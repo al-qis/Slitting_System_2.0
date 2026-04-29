@@ -30,8 +30,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
             $original_source = 'sfc';
 
             if ($action === 'RECOIL') {
+                // 7 placeholders for 7 variables
                 $stmt = $conn->prepare("INSERT INTO recoiling_product (product, lot_no, coil_no, roll_no, width, length, status, date_in, original_source) VALUES (?, ?, ?, ?, ?, ?, 'pending', NOW(), ?)");
-                $stmt->bind_param("ssssddds", 
+                $stmt->bind_param("ssssdds", 
                         $sfc['product'],
                         $sfc['lot_no'], 
                         $sfc['coil_no'],
@@ -45,8 +46,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
                 log_source_tracking($conn, 0, 'recoiling_product', $original_source, 'sfc', 'RECOIL_FROM_SFC');
 
             } elseif ($action === 'RESLIT') {
+                // 7 placeholders for 7 variables
                 $stmt = $conn->prepare("INSERT INTO reslit_product (product, lot_no, coil_no, roll_no, width, length, status, date_in, original_source) VALUES (?, ?, ?, ?, ?, ?, 'pending', NOW(), ?)");
-                $stmt->bind_param("ssssddds", 
+                $stmt->bind_param("ssssdds", 
                         $sfc['product'], 
                         $sfc['lot_no'], 
                         $sfc['coil_no'],
@@ -60,8 +62,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
                 log_source_tracking($conn, 0, 'reslit_product', $original_source, 'sfc', 'RESLIT_FROM_SFC');
 
             } elseif ($action === 'SELL') {
+                // Fixed: 7 placeholders (?) to match the 7 variables in bind_param
+                // Static values like 'WAITING', NOW(), 'sfc_sell', and 'sfc' are written directly in the query
                 $stmt = $conn->prepare("INSERT INTO slitting_product (product, lot_no, coil_no, roll_no, width, length, status, date_in, date_out, cut_type, source, original_source) VALUES (?, ?, ?, ?, ?, ?, 'WAITING', NOW(), NOW(), 'sfc_sell', 'sfc', ?)");
-                $stmt->bind_param("sssssddds", 
+                
+                $stmt->bind_param("ssssdds", 
                         $sfc['product'], 
                         $sfc['lot_no'], 
                         $sfc['coil_no'],
@@ -75,6 +80,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
                 log_source_tracking($conn, 0, 'slitting_product', $original_source, 'sfc', 'SELL_FROM_SFC');
             }
 
+            // Update original SFC record to mark it as moved
             $updateStmt = $conn->prepare("UPDATE sfc SET date_out = NOW(), action = ? WHERE sfc_id = ?");
             $updateStmt->bind_param("si", $action, $sfcId);
             $updateStmt->execute();
@@ -149,7 +155,7 @@ include 'header.php';
         </form>
     </div>
     <div class="col-md-7 text-end">
-        <a href="sfc_tracking_report.php" class="btn btn-info btn-sm">
+        <a href="sfc_tracking.php" class="btn btn-info btn-sm">
             <i class="bi bi-graph-up me-1"></i> View SFC Tracking Report
         </a>
     </div>
