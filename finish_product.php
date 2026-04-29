@@ -237,7 +237,7 @@ include 'header.php';
             $sourceRaw = $row['source'] ?? '';
             $sourceDisplay = match(trim(strtolower($sourceRaw))) {
                 'raw_material' => ['label' => 'RAW MAT', 'class' => 'bg-secondary'],
-                '0', '', 'sfg' => ['label' => 'SFG', 'class' => 'bg-dark'],
+                '0', '', 'sfg' => ['label' => 'SFC', 'class' => 'bg-dark'],
                 default        => ['label' => strtoupper($sourceRaw), 'class' => 'bg-info']
             };
 
