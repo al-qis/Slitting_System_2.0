@@ -24,6 +24,7 @@ USE `slitting_db_test`;
 DROP TABLE IF EXISTS `coil_product_map`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;
+
 CREATE TABLE `coil_product_map` (
   `id` int NOT NULL AUTO_INCREMENT,
   `coil_code` varchar(10) NOT NULL,
@@ -56,8 +57,8 @@ CREATE TABLE `mother_coil` (
   `product` varchar(100) NOT NULL,
   `lot_no` varchar(100) NOT NULL,
   `grade` varchar(50) DEFAULT NULL,
-  `width` varchar(100) NOT NULL,
-  `length` varchar(100) NOT NULL,
+  `width` decimal(10,2) DEFAULT NULL,
+  `length` decimal(10,2) DEFAULT NULL,
   `status` enum('NEW','IN','OUT') DEFAULT 'NEW',
   `date_in` datetime DEFAULT NULL,
   `date_out` datetime DEFAULT NULL,
@@ -65,7 +66,8 @@ CREATE TABLE `mother_coil` (
   `in_count` tinyint unsigned NOT NULL DEFAULT '0' COMMENT 'Counter for IN scans',
   `out_count` tinyint unsigned NOT NULL DEFAULT '0' COMMENT 'Counter for OUT scans',
   `stock` tinyint(1) NOT NULL DEFAULT '0' COMMENT 'Stock status, IN - OUT',
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `unique_coil_lot` (`coil_no`,`lot_no`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -79,30 +81,32 @@ LOCK TABLES `mother_coil` WRITE;
 UNLOCK TABLES;
 
 --
--- Table structure for table `mother_coil_log`
+-- Table structure for table `mother_coil_audit_log`
 --
 
-DROP TABLE IF EXISTS `mother_coil_log`;
+DROP TABLE IF EXISTS `mother_coil_audit_log`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `mother_coil_log` (
+CREATE TABLE `mother_coil_audit_log` (
   `id` int NOT NULL AUTO_INCREMENT,
   `mother_id` int NOT NULL,
-  `status` enum('IN','OUT') NOT NULL,
-  `date` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `action_type` enum('IN','OUT','SCAN_IN','SCAN_OUT','CREATED','UPDATED') NOT NULL,
+  `performed_at` datetime DEFAULT CURRENT_TIMESTAMP,
+  `remark` text,
   PRIMARY KEY (`id`),
-  KEY `fk_log_mother` (`mother_id`),
-  CONSTRAINT `fk_log_mother` FOREIGN KEY (`mother_id`) REFERENCES `mother_coil` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+  KEY `fk_audit_mother` (`mother_id`),
+  KEY `idx_performed_at` (`performed_at`),
+  CONSTRAINT `fk_audit_mother` FOREIGN KEY (`mother_id`) REFERENCES `mother_coil` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Dumping data for table `mother_coil_log`
+-- Dumping data for table `mother_coil_audit_log`
 --
 
-LOCK TABLES `mother_coil_log` WRITE;
-/*!40000 ALTER TABLE `mother_coil_log` DISABLE KEYS */;
-/*!40000 ALTER TABLE `mother_coil_log` ENABLE KEYS */;
+LOCK TABLES `mother_coil_audit_log` WRITE;
+/*!40000 ALTER TABLE `mother_coil_audit_log` DISABLE KEYS */;
+/*!40000 ALTER TABLE `mother_coil_audit_log` ENABLE KEYS */;
 UNLOCK TABLES;
 
 --
@@ -135,6 +139,25 @@ INSERT INTO `nci_product_mapping` VALUES (1,'A-115','RS-3825','115 mm','DELPHI (
 UNLOCK TABLES;
 
 --
+-- Temporary view structure for view `production_yield_summary`
+--
+
+DROP TABLE IF EXISTS `production_yield_summary`;
+/*!50001 DROP VIEW IF EXISTS `production_yield_summary`*/;
+SET @saved_cs_client     = @@character_set_client;
+/*!50503 SET character_set_client = utf8mb4 */;
+/*!50001 CREATE VIEW `production_yield_summary` AS SELECT 
+ 1 AS `mother_id`,
+ 1 AS `coil_no`,
+ 1 AS `product`,
+ 1 AS `input_width`,
+ 1 AS `output_width`,
+ 1 AS `waste_width`,
+ 1 AS `yield_percentage`,
+ 1 AS `date_created`*/;
+SET character_set_client = @saved_cs_client;
+
+--
 -- Table structure for table `raw_material_log`
 --
 
@@ -144,14 +167,8 @@ DROP TABLE IF EXISTS `raw_material_log`;
 CREATE TABLE `raw_material_log` (
   `id` int NOT NULL AUTO_INCREMENT,
   `mother_id` int DEFAULT NULL,
-  `product` varchar(255) NOT NULL,
-  `lot_no` varchar(100) NOT NULL,
-  `coil_no` varchar(50) DEFAULT NULL,
-  `width` varchar(100) NOT NULL,
-  `length` decimal(10,2) NOT NULL,
   `status` enum('IN','OUT') NOT NULL,
   `action` varchar(50) DEFAULT NULL COMMENT 'normal or cut_into_2',
-  `date` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `date_in` datetime DEFAULT NULL,
   `date_out` datetime DEFAULT NULL,
   `remark` text,
@@ -179,6 +196,7 @@ DROP TABLE IF EXISTS `recoiling_product`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `recoiling_product` (
   `id` int NOT NULL AUTO_INCREMENT,
+  `mother_id` int DEFAULT NULL,
   `status` enum('pending','completed') CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT 'pending',
   `product` varchar(100) NOT NULL,
   `lot_no` varchar(100) NOT NULL,
@@ -194,7 +212,8 @@ CREATE TABLE `recoiling_product` (
   `completed_at` datetime DEFAULT NULL,
   `cut_type` varchar(50) DEFAULT NULL,
   `remark` text,
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`),
+  KEY `fk_recoiling_mother_idx` (`mother_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -288,7 +307,7 @@ CREATE TABLE `sfc` (
   `product` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL,
   `lot_no` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL,
   `coil_no` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL,
-  `width` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL,
+  `width` decimal(10,2) DEFAULT NULL,
   `length` decimal(10,2) DEFAULT NULL,
   `action` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL,
   `date_created` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
@@ -319,17 +338,19 @@ CREATE TABLE `slitting_product` (
   `lot_no` varchar(100) DEFAULT NULL,
   `coil_no` varchar(50) DEFAULT NULL,
   `roll_no` varchar(100) DEFAULT NULL,
-  `width` varchar(50) DEFAULT NULL,
-  `length` varchar(50) DEFAULT NULL,
-  `actual_length` varchar(50) DEFAULT NULL,
+  `width` decimal(10,2) DEFAULT NULL,
+  `length` decimal(10,2) DEFAULT NULL,
+  `actual_length` decimal(10,2) DEFAULT NULL,
   `length_type` varchar(20) DEFAULT NULL,
-  `status` varchar(20) DEFAULT 'IN',
+  `status` enum('IN','WAITING','APPROVED','REJECTED','DELIVERED') DEFAULT 'IN',
+  `qc_comment` text,
   `is_completed` tinyint(1) DEFAULT '0',
   `stock_counted` tinyint(1) DEFAULT '0',
   `date_in` date NOT NULL DEFAULT (curdate()),
   `date_out` datetime DEFAULT NULL,
   `delivered_at` datetime DEFAULT NULL,
   `mother_id` int DEFAULT NULL,
+  `from_log_id` int DEFAULT NULL,
   `cut_type` varchar(20) DEFAULT 'normal' COMMENT 'normal or cut_into_2',
   `slit_quantity` decimal(10,2) DEFAULT NULL COMMENT 'Quantity untuk cut into 2',
   `stock_value` decimal(10,2) DEFAULT NULL COMMENT 'Stock amount yang return ke mother coil',
@@ -345,10 +366,13 @@ CREATE TABLE `slitting_product` (
   `recoiling_id` int DEFAULT NULL,
   `source` varchar(50) NOT NULL DEFAULT 'raw_material',
   PRIMARY KEY (`id`),
+  UNIQUE KEY `unique_production_roll` (`lot_no`,`coil_no`,`roll_no`),
   KEY `idx_recoiling_id` (`recoiling_id`),
-  KEY `fk_slitting_mother` (`mother_id`),
   KEY `fk_slitting_std_wgt` (`product`),
-  CONSTRAINT `fk_slitting_mother` FOREIGN KEY (`mother_id`) REFERENCES `mother_coil` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  KEY `fk_slitting_mother` (`mother_id`),
+  KEY `fk_slitting_log` (`from_log_id`),
+  CONSTRAINT `fk_slitting_log` FOREIGN KEY (`from_log_id`) REFERENCES `raw_material_log` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_slitting_mother` FOREIGN KEY (`mother_id`) REFERENCES `mother_coil` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
   CONSTRAINT `fk_slitting_std_wgt` FOREIGN KEY (`product`) REFERENCES `std_wgt` (`product_code`) ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
@@ -404,13 +428,16 @@ CREATE TABLE `stock_raw_material` (
   `width` decimal(10,2) DEFAULT NULL,
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `lot_no` varchar(100) DEFAULT NULL,
+  `grade` varchar(50) DEFAULT NULL,
   `coil_no` varchar(100) DEFAULT NULL,
   `status` varchar(20) DEFAULT NULL,
   `source_type` varchar(50) DEFAULT NULL,
   `source_id` int DEFAULT NULL,
   `date_in` datetime DEFAULT NULL,
   `updated_at` datetime DEFAULT NULL,
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`),
+  KEY `fk_mother_source` (`source_id`),
+  CONSTRAINT `fk_mother_source` FOREIGN KEY (`source_id`) REFERENCES `mother_coil` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -478,6 +505,32 @@ LOCK TABLES `waiting_approval` WRITE;
 /*!40000 ALTER TABLE `waiting_approval` DISABLE KEYS */;
 /*!40000 ALTER TABLE `waiting_approval` ENABLE KEYS */;
 UNLOCK TABLES;
+
+--
+-- Dumping events for database 'slitting_db_test'
+--
+
+--
+-- Dumping routines for database 'slitting_db_test'
+--
+
+--
+-- Final view structure for view `production_yield_summary`
+--
+
+/*!50001 DROP VIEW IF EXISTS `production_yield_summary`*/;
+/*!50001 SET @saved_cs_client          = @@character_set_client */;
+/*!50001 SET @saved_cs_results         = @@character_set_results */;
+/*!50001 SET @saved_col_connection     = @@collation_connection */;
+/*!50001 SET character_set_client      = utf8mb4 */;
+/*!50001 SET character_set_results     = utf8mb4 */;
+/*!50001 SET collation_connection      = utf8mb4_0900_ai_ci */;
+/*!50001 CREATE ALGORITHM=UNDEFINED */
+/*!50013 DEFINER=`root`@`localhost` SQL SECURITY DEFINER */
+/*!50001 VIEW `production_yield_summary` AS select `m`.`id` AS `mother_id`,`m`.`coil_no` AS `coil_no`,`m`.`product` AS `product`,cast(`m`.`width` as decimal(10,2)) AS `input_width`,sum(cast(`s`.`width` as decimal(10,2))) AS `output_width`,(cast(`m`.`width` as decimal(10,2)) - sum(cast(`s`.`width` as decimal(10,2)))) AS `waste_width`,((sum(cast(`s`.`width` as decimal(10,2))) / cast(`m`.`width` as decimal(10,2))) * 100) AS `yield_percentage`,`m`.`date_created` AS `date_created` from (`mother_coil` `m` left join `slitting_product` `s` on((`m`.`id` = `s`.`mother_id`))) group by `m`.`id` */;
+/*!50001 SET character_set_client      = @saved_cs_client */;
+/*!50001 SET character_set_results     = @saved_cs_results */;
+/*!50001 SET collation_connection      = @saved_col_connection */;
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
 
 /*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
@@ -488,4 +541,4 @@ UNLOCK TABLES;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2026-04-08  8:13:03
+-- Dump completed on 2026-04-29  8:51:06
