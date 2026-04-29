@@ -1,151 +1,214 @@
 <?php
 session_start();
-include 'config.php';
 
-// Authentication & Role Check
 if (!isset($_SESSION['role'])) {
     header("Location: login.php");
     exit;
 }
 
-// Get POST data
-$source_type = trim($_POST['source_type'] ?? ''); // 'mother' or 'stock'
-$product     = trim($_POST['product'] ?? '');
-$lot_no      = trim($_POST['lot_no'] ?? '');
-$coil_no     = trim($_POST['coil_no'] ?? '');
-$total       = intval($_POST['total'] ?? 0);
-$cut_type    = trim($_POST['cut_type'] ?? '');
+if ($_SESSION['role'] !== 'slitting') {
+    die("Access denied");
+}
 
-$roll_nos    = $_POST['roll_no'] ?? [];
-$widths      = $_POST['width'] ?? [];
-$lengths     = $_POST['length'] ?? [];
+include 'config.php';
+
+// Retrieve form data
+$source_type = trim($_POST['source_type'] ?? '');
+$mother_id = intval($_POST['mother_id'] ?? 0);
+$stock_id = intval($_POST['stock_id'] ?? 0);
+$product = trim($_POST['product'] ?? '');
+$lot_no = trim($_POST['lot_no'] ?? '');
+$coil_no = trim($_POST['coil_no'] ?? '');
+$cut_type = trim($_POST['cut_type'] ?? 'normal');
+$slit_quantity = floatval($_POST['slit_quantity'] ?? 0);
+$stock = floatval($_POST['stock'] ?? 0);
+$sfc_balance_width = floatval($_POST['sfc_balance_width'] ?? 0);
+
+$roll_nos = $_POST['roll_no'] ?? [];
 $cut_letters = $_POST['cut_letter'] ?? [];
+$lengths = $_POST['length'] ?? [];
+$widths = $_POST['width'] ?? [];
+$send_to_sfc = $_POST['send_to_sfc'] ?? []; // Array of roll numbers to send to SFC
 
-$slit_quantity = isset($_POST['slit_quantity']) ? floatval($_POST['slit_quantity']) : null;
-$stock         = isset($_POST['stock']) ? floatval($_POST['stock']) : null;
-
-// Determine source & Validate material
-$mother_id = null;
-$stock_id = 0;
-$source_data = null;
-
-if($source_type === 'mother') {
-    $mother_id = intval($_POST['mother_id']);
-    $source_data = $conn->query("SELECT * FROM mother_coil WHERE id=$mother_id")->fetch_assoc();
-} else if($source_type === 'stock') {
-    $stock_id = intval($_POST['stock_id']);
-    $source_data = $conn->query("SELECT * FROM raw_material_log WHERE id=$stock_id")->fetch_assoc();
-    
-    if($source_data && !empty($source_data['mother_id'])) {
-        $mother_id = intval($source_data['mother_id']);
-    }
+// Validate input
+if (count($roll_nos) === 0 || count($widths) === 0) {
+    die("Error: No rolls provided");
 }
 
-if (!$source_data) {
-    die("Error: Source material not found.");
-}
-
-// Start Transaction to ensure data integrity
 $conn->begin_transaction();
 
 try {
-    // === 1. PRE-CHECK FOR DUPLICATES ===
-    // We check all planned rolls before inserting any to ensure the batch is valid
-    for($i = 0; $i < $total; $i++){
-        $current_roll = trim($roll_nos[$i]);
-        $suffix = isset($cut_letters[$i]) ? trim($cut_letters[$i]) : '';
-        $final_lot_no = $lot_no . $suffix;
-
-        $check = $conn->prepare("SELECT id FROM slitting_product WHERE lot_no = ? AND coil_no = ? AND roll_no = ?");
-        $check->bind_param("sss", $final_lot_no, $coil_no, $current_roll);
-        $check->execute();
-        $result = $check->get_result();
-        
-        if($result->num_rows > 0) {
-            throw new Exception("Duplicate Entry Detected: A record for Lot: $final_lot_no, Coil: $coil_no, Roll: $current_roll already exists. Please use an alphabet suffix (e.g. {$lot_no}a) to differentiate.");
-        }
-        $check->close();
-    }
-
-    // === 2. INSERT SLITTING PRODUCTS ===
-    for($i = 0; $i < $total; $i++){
+    // 1. Process each output roll
+    for ($i = 0; $i < count($roll_nos); $i++) {
         $roll_no = trim($roll_nos[$i]);
-        $width   = trim($widths[$i]);
-        $length  = trim($lengths[$i]);
+        $cut_letter = trim($cut_letters[$i] ?? '');
+        $length = floatval($lengths[$i]);
+        $width = floatval($widths[$i]);
+        $roll_number = $i + 1; // 1-based roll number
         
-        $final_lot_no = $lot_no;    
-        if(isset($cut_letters[$i]) && $cut_letters[$i] !== ''){
-            $final_lot_no = $lot_no . $cut_letters[$i];
+        // Build lot_no with cut letter if provided
+        $modified_lot_no = $cut_letter ? ($lot_no . $cut_letter) : $lot_no;
+        
+        // Check if this roll is selected for SFC
+        $is_for_sfc = in_array($roll_number, $send_to_sfc);
+        
+        if ($is_for_sfc) {
+            // ROUTE 1: Send to SFC inventory
+            // Insert into sfc table with roll_no included
+            $stmt = $conn->prepare("INSERT INTO sfc 
+                (product, lot_no, coil_no, roll_no, width, length, date_created) 
+                VALUES (?, ?, ?, ?, ?, ?, NOW())");
+            
+            if (!$stmt) {
+                throw new Exception("SFC Prepare failed: " . $conn->error);
+            }
+            
+            $stmt->bind_param(
+                "ssssdd",
+                $product,
+                $modified_lot_no,
+                $coil_no,
+                $roll_no,
+                $width,
+                $length
+            );
+            
+            if (!$stmt->execute()) {
+                throw new Exception("Error inserting to SFC: " . $stmt->error);
+            }
+            
+            $stmt->close();
+            
+        } else {
+            // ROUTE 2: Send to Finish Product (slitting_product)
+            // Insert into slitting_product table
+            $stmt = $conn->prepare("INSERT INTO slitting_product 
+                (product, lot_no, coil_no, roll_no, width, length, status, date_in, cut_type, mother_id) 
+                VALUES (?, ?, ?, ?, ?, ?, 'IN', NOW(), ?, ?)");
+            
+            if (!$stmt) {
+                throw new Exception("Finish Product Prepare failed: " . $conn->error);
+            }
+            
+            $stmt->bind_param(
+                "ssssddsi",
+                $product,
+                $modified_lot_no,
+                $coil_no,
+                $roll_no,
+                $width,
+                $length,
+                $cut_type,
+                $mother_id
+            );
+            
+            if (!$stmt->execute()) {
+                throw new Exception("Error inserting to Finish Product: " . $stmt->error);
+            }
+            
+            $stmt->close();
         }
-
-        $stmt = $conn->prepare("INSERT INTO slitting_product 
-            (mother_id, product, lot_no, coil_no, roll_no, width, length, cut_type, slit_quantity, stock, status, is_completed, stock_counted, source) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 0, 0, ?)");
-
-        $source_value = ($source_type === 'stock') ? 'sfg' : 'raw_material';
+    }
+    
+    // 2. Handle leftover stock if "Cut Into 2" is selected
+    if ($cut_type === 'cut_into_2' && $stock > 0) {
+        $mother_stock_lot = $lot_no . 'a';
         
-        $stmt->bind_param("isssssssdds", $mother_id, $product, $final_lot_no, $coil_no, $roll_no, $width, $length, $cut_type, $slit_quantity, $stock, $source_value);
-        $stmt->execute();
+        $check = $conn->query("SELECT id, length FROM stock_raw_material 
+                             WHERE lot_no='$mother_stock_lot' AND coil_no='{$coil_no}'");
+        
+        if ($check->num_rows > 0) {
+            // Update existing
+            $existing = $check->fetch_assoc();
+            $new_length = $existing['length'] + $stock;
+            $conn->query("UPDATE stock_raw_material SET length=$new_length, updated_at=NOW() 
+                         WHERE lot_no='$mother_stock_lot' AND coil_no='{$coil_no}'");
+        } else {
+            // Create new stock record
+            $default_width = floatval($widths[0] ?? 0);
+            $stmt = $conn->prepare("INSERT INTO stock_raw_material 
+                (lot_no, coil_no, width, length, status, source_type, source_id, date_in) 
+                VALUES (?, ?, ?, ?, 'IN', 'slitting_leftover', ?, NOW())");
+            
+            if (!$stmt) {
+                throw new Exception("Stock Prepare failed: " . $conn->error);
+            }
+            
+            $stmt->bind_param(
+                "ssddi",
+                $mother_stock_lot,
+                $coil_no,
+                $default_width,
+                $stock,
+                $mother_id
+            );
+            
+            if (!$stmt->execute()) {
+                throw new Exception("Error creating stock record: " . $stmt->error);
+            }
+            
+            $stmt->close();
+        }
+    }
+    
+    // 3. Update mother_coil status if from fresh coil
+    if ($source_type === 'mother' && $mother_id > 0) {
+        // Update mother coil
+        $stmt = $conn->prepare("UPDATE mother_coil SET status='OUT', date_out=NOW() WHERE id=?");
+        if (!$stmt) {
+            throw new Exception("Mother update prepare failed: " . $conn->error);
+        }
+        $stmt->bind_param("i", $mother_id);
+        if (!$stmt->execute()) {
+            throw new Exception("Mother update failed: " . $stmt->error);
+        }
         $stmt->close();
-    }
-
-    // === 3. HANDLE SFC BALANCE ===
-    if ($cut_type === 'normal' && isset($_POST['sfc_balance_width']) && floatval($_POST['sfc_balance_width']) > 0) {
-        $sfc_width = floatval($_POST['sfc_balance_width']);
-        $original_length = floatval($source_data['length']);
         
-        $sfc_stmt = $conn->prepare("INSERT INTO sfc (product, lot_no, coil_no, width, length, date_created) VALUES (?, ?, ?, ?, ?, NOW())");
-        $sfc_stmt->bind_param("ssssd", $product, $lot_no, $coil_no, $sfc_width, $original_length);
-        $sfc_stmt->execute();
-        $sfc_stmt->close();
+        // Log to audit - use valid enum: IN, OUT, SCAN_IN, SCAN_OUT, CREATED, UPDATED
+        $stmt = $conn->prepare("INSERT INTO mother_coil_audit_log 
+            (mother_id, action_type, performed_at, remark) 
+            VALUES (?, 'OUT', NOW(), 'Material sent to slitting production')");
+        if ($stmt) {
+            $stmt->bind_param("i", $mother_id);
+            if (!$stmt->execute()) {
+                error_log("Audit log failed: " . $stmt->error);
+            }
+            $stmt->close();
+        }
     }
-
-    // === 4. UPDATE MATERIAL LIFECYCLE ===
-    if($source_type === 'mother') {
-        $upd_mother = $conn->prepare("UPDATE mother_coil SET status='OUT', stock=0, date_out=NOW() WHERE id=?");
-        $upd_mother->bind_param("i", $mother_id);
-        $upd_mother->execute();
-
-        $upd_raw = $conn->prepare("UPDATE raw_material_log SET status='OUT', date_out=NOW(), action=? WHERE mother_id=? AND status='IN' LIMIT 1");
-        $upd_raw->bind_param("si", $cut_type, $mother_id);
-        $upd_raw->execute();
-
-    } else if($source_type === 'stock') {
-        $upd_stock = $conn->prepare("UPDATE raw_material_log SET status='OUT', date_out=NOW(), action=? WHERE id=?");
-        $upd_stock->bind_param("si", $cut_type, $stock_id);
-        $upd_stock->execute();
+    
+    // 4. Update raw_material_log status if from stock
+    if ($source_type === 'stock' && $stock_id > 0) {
+        $stmt = $conn->prepare("UPDATE raw_material_log SET status='OUT', date_out=NOW() WHERE id=?");
+        if ($stmt) {
+            $stmt->bind_param("i", $stock_id);
+            if (!$stmt->execute()) {
+                error_log("Raw material log update failed: " . $stmt->error);
+            }
+            $stmt->close();
+        }
     }
-
-    // === 5. LOG AUDIT ACTION ===
-    $audit_remark = "Processed via slitting ($cut_type)";
-    $audit = $conn->prepare("INSERT INTO mother_coil_audit_log (mother_id, action_type, performed_at, remark) VALUES (?, 'OUT', NOW(), ?)");
-    $audit->bind_param("is", $mother_id, $audit_remark);
-    $audit->execute();
-
-    // === 6. HANDLE LEFTOVER (CUT INTO 2) ===
-    if($cut_type === 'cut_into_2' && $stock > 0) {
-        $remark = ($source_type === 'stock') ? 'Stock leftover from stock after cut' : 'Stock leftover from slitting';
-        
-        $ins_leftover = $conn->prepare("INSERT INTO raw_material_log (mother_id, status, date_in, action, length, remark) VALUES (?, 'IN', NOW(), 'cut_into_2', ?, ?)");
-        $ins_leftover->bind_param("ids", $mother_id, $stock, $remark);
-        $ins_leftover->execute();
-        
-        $audit_in = $conn->prepare("INSERT INTO mother_coil_audit_log (mother_id, action_type, performed_at, remark) VALUES (?, 'IN', NOW(), 'Leftover from Cut Into 2 returned to stock')");
-        $audit_in->bind_param("i", $mother_id);
-        $audit_in->execute();
-    }
-
+    
     $conn->commit();
-    header("Location: finish_product.php?success=1");
-
+    
+    // Build success message
+    $slitting_count = count($roll_nos);
+    $sfc_count = count($send_to_sfc);
+    $finish_count = $slitting_count - $sfc_count;
+    
+    if ($sfc_count > 0 && $finish_count > 0) {
+        $message = "Created $sfc_count roll(s) to SFC and $finish_count roll(s) to Finish Product";
+    } elseif ($sfc_count > 0) {
+        $message = "Created $sfc_count roll(s) and sent to SFC";
+    } else {
+        $message = "Created $slitting_count roll(s) in Finish Product";
+    }
+    
+    header("Location: finish_product.php?success=1&message=" . urlencode($message));
+    exit;
+    
 } catch (Exception $e) {
     $conn->rollback();
-    // Use die with a message so the operator knows exactly why it failed
-    die("<div style='color:red; font-family:sans-serif; padding:20px; border:1px solid red; background:#fff5f5;'>
-            <h2>Transaction Failed</h2>
-            <p><strong>Reason:</strong> " . $e->getMessage() . "</p>
-            <button onclick='history.back()'>Go Back and Correct Data</button>
-         </div>");
+    die("Error: " . htmlspecialchars($e->getMessage()));
 }
-exit;
 ?>

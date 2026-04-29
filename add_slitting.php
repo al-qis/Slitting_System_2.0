@@ -185,14 +185,6 @@ if ($from_stock) {
     </form>
 </div>
 
-        <div class="mb-5">
-            <button type="submit" class="btn btn-primary btn-lg px-5 shadow" id="submitBtn" style="display:none;">
-                <i class="bi bi-save me-2"></i> Save Production Data
-            </button>
-        </div>
-    </form>
-</div>
-
 <script>
 const sourceData = {
     lotNo: '<?= htmlspecialchars($source_data['lot_no']) ?>',
@@ -260,9 +252,17 @@ function generateForm(){
     for (let i = 1; i <= total; i++) {
         html += `
             <div class="slitting-box">
-                <div class="d-flex justify-content-between border-bottom pb-2 mb-3">
+                <div class="d-flex justify-content-between border-bottom pb-2 mb-3 align-items-center">
                     <h5 class="mb-0 text-primary">Output Roll #${i}</h5>
-                    <span class="badge bg-light text-dark border">Label: R${i}</span>
+                    <div class="d-flex gap-2 align-items-center">
+                        <span class="badge bg-light text-dark border">Label: R${i}</span>
+                        <div class="form-check">
+                            <input class="form-check-input sfc-checkbox" type="checkbox" name="send_to_sfc[]" id="sfcCheck${i-1}" value="${i}">
+                            <label class="form-check-label small" for="sfcCheck${i-1}" title="Send this roll to SFC inventory">
+                                <i class="bi bi-box-seam text-primary"></i> To SFC
+                            </label>
+                        </div>
+                    </div>
                 </div>
                 <input type="hidden" name="roll_no[]" value="R${i}">
 

@@ -81,19 +81,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $res = $conn->query("SELECT * FROM slitting_product WHERE id = $id");
     if ($res->num_rows > 0) {
         $p = $res->fetch_assoc();
-        
-        // PERMANENT SOURCE: Keep original_source from slitting_product
         $original_source = $p['original_source'] ?? 'raw_material';
         
         $stmt = $conn->prepare("INSERT INTO recoiling_product (status, product, lot_no, coil_no, roll_no, width, length, actual_length, original_source) VALUES ('pending', ?, ?, ?, ?, ?, ?, ?, ?)");
         $stmt->bind_param("ssssddds", $p['product'], $p['lot_no'], $p['coil_no'], $p['roll_no'], $p['width'], $p['length'], $p['actual_length'], $original_source);
+        
         if ($stmt->execute()) {
             $stmt->close();
             $conn->query("UPDATE slitting_product SET is_recoiled=1 WHERE id=$id");
             
-            // Log source tracking
             $stmt = $conn->prepare("INSERT INTO source_tracking_log (product_id, table_name, original_source, current_source, action) VALUES (?, 'recoiling_product', ?, 'recoiling', 'send_to_recoiling')");
-            $stmt->bind_param("iss", $id, $original_source);
+            $stmt->bind_param("is", $id, $original_source); // Fixed here too
             $stmt->execute();
             $stmt->close();
             
@@ -109,19 +107,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $res = $conn->query("SELECT * FROM slitting_product WHERE id = $id");
     if ($res->num_rows > 0) {
         $p = $res->fetch_assoc();
-        
-        // PERMANENT SOURCE: Keep original_source from slitting_product
         $original_source = $p['original_source'] ?? 'raw_material';
         
         $stmt = $conn->prepare("INSERT INTO reslit_product (status, product, lot_no, coil_no, roll_no, width, length, date_in, original_source) VALUES ('pending', ?, ?, ?, ?, ?, ?, NOW(), ?)");
         $stmt->bind_param("ssssdds", $p['product'], $p['lot_no'], $p['coil_no'], $p['roll_no'], $p['width'], $p['length'], $original_source);
+        
         if ($stmt->execute()) {
             $stmt->close();
             $conn->query("UPDATE slitting_product SET is_reslitted=1 WHERE id=$id");
             
-            // Log source tracking
             $stmt = $conn->prepare("INSERT INTO source_tracking_log (product_id, table_name, original_source, current_source, action) VALUES (?, 'reslit_product', ?, 'reslit', 'send_to_reslit')");
-            $stmt->bind_param("iss", $id, $original_source);
+            $stmt->bind_param("is", $id, $original_source); // Fixed
             $stmt->execute();
             $stmt->close();
             
@@ -282,7 +278,7 @@ include 'header.php';
             $originBadge = ($row['original_source'] === 'sfc') 
         ? '<br><span class="badge bg-info text-dark" style="font-size: 0.65rem;">SFC ORIGIN</span>' 
         : '<br><span class="badge bg-light text-muted" style="font-size: 0.65rem;">RAW MATERIAL</span>'
-        
+
         ?>
             <tr class="<?= $rowClass ?>">
                 <td><?= $row['id'] ?></td>

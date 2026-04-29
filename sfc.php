@@ -27,55 +27,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
     if ($sfc) {
         $conn->begin_transaction();
         try {
-            // PERMANENT SOURCE: Always set original_source to 'sfc'
             $original_source = 'sfc';
 
             if ($action === 'RECOIL') {
-                $stmt = $conn->prepare("INSERT INTO recoiling_product (product, lot_no, coil_no, width, length, status, date_in, source, original_source) VALUES (?, ?, ?, ?, ?, 'pending', NOW(), 'sfc', ?)");
-                $stmt->bind_param("sssdds", 
+                $stmt = $conn->prepare("INSERT INTO recoiling_product (product, lot_no, coil_no, roll_no, width, length, status, date_in, original_source) VALUES (?, ?, ?, ?, ?, ?, 'pending', NOW(), ?)");
+                $stmt->bind_param("ssssddds", 
                         $sfc['product'],
                         $sfc['lot_no'], 
-                        $sfc['coil_no'], 
+                        $sfc['coil_no'],
+                        $sfc['roll_no'],
                         $sfc['width'], 
                         $sfc['length'],
                         $original_source
                 );
                 $stmt->execute();
                 $stmt->close();
-                
-                // Log to source tracking
                 log_source_tracking($conn, 0, 'recoiling_product', $original_source, 'sfc', 'RECOIL_FROM_SFC');
 
             } elseif ($action === 'RESLIT') {
-                $stmt = $conn->prepare("INSERT INTO reslit_product (product, lot_no, coil_no, width, length, status, date_in, source, original_source) VALUES (?, ?, ?, ?, ?, 'pending', NOW(), 'sfc', ?)");
-                $stmt->bind_param("sssdds", 
-                        $sfc['product'], 
-                        $sfc['lot_no'], 
-                        $sfc['coil_no'], 
-                        $sfc['width'], 
-                        $sfc['length'],
-                        $original_source
-                );
-                $stmt->execute();
-                $stmt->close();
-                
-                // Log to source tracking
-                log_source_tracking($conn, 0, 'reslit_product', $original_source, 'sfc', 'RESLIT_FROM_SFC');
-
-            } elseif ($action === 'SELL') {
-                $stmt = $conn->prepare("INSERT INTO slitting_product (product, lot_no, coil_no, width, length, status, date_in, date_out, cut_type, source, original_source) VALUES (?, ?, ?, ?, ?, 'WAITING', NOW(), NOW(), 'sfc_sell', 'sfc', ?)");
+                $stmt = $conn->prepare("INSERT INTO reslit_product (product, lot_no, coil_no, roll_no, width, length, status, date_in, original_source) VALUES (?, ?, ?, ?, ?, ?, 'pending', NOW(), ?)");
                 $stmt->bind_param("ssssddds", 
                         $sfc['product'], 
                         $sfc['lot_no'], 
-                        $sfc['coil_no'], 
+                        $sfc['coil_no'],
+                        $sfc['roll_no'],
                         $sfc['width'], 
                         $sfc['length'],
                         $original_source
                 );
                 $stmt->execute();
                 $stmt->close();
-                
-                // Log to source tracking
+                log_source_tracking($conn, 0, 'reslit_product', $original_source, 'sfc', 'RESLIT_FROM_SFC');
+
+            } elseif ($action === 'SELL') {
+                $stmt = $conn->prepare("INSERT INTO slitting_product (product, lot_no, coil_no, roll_no, width, length, status, date_in, date_out, cut_type, source, original_source) VALUES (?, ?, ?, ?, ?, ?, 'WAITING', NOW(), NOW(), 'sfc_sell', 'sfc', ?)");
+                $stmt->bind_param("sssssddds", 
+                        $sfc['product'], 
+                        $sfc['lot_no'], 
+                        $sfc['coil_no'],
+                        $sfc['roll_no'],
+                        $sfc['width'], 
+                        $sfc['length'],
+                        $original_source
+                );
+                $stmt->execute();
+                $stmt->close();
                 log_source_tracking($conn, 0, 'slitting_product', $original_source, 'sfc', 'SELL_FROM_SFC');
             }
 
@@ -101,9 +97,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
     }
 }
 
-// ============================================================================
-// HELPER FUNCTION: Log to source_tracking_log
-// ============================================================================
 function log_source_tracking($conn, $product_id, $table_name, $original_source, $current_source, $action) {
     $stmt = $conn->prepare("INSERT INTO source_tracking_log (product_id, table_name, original_source, current_source, action) VALUES (?, ?, ?, ?, ?)");
     $stmt->bind_param("issss", $product_id, $table_name, $original_source, $current_source, $action);
@@ -111,20 +104,19 @@ function log_source_tracking($conn, $product_id, $table_name, $original_source, 
     $stmt->close();
 }
 
-// 3. Handle Search and Fetch Data
 $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 
 if ($search !== '') {
-    // Search by SFC ID, Product, Lot No, or Coil No
     $query = "SELECT * FROM sfc WHERE date_out IS NULL AND (
                 sfc_id LIKE ? OR 
                 product LIKE ? OR 
                 lot_no LIKE ? OR 
-                coil_no LIKE ?
+                coil_no LIKE ? OR
+                roll_no LIKE ?
               ) ORDER BY date_created DESC";
     $stmt = $conn->prepare($query);
     $likeSearch = "%$search%";
-    $stmt->bind_param("ssss", $likeSearch, $likeSearch, $likeSearch, $likeSearch);
+    $stmt->bind_param("sssss", $likeSearch, $likeSearch, $likeSearch, $likeSearch, $likeSearch);
     $stmt->execute();
     $result = $stmt->get_result();
 } else {
@@ -147,7 +139,7 @@ include 'header.php';
 <div class="row mb-3">
     <div class="col-md-5">
         <form method="GET" action="sfc.php" class="input-group shadow-sm">
-            <input type="text" name="search" class="form-control" placeholder="Search ID, Product, Lot, or Coil..." value="<?= htmlspecialchars($search) ?>">
+            <input type="text" name="search" class="form-control" placeholder="Search ID, Product, Lot, or Roll..." value="<?= htmlspecialchars($search) ?>">
             <button class="btn btn-primary" type="submit">
                 <i class="bi bi-search me-1"></i> Search
             </button>
@@ -166,9 +158,6 @@ include 'header.php';
 <div class="card shadow-sm border-0">
     <div class="card-header bg-dark text-white fw-bold py-3 d-flex justify-content-between align-items-center">
         <span><i class="bi bi-list-task me-2"></i>Available SFC Material</span>
-        <?php if($search !== ''): ?>
-            <span class="badge bg-info text-dark">Results for: "<?= htmlspecialchars($search) ?>"</span>
-        <?php endif; ?>
     </div>
     <div class="table-responsive">
         <table class="table table-hover align-middle text-center mb-0">
@@ -176,7 +165,8 @@ include 'header.php';
                 <tr>
                     <th>SFC ID</th>
                     <th>Product</th>
-                    <th>Lot & Coil</th>
+                    <th>Lot No</th>
+                    <th>Roll No</th>
                     <th>Width (mm)</th>
                     <th>Length (m)</th>
                     <th>Date Created</th>
@@ -189,7 +179,10 @@ include 'header.php';
                         <tr>
                             <td class="fw-bold text-muted">#<?= htmlspecialchars($row['sfc_id']) ?></td>
                             <td><span class="badge bg-secondary"><?= htmlspecialchars($row['product']) ?></span></td>
-                            <td class="small"><?= htmlspecialchars($row['lot_no']) ?> | <?= htmlspecialchars($row['coil_no']) ?></td>
+                            <td class="small fw-bold">
+                                <?= htmlspecialchars($row['lot_no']) ?> <?= htmlspecialchars($row['coil_no']) ?>
+                            </td>
+                            <td><span class="badge outline-primary text-dark border"><?= htmlspecialchars($row['roll_no']) ?></span></td>
                             <td><?= number_format($row['width']) ?> </td>
                             <td class="text-primary fw-bold"><?= number_format($row['length'], 2) ?></td>
                             <td class="small text-muted"><?= date('d/M/Y', strtotime($row['date_created'])) ?></td>
@@ -205,7 +198,7 @@ include 'header.php';
                         </tr>
                     <?php endwhile; ?>
                 <?php else: ?>
-                    <tr><td colspan="7" class="py-5 text-muted">No SFC inventory found matching your criteria.</td></tr>
+                    <tr><td colspan="8" class="py-5 text-muted">No SFC inventory found matching your criteria.</td></tr>
                 <?php endif; ?>
             </tbody>
         </table>
@@ -222,11 +215,6 @@ include 'header.php';
       <div class="modal-body text-center p-4">
         <p class="text-muted small text-uppercase fw-bold">Processing Material:</p>
         <h5 id="sfcDetails" class="fw-bold mb-4"></h5>
-        <p class="text-info small mb-3">
-            <i class="bi bi-info-circle me-1"></i>
-            <strong>Note:</strong> This SFC origin will be permanently tracked through all downstream processes.
-        </p>
-        
         <form id="actionForm" method="post" action="sfc.php">
             <input type="hidden" name="sfc_id" id="sfc_id_input">
             <div class="d-grid gap-3">
