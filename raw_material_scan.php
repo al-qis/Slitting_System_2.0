@@ -57,7 +57,7 @@ include 'header.php';
         <a href="raw_material_export.php?month=<?= $month ?>&year=<?= $year ?>" class="btn btn-success shadow-sm">
             <i class="bi bi-file-earmark-excel me-1"></i> Download
         </a>
-        <button type="button" class="btn btn-primary shadow-sm" data-bs-toggle="modal" data-bs-target="#manualCoilModal">
+        <button type="button" class="btn btn-primary shadow-sm" data-bs-toggle="modal" data-bs-target="#manualEntryModal">
             <i class="bi bi-pencil-square me-1"></i> Manual Entry
         </button>
     </div>
@@ -87,6 +87,11 @@ include 'header.php';
         </form>
     </div>
 </div>
+
+<!-- Hidden form for scanner/manual entry submission -->
+<form id="scanForm" method="post" action="scan_mother_action.php" style="position:absolute; left:-9999px;">
+    <input id="qrInput" type="text" name="qr" autofocus>
+</form>
 
 <div class="row g-3 mb-4 text-center">
     <div class="col-md-3">
@@ -212,47 +217,129 @@ include 'header.php';
     </div>
 </div>
 
-<div class="modal fade" id="manualCoilModal" tabindex="-1">
+<!-- Manual Entry Modal -->
+<div class="modal fade" id="manualEntryModal" tabindex="-1">
     <div class="modal-dialog">
         <div class="modal-content border-0 shadow">
             <div class="modal-header bg-primary text-white">
-                <h5 class="modal-title">Manual Material Entry</h5>
+                <h5 class="modal-title"><i class="bi bi-pencil-square me-2"></i>Manual Material Entry</h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
-            <form action="raw_material_scan.php" method="POST">
-                <div class="modal-body">
+            <div class="modal-body">
+                <form id="manualEntryForm">
                     <div class="mb-3">
-                        <label class="form-label fw-bold">Select Mother Coil</label>
-                        <select name="mother_id" class="form-select" required>
-                            <option value="">-- Choose Coil No / Lot No --</option>
-                            <?php
-                            $coils = $conn->query("SELECT id, coil_no, lot_no, product FROM mother_coil ORDER BY date_created DESC");
-                            while($c = $coils->fetch_assoc()): ?>
-                                <option value="<?= $c['id'] ?>">
-                                    <?= htmlspecialchars($c['coil_no']) ?> (Lot: <?= htmlspecialchars($c['lot_no']) ?>) - <?= htmlspecialchars($c['product']) ?>
-                                </option>
-                            <?php endwhile; ?>
-                        </select>
+                        <label class="form-label fw-bold">Enter Lot No & Coil No</label>
+                        <input type="text" class="form-control form-control-lg" id="combined_input" 
+                               placeholder="e.g., 826175 FK-1" required autofocus>
+                        <div id="validationFeedback" class="invalid-feedback" style="display:none;">
+                            Please enter both Lot No and Coil No separated by a space (e.g., 826175 FK-1).
+                        </div>
+                        <div class="form-text mt-2">
+                            Type the <strong>Lot Number</strong>, then a <strong>space</strong>, then the <strong>Coil Number</strong>.
+                        </div>
                     </div>
-                    <div class="mb-3">
-                        <label class="form-label fw-bold">Action Type</label>
-                        <select name="action_type" class="form-select" required>
-                            <option value="IN">Manual IN (Warehouse Intake)</option>
-                            <option value="OUT">Manual OUT (Production/Removal)</option>
-                        </select>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label fw-bold">Remark</label>
-                        <textarea name="remark" class="form-control" placeholder="Reason for manual override..."></textarea>
-                    </div>
-                </div>
-                <div class="modal-footer bg-light">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="submit" class="btn btn-primary px-4">Process Entry</button>
-                </div>
-            </form>
+                </form>
+            </div>
+            <div class="modal-footer bg-light">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary px-4" id="manualSubmitButton">Process Entry</button>
+            </div>
         </div>
     </div>
 </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const qrInput = document.getElementById('qrInput');
+    const scanForm = document.getElementById('scanForm');
+    const combinedInput = document.getElementById('combined_input');
+    const manualBtn = document.getElementById('manualSubmitButton');
+    const feedback = document.getElementById('validationFeedback');
+    const manualModal = document.getElementById('manualEntryModal');
+
+    // ===== SCANNER LOGIC =====
+    if(qrInput) {
+        qrInput.addEventListener('keydown', function(e) {
+            if(e.key === 'Enter') {
+                e.preventDefault();
+                if(this.value.trim() !== '') {
+                    scanForm.submit();
+                }
+            }
+        });
+
+        // Keep scanner input focused (except when modal is open)
+        document.addEventListener('click', function() {
+            if(!manualModal.classList.contains('show')) {
+                qrInput.focus();
+            }
+        });
+
+        setInterval(() => {
+            const el = document.activeElement;
+            const isModalOpen = manualModal.classList.contains('show');
+            
+            if(!isModalOpen && !['INPUT','TEXTAREA','SELECT','BUTTON'].includes(el.tagName)) {
+                qrInput.focus();
+            }
+        }, 500);
+    }
+
+    // ===== MANUAL ENTRY LOGIC =====
+    if(manualBtn) {
+        manualBtn.addEventListener('click', function() {
+            const rawValue = combinedInput.value.trim();
+            
+            if(rawValue === '') {
+                combinedInput.classList.add('is-invalid');
+                feedback.style.display = 'block';
+                return;
+            }
+
+            const parts = rawValue.split(/\s+/);
+
+            if(parts.length >= 2) {
+                const lotNo = parts[0];
+                const coilNo = parts.slice(1).join(' ');
+
+                combinedInput.classList.remove('is-invalid');
+                feedback.style.display = 'none';
+
+                // Format for scan_mother_action.php
+                qrInput.value = `LOT=${lotNo};COIL=${coilNo}`;
+                
+                // Close the modal before submitting
+                const modalInstance = bootstrap.Modal.getInstance(manualModal);
+                if(modalInstance) {
+                    modalInstance.hide();
+                }
+
+                // Submit the form
+                setTimeout(() => {
+                    scanForm.submit();
+                }, 300);
+
+            } else {
+                combinedInput.classList.add('is-invalid');
+                feedback.style.display = 'block';
+            }
+        });
+
+        // Clear error when user types
+        combinedInput.addEventListener('input', function() {
+            combinedInput.classList.remove('is-invalid');
+            feedback.style.display = 'none';
+        });
+
+        // Allow Enter key in modal to submit
+        combinedInput.addEventListener('keydown', function(e) {
+            if(e.key === 'Enter') {
+                e.preventDefault();
+                manualBtn.click();
+            }
+        });
+    }
+});
+</script>
 
 <?php include 'footer.php'; ?>

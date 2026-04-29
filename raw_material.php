@@ -87,6 +87,7 @@ include 'header.php';
     </div>
 </div>
 
+<!-- Hidden form for scanner/manual entry submission -->
 <form id="scanForm" method="post" action="scan_mother_action.php" style="position:absolute; left:-9999px;">
     <input id="qrInput" type="text" name="qr" autofocus>
 </form>
@@ -215,6 +216,7 @@ include 'header.php';
     </div>
 </div>
 
+<!-- Manual Entry Modal -->
 <div class="modal fade" id="manualEntryModal" tabindex="-1">
     <div class="modal-dialog">
         <div class="modal-content border-0 shadow">
@@ -228,7 +230,7 @@ include 'header.php';
                         <label class="form-label fw-bold">Enter Lot No & Coil No</label>
                         <input type="text" class="form-control form-control-lg" id="combined_input" 
                                placeholder="e.g., 826175 FK-1" required autofocus>
-                        <div id="validationFeedback" class="invalid-feedback">
+                        <div id="validationFeedback" class="invalid-feedback" style="display:none;">
                             Please enter both Lot No and Coil No separated by a space (e.g., 826175 FK-1).
                         </div>
                         <div class="form-text mt-2">
@@ -246,81 +248,97 @@ include 'header.php';
 </div>
 
 <script>
-    // Scanner Logic
+document.addEventListener('DOMContentLoaded', function() {
     const qrInput = document.getElementById('qrInput');
     const scanForm = document.getElementById('scanForm');
+    const combinedInput = document.getElementById('combined_input');
+    const manualBtn = document.getElementById('manualSubmitButton');
+    const feedback = document.getElementById('validationFeedback');
+    const manualModal = document.getElementById('manualEntryModal');
 
-    if(qrInput){
-        qrInput.addEventListener('keydown', function(e){
-            if(e.key === 'Enter'){
+    // ===== SCANNER LOGIC =====
+    if(qrInput) {
+        qrInput.addEventListener('keydown', function(e) {
+            if(e.key === 'Enter') {
                 e.preventDefault();
-                if(this.value.trim() !== '') scanForm.submit();
+                if(this.value.trim() !== '') {
+                    scanForm.submit();
+                }
             }
         });
+
+        // Keep scanner input focused (except when modal is open)
+        document.addEventListener('click', function() {
+            if(!manualModal.classList.contains('show')) {
+                qrInput.focus();
+            }
+        });
+
+        setInterval(() => {
+            const el = document.activeElement;
+            const isModalOpen = manualModal.classList.contains('show');
+            
+            if(!isModalOpen && !['INPUT','TEXTAREA','SELECT','BUTTON'].includes(el.tagName)) {
+                qrInput.focus();
+            }
+        }, 500);
     }
 
-    // Manual Entry Logic (Original Functional split logic)
-    const manualBtn = document.getElementById('manualSubmitButton');
-    const combinedInput = document.getElementById('combined_input');
-    const feedback = document.getElementById('validationFeedback');
-
-    if(manualBtn){
+    // ===== MANUAL ENTRY LOGIC =====
+    if(manualBtn) {
         manualBtn.addEventListener('click', function() {
             const rawValue = combinedInput.value.trim();
+            
+            if(rawValue === '') {
+                combinedInput.classList.add('is-invalid');
+                feedback.style.display = 'block';
+                return;
+            }
+
             const parts = rawValue.split(/\s+/);
 
-            if (parts.length >= 2) {
+            if(parts.length >= 2) {
                 const lotNo = parts[0];
-                const coilNo = parts.slice(1).join(' '); 
+                const coilNo = parts.slice(1).join(' ');
 
                 combinedInput.classList.remove('is-invalid');
+                feedback.style.display = 'none';
+
                 // Format for scan_mother_action.php
                 qrInput.value = `LOT=${lotNo};COIL=${coilNo}`;
-                scanForm.submit();
+                
+                // Close the modal before submitting
+                const modalInstance = bootstrap.Modal.getInstance(manualModal);
+                if(modalInstance) {
+                    modalInstance.hide();
+                }
+
+                // Submit the form
+                setTimeout(() => {
+                    scanForm.submit();
+                }, 300);
+
             } else {
                 combinedInput.classList.add('is-invalid');
                 feedback.style.display = 'block';
             }
         });
 
-        combinedInput.addEventListener('input', () => {
+        // Clear error when user types
+        combinedInput.addEventListener('input', function() {
             combinedInput.classList.remove('is-invalid');
             feedback.style.display = 'none';
         });
-    }
 
-// 1. Keep the input focused at all times
-setInterval(() => {
-    const el = document.activeElement;
-    const modal = document.getElementById('manualEntryModal');
-    // Don't steal focus if the user is typing in the manual entry modal
-    const isModalOpen = modal ? modal.classList.contains('show') : false;
-    
-    if (!isModalOpen && !['INPUT','TEXTAREA','SELECT','BUTTON'].includes(el.tagName)) {
-        if(qrInput) qrInput.focus();
-    }
-}, 500);
-
-    const qrInput = document.getElementById('qrInput');
-    const scanForm = document.getElementById('scanForm');
-
-    // Focus management: ensure the hidden input is always focused
-    document.addEventListener('click', () => {
-        // Only focus if a modal isn't open
-        const modalOpen = document.querySelector('.modal.show');
-        if(!modalOpen) qrInput.focus();
-    });
-
- // 2. Submit immediately on Scan (Enter key)
-qrInput.addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') {
-        e.preventDefault(); // Prevent default page refresh
-        if (this.value.trim() !== '') {
-            scanForm.submit(); // Submit the form to scan_mother_action.php
-        }
+        // Allow Enter key in modal to submit
+        combinedInput.addEventListener('keydown', function(e) {
+            if(e.key === 'Enter') {
+                e.preventDefault();
+                manualBtn.click();
+            }
+        });
     }
 });
-
 </script>
 
 <?php include 'footer.php'; ?>
