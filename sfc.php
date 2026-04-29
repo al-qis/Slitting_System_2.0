@@ -27,43 +27,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
     if ($sfc) {
         $conn->begin_transaction();
         try {
+            // PERMANENT SOURCE: Always set original_source to 'sfc'
+            $original_source = 'sfc';
+
             if ($action === 'RECOIL') {
-                $stmt = $conn->prepare("INSERT INTO recoiling_product (product, lot_no, coil_no, width, length, status, date_in) VALUES (?, ?, ?, ?, ?, 'pending', NOW())");
-                $stmt->bind_param("sssdd", 
+                $stmt = $conn->prepare("INSERT INTO recoiling_product (product, lot_no, coil_no, width, length, status, date_in, source, original_source) VALUES (?, ?, ?, ?, ?, 'pending', NOW(), 'sfc', ?)");
+                $stmt->bind_param("sssdds", 
                         $sfc['product'],
                         $sfc['lot_no'], 
                         $sfc['coil_no'], 
                         $sfc['width'], 
-                        $sfc['length']
+                        $sfc['length'],
+                        $original_source
                 );
                 $stmt->execute();
                 $stmt->close();
+                
+                // Log to source tracking
+                log_source_tracking($conn, 0, 'recoiling_product', $original_source, 'sfc', 'RECOIL_FROM_SFC');
 
             } elseif ($action === 'RESLIT') {
-                $stmt = $conn->prepare("INSERT INTO reslit_product (product, lot_no, coil_no, width, length, status, date_in) VALUES (?, ?, ?, ?, ?, 'pending', NOW())");
-                $stmt->bind_param("sssdd", 
+                $stmt = $conn->prepare("INSERT INTO reslit_product (product, lot_no, coil_no, width, length, status, date_in, source, original_source) VALUES (?, ?, ?, ?, ?, 'pending', NOW(), 'sfc', ?)");
+                $stmt->bind_param("sssdds", 
                         $sfc['product'], 
                         $sfc['lot_no'], 
                         $sfc['coil_no'], 
                         $sfc['width'], 
-                        $sfc['length']
+                        $sfc['length'],
+                        $original_source
                 );
                 $stmt->execute();
                 $stmt->close();
+                
+                // Log to source tracking
+                log_source_tracking($conn, 0, 'reslit_product', $original_source, 'sfc', 'RESLIT_FROM_SFC');
 
             } elseif ($action === 'SELL') {
-                $stmt = $conn->prepare("INSERT INTO slitting_product (product, lot_no, coil_no, width, length, status, date_in, date_out, cut_type, source) VALUES (?, ?, ?, ?, ?, 'WAITING', NOW(), NOW(), 'sfc_sell', ?)");
-                $source_value = 'sfc';
-                $stmt->bind_param("ssssdd", 
+                $stmt = $conn->prepare("INSERT INTO slitting_product (product, lot_no, coil_no, width, length, status, date_in, date_out, cut_type, source, original_source) VALUES (?, ?, ?, ?, ?, 'WAITING', NOW(), NOW(), 'sfc_sell', 'sfc', ?)");
+                $stmt->bind_param("ssssddds", 
                         $sfc['product'], 
                         $sfc['lot_no'], 
                         $sfc['coil_no'], 
                         $sfc['width'], 
-                        $sfc['length'], 
-                        $source_value
+                        $sfc['length'],
+                        $original_source
                 );
                 $stmt->execute();
                 $stmt->close();
+                
+                // Log to source tracking
+                log_source_tracking($conn, 0, 'slitting_product', $original_source, 'sfc', 'SELL_FROM_SFC');
             }
 
             $updateStmt = $conn->prepare("UPDATE sfc SET date_out = NOW(), action = ? WHERE sfc_id = ?");
@@ -86,6 +99,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
     } else {
         die("SFC not found or already used.");
     }
+}
+
+// ============================================================================
+// HELPER FUNCTION: Log to source_tracking_log
+// ============================================================================
+function log_source_tracking($conn, $product_id, $table_name, $original_source, $current_source, $action) {
+    $stmt = $conn->prepare("INSERT INTO source_tracking_log (product_id, table_name, original_source, current_source, action) VALUES (?, ?, ?, ?, ?)");
+    $stmt->bind_param("issss", $product_id, $table_name, $original_source, $current_source, $action);
+    $stmt->execute();
+    $stmt->close();
 }
 
 // 3. Handle Search and Fetch Data
@@ -132,6 +155,11 @@ include 'header.php';
                 <a href="sfc.php" class="btn btn-outline-secondary">Clear</a>
             <?php endif; ?>
         </form>
+    </div>
+    <div class="col-md-7 text-end">
+        <a href="sfc_tracking_report.php" class="btn btn-info btn-sm">
+            <i class="bi bi-graph-up me-1"></i> View SFC Tracking Report
+        </a>
     </div>
 </div>
 
@@ -194,6 +222,10 @@ include 'header.php';
       <div class="modal-body text-center p-4">
         <p class="text-muted small text-uppercase fw-bold">Processing Material:</p>
         <h5 id="sfcDetails" class="fw-bold mb-4"></h5>
+        <p class="text-info small mb-3">
+            <i class="bi bi-info-circle me-1"></i>
+            <strong>Note:</strong> This SFC origin will be permanently tracked through all downstream processes.
+        </p>
         
         <form id="actionForm" method="post" action="sfc.php">
             <input type="hidden" name="sfc_id" id="sfc_id_input">

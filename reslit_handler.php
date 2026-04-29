@@ -14,13 +14,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $cut_type = $_POST['cut_type'];
     
     // Arrays from the form
-    $roll_numbers   = $_POST['roll_number'] ?? []; // e.g. R1, R2
-    $cut_letters    = $_POST['cut_letter'] ?? [];  // e.g. a, b, None
+    $roll_numbers   = $_POST['roll_number'] ?? []; 
+    $cut_letters    = $_POST['cut_letter'] ?? [];  
     $new_widths     = $_POST['new_width'] ?? [];
     $lengths        = $_POST['length'] ?? [];
     $actual_lengths = $_POST['actual_length'] ?? [];
 
-    // 1. Fetch Parent Data to get Product, Lot, Coil, and Mother ID
+    // 1. Fetch Parent Data (Updated to ensure original_source is included)
     $stmt = $conn->prepare("SELECT * FROM reslit_product WHERE id = ?");
     $stmt->bind_param("i", $parent_id);
     $stmt->execute();
@@ -30,11 +30,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         die("Parent record not found.");
     }
 
-    // Start Transaction
     $conn->begin_transaction();
 
     try {
-        // === 2. VALIDATION LOOP: Check for duplicates before any database changes ===
+        // Capture the source to maintain lineage
+        $originalSource = $parent['original_source'];
+
+        // === 2. VALIDATION LOOP ===
         foreach ($roll_numbers as $index => $roll_label) {
             $letter = $cut_letters[$index];
             $temp_lot_no = $parent['lot_no'] . $letter;
@@ -51,7 +53,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
         $total_actual = 0;
 
-        // === 3. PROCESSING LOOP: Insert data (Proceeds only if no duplicates found) ===
+        // === 3. PROCESSING LOOP ===
         foreach ($roll_numbers as $index => $roll_label) {
             $letter = $cut_letters[$index];
             $width = floatval($new_widths[$index]);
@@ -61,12 +63,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $new_lot_no = $parent['lot_no'] . $letter;
             $total_actual += $act_len;
 
-            // A. Insert into slitting_product (Final Stock)
+            // A. Insert into slitting_product (Maintains 'original_source')
             $stmt_ins = $conn->prepare("INSERT INTO slitting_product 
-                (mother_id, product, lot_no, coil_no, roll_no, width, length, actual_length, status, is_completed, stock_counted, date_in, source) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, NOW(), 'reslit')");
+                (mother_id, product, lot_no, coil_no, roll_no, width, length, actual_length, status, is_completed, stock_counted, date_in, source, original_source) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, NOW(), 'reslit', ?)");
             
-            $stmt_ins->bind_param("issssddd", 
+            $stmt_ins->bind_param("issssddds", 
                 $parent['mother_id'], 
                 $parent['product'], 
                 $new_lot_no, 
@@ -74,26 +76,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 $roll_label, 
                 $width, 
                 $nom_len, 
-                $act_len
+                $act_len,
+                $originalSource
             );
             $stmt_ins->execute();
 
-            // B. Insert into reslit_rolls (For History/Record keeping)
+            // B. Insert into reslit_rolls (Maintains 'original_source' for history)
             $stmt_roll = $conn->prepare("INSERT INTO reslit_rolls 
-                (parent_id, roll_no, cut_letter, new_width, length, actual_length) 
-                VALUES (?, ?, ?, ?, ?, ?)");
-            $stmt_roll->bind_param("issddd", 
+                (parent_id, roll_no, cut_letter, new_width, length, actual_length, original_source) 
+                VALUES (?, ?, ?, ?, ?, ?, ?)");
+            $stmt_roll->bind_param("issddds", 
                 $parent_id, 
                 $roll_label, 
                 $letter, 
                 $width, 
                 $nom_len, 
-                $act_len
+                $act_len,
+                $originalSource
             );
             $stmt_roll->execute();
         }
 
-        // 4. Update Parent Reslit Product Status to 'completed'
+        // 4. Update Parent Reslit Product Status
         $stmt_upd = $conn->prepare("UPDATE reslit_product SET status = 'completed', actual_length = ? WHERE id = ?");
         $stmt_upd->bind_param("di", $total_actual, $parent_id);
         $stmt_upd->execute();
@@ -104,7 +108,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
     } catch (Exception $e) {
         $conn->rollback();
-        // ERROR PAGE WITH REFILL OPTION
+        // ... (Error UI Block - same as your original)
         ?>
         <!DOCTYPE html>
         <html lang="en">
@@ -123,10 +127,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                                 <h4 class="mb-0"><i class="bi bi-exclamation-triangle-fill me-2"></i>Reslit Process Failed</h4>
                             </div>
                             <div class="card-body p-4 text-center">
-                                <p class="lead text-danger fw-bold"><?php echo $e->getMessage(); ?></p>
+                                <p class="lead text-danger fw-bold"><?php echo htmlspecialchars($e->getMessage()); ?></p>
                                 <hr>
-                                <p class="text-secondary">A duplicate entry was found in the inventory. To fix this, click the button below to return to the form and change the <strong>Cut Letter</strong> (e.g., to 'a' or 'b') to make the combination unique.</p>
-                                
+                                <p class="text-secondary">A duplicate entry was found or a process error occurred. Please go back and ensure your cut letters make the lot combination unique.</p>
                                 <div class="d-flex justify-content-center gap-3 mt-4">
                                     <button onclick="history.back()" class="btn btn-warning px-4 fw-bold">
                                         <i class="bi bi-arrow-left"></i> Back to Refill Form

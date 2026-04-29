@@ -81,10 +81,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $res = $conn->query("SELECT * FROM slitting_product WHERE id = $id");
     if ($res->num_rows > 0) {
         $p = $res->fetch_assoc();
-        $stmt = $conn->prepare("INSERT INTO recoiling_product (status, product, lot_no, coil_no, roll_no, width, length, actual_length) VALUES ('pending', ?, ?, ?, ?, ?, ?, ?)");
-        $stmt->bind_param("ssssddd", $p['product'], $p['lot_no'], $p['coil_no'], $p['roll_no'], $p['width'], $p['length'], $p['actual_length']);
+        
+        // PERMANENT SOURCE: Keep original_source from slitting_product
+        $original_source = $p['original_source'] ?? 'raw_material';
+        
+        $stmt = $conn->prepare("INSERT INTO recoiling_product (status, product, lot_no, coil_no, roll_no, width, length, actual_length, original_source) VALUES ('pending', ?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt->bind_param("ssssddds", $p['product'], $p['lot_no'], $p['coil_no'], $p['roll_no'], $p['width'], $p['length'], $p['actual_length'], $original_source);
         if ($stmt->execute()) {
+            $stmt->close();
             $conn->query("UPDATE slitting_product SET is_recoiled=1 WHERE id=$id");
+            
+            // Log source tracking
+            $stmt = $conn->prepare("INSERT INTO source_tracking_log (product_id, table_name, original_source, current_source, action) VALUES (?, 'recoiling_product', ?, 'recoiling', 'send_to_recoiling')");
+            $stmt->bind_param("iss", $id, $original_source);
+            $stmt->execute();
+            $stmt->close();
+            
             header("Location: finish_product.php?success=recoiling");
             exit;
         }
@@ -97,10 +109,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $res = $conn->query("SELECT * FROM slitting_product WHERE id = $id");
     if ($res->num_rows > 0) {
         $p = $res->fetch_assoc();
-        $stmt = $conn->prepare("INSERT INTO reslit_product (status, product, lot_no, coil_no, roll_no, width, length, date_in) VALUES ('pending', ?, ?, ?, ?, ?, ?, NOW())");
-        $stmt->bind_param("ssssdd", $p['product'], $p['lot_no'], $p['coil_no'], $p['roll_no'], $p['width'], $p['length']);
+        
+        // PERMANENT SOURCE: Keep original_source from slitting_product
+        $original_source = $p['original_source'] ?? 'raw_material';
+        
+        $stmt = $conn->prepare("INSERT INTO reslit_product (status, product, lot_no, coil_no, roll_no, width, length, date_in, original_source) VALUES ('pending', ?, ?, ?, ?, ?, ?, NOW(), ?)");
+        $stmt->bind_param("ssssdds", $p['product'], $p['lot_no'], $p['coil_no'], $p['roll_no'], $p['width'], $p['length'], $original_source);
         if ($stmt->execute()) {
+            $stmt->close();
             $conn->query("UPDATE slitting_product SET is_reslitted=1 WHERE id=$id");
+            
+            // Log source tracking
+            $stmt = $conn->prepare("INSERT INTO source_tracking_log (product_id, table_name, original_source, current_source, action) VALUES (?, 'reslit_product', ?, 'reslit', 'send_to_reslit')");
+            $stmt->bind_param("iss", $id, $original_source);
+            $stmt->execute();
+            $stmt->close();
+            
             header("Location: finish_product.php?success=reslit");
             exit;
         }
@@ -142,11 +166,12 @@ include 'header.php';
 <style>
     .pending-row { background-color: #fff3cd; }
     .completed-row { background-color: #d1e7dd; }
+    .sfc-row { background-color: #e7f3ff; border-left: 4px solid #0066ff; }
     table { table-layout: fixed; width: 100%; }
     table th, table td { word-wrap: break-word; vertical-align: middle; font-size: 13px; }
     table td img { max-width: 60px; max-height: 60px; display: block; margin: 0 auto; }
     /* Column Widths */
-    table th:nth-child(1) { width: 45px; } table th:nth-child(2) { width: 110px; } table th:nth-child(3) { width: 90px; }
+    table th:nth-child(1) { width: 45px; } table th:nth-child(2) { width: 110px; } table th:nth-child(3) { width: 70px; }
     table th:nth-child(4) { width: 90px; } table th:nth-child(5) { width: 110px; } table th:nth-child(6) { width: 70px; }
     table th:nth-child(7) { width: 60px; } table th:nth-child(8) { width: 60px; } table th:nth-child(9) { width: 70px; }
     table th:nth-child(10) { width: 90px; } table th:nth-child(11) { width: 90px; } table th:nth-child(12) { width: 70px; }
@@ -194,6 +219,7 @@ include 'header.php';
 <div class="mb-3 d-flex gap-2">
     <a href="?month=<?= $month ?>&year=<?= $year ?>&download=excel" class="btn btn-success btn-sm">Download Excel</a>
     <button type="button" class="btn btn-warning btn-sm" data-bs-toggle="modal" data-bs-target="#manualEntryModal">Manual Entry</button>
+    <a href="sfc_tracking_report.php" class="btn btn-info btn-sm">SFC Tracking Report</a>
 </div>
 
 <div class="d-flex mb-4 gap-2">
@@ -207,22 +233,29 @@ include 'header.php';
     <table class="table table-bordered table-striped align-middle text-center">
         <thead class="table-dark">
             <tr>
-                <th>ID</th><th>Status</th><th>Source</th><th>Product</th><th>Lot No</th><th>Roll No.</th>
+                <th>ID</th><th>Status</th><th>Origin</th><th>Product</th><th>Lot No</th><th>Roll No.</th>
                 <th>Width</th><th>Length</th><th>Actual</th><th>Date Out</th><th>Delivered</th><th>QR</th><th>Action</th>
             </tr>
         </thead>
         <tbody>
         <?php if($result && $result->num_rows>0): while($row=$result->fetch_assoc()): 
+            // Check if this is from SFC
+            $isFromSFC = ($row['original_source'] ?? $row['source']) === 'sfc';
+            
             // Handle REJECTED color and badge
             $rowClass = match($row['status']) {
                 'IN' => $row['is_completed'] == 0 ? 'table-info' : 'table-primary',
                 'OUT' => 'table-danger', 
                 'WAITING' => 'table-warning', 
                 'APPROVED' => 'table-success', 
-                'REJECTED' => 'table-danger', // Red for rejected
+                'REJECTED' => 'table-danger',
                 'DELIVERED' => 'table-success', 
                 default => ''
             };
+            
+            if ($isFromSFC) {
+                $rowClass .= ' sfc-row';
+            }
 
             $statusBadge = match($row['status']) {
                 'IN' => $row['is_completed'] == 0 ? '<span class="badge bg-info">IN (Pending)</span>' : '<span class="badge bg-primary">IN (Stock)</span>',
@@ -234,19 +267,31 @@ include 'header.php';
                 default => '<span class="badge bg-secondary">'.$row['status'].'</span>'
             };
 
-            $sourceRaw = $row['source'] ?? '';
-            $sourceDisplay = match(trim(strtolower($sourceRaw))) {
-                'raw_material' => ['label' => 'RAW MAT', 'class' => 'bg-secondary'],
-                '0', '', 'sfg' => ['label' => 'SFC', 'class' => 'bg-dark'],
-                default        => ['label' => strtoupper($sourceRaw), 'class' => 'bg-info']
+            // PERMANENT SOURCE DISPLAY
+            $originalSource = $row['original_source'] ?? $row['source'] ?? 'raw_material';
+            $originDisplay = match(trim(strtolower($originalSource))) {
+                'sfc' => ['label' => 'SFC', 'class' => 'bg-primary', 'icon' => '📦'],
+                'raw_material' => ['label' => 'RAW MAT', 'class' => 'bg-secondary', 'icon' => '📋'],
+                default => ['label' => strtoupper($originalSource), 'class' => 'bg-info', 'icon' => '📊']
             };
 
+            
+
             $lotCoil = trim($row['lot_no'] ?? '') . ' ' . trim($row['coil_no'] ?? '');
+
+            $originBadge = ($row['original_source'] === 'sfc') 
+        ? '<br><span class="badge bg-info text-dark" style="font-size: 0.65rem;">SFC ORIGIN</span>' 
+        : '<br><span class="badge bg-light text-muted" style="font-size: 0.65rem;">RAW MATERIAL</span>'
+        
         ?>
             <tr class="<?= $rowClass ?>">
                 <td><?= $row['id'] ?></td>
                 <td><?= $statusBadge ?></td>
-                <td><span class="badge <?= $sourceDisplay['class'] ?>"><?= $sourceDisplay['label'] ?></span></td>
+                <td>
+                    <span class="badge <?= $originDisplay['class'] ?>" title="Original source: <?= htmlspecialchars($originalSource) ?>">
+                        <?= $originDisplay['label'] ?>
+                    </span>
+                </td>
                 <td><?= htmlspecialchars($row['product'] ?? '') ?></td>
                 <td><?= htmlspecialchars($lotCoil ?? '') ?></td>
                 <td><?= str_replace('R', 'R-', htmlspecialchars($row['roll_no'] ?? '')) ?></td>
@@ -356,34 +401,6 @@ include 'header.php';
     var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
       return new bootstrap.Tooltip(tooltipTriggerEl)
     })
-</script>
-
-<script> 
-    //// Existing scanner focus logic...
-    const qIn = document.getElementById('qrInputProduct');
-    const qFm = document.getElementById('scanFormProduct');
-    setInterval(() => {
-        if(!document.querySelector('.modal.show') && !['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)) qIn.focus();
-    }, 800);
-    qIn.addEventListener('keydown', (e) => { if(e.key==='Enter' && qIn.value.trim()!=='') qFm.submit(); });
-
-    // ADD THIS: Initialize all tooltips on the page
-    var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'))
-    var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
-        return new bootstrap.Tooltip(tooltipTriggerEl)
-    });// Existing scanner focus logic...
-    const qIn = document.getElementById('qrInputProduct');
-    const qFm = document.getElementById('scanFormProduct');
-    setInterval(() => {
-        if(!document.querySelector('.modal.show') && !['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)) qIn.focus();
-    }, 800);
-    qIn.addEventListener('keydown', (e) => { if(e.key==='Enter' && qIn.value.trim()!=='') qFm.submit(); });
-
-    // ADD THIS: Initialize all tooltips on the page
-    var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'))
-    var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
-        return new bootstrap.Tooltip(tooltipTriggerEl)
-    });
 </script>
 
 <div><a href="index.php" class="btn btn-secondary mt-3">← Back</a></div>

@@ -3,25 +3,16 @@
 
 session_start();
 
-// Debug file (can be removed once stable)
-file_put_contents('debug_recoiling.txt', print_r($_POST, true));
-
 include 'config.php';
 
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
-
-// Log debug
-error_log("=== RECOILING HANDLER CALLED ===");
-error_log("POST DATA: " . print_r($_POST, true));
 
 if (
     $_SERVER['REQUEST_METHOD'] === 'POST'
     && isset($_POST['action'])
     && $_POST['action'] === 'start_and_complete_recoiling'
 ) {
-
-    error_log("Handler condition passed");
 
     $id = intval($_POST['id'] ?? 0);
 
@@ -33,15 +24,12 @@ if (
         $total_rolls = count($_POST['new_width']);
     }
 
-    error_log("ID: $id, Total Rolls(auto): $total_rolls");
-
     if ($id <= 0) {
-        error_log("ERROR: Invalid ID");
         header("Location: recoiling.php?error=invalid_id");
         exit;
     }
 
-    // Get original product data
+    // 1. Get original product data (Now includes original_source)
     $stmt = $conn->prepare("SELECT * FROM recoiling_product WHERE id = ? LIMIT 1");
     $stmt->bind_param("i", $id);
     $stmt->execute();
@@ -49,42 +37,13 @@ if (
     $stmt->close();
 
     if (!$original) {
-        error_log("ERROR: Product not found for ID: $id");
         header("Location: recoiling.php?error=not_found");
         exit;
     }
 
-    // Block if already completed
     if (($original['status'] ?? '') === 'completed') {
-        error_log("ERROR: Recoiling already completed for ID: $id");
         header("Location: recoiling.php?error=already_completed&id=$id");
         exit;
-    }
-
-    if ($total_rolls <= 0) {
-        error_log("ERROR: Invalid rolls detected: $total_rolls");
-        header("Location: recoiling.php?error=invalid_rolls");
-        exit;
-    }
-
-    // Safety check for cut_into_2
-    $cut_type = $_POST['cut_type'] ?? '';
-    if ($cut_type === 'cut_into_2') {
-        $letters = $_POST['letter'] ?? [];
-        $hasAnyLetter = false;
-        if (is_array($letters)) {
-            foreach ($letters as $lv) {
-                if (trim((string)$lv) !== '') {
-                    $hasAnyLetter = true;
-                    break;
-                }
-            }
-        }
-        if (!$hasAnyLetter) {
-            error_log("ERROR: cut_into_2 but no letter selected");
-            header("Location: recoiling.php?error=letter_required_for_cut2");
-            exit;
-        }
     }
 
     $conn->begin_transaction();
@@ -93,7 +52,6 @@ if (
         $total_actual_length = 0.0;
         $summary_width = 0.0;
         $all_remarks = [];
-        $inserted_ids = [];
 
         for ($i = 0; $i < $total_rolls; $i++) {
 
@@ -105,48 +63,29 @@ if (
             $roll_number   = intval($_POST['roll_number'][$i] ?? 1);
             $letter        = trim($_POST['letter'][$i] ?? ''); 
 
-            if ($new_width <= 0) {
-                throw new Exception("Invalid new_width for row index {$i}");
-            }
-
-            if ($actual_length < 0) {
-                $actual_length = 0;
-            }
-
-            // --- IDENTIFIERS ---
             $new_roll_no = 'R' . $roll_number;
             $new_lot_no  = $original['lot_no'] . ($letter !== '' ? $letter : '');
-            $coil_no     = $original['coil_no'];
-
-            error_log("Processing index $i | Roll=$new_roll_no | Lot=$new_lot_no | Width=$new_width | Actual=$actual_length");
-
-            // --- UPDATED REMARK LOGIC ---
-            // Format: 111111a FK-1 / R1 : Defect...
+            
+            // Build Remark
             if (!empty($remark) || $defect > 0 || $letter !== '') {
-                $r = "{$new_lot_no} {$coil_no} / {$new_roll_no} : ";
-                
-                if ($defect > 0) {
-                    $r .= "Defect {$defect}m";
-                }
-                
-                if (!empty($remark)) {
-                    $r .= ($defect > 0 ? " - " : "") . $remark;
-                }
+                $r = "{$new_lot_no} {$original['coil_no']} / {$new_roll_no} : ";
+                $r .= ($defect > 0) ? "Defect {$defect}m" : "";
+                if (!empty($remark)) $r .= ($defect > 0 ? " - " : "") . $remark;
                 $all_remarks[] = $r;
             }
 
-            // 1. Determine valid mother_id
             $mother_id_val = (!empty($original['mother_id']) && $original['mother_id'] != 0) ? $original['mother_id'] : NULL;
 
-            // 2. Insert into slitting_product
+            // 2. Insert into slitting_product with original_source maintained
             $insert_stmt = $conn->prepare("
                 INSERT INTO slitting_product
-                (recoiling_id, mother_id, product, lot_no, coil_no, roll_no, width, length, actual_length, status, is_completed, stock_counted, date_in)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, NOW())
+                (recoiling_id, mother_id, product, lot_no, coil_no, roll_no, width, length, actual_length, status, is_completed, stock_counted, original_source, source, date_in)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, ?, 'recoiling', NOW())
             ");
 
+            // We pass $original['original_source'] directly into the new product
             $insert_stmt->bind_param(
-                "iissssddd",
+                "iissssddds", 
                 $id,
                 $mother_id_val,
                 $original['product'],
@@ -155,25 +94,22 @@ if (
                 $new_roll_no,
                 $new_width,
                 $length,
-                $actual_length
+                $actual_length,
+                $original['original_source'] // THIS IS THE FIX
             );
 
             if (!$insert_stmt->execute()) {
-                throw new Exception("Insert failed ({$new_lot_no} {$new_roll_no}): " . $insert_stmt->error);
+                throw new Exception("Insert failed: " . $insert_stmt->error);
             }
-
-            $inserted_ids[] = $insert_stmt->insert_id;
             $insert_stmt->close();
 
             $total_actual_length += $actual_length;
-            if ($i === 0) {
-                $summary_width = $new_width;
-            }
+            if ($i === 0) $summary_width = $new_width;
         }
 
         $combined_remark = !empty($all_remarks) ? implode(" | ", $all_remarks) : "";
 
-        // Update recoiling_product
+        // 3. Update recoiling_product status
         $update_stmt = $conn->prepare("
             UPDATE recoiling_product
             SET status = 'completed',
@@ -182,32 +118,20 @@ if (
                 new_width = ?,
                 new_length = ?,
                 remark = ?
-            WHERE id = ? AND (status='pending' OR status='sfc')
+            WHERE id = ?
         ");
 
         $update_stmt->bind_param("ddsi", $summary_width, $total_actual_length, $combined_remark, $id);
-
-        if (!$update_stmt->execute()) {
-            throw new Exception("Update recoiling failed: " . $update_stmt->error);
-        }
-
-        if ($update_stmt->affected_rows <= 0) {
-            throw new Exception("Recoiling already completed or record not pending.");
-        }
-
+        $update_stmt->execute();
         $update_stmt->close();
-        $conn->commit();
 
+        $conn->commit();
         header("Location: recoiling.php?success=completed&id=$id");
         exit;
 
     } catch (Throwable $e) {
         $conn->rollback();
-        error_log("Error: " . $e->getMessage());
         header("Location: recoiling.php?error=process_failed&msg=" . urlencode($e->getMessage()));
         exit;
     }
-} else {
-    header("Location: recoiling.php?error=invalid_request");
-    exit;
 }
