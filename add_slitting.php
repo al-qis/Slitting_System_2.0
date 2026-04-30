@@ -15,6 +15,7 @@ include 'config.php';
 
 $from_stock = isset($_GET['stock_id']);
 $source_data = null;
+$mother_data = null;
 $source_type = '';
 $mother_id = null;
 $stock_id = null;
@@ -42,20 +43,28 @@ if ($from_stock) {
              </div>");
     }
     
-    // For leftovers, we need to find the original mother coil
-    // But for now, we'll use source_id if available, or get it from lot_no matching
+    // Get mother coil data for product information
     if ($source_data['source_id']) {
         $mother_id = $source_data['source_id'];
+        $mother_query = "SELECT * FROM mother_coil WHERE id=$mother_id";
+        $mother_result = $conn->query($mother_query);
+        
+        if ($mother_result && $mother_result->num_rows > 0) {
+            $mother_data = $mother_result->fetch_assoc();
+        } else {
+            die("Mother coil not found for source_id: " . $source_data['source_id']);
+        }
     } else {
         // Fallback: try to find a mother coil with matching lot_no
-        $mother_query = "SELECT id FROM mother_coil 
+        $mother_query = "SELECT * FROM mother_coil 
                          WHERE lot_no LIKE '" . $conn->real_escape_string($source_data['lot_no']) . "%' 
                          LIMIT 1";
         $mother_result = $conn->query($mother_query);
         if ($mother_result && $mother_result->num_rows > 0) {
-            $mother_id = $mother_result->fetch_assoc()['id'];
+            $mother_data = $mother_result->fetch_assoc();
+            $mother_id = $mother_data['id'];
         } else {
-            $mother_id = 0; // Will be handled in save_slitting
+            die("Mother coil not found for lot_no: " . $source_data['lot_no']);
         }
     }
 
@@ -65,12 +74,15 @@ if ($from_stock) {
         die("Error: mother_id was not provided.");
     }
     $mother_id = intval($_GET['mother_id']);
-    $source_data = $conn->query("SELECT * FROM mother_coil WHERE id=$mother_id")->fetch_assoc();
+    $mother_data = $conn->query("SELECT * FROM mother_coil WHERE id=$mother_id")->fetch_assoc();
     $source_type = 'mother';
 
-    if (!$source_data) {
+    if (!$mother_data) {
         die("Mother coil not found for ID: $mother_id");
     }
+    
+    // Use mother_data as source_data for display
+    $source_data = $mother_data;
 }
 ?>
 <!DOCTYPE html>
@@ -137,7 +149,8 @@ if ($from_stock) {
             <input type="hidden" name="stock_id" value="<?= $stock_id ?>">
         <?php endif; ?>
         
-        <input type="hidden" name="product" value="<?= htmlspecialchars($source_data['product'] ?? '') ?>">
+        <!-- Get product from mother_coil table -->
+        <input type="hidden" name="product" value="<?= htmlspecialchars($mother_data['product'] ?? '') ?>">
         <input type="hidden" name="lot_no" value="<?= htmlspecialchars($source_data['lot_no'] ?? '') ?>">
         <input type="hidden" name="coil_no" value="<?= htmlspecialchars($source_data['coil_no'] ?? '') ?>">
 
@@ -226,7 +239,8 @@ const sourceData = {
     lotNo: '<?= htmlspecialchars($source_data['lot_no'] ?? '') ?>',
     coilNo: '<?= htmlspecialchars($source_data['coil_no'] ?? '') ?>',
     originalLength: <?= floatval($source_data['length'] ?? 0) ?>,
-    fromStock: <?= $from_stock ? 'true' : 'false' ?>
+    fromStock: <?= $from_stock ? 'true' : 'false' ?>,
+    product: '<?= htmlspecialchars($mother_data['product'] ?? '') ?>'
 };
 
 function calculateStock() {

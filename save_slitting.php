@@ -28,6 +28,9 @@ $lengths = isset($_POST['length']) ? $_POST['length'] : [];
 $widths = isset($_POST['width']) ? $_POST['width'] : [];
 $send_to_sfc = isset($_POST['send_to_sfc']) ? $_POST['send_to_sfc'] : [];
 
+// NEW: Get SFC balance width for Normal Slitting
+$sfc_balance_width = isset($_POST['sfc_balance_width']) ? floatval($_POST['sfc_balance_width']) : 0;
+
 // Validate required fields
 if (!$mother_id || !$cut_type) {
     die("Error: Missing required fields (mother_id or cut_type)");
@@ -122,7 +125,10 @@ try {
         $length = floatval($lengths[$index] ?? 0);
         $width = floatval($widths[$index] ?? 0);
         $cut_letter = $conn->real_escape_string($cut_letters[$index] ?? '');
-        $is_sfc = in_array($index, $send_to_sfc) ? 1 : 0;
+        
+        // FIX: Check if the ROLL NUMBER is in send_to_sfc array
+        $roll_number_str = (string)($index + 1);
+        $is_sfc = in_array($roll_number_str, $send_to_sfc) ? 1 : 0;
 
         // Build the INSERT query for slitting_product
         $insert_query = "INSERT INTO slitting_product 
@@ -148,18 +154,22 @@ try {
 
         $slitting_id = $conn->insert_id;
 
-        // Handle SFC entries
+        // Handle SFC entries for individual rolls - with error checking
         if ($is_sfc) {
-            $sfc_query = "INSERT INTO sfc (product, lot_no, coil_no, width, length, action, date_created) 
-                          VALUES ('$product', '$lot_no', '$coil_no', $width, $length, 'slitting', NOW())";
-            $conn->query($sfc_query);
+            $sfc_query = "INSERT INTO sfc (product, lot_no, coil_no, roll_no, width, length, action, date_created) 
+                          VALUES ('$product', '$lot_no', '$coil_no', '$roll_no', $width, $length, 'slitting', NOW())";
+            if (!$conn->query($sfc_query)) {
+                throw new Exception("Failed to insert into SFC table: " . $conn->error);
+            }
         }
     }
 
     // Update mother coil stock status if normal cut
     if ($cut_type === 'normal') {
         $update_mother_query = "UPDATE mother_coil SET stock=0, status='OUT', date_out=NOW() WHERE id=$mother_id";
-        $conn->query($update_mother_query);
+        if (!$conn->query($update_mother_query)) {
+            throw new Exception("Failed to update mother coil: " . $conn->error);
+        }
 
         // Update stock_raw_material to mark as OUT
         if ($stock_id > 0) {
@@ -167,13 +177,41 @@ try {
                                     SET status='OUT', 
                                         updated_at=NOW()
                                     WHERE id=$stock_id";
-            $conn->query($update_stock_normal);
+            if (!$conn->query($update_stock_normal)) {
+                throw new Exception("Failed to mark stock as OUT: " . $conn->error);
+            }
+        }
+
+        // NEW: Handle SFC balance width for Normal Slitting
+        // This is the unused/balance width that user entered in "Save to SFC" section
+        if ($sfc_balance_width > 0) {
+            // Create a special "balance" roll entry for the unused width
+            $balance_roll_no = "BALANCE";
+            $balance_length = isset($_POST['length']) ? floatval($_POST['length'][0] ?? 0) : 0;
+            
+            $sfc_balance_query = "INSERT INTO sfc 
+                                  (product, lot_no, coil_no, roll_no, width, length, action, date_created) 
+                                  VALUES 
+                                  ('$product', '$lot_no', '$coil_no', '$balance_roll_no', 
+                                   $sfc_balance_width, $balance_length, 'slitting_balance', NOW())";
+            
+            if (!$conn->query($sfc_balance_query)) {
+                throw new Exception("Failed to insert SFC balance: " . $conn->error);
+            }
         }
 
         // Log the action
         $audit_query = "INSERT INTO mother_coil_audit_log (mother_id, action_type, performed_at, remark) 
                         VALUES ($mother_id, 'OUT', NOW(), 'Normal slitting completed')";
         $conn->query($audit_query);
+    }
+
+    // For Cut Into 2: Also mark mother_coil as OUT after saving
+    if ($cut_type === 'cut_into_2') {
+        $update_mother_cut_into_2 = "UPDATE mother_coil SET stock=0, status='OUT', date_out=NOW() WHERE id=$mother_id";
+        if (!$conn->query($update_mother_cut_into_2)) {
+            throw new Exception("Failed to update mother coil for Cut Into 2: " . $conn->error);
+        }
     }
 
     // Commit transaction
