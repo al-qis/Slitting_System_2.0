@@ -24,7 +24,6 @@ USE `slitting_db_test`;
 DROP TABLE IF EXISTS `coil_product_map`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;
-
 CREATE TABLE `coil_product_map` (
   `id` int NOT NULL AUTO_INCREMENT,
   `coil_code` varchar(10) NOT NULL,
@@ -66,8 +65,11 @@ CREATE TABLE `mother_coil` (
   `in_count` tinyint unsigned NOT NULL DEFAULT '0' COMMENT 'Counter for IN scans',
   `out_count` tinyint unsigned NOT NULL DEFAULT '0' COMMENT 'Counter for OUT scans',
   `stock` tinyint(1) NOT NULL DEFAULT '0' COMMENT 'Stock status, IN - OUT',
+  `scan_in_count` int DEFAULT '0' COMMENT 'Total times scanned IN',
+  `scan_out_count` int DEFAULT '0' COMMENT 'Total times scanned OUT',
   PRIMARY KEY (`id`),
-  UNIQUE KEY `unique_coil_lot` (`coil_no`,`lot_no`)
+  UNIQUE KEY `unique_coil_lot` (`coil_no`,`lot_no`),
+  KEY `idx_stock_status` (`stock`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -172,6 +174,8 @@ CREATE TABLE `raw_material_log` (
   `date_in` datetime DEFAULT NULL,
   `date_out` datetime DEFAULT NULL,
   `remark` text,
+  `length` decimal(10,2) DEFAULT NULL COMMENT 'Length used in this action',
+  `width` decimal(10,2) DEFAULT NULL COMMENT 'Width of material',
   PRIMARY KEY (`id`),
   KEY `fk_log_to_mother` (`mother_id`),
   CONSTRAINT `fk_log_to_mother` FOREIGN KEY (`mother_id`) REFERENCES `mother_coil` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
@@ -198,6 +202,7 @@ CREATE TABLE `recoiling_product` (
   `id` int NOT NULL AUTO_INCREMENT,
   `mother_id` int DEFAULT NULL,
   `status` enum('pending','completed') CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT 'pending',
+  `source` varchar(50) DEFAULT NULL COMMENT 'Immediate source',
   `product` varchar(100) NOT NULL,
   `lot_no` varchar(100) NOT NULL,
   `coil_no` varchar(100) NOT NULL,
@@ -212,8 +217,10 @@ CREATE TABLE `recoiling_product` (
   `completed_at` datetime DEFAULT NULL,
   `cut_type` varchar(50) DEFAULT NULL,
   `remark` text,
+  `original_source` varchar(50) DEFAULT 'raw_material' COMMENT 'Permanent original source (raw_material, sfc)',
   PRIMARY KEY (`id`),
-  KEY `fk_recoiling_mother_idx` (`mother_id`)
+  KEY `fk_recoiling_mother_idx` (`mother_id`),
+  KEY `idx_recoiling_original_source` (`original_source`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -236,6 +243,7 @@ DROP TABLE IF EXISTS `reslit_product`;
 CREATE TABLE `reslit_product` (
   `id` int NOT NULL AUTO_INCREMENT,
   `status` enum('pending','in_progress','completed') DEFAULT 'pending',
+  `source` varchar(50) DEFAULT NULL COMMENT 'Immediate source',
   `product` varchar(100) DEFAULT NULL,
   `lot_no` varchar(100) DEFAULT NULL,
   `coil_no` varchar(100) DEFAULT NULL,
@@ -246,11 +254,13 @@ CREATE TABLE `reslit_product` (
   `date_in` datetime DEFAULT CURRENT_TIMESTAMP,
   `qr_code` varchar(255) DEFAULT NULL,
   `cut_type` varchar(50) DEFAULT NULL,
+  `original_source` varchar(50) DEFAULT 'raw_material' COMMENT 'Permanent original source (raw_material, sfc)',
   `actual_length` decimal(10,2) DEFAULT NULL,
   `started_at` datetime DEFAULT NULL,
   `completed_at` datetime DEFAULT NULL,
   `date_reslit` date DEFAULT NULL,
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`),
+  KEY `idx_reslit_original_source` (`original_source`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -280,6 +290,7 @@ CREATE TABLE `reslit_rolls` (
   `actual_length` decimal(10,2) DEFAULT NULL,
   `status` enum('pending','in_progress','completed') DEFAULT 'pending',
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `original_source` varchar(50) DEFAULT 'raw_material',
   PRIMARY KEY (`id`),
   KEY `parent_id` (`parent_id`),
   CONSTRAINT `fk_reslit_parent` FOREIGN KEY (`parent_id`) REFERENCES `reslit_product` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
@@ -307,6 +318,7 @@ CREATE TABLE `sfc` (
   `product` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL,
   `lot_no` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL,
   `coil_no` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL,
+  `roll_no` varchar(50) DEFAULT NULL,
   `width` decimal(10,2) DEFAULT NULL,
   `length` decimal(10,2) DEFAULT NULL,
   `action` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL,
@@ -324,6 +336,29 @@ LOCK TABLES `sfc` WRITE;
 /*!40000 ALTER TABLE `sfc` DISABLE KEYS */;
 /*!40000 ALTER TABLE `sfc` ENABLE KEYS */;
 UNLOCK TABLES;
+
+--
+-- Temporary view structure for view `sfc_derived_products`
+--
+
+DROP TABLE IF EXISTS `sfc_derived_products`;
+/*!50001 DROP VIEW IF EXISTS `sfc_derived_products`*/;
+SET @saved_cs_client     = @@character_set_client;
+/*!50503 SET character_set_client = utf8mb4 */;
+/*!50001 CREATE VIEW `sfc_derived_products` AS SELECT 
+ 1 AS `product_type`,
+ 1 AS `product_id`,
+ 1 AS `product`,
+ 1 AS `lot_no`,
+ 1 AS `coil_no`,
+ 1 AS `roll_no`,
+ 1 AS `original_source`,
+ 1 AS `source`,
+ 1 AS `status`,
+ 1 AS `date_in`,
+ 1 AS `date_out`,
+ 1 AS `table_name`*/;
+SET character_set_client = @saved_cs_client;
 
 --
 -- Table structure for table `slitting_product`
@@ -365,12 +400,14 @@ CREATE TABLE `slitting_product` (
   `std_weight` decimal(10,4) DEFAULT '0.0000' COMMENT 'Standard weight for calculation',
   `recoiling_id` int DEFAULT NULL,
   `source` varchar(50) NOT NULL DEFAULT 'raw_material',
+  `original_source` varchar(50) DEFAULT 'raw_material' COMMENT 'Permanent original source (raw_material, sfc)',
   PRIMARY KEY (`id`),
   UNIQUE KEY `unique_production_roll` (`lot_no`,`coil_no`,`roll_no`),
   KEY `idx_recoiling_id` (`recoiling_id`),
   KEY `fk_slitting_std_wgt` (`product`),
   KEY `fk_slitting_mother` (`mother_id`),
   KEY `fk_slitting_log` (`from_log_id`),
+  KEY `idx_original_source` (`original_source`),
   CONSTRAINT `fk_slitting_log` FOREIGN KEY (`from_log_id`) REFERENCES `raw_material_log` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_slitting_mother` FOREIGN KEY (`mother_id`) REFERENCES `mother_coil` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
   CONSTRAINT `fk_slitting_std_wgt` FOREIGN KEY (`product`) REFERENCES `std_wgt` (`product_code`) ON DELETE RESTRICT ON UPDATE CASCADE
@@ -384,6 +421,37 @@ CREATE TABLE `slitting_product` (
 LOCK TABLES `slitting_product` WRITE;
 /*!40000 ALTER TABLE `slitting_product` DISABLE KEYS */;
 /*!40000 ALTER TABLE `slitting_product` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `source_tracking_log`
+--
+
+DROP TABLE IF EXISTS `source_tracking_log`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `source_tracking_log` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `product_id` int NOT NULL,
+  `table_name` varchar(50) NOT NULL COMMENT 'slitting_product, recoiling_product, reslit_product',
+  `original_source` varchar(50) NOT NULL COMMENT 'Permanent source (raw_material, sfc)',
+  `current_source` varchar(50) NOT NULL COMMENT 'Current destination',
+  `action` varchar(100) DEFAULT NULL COMMENT 'send_to_recoiling, send_to_reslit, etc',
+  `tracked_at` datetime DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_product` (`product_id`),
+  KEY `idx_table_source` (`table_name`,`original_source`),
+  KEY `idx_tracked_at` (`tracked_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Permanent source tracking for products through their lifecycle';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `source_tracking_log`
+--
+
+LOCK TABLES `source_tracking_log` WRITE;
+/*!40000 ALTER TABLE `source_tracking_log` DISABLE KEYS */;
+/*!40000 ALTER TABLE `source_tracking_log` ENABLE KEYS */;
 UNLOCK TABLES;
 
 --
@@ -531,6 +599,24 @@ UNLOCK TABLES;
 /*!50001 SET character_set_client      = @saved_cs_client */;
 /*!50001 SET character_set_results     = @saved_cs_results */;
 /*!50001 SET collation_connection      = @saved_col_connection */;
+
+--
+-- Final view structure for view `sfc_derived_products`
+--
+
+/*!50001 DROP VIEW IF EXISTS `sfc_derived_products`*/;
+/*!50001 SET @saved_cs_client          = @@character_set_client */;
+/*!50001 SET @saved_cs_results         = @@character_set_results */;
+/*!50001 SET @saved_col_connection     = @@collation_connection */;
+/*!50001 SET character_set_client      = utf8mb4 */;
+/*!50001 SET character_set_results     = utf8mb4 */;
+/*!50001 SET collation_connection      = utf8mb4_0900_ai_ci */;
+/*!50001 CREATE ALGORITHM=UNDEFINED */
+/*!50013 DEFINER=`root`@`localhost` SQL SECURITY DEFINER */
+/*!50001 VIEW `sfc_derived_products` AS select 'slitting' AS `product_type`,`slitting_product`.`id` AS `product_id`,`slitting_product`.`product` AS `product`,`slitting_product`.`lot_no` AS `lot_no`,`slitting_product`.`coil_no` AS `coil_no`,`slitting_product`.`roll_no` AS `roll_no`,`slitting_product`.`original_source` AS `original_source`,`slitting_product`.`source` AS `source`,`slitting_product`.`status` AS `status`,`slitting_product`.`date_in` AS `date_in`,`slitting_product`.`date_out` AS `date_out`,'slitting_product' AS `table_name` from `slitting_product` where (`slitting_product`.`original_source` = 'sfc') union all select 'recoiling' AS `product_type`,`recoiling_product`.`id` AS `product_id`,`recoiling_product`.`product` AS `product`,`recoiling_product`.`lot_no` AS `lot_no`,`recoiling_product`.`coil_no` AS `coil_no`,`recoiling_product`.`roll_no` AS `roll_no`,`recoiling_product`.`original_source` AS `original_source`,`recoiling_product`.`source` AS `source`,`recoiling_product`.`status` AS `status`,`recoiling_product`.`date_in` AS `date_in`,NULL AS `date_out`,'recoiling_product' AS `table_name` from `recoiling_product` where (`recoiling_product`.`original_source` = 'sfc') union all select 'reslit' AS `product_type`,`reslit_product`.`id` AS `product_id`,`reslit_product`.`product` AS `product`,`reslit_product`.`lot_no` AS `lot_no`,`reslit_product`.`coil_no` AS `coil_no`,`reslit_product`.`roll_no` AS `roll_no`,`reslit_product`.`original_source` AS `original_source`,`reslit_product`.`source` AS `source`,`reslit_product`.`status` AS `status`,`reslit_product`.`date_in` AS `date_in`,NULL AS `date_out`,'reslit_product' AS `table_name` from `reslit_product` where (`reslit_product`.`original_source` = 'sfc') order by `date_in` desc */;
+/*!50001 SET character_set_client      = @saved_cs_client */;
+/*!50001 SET character_set_results     = @saved_cs_results */;
+/*!50001 SET collation_connection      = @saved_col_connection */;
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
 
 /*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
@@ -541,4 +627,4 @@ UNLOCK TABLES;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2026-04-29  8:51:06
+-- Dump completed on 2026-04-30 15:34:20

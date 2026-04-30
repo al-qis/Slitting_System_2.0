@@ -6,12 +6,14 @@ if (!isset($_SESSION['role'])) {
     exit;
 }
 
-if ($_SESSION['role'] !== 'slitting') {
-    die("Access denied");
+// Allow BOTH supervisor and slitting roles to scan
+if ($_SESSION['role'] !== 'supervisor' && $_SESSION['role'] !== 'slitting') {
+    die("Access denied - Only supervisors or slitting staff can scan");
 }
 
 include 'config.php';
 
+// Get scan data from POST
 $qr = isset($_POST['qr']) ? trim($_POST['qr']) : '';
 
 if (empty($qr)) {
@@ -41,9 +43,6 @@ if (empty($lot_no) || empty($coil_no)) {
     exit;
 }
 
-// Determine action based on current button
-$action = isset($_POST['action']) ? $_POST['action'] : 'toggle';
-
 // Get mother coil
 $query = "SELECT * FROM mother_coil WHERE lot_no='$lot_no' AND coil_no='$coil_no'";
 $result = $conn->query($query);
@@ -56,99 +55,127 @@ if (!$result || $result->num_rows === 0) {
 
 $mother = $result->fetch_assoc();
 $mother_id = $mother['id'];
-$current_stock = $mother['stock'];
 
-// Determine new status based on action or toggle
-if ($action === 'in') {
-    $new_status = 'IN';
-} elseif ($action === 'out') {
-    $new_status = 'OUT';
-} else {
-    // Toggle: if stock=1 (IN), change to OUT; if stock=0 (OUT), change to IN
-    $new_status = ($current_stock == 1) ? 'OUT' : 'IN';
-}
+// Start transaction for data consistency
+$conn->begin_transaction();
 
-$new_stock = ($new_status === 'IN') ? 1 : 0;
+try {
+    // Check if this coil already exists in stock_raw_material
+    $stock_check = "SELECT id, status FROM stock_raw_material 
+                    WHERE lot_no='$lot_no' AND coil_no='$coil_no' AND source_type='mother_coil'
+                    ORDER BY id DESC LIMIT 1";
+    $stock_check_result = $conn->query($stock_check);
 
-// Update mother_coil
-if ($new_status === 'IN') {
-    $update_query = "UPDATE mother_coil 
-                     SET status='IN', 
-                         stock=1, 
-                         date_in=NOW(),
-                         scan_in_count = scan_in_count + 1
-                     WHERE id=$mother_id";
-} else {
-    $update_query = "UPDATE mother_coil 
-                     SET status='OUT', 
-                         stock=0, 
-                         date_out=NOW(),
-                         scan_out_count = scan_out_count + 1
-                     WHERE id=$mother_id";
-}
+    if ($stock_check_result && $stock_check_result->num_rows > 0) {
+        // Entry exists - Check status
+        $existing_stock = $stock_check_result->fetch_assoc();
+        $stock_id = $existing_stock['id'];
+        $current_status = $existing_stock['status'];
 
-if (!$conn->query($update_query)) {
-    $_SESSION['error'] = "Failed to update mother coil: " . $conn->error;
-    header("Location: raw_material.php");
-    exit;
-}
+        if ($current_status === 'IN') {
+            // SECOND SCAN - Entry exists and status is IN
+            // This is when user wants to USE the coil
+            
+            // DO NOT mark as OUT yet! Just redirect to add_slitting.php
+            // The form will handle marking as OUT when user saves
+            
+            // Commit transaction (no updates made yet)
+            $conn->commit();
 
-// Log the action in audit log
-$action_type = ($new_status === 'IN') ? 'SCAN_IN' : 'SCAN_OUT';
-$audit_query = "INSERT INTO mother_coil_audit_log (mother_id, action_type, performed_at, remark) 
-                VALUES ($mother_id, '$action_type', NOW(), 'Manual scan: $lot_no $coil_no')";
+            // REDIRECT TO add_slitting.php with stock_id
+            // add_slitting.php will handle marking as OUT when user saves the form
+            $_SESSION['success'] = "Mother coil $lot_no-$coil_no ready for slitting. Fill the form.";
+            header("Location: add_slitting.php?stock_id=$stock_id");
+            exit;
 
-if (!$conn->query($audit_query)) {
-    $_SESSION['error'] = "Failed to log action: " . $conn->error;
-    header("Location: raw_material.php");
-    exit;
-}
+        } else {
+            // Status is OUT - Toggle back to IN (optional feature)
+            $update_stock_query = "UPDATE stock_raw_material 
+                                   SET status='IN', 
+                                       updated_at=NOW()
+                                   WHERE id=$stock_id";
+            
+            if (!$conn->query($update_stock_query)) {
+                throw new Exception("Failed to update stock_raw_material: " . $conn->error);
+            }
 
-// Check if this coil already has a log entry
-$log_check = "SELECT id FROM raw_material_log 
-              WHERE mother_id=$mother_id 
-              ORDER BY id DESC LIMIT 1";
-$log_result = $conn->query($log_check);
+            // Update mother_coil
+            $update_mother_query = "UPDATE mother_coil 
+                                    SET status='IN', 
+                                        stock=1
+                                    WHERE id=$mother_id";
+            
+            if (!$conn->query($update_mother_query)) {
+                throw new Exception("Failed to update mother coil: " . $conn->error);
+            }
 
-if ($log_result && $log_result->num_rows > 0) {
-    // Update existing log entry instead of creating a new one (NO DUPLICATES)
-    $existing_log = $log_result->fetch_assoc();
-    $log_id = $existing_log['id'];
+            // Log audit
+            $audit_query = "INSERT INTO mother_coil_audit_log (mother_id, action_type, performed_at, remark) 
+                            VALUES ($mother_id, 'SCAN_IN', NOW(), 'Toggled back IN: $lot_no $coil_no')";
+            $conn->query($audit_query);
 
-    if ($new_status === 'IN') {
-        $update_log = "UPDATE raw_material_log 
-                       SET status='IN', 
-                           date_in=NOW(),
-                           date_out=NULL,
-                           remark='Scanned IN: $lot_no $coil_no'
-                       WHERE id=$log_id";
+            $conn->commit();
+
+            $_SESSION['message'] = "Mother coil $lot_no-$coil_no toggled back to IN";
+            header("Location: raw_material.php");
+            exit;
+        }
+
     } else {
-        $update_log = "UPDATE raw_material_log 
-                       SET status='OUT', 
-                           date_out=NOW(),
-                           remark='Scanned OUT: $lot_no $coil_no'
-                       WHERE id=$log_id";
+        // Entry DOESN'T exist - FIRST SCAN
+        // Create entry in stock_raw_material with status='IN'
+        $insert_stock_query = "INSERT INTO stock_raw_material 
+                               (lot_no, coil_no, grade, width, length, status, source_type, source_id, date_in) 
+                               VALUES 
+                               ('$lot_no', '$coil_no', 
+                                '" . $conn->real_escape_string($mother['grade'] ?? '') . "',
+                                " . (float)$mother['width'] . ",
+                                " . (float)$mother['length'] . ",
+                                'IN',
+                                'mother_coil',
+                                $mother_id,
+                                NOW())";
+        
+        if (!$conn->query($insert_stock_query)) {
+            throw new Exception("Failed to insert into stock_raw_material: " . $conn->error);
+        }
+
+        // Update mother_coil
+        $update_mother_query = "UPDATE mother_coil 
+                                SET status='IN', 
+                                    stock=1, 
+                                    date_in=NOW(),
+                                    scan_in_count = scan_in_count + 1
+                                WHERE id=$mother_id";
+        
+        if (!$conn->query($update_mother_query)) {
+            throw new Exception("Failed to update mother coil: " . $conn->error);
+        }
+
+        // Log audit
+        $audit_query = "INSERT INTO mother_coil_audit_log (mother_id, action_type, performed_at, remark) 
+                        VALUES ($mother_id, 'SCAN_IN', NOW(), 'Scanned IN: $lot_no $coil_no')";
+        $conn->query($audit_query);
+
+        // Create log entry
+        $log_query = "INSERT INTO raw_material_log (mother_id, status, action, date_in, remark) 
+                      VALUES ($mother_id, 'IN', 'normal', NOW(), 'Scanned IN: $lot_no $coil_no')";
+        $conn->query($log_query);
+
+        // Commit transaction
+        $conn->commit();
+
+        $_SESSION['success'] = "Mother coil $lot_no-$coil_no scanned IN. Ready for use.";
+        header("Location: raw_material.php");
+        exit;
     }
 
-    $conn->query($update_log);
-} else {
-    // Create new log entry only for first scan
-    $log_query = "INSERT INTO raw_material_log (mother_id, status, action, date_in, date_out, remark) 
-                  VALUES ($mother_id, '$new_status', 'normal', " . 
-                  ($new_status === 'IN' ? "NOW(), NULL" : "NULL, NOW()") . 
-                  ", 'Scanned: $lot_no $coil_no')";
-
-    $conn->query($log_query);
-}
-
-// Redirection Logic
-if ($new_status === 'OUT') {
-    // If scanning OUT, force user to fill the Add Slitting form
-    header("Location: add_slitting.php?mother_id=" . $mother_id);
-} else {
-    // If scanning IN, proceed to the raw material list as usual
-    $_SESSION['success'] = "Mother coil $lot_no-$coil_no scanned " . strtolower($new_status);
+} catch (Exception $e) {
+    $conn->rollback();
+    $_SESSION['error'] = "Error: " . $e->getMessage();
     header("Location: raw_material.php");
+    exit;
 }
-exit;
+
+$conn->close();
 ?>
