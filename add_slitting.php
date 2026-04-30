@@ -21,12 +21,22 @@ $mother_id = null;
 if ($from_stock) {
     // From Stock After Cut (raw_material_log leftovers)
     $stock_id = intval($_GET['stock_id']);
-    // Improved Query: JOIN with mother_coil to get original specs if needed
-    $query = "SELECT log.*, mc.grade 
+    
+    // IMPROVED QUERY: JOIN with mother_coil to ensure all columns (product, lot, coil) are retrieved[cite: 1]
+    $query = "SELECT log.*, mc.product, mc.lot_no, mc.coil_no, mc.grade, mc.length as original_mc_length
               FROM raw_material_log log 
               JOIN mother_coil mc ON log.mother_id = mc.id 
               WHERE log.id=$stock_id AND log.status='IN' AND log.action='cut_into_2'";
-    $source_data = $conn->query($query)->fetch_assoc();
+              
+    $result = $conn->query($query);
+    if ($result && $result->num_rows > 0) {
+        $source_data = $result->fetch_assoc();
+        // Use the length stored in the log (the leftover amount) rather than the mother coil original[cite: 1]
+        if (isset($source_data['length'])) {
+            $source_data['display_length'] = floatval($source_data['length']);
+        }
+    }
+    
     $source_type = 'stock';
 
     if (!$source_data) {
@@ -39,7 +49,7 @@ if ($from_stock) {
         die("Error: mother_id was not provided.");
     }
     $mother_id = intval($_GET['mother_id']);
-    $source_data = $conn->query("SELECT * FROM mother_coil WHERE id=$mother_id")->fetch_assoc();
+    $source_data = $conn->query("SELECT *, length as display_length FROM mother_coil WHERE id=$mother_id")->fetch_assoc();
     $source_type = 'mother';
 
     if (!$source_data) {
@@ -63,32 +73,33 @@ if ($from_stock) {
 </head>
 <body>
 
-    <div class="container py-4">
+<div class="container py-4">
     <div class="d-flex justify-content-between align-items-center mb-4">
         <h3><i class="bi bi-scissors me-2"></i>Production Slitting</h3>
-        <a href="<?= $from_stock ? 'raw_material.php' : 'index.php' ?>" class="btn btn-outline-secondary btn-sm">
+        <a href="<?= $from_stock ? 'raw_material.php' : 'raw_material.php' ?>" class="btn btn-outline-secondary btn-sm">
             <i class="bi bi-arrow-left"></i> Back
         </a>
     </div>
 
+    <!-- Material Source Info Header[cite: 1] -->
     <div class="card shadow-sm mb-4 source-info">
         <div class="card-body">
             <div class="row">
                 <div class="col-md-3">
                     <small class="text-muted d-block">Product</small>
-                    <span class="fw-bold"><?= htmlspecialchars($source_data['product']) ?></span>
+                    <span class="fw-bold"><?= htmlspecialchars($source_data['product'] ?? 'N/A') ?></span>
                 </div>
                 <div class="col-md-3">
                     <small class="text-muted d-block">Lot No</small>
-                    <span class="fw-bold"><?= htmlspecialchars($source_data['lot_no']) ?>  <?= htmlspecialchars($source_data['coil_no']) ?></span>
+                    <span class="fw-bold"><?= htmlspecialchars($source_data['lot_no'] ?? '-') ?> <?= htmlspecialchars($source_data['coil_no'] ?? '-') ?></span>
                 </div>
                 <div class="col-md-3">
                     <small class="text-muted d-block">Grade</small>
-                    <span class="badge bg-primary"><?= htmlspecialchars($source_data['grade']) ?></span>
+                    <span class="badge bg-primary"><?= htmlspecialchars($source_data['grade'] ?? 'N/A') ?></span>
                 </div>
                 <div class="col-md-3 text-end">
                     <small class="text-muted d-block"><?= $from_stock ? 'Current Leftover' : 'Input' ?> Length</small>
-                    <span class="h5 mb-0 text-success fw-bold"><?= number_format($source_data['length'], 2) ?> m</span>
+                    <span class="h5 mb-0 text-success fw-bold"><?= number_format(floatval($source_data['display_length'] ?? 0), 2) ?> m</span>
                 </div>
             </div>
         </div>
@@ -101,14 +112,15 @@ if ($from_stock) {
             <input type="hidden" name="stock_id" value="<?= $source_data['id'] ?>">
         <?php endif; ?>
         
-        <input type="hidden" name="product" value="<?= htmlspecialchars($source_data['product']) ?>">
-        <input type="hidden" name="lot_no" value="<?= htmlspecialchars($source_data['lot_no']) ?>">
-        <input type="hidden" name="coil_no" value="<?= htmlspecialchars($source_data['coil_no']) ?>">
+        <input type="hidden" name="product" value="<?= htmlspecialchars($source_data['product'] ?? '') ?>">
+        <input type="hidden" name="lot_no" value="<?= htmlspecialchars($source_data['lot_no'] ?? '') ?>">
+        <input type="hidden" name="coil_no" value="<?= htmlspecialchars($source_data['coil_no'] ?? '') ?>">
 
+        <!-- 1. Select Cut Type[cite: 1] -->
         <div class="card shadow-sm mb-4">
             <div class="card-body">
                 <h5 class="card-title mb-3">1. Select Cut Type</h5>
-                <div class="btn-group w-100" role="group" aria-label="Cut Type Selection">
+                <div class="btn-group w-100" role="group">
                     <input type="radio" class="btn-check" name="cut_type" id="cutNormal" value="normal" onchange="handleCutTypeChange()" required>
                     <label class="btn btn-outline-success py-3 fw-bold" for="cutNormal">
                         <i class="bi bi-scissors me-2"></i> Normal Slitting
@@ -122,6 +134,7 @@ if ($from_stock) {
             </div>
         </div>
 
+        <!-- 2. Slit Calculation (Visible only for Cut Into 2)[cite: 1] -->
         <div id="cutInto2Section" style="display:none;" class="card shadow-sm mb-4 border-warning">
             <div class="card-body bg-light-subtle">
                 <h5 class="mb-3 text-warning-emphasis">2. Slit Calculation</h5>
@@ -144,6 +157,7 @@ if ($from_stock) {
             </div>
         </div>
 
+        <!-- 3. Output Configuration[cite: 1] -->
         <div id="rollCountSection" style="display:none;" class="card shadow-sm mb-4">
             <div class="card-body">
                 <h5 class="mb-3" id="outputStepTitle">2. Output Configuration</h5>
@@ -165,6 +179,7 @@ if ($from_stock) {
 
         <div id="slittingForm"></div>
 
+        <!-- SFC Balance Section[cite: 1] -->
         <div id="normalCutSfcSection" style="display: none;" class="card shadow-sm mb-4 border-info">
             <div class="card-body">
                 <h5 class="text-info-emphasis"><i class="bi bi-box-seam me-2"></i>Save to SFC </h5>
@@ -187,9 +202,9 @@ if ($from_stock) {
 
 <script>
 const sourceData = {
-    lotNo: '<?= htmlspecialchars($source_data['lot_no']) ?>',
-    coilNo: '<?= htmlspecialchars($source_data['coil_no']) ?>',
-    originalLength: <?= floatval($source_data['length']) ?>,
+    lotNo: '<?= htmlspecialchars($source_data['lot_no'] ?? '') ?>',
+    coilNo: '<?= htmlspecialchars($source_data['coil_no'] ?? '') ?>',
+    originalLength: <?= floatval($source_data['display_length'] ?? 0) ?>,
     fromStock: <?= $from_stock ? 'true' : 'false' ?>
 };
 
@@ -214,19 +229,16 @@ function handleCutTypeChange(){
     const cutType = document.querySelector('input[name="cut_type"]:checked')?.value;
     const outputStepTitle = document.getElementById('outputStepTitle');
     
-    // UI Toggles
     document.getElementById('cutInto2Section').style.display = (cutType === 'cut_into_2') ? 'block' : 'none';
     document.getElementById('rollCountSection').style.display = (cutType) ? 'block' : 'none';
     document.getElementById('normalCutSfcSection').style.display = (cutType === 'normal') ? 'block' : 'none';
     
-    // Fix Step Numbering
     if (cutType === 'cut_into_2') {
         outputStepTitle.innerText = "3. Output Configuration";
     } else {
         outputStepTitle.innerText = "2. Output Configuration";
     }
 
-    // Reset output form
     document.getElementById('total').value = '';
     document.getElementById('slittingForm').innerHTML = '';
     document.getElementById('submitBtn').style.display = 'none';
@@ -243,7 +255,6 @@ function generateForm(){
         return;
     }
 
-    // Determine the default length based on selection
     let defaultLength = (cutType === 'cut_into_2') 
         ? (parseFloat(document.getElementById('slitQuantity').value) || 0) 
         : sourceData.originalLength;
@@ -258,7 +269,7 @@ function generateForm(){
                         <span class="badge bg-light text-dark border">Label: R${i}</span>
                         <div class="form-check">
                             <input class="form-check-input sfc-checkbox" type="checkbox" name="send_to_sfc[]" id="sfcCheck${i-1}" value="${i}">
-                            <label class="form-check-label small" for="sfcCheck${i-1}" title="Send this roll to SFC inventory">
+                            <label class="form-check-label small" for="sfcCheck${i-1}">
                                 <i class="bi bi-box-seam text-primary"></i> To SFC
                             </label>
                         </div>
@@ -281,7 +292,6 @@ function generateForm(){
                         <label class="form-label small fw-bold">Length (m)</label>
                         <input type="number" step="0.1" name="length[]" class="form-control length-input" 
                                value="${defaultLength}" readonly required>
-                        <small class="text-muted">Auto-filled based on selection</small>
                     </div>
                     <div class="col-md-4">
                         <label class="form-label small fw-bold">Width (mm)</label>

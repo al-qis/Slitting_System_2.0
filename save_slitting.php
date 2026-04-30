@@ -37,7 +37,7 @@ if (!$mother_id || !$cut_type) {
 $conn->begin_transaction();
 
 try {
-    // Get mother coil data
+    // Get original mother coil data to ensure we have all specs (grade, etc.)
     $mother_query = "SELECT * FROM mother_coil WHERE id=$mother_id";
     $mother_result = $conn->query($mother_query);
     
@@ -53,13 +53,17 @@ try {
         $stock_value = isset($_POST['stock']) ? floatval($_POST['stock']) : 0;
 
         if ($stock_value > 0) {
-            // Create new mother coil record for leftover stock
+            // Carry over all details to prevent "Undefined array key" errors in add_slitting.php later
+            // We suffix the coil number with -BAL to indicate it's a Balance/Leftover
+            $new_coil_no = $coil_no . "-BAL"; 
+            $grade = $conn->real_escape_string($mother['grade']);
+            
             $insert_stock_query = "INSERT INTO mother_coil 
                                    (coil_no, product, lot_no, grade, width, length, status, date_in, stock) 
-                                   VALUES ('STOCK-" . time() . "', 
+                                   VALUES ('$new_coil_no', 
                                            '$product', 
                                            '$lot_no', 
-                                           '" . $conn->real_escape_string($mother['grade']) . "',
+                                           '$grade',
                                            " . $mother['width'] . ",
                                            $stock_value,
                                            'IN',
@@ -72,27 +76,30 @@ try {
             
             $stock_mother_id = $conn->insert_id;
 
-            // Log the stock creation
+            // Log the stock creation in raw_material_log so it shows in "Available Stock After Cut"
+            $log_stock_query = "INSERT INTO raw_material_log (mother_id, status, action, date_in, remark) 
+                                VALUES ($stock_mother_id, 'IN', 'cut_into_2', NOW(), 'Leftover from $lot_no $coil_no')";
+            $conn->query($log_stock_query);
+
+            // Log in unified audit log
             $audit_query = "INSERT INTO mother_coil_audit_log (mother_id, action_type, performed_at, remark) 
-                            VALUES ($stock_mother_id, 'CREATED', NOW(), 'Stock from cut_into_2')";
+                            VALUES ($stock_mother_id, 'CREATED', NOW(), 'Stock generated from cut_into_2')";
             $conn->query($audit_query);
         }
 
-        // Update raw_material_log to mark stock as used
+        // If we were using an existing leftover (stock_id), mark that specific log entry as OUT/Used
         if ($stock_id > 0) {
             $update_log_query = "UPDATE raw_material_log SET status='OUT', date_out=NOW() WHERE id=$stock_id";
             $conn->query($update_log_query);
         }
     }
 
-    // Insert slitting products
+    // Insert slitting products (Output Rolls)
     foreach ($roll_nos as $index => $roll_no) {
         $length = floatval($lengths[$index] ?? 0);
         $width = floatval($widths[$index] ?? 0);
-        $cut_letter = $conn->real_escape_string($cut_letters[$index] ?? '');
-        $is_sfc = in_array($index, $send_to_sfc) ? 1 : 0;
+        $is_sfc = in_array($index + 1, $send_to_sfc) ? 1 : 0; // Checkboxes are 1-based in HTML
 
-        // Build the INSERT query - only include columns that exist in slitting_product
         $insert_query = "INSERT INTO slitting_product 
                          (product, lot_no, coil_no, roll_no, width, length, mother_id, 
                           status, cut_type, slit_quantity, date_in, source) 
@@ -114,9 +121,7 @@ try {
             throw new Exception("Failed to insert slitting product: " . $conn->error);
         }
 
-        $slitting_id = $conn->insert_id;
-
-        // Handle SFC entries
+        // Handle SFC (Inventory) entries
         if ($is_sfc) {
             $sfc_query = "INSERT INTO sfc (product, lot_no, coil_no, width, length, action, date_created) 
                           VALUES ('$product', '$lot_no', '$coil_no', $width, $length, 'slitting', NOW())";
@@ -124,12 +129,11 @@ try {
         }
     }
 
-    // Update mother coil stock status if normal cut
+    // Update mother coil stock status to OUT if this was a normal/full cut
     if ($cut_type === 'normal') {
         $update_mother_query = "UPDATE mother_coil SET stock=0, status='OUT', date_out=NOW() WHERE id=$mother_id";
         $conn->query($update_mother_query);
 
-        // Log the action
         $audit_query = "INSERT INTO mother_coil_audit_log (mother_id, action_type, performed_at, remark) 
                         VALUES ($mother_id, 'OUT', NOW(), 'Normal slitting completed')";
         $conn->query($audit_query);
@@ -143,9 +147,8 @@ try {
     exit;
 
 } catch (Exception $e) {
-    // Rollback on error
     $conn->rollback();
-    die("Error: " . $e->getMessage());
+    die("Error saving production data: " . $e->getMessage());
 }
 
 $conn->close();
