@@ -1,129 +1,154 @@
 <?php
-include 'config.php';
+session_start();
 
-$qr = $_POST['qr'] ?? '';
-
-// =====================
-// 0) Return URL Logic
-// =====================
-$returnUrl = $_SERVER['HTTP_REFERER'] ?? ($BASE_URL . "/index.php");
-$returnUrl = trim($returnUrl);
-
-if (strpos($returnUrl, $BASE_URL) !== 0) {
-    $returnUrl = $BASE_URL . "/index.php";
-}
-
-function back_to($returnUrl, $status)
-{
-    $join = (strpos($returnUrl, '?') !== false) ? '&' : '?';
-    header("Location: " . $returnUrl . $join . "scan=" . urlencode($status));
+if (!isset($_SESSION['role'])) {
+    header("Location: login.php");
     exit;
 }
 
-// =====================
-// 1) Normalize Input
-// =====================
-$qr = trim($qr);
-$qr = str_replace(["\r\n", "\r"], "\n", $qr);
-
-if ($qr === '') {
-    back_to($returnUrl, "empty");
+if ($_SESSION['role'] !== 'slitting') {
+    die("Access denied");
 }
 
-$firstLine = strtok($qr, "\n");
-$firstLine = trim($firstLine);
-$firstLine = preg_replace('/^\][A-Za-z0-9]{2,3}/', '', $firstLine);
-$firstLine = preg_replace('/[[:cntrl:]]+/', '', $firstLine);
-$firstLine = trim($firstLine);
+include 'config.php';
 
-// =====================
-// 2) Parse QR (LOT=...;COIL=...)
-// =====================
-$lot_no = '';
-$coil_no = '';
+$qr = isset($_POST['qr']) ? trim($_POST['qr']) : '';
 
-$data = [];
-parse_str(str_replace(';', '&', $firstLine), $data);
-
-if (!empty($data)) {
-    $upper = [];
-    foreach ($data as $k => $v) { $upper[strtoupper($k)] = $v; }
-    $lot_no  = trim($upper['LOT']  ?? '');
-    $coil_no = trim($upper['COIL'] ?? '');
+if (empty($qr)) {
+    $_SESSION['error'] = "QR code cannot be empty";
+    header("Location: raw_material.php");
+    exit;
 }
 
-if ($lot_no === '' || $coil_no === '') {
-    $parts = array_values(array_filter(array_map('trim', explode(';', $firstLine)), 'strlen'));
-    $lot_no  = $parts[0] ?? '';
-    $coil_no = $parts[1] ?? '';
+// Parse QR format: LOT=825175;COIL=FK-1
+$parts = [];
+if (strpos($qr, ';') !== false) {
+    $pairs = explode(';', $qr);
+    foreach ($pairs as $pair) {
+        if (strpos($pair, '=') !== false) {
+            list($key, $value) = explode('=', $pair, 2);
+            $parts[trim($key)] = trim($value);
+        }
+    }
 }
 
-if (trim($lot_no) === '' || trim($coil_no) === '') {
-    back_to($returnUrl, "invalid");
+$lot_no = isset($parts['LOT']) ? $conn->real_escape_string($parts['LOT']) : '';
+$coil_no = isset($parts['COIL']) ? $conn->real_escape_string($parts['COIL']) : '';
+
+if (empty($lot_no) || empty($coil_no)) {
+    $_SESSION['error'] = "Invalid QR format. Expected: LOT=xxx;COIL=xxx";
+    header("Location: raw_material.php");
+    exit;
 }
 
-// =====================
-// 3) Find Mother Coil
-// =====================
-$stmt = $conn->prepare("SELECT * FROM mother_coil WHERE lot_no=? AND coil_no=?");
-$stmt->bind_param("ss", $lot_no, $coil_no);
-$stmt->execute();
-$mother = $stmt->get_result()->fetch_assoc();
-$stmt->close();
+// Determine action based on current button
+$action = isset($_POST['action']) ? $_POST['action'] : 'toggle';
 
-if (!$mother) {
-    back_to($returnUrl, "notfound");
+// Get mother coil
+$query = "SELECT * FROM mother_coil WHERE lot_no='$lot_no' AND coil_no='$coil_no'";
+$result = $conn->query($query);
+
+if (!$result || $result->num_rows === 0) {
+    $_SESSION['error'] = "Mother coil not found: $lot_no - $coil_no";
+    header("Location: raw_material.php");
+    exit;
 }
 
-// =====================
-// 4) Handle Scan Logic
-// =====================
-$mother_id = (int)$mother['id'];
-$conn->begin_transaction();
+$mother = $result->fetch_assoc();
+$mother_id = $mother['id'];
+$current_stock = $mother['stock'];
 
-try {
-    // Select for update to prevent race conditions
-    $stmt = $conn->prepare("SELECT status FROM mother_coil WHERE id=? FOR UPDATE");
-    $stmt->bind_param("i", $mother_id);
-    $stmt->execute();
-    $currentStatus = $stmt->get_result()->fetch_assoc()['status'];
-    $stmt->close();
+// Determine new status based on action or toggle
+if ($action === 'in') {
+    $new_status = 'IN';
+} elseif ($action === 'out') {
+    $new_status = 'OUT';
+} else {
+    // Toggle: if stock=1 (IN), change to OUT; if stock=0 (OUT), change to IN
+    $new_status = ($current_stock == 1) ? 'OUT' : 'IN';
+}
 
-    if ($currentStatus === 'NEW' || $currentStatus === null || $currentStatus === '') {
-        // First scan: Mark as IN and update Stock Boolean
-        $stmt = $conn->prepare("UPDATE mother_coil SET status='IN', stock=1, date_in=NOW() WHERE id=?");
-        $stmt->bind_param("i", $mother_id);
-        $stmt->execute();
-        $stmt->close();
+$new_stock = ($new_status === 'IN') ? 1 : 0;
 
-        // Normalized raw_material_log (Only FK and status)
-        $stmt = $conn->prepare("INSERT INTO raw_material_log (mother_id, status, date_in, action, remark) VALUES (?, 'IN', NOW(), 'SCAN_IN', 'Material scanned into production')");
-        $stmt->bind_param("i", $mother_id);
-        $stmt->execute();
-        $stmt->close();
+// Update mother_coil
+if ($new_status === 'IN') {
+    $update_query = "UPDATE mother_coil 
+                     SET status='IN', 
+                         stock=1, 
+                         date_in=NOW(),
+                         scan_in_count = scan_in_count + 1
+                     WHERE id=$mother_id";
+} else {
+    $update_query = "UPDATE mother_coil 
+                     SET status='OUT', 
+                         stock=0, 
+                         date_out=NOW(),
+                         scan_out_count = scan_out_count + 1
+                     WHERE id=$mother_id";
+}
 
-        // New Unified Audit Log
-        $stmt = $conn->prepare("INSERT INTO mother_coil_audit_log (mother_id, action_type, performed_at, remark) VALUES (?, 'SCAN_IN', NOW(), 'QR Code scanned at intake')");
-        $stmt->bind_param("i", $mother_id);
-        $stmt->execute();
-        $stmt->close();
+if (!$conn->query($update_query)) {
+    $_SESSION['error'] = "Failed to update mother coil: " . $conn->error;
+    header("Location: raw_material.php");
+    exit;
+}
 
-        $conn->commit();
-        back_to($returnUrl, "in");
+// Log the action in audit log
+$action_type = ($new_status === 'IN') ? 'SCAN_IN' : 'SCAN_OUT';
+$audit_query = "INSERT INTO mother_coil_audit_log (mother_id, action_type, performed_at, remark) 
+                VALUES ($mother_id, '$action_type', NOW(), 'Manual scan: $lot_no $coil_no')";
 
-    } elseif ($currentStatus === 'IN') {
-        // If already IN, proceed to process (Slitting)
-        $conn->commit();
-        header("Location: add_slitting.php?mother_id=" . $mother_id);
-        exit;
+if (!$conn->query($audit_query)) {
+    $_SESSION['error'] = "Failed to log action: " . $conn->error;
+    header("Location: raw_material.php");
+    exit;
+}
 
-    } elseif ($currentStatus === 'OUT') {
-        $conn->rollback();
-        back_to($returnUrl, "already_out");
+// Check if this coil already has a log entry
+$log_check = "SELECT id FROM raw_material_log 
+              WHERE mother_id=$mother_id 
+              ORDER BY id DESC LIMIT 1";
+$log_result = $conn->query($log_check);
+
+if ($log_result && $log_result->num_rows > 0) {
+    // Update existing log entry instead of creating a new one (NO DUPLICATES)
+    $existing_log = $log_result->fetch_assoc();
+    $log_id = $existing_log['id'];
+
+    if ($new_status === 'IN') {
+        $update_log = "UPDATE raw_material_log 
+                       SET status='IN', 
+                           date_in=NOW(),
+                           date_out=NULL,
+                           remark='Scanned IN: $lot_no $coil_no'
+                       WHERE id=$log_id";
+    } else {
+        $update_log = "UPDATE raw_material_log 
+                       SET status='OUT', 
+                           date_out=NOW(),
+                           remark='Scanned OUT: $lot_no $coil_no'
+                       WHERE id=$log_id";
     }
 
-} catch (Exception $e) {
-    $conn->rollback();
-    error_log("Scan transaction failed: " . $e->getMessage());
-    back_to($returnUrl, "error");
+    $conn->query($update_log);
+} else {
+    // Create new log entry only for first scan
+    $log_query = "INSERT INTO raw_material_log (mother_id, status, action, date_in, date_out, remark) 
+                  VALUES ($mother_id, '$new_status', 'normal', " . 
+                  ($new_status === 'IN' ? "NOW(), NULL" : "NULL, NOW()") . 
+                  ", 'Scanned: $lot_no $coil_no')";
+
+    $conn->query($log_query);
 }
+
+// Redirection Logic
+if ($new_status === 'OUT') {
+    // If scanning OUT, force user to fill the Add Slitting form
+    header("Location: add_slitting.php?mother_id=" . $mother_id);
+} else {
+    // If scanning IN, proceed to the raw material list as usual
+    $_SESSION['success'] = "Mother coil $lot_no-$coil_no scanned " . strtolower($new_status);
+    header("Location: raw_material.php");
+}
+exit;
+?>

@@ -22,14 +22,14 @@ if ($year < 2020 || $year > 2030) { $year = (int)date('Y'); }
 
 // 3. Summary Queries (Using new unified mother_coil_audit_log)
 $in = $conn->query("SELECT COUNT(*) AS total FROM mother_coil_audit_log 
-                    WHERE action_type='IN' AND MONTH(performed_at)=$month AND YEAR(performed_at)=$year")
+                    WHERE action_type IN ('SCAN_IN', 'IN') AND MONTH(performed_at)=$month AND YEAR(performed_at)=$year")
                     ->fetch_assoc()['total'];
 
 $out = $conn->query("SELECT COUNT(*) AS total FROM mother_coil_audit_log 
-                     WHERE action_type='OUT' AND MONTH(performed_at)=$month AND YEAR(performed_at)=$year")
+                     WHERE action_type IN ('SCAN_OUT', 'OUT') AND MONTH(performed_at)=$month AND YEAR(performed_at)=$year")
                      ->fetch_assoc()['total'];
 
-// Stock is pulled directly from the mother_coil table based on the 'stock' boolean
+// Current Stock (where stock = 1, meaning IN)
 $stock_query = $conn->query("SELECT COUNT(*) AS total FROM mother_coil WHERE stock = 1");
 $stock = $stock_query->fetch_assoc()['total'];
 
@@ -37,8 +37,12 @@ $stock = $stock_query->fetch_assoc()['total'];
 $afterCutStock = $conn->query("SELECT COUNT(*) AS total FROM raw_material_log WHERE status='IN' AND action='cut_into_2'")
                                ->fetch_assoc()['total'];
 
+// Get total scan counts for period
+$total_scan_in = $conn->query("SELECT COALESCE(SUM(scan_in_count), 0) AS total FROM mother_coil")->fetch_assoc()['total'];
+$total_scan_out = $conn->query("SELECT COALESCE(SUM(scan_out_count), 0) AS total FROM mother_coil")->fetch_assoc()['total'];
+
 // 4. Main Data Query (Using JOIN to get specs from master mother_coil table)
-$query = "SELECT log.*, mc.product, mc.grade, mc.coil_no, mc.lot_no, mc.width, mc.length 
+$query = "SELECT log.*, mc.product, mc.grade, mc.coil_no, mc.lot_no, mc.width, mc.length, mc.stock, mc.scan_in_count, mc.scan_out_count
           FROM raw_material_log log
           JOIN mother_coil mc ON log.mother_id = mc.id
           WHERE (MONTH(log.date_in)=$month AND YEAR(log.date_in)=$year) 
@@ -92,36 +96,59 @@ include 'header.php';
     <input id="qrInput" type="text" name="qr" autofocus>
 </form>
 
+<!-- Summary Cards with Tracking -->
 <div class="row g-3 mb-4 text-center">
-    <div class="col-md-3">
+    <div class="col-md-2">
         <div class="card border-0 shadow-sm bg-white">
-            <div class="card-body">
+            <div class="card-body p-2">
+                <h6 class="text-muted small mb-1">SCAN IN</h6>
+                <h4 class="text-success fw-bold mb-0"><?= (int)$total_scan_in ?></h4>
+                <small class="text-muted">Total Scans</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card border-0 shadow-sm bg-white">
+            <div class="card-body p-2">
+                <h6 class="text-muted small mb-1">SCAN OUT</h6>
+                <h4 class="text-danger fw-bold mb-0"><?= (int)$total_scan_out ?></h4>
+                <small class="text-muted">Total Scans</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card border-0 shadow-sm bg-white">
+            <div class="card-body p-2">
                 <h6 class="text-muted small mb-1">MONTHLY IN</h6>
-                <h3 class="text-success fw-bold mb-0"><?= (int)$in ?></h3>
+                <h4 class="text-info fw-bold mb-0"><?= (int)$in ?></h4>
+                <small class="text-muted">This Month</small>
             </div>
         </div>
     </div>
-    <div class="col-md-3">
+    <div class="col-md-2">
         <div class="card border-0 shadow-sm bg-white">
-            <div class="card-body">
+            <div class="card-body p-2">
                 <h6 class="text-muted small mb-1">MONTHLY OUT</h6>
-                <h3 class="text-danger fw-bold mb-0"><?= (int)$out ?></h3>
+                <h4 class="text-warning fw-bold mb-0"><?= (int)$out ?></h4>
+                <small class="text-muted">This Month</small>
             </div>
         </div>
     </div>
-    <div class="col-md-3">
+    <div class="col-md-2">
         <div class="card border-0 shadow-sm bg-primary text-white">
-            <div class="card-body">
+            <div class="card-body p-2">
                 <h6 class="small mb-1">CURRENT STOCK</h6>
-                <h3 class="fw-bold mb-0"><?= (int)$stock ?></h3>
+                <h4 class="fw-bold mb-0"><?= (int)$stock ?></h4>
+                <small>In Warehouse</small>
             </div>
         </div>
     </div>
-    <div class="col-md-3">
+    <div class="col-md-2">
         <div class="card border-0 shadow-sm bg-warning text-dark">
-            <div class="card-body">
-                <h6 class="small mb-1">AFTER CUT STOCK</h6>
-                <h3 class="fw-bold mb-0"><?= (int)$afterCutStock ?></h3>
+            <div class="card-body p-2">
+                <h6 class="small mb-1">AFTER CUT</h6>
+                <h4 class="fw-bold mb-0"><?= (int)$afterCutStock ?></h4>
+                <small>Leftover Stock</small>
             </div>
         </div>
     </div>
@@ -132,7 +159,7 @@ include 'header.php';
         <i class="bi bi-clock-history me-2"></i>Raw Material Log (Unified View)
     </div>
     <div class="table-responsive">
-        <table class="table table-hover align-middle text-center mb-0">
+        <table class="table table-hover align-middle text-center mb-0 small">
             <thead class="table-light">
                 <tr>
                     <th>Product</th>
@@ -140,6 +167,9 @@ include 'header.php';
                     <th>Lot No / Coil No</th> 
                     <th>Length (mtr)</th>
                     <th>Width (mm)</th>
+                    <th>Scan In</th>
+                    <th>Scan Out</th>
+                    <th>Status</th>
                     <th>Date In</th>
                     <th>Date Out</th>
                     <th>Action</th>
@@ -149,6 +179,7 @@ include 'header.php';
                 <?php if($result && $result->num_rows > 0): ?>
                     <?php while($row = $result->fetch_assoc()): 
                         $combinedLotCoil = trim(($row['lot_no'] ?? '-') . ' ' . ($row['coil_no'] ?? ''));
+                        $statusBadge = $row['stock'] == 1 ? '<span class="badge bg-success">IN STOCK</span>' : '<span class="badge bg-secondary">OUT</span>';
                     ?>
                     <tr>
                         <td><span class="badge bg-secondary"><?= htmlspecialchars($row['product']) ?></span></td>
@@ -156,13 +187,16 @@ include 'header.php';
                         <td class="fw-medium"><?= htmlspecialchars($combinedLotCoil) ?></td>
                         <td class="fw-bold"><?= number_format((float)$row['length']) ?></td>
                         <td><?= number_format((float)$row['width']) ?></td>
+                        <td><span class="badge bg-info"><?= intval($row['scan_in_count']) ?></span></td>
+                        <td><span class="badge bg-danger"><?= intval($row['scan_out_count']) ?></span></td>
+                        <td><?= $statusBadge ?></td>
                         <td class="small"><?= $row['date_in'] ?? '-' ?></td>
                         <td class="small"><?= $row['date_out'] ?? '-' ?></td>
                         <td><span class="badge bg-info text-dark"><?= $row['action'] ?></span></td>
                     </tr>
                     <?php endwhile; ?>
                 <?php else: ?>
-                    <tr><td colspan="8" class="py-4 text-muted">No records found for the selected period.</td></tr>
+                    <tr><td colspan="11" class="py-4 text-muted">No records found for the selected period.</td></tr>
                 <?php endif; ?>
             </tbody>
         </table>
@@ -174,11 +208,12 @@ include 'header.php';
         <i class="bi bi-scissors me-2"></i>Available Stock After Cut
     </div>
     <div class="table-responsive">
-        <table class="table table-hover align-middle text-center mb-0">
+        <table class="table table-hover align-middle text-center mb-0 small">
             <thead class="table-light">
                 <tr>
                     <th>Product</th>
-                    <th>Grade</th> <th>Lot No / Coil No</th> 
+                    <th>Grade</th> 
+                    <th>Lot No / Coil No</th> 
                     <th>Length (mtr)</th>
                     <th>Width (mm)</th>
                     <th>Actions</th>
