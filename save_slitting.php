@@ -28,7 +28,7 @@ $lengths = isset($_POST['length']) ? $_POST['length'] : [];
 $widths = isset($_POST['width']) ? $_POST['width'] : [];
 $send_to_sfc = isset($_POST['send_to_sfc']) ? $_POST['send_to_sfc'] : [];
 
-// NEW: Get SFC balance width for Normal Slitting
+// Get SFC balance width for Normal Slitting
 $sfc_balance_width = isset($_POST['sfc_balance_width']) ? floatval($_POST['sfc_balance_width']) : 0;
 
 // Validate required fields
@@ -50,41 +50,38 @@ try {
     
     $mother = $mother_result->fetch_assoc();
 
+    $balance_stock_id = null; // Track the balance stock ID for printing
+
     // Handle "Cut Into 2" - Save leftover to stock_raw_material with automatic suffix
     if ($cut_type === 'cut_into_2') {
         $slit_quantity = isset($_POST['slit_quantity']) ? floatval($_POST['slit_quantity']) : 0;
         $stock_value = isset($_POST['stock']) ? floatval($_POST['stock']) : 0;
 
         if ($stock_value > 0) {
-            // IMPROVEMENT: Generate automatic suffix letter for leftover lot number
-            // Find the highest existing suffix for this lot number
+            // Generate automatic suffix letter for leftover lot number
             $base_lot = $lot_no;
             
-            // Get all existing lot numbers starting with this base
             $suffix_check = "SELECT lot_no FROM stock_raw_material 
                              WHERE lot_no LIKE '" . $conn->real_escape_string($base_lot) . "%' 
                              ORDER BY lot_no DESC LIMIT 1";
             $suffix_result = $conn->query($suffix_check);
             
-            $next_suffix = 'a'; // Default first suffix
+            $next_suffix = 'a';
             
             if ($suffix_result && $suffix_result->num_rows > 0) {
                 $last_lot = $suffix_result->fetch_assoc()['lot_no'];
-                // Extract the last character (should be the suffix)
                 $last_char = substr($last_lot, -1);
                 
-                // If it's a letter, increment it
                 if (ctype_alpha($last_char)) {
                     $next_suffix = chr(ord($last_char) + 1);
                 } else {
-                    $next_suffix = 'a'; // If not a letter, start with 'a'
+                    $next_suffix = 'a';
                 }
             }
             
-            // Create new lot number with suffix
             $new_lot_no = $base_lot . $next_suffix;
             
-            // Insert leftover into stock_raw_material with new lot number
+            // Insert leftover into stock_raw_material
             $insert_stock_query = "INSERT INTO stock_raw_material 
                                    (lot_no, coil_no, grade, width, length, status, source_type, source_id, date_in) 
                                    VALUES ('" . $conn->real_escape_string($new_lot_no) . "', 
@@ -100,9 +97,11 @@ try {
             if (!$conn->query($insert_stock_query)) {
                 throw new Exception("Failed to save leftover stock: " . $conn->error);
             }
+
+            $balance_stock_id = $conn->insert_id;
         }
 
-        // Mark the original stock_raw_material entry as OUT (if it exists)
+        // Mark the original stock_raw_material entry as OUT
         if ($stock_id > 0) {
             $update_stock_log = "UPDATE stock_raw_material 
                                  SET status='OUT', 
@@ -120,51 +119,87 @@ try {
         $conn->query($update_log_query);
     }
 
-    // Insert slitting products
+    // ============================================================================
+    // EXCLUSIVE LOGIC GATES: Process each roll with conditional routing
+    // ============================================================================
+    
     foreach ($roll_nos as $index => $roll_no) {
         $length = floatval($lengths[$index] ?? 0);
         $width = floatval($widths[$index] ?? 0);
         $cut_letter = $conn->real_escape_string($cut_letters[$index] ?? '');
         
-        // FIX: Check if the ROLL NUMBER is in send_to_sfc array
+        // ========================================================================
+        // DECISION POINT: Check if this roll should go to SFC
+        // ========================================================================
         $roll_number_str = (string)($index + 1);
-        $is_sfc = in_array($roll_number_str, $send_to_sfc) ? 1 : 0;
-
-        // Build the INSERT query for slitting_product
-        $insert_query = "INSERT INTO slitting_product 
-                         (product, lot_no, coil_no, roll_no, width, length, mother_id, 
-                          status, cut_type, slit_quantity, date_in, source) 
-                         VALUES 
-                         ('$product', 
-                          '$lot_no', 
-                          '$coil_no', 
-                          '$roll_no', 
-                          $width, 
-                          $length, 
-                          $mother_id, 
-                          'IN', 
-                          '$cut_type', 
-                          " . (isset($_POST['slit_quantity']) ? floatval($_POST['slit_quantity']) : 0) . ", 
-                          NOW(), 
-                          '$source_type')";
-
-        if (!$conn->query($insert_query)) {
-            throw new Exception("Failed to insert slitting product: " . $conn->error);
-        }
-
-        $slitting_id = $conn->insert_id;
-
-        // Handle SFC entries for individual rolls - with error checking
-        if ($is_sfc) {
-            $sfc_query = "INSERT INTO sfc (product, lot_no, coil_no, roll_no, width, length, action, date_created) 
-                          VALUES ('$product', '$lot_no', '$coil_no', '$roll_no', $width, $length, 'slitting', NOW())";
+        $send_to_sfc_flag = in_array($roll_number_str, $send_to_sfc);
+        
+        // ========================================================================
+        // PATH A: SEND TO SFC (if checkbox is TICKED)
+        // ========================================================================
+        if ($send_to_sfc_flag) {
+            // Insert ONLY into sfc table
+            // Do NOT insert into slitting_product for this roll
+            
+            $sfc_query = "INSERT INTO sfc 
+                          (product, lot_no, coil_no, roll_no, width, length, action, date_created) 
+                          VALUES 
+                          ('$product', '$lot_no', '$coil_no', '$roll_no', $width, $length, 'slitting', NOW())";
+            
             if (!$conn->query($sfc_query)) {
                 throw new Exception("Failed to insert into SFC table: " . $conn->error);
             }
+            
+            // Log this action for audit trail
+            $audit_log = "INSERT INTO slitting_audit_log (mother_id, action, roll_no, destination, created_at) 
+                         VALUES ($mother_id, 'send_to_sfc', '$roll_no', 'sfc_stock', NOW())";
+            $conn->query($audit_log);
+            
+            // STOP here for this roll - do not proceed to finished_products
+            continue; // Skip the rest of the loop for this item
+        }
+        
+        // ========================================================================
+        // PATH B: GO TO FINISHED PRODUCTS (if checkbox is NOT ticked)
+        // ========================================================================
+        else {
+            // Insert ONLY into slitting_product table
+            // Do NOT insert into sfc for this roll
+            
+            $insert_query = "INSERT INTO slitting_product 
+                             (product, lot_no, coil_no, roll_no, width, length, mother_id, 
+                              status, cut_type, slit_quantity, date_in, source) 
+                             VALUES 
+                             ('$product', 
+                              '$lot_no', 
+                              '$coil_no', 
+                              '$roll_no', 
+                              $width, 
+                              $length, 
+                              $mother_id, 
+                              'IN', 
+                              '$cut_type', 
+                              " . (isset($_POST['slit_quantity']) ? floatval($_POST['slit_quantity']) : 0) . ", 
+                              NOW(), 
+                              '$source_type')";
+
+            if (!$conn->query($insert_query)) {
+                throw new Exception("Failed to insert slitting product: " . $conn->error);
+            }
+
+            $slitting_id = $conn->insert_id;
+            
+            // Log this action for audit trail
+            $audit_log = "INSERT INTO slitting_audit_log (mother_id, action, roll_no, destination, created_at) 
+                         VALUES ($mother_id, 'send_to_finished', '$roll_no', 'slitting_product', NOW())";
+            $conn->query($audit_log);
         }
     }
-
-    // Update mother coil stock status if normal cut
+    
+    // ============================================================================
+    // NORMAL SLITTING: Handle special case of balance width
+    // ============================================================================
+    
     if ($cut_type === 'normal') {
         $update_mother_query = "UPDATE mother_coil SET stock=0, status='OUT', date_out=NOW() WHERE id=$mother_id";
         if (!$conn->query($update_mother_query)) {
@@ -182,13 +217,12 @@ try {
             }
         }
 
-        // NEW: Handle SFC balance width for Normal Slitting
-        // This is the unused/balance width that user entered in "Save to SFC" section
+        // Handle SFC balance width for Normal Slitting
         if ($sfc_balance_width > 0) {
-            // Create a special "balance" roll entry for the unused width
             $balance_roll_no = "BALANCE";
             $balance_length = isset($_POST['length']) ? floatval($_POST['length'][0] ?? 0) : 0;
             
+            // This balance width goes to SFC
             $sfc_balance_query = "INSERT INTO sfc 
                                   (product, lot_no, coil_no, roll_no, width, length, action, date_created) 
                                   VALUES 
@@ -206,7 +240,7 @@ try {
         $conn->query($audit_query);
     }
 
-    // For Cut Into 2: Also mark mother_coil as OUT after saving
+    // For Cut Into 2: Mark mother_coil as OUT
     if ($cut_type === 'cut_into_2') {
         $update_mother_cut_into_2 = "UPDATE mother_coil SET stock=0, status='OUT', date_out=NOW() WHERE id=$mother_id";
         if (!$conn->query($update_mother_cut_into_2)) {
@@ -217,7 +251,14 @@ try {
     // Commit transaction
     $conn->commit();
 
-    $_SESSION['success'] = "Slitting products saved successfully (" . count($roll_nos) . " rolls)";
+    // For Cut Into 2: Redirect to print balance sticker page
+    if ($cut_type === 'cut_into_2' && $balance_stock_id > 0) {
+        header("Location: print_balance_sticker_MK_STYLE.php?stock_id=$balance_stock_id");
+        exit;
+    }
+    
+    // For normal cut: Show success message and redirect to raw_material
+    $_SESSION['success'] = "✓ Slitting products saved successfully (" . count($roll_nos) . " rolls)";
     header("Location: raw_material.php");
     exit;
 
