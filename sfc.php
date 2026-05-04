@@ -30,7 +30,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
             $original_source = 'sfc';
 
             if ($action === 'RECOIL') {
-                // 7 placeholders for 7 variables
                 $stmt = $conn->prepare("INSERT INTO recoiling_product (product, lot_no, coil_no, roll_no, width, length, status, date_in, original_source) VALUES (?, ?, ?, ?, ?, ?, 'pending', NOW(), ?)");
                 $stmt->bind_param("ssssdds", 
                         $sfc['product'],
@@ -46,7 +45,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
                 log_source_tracking($conn, 0, 'recoiling_product', $original_source, 'sfc', 'RECOIL_FROM_SFC');
 
             } elseif ($action === 'RESLIT') {
-                // 7 placeholders for 7 variables
                 $stmt = $conn->prepare("INSERT INTO reslit_product (product, lot_no, coil_no, roll_no, width, length, status, date_in, original_source) VALUES (?, ?, ?, ?, ?, ?, 'pending', NOW(), ?)");
                 $stmt->bind_param("ssssdds", 
                         $sfc['product'], 
@@ -62,10 +60,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
                 log_source_tracking($conn, 0, 'reslit_product', $original_source, 'sfc', 'RESLIT_FROM_SFC');
 
             } elseif ($action === 'SELL') {
-                // Fixed: 7 placeholders (?) to match the 7 variables in bind_param
-                // Static values like 'WAITING', NOW(), 'sfc_sell', and 'sfc' are written directly in the query
                 $stmt = $conn->prepare("INSERT INTO slitting_product (product, lot_no, coil_no, roll_no, width, length, status, date_in, date_out, cut_type, source, original_source) VALUES (?, ?, ?, ?, ?, ?, 'WAITING', NOW(), NOW(), 'sfc_sell', 'sfc', ?)");
-                
                 $stmt->bind_param("ssssdds", 
                         $sfc['product'], 
                         $sfc['lot_no'], 
@@ -169,7 +164,8 @@ include 'header.php';
         <table class="table table-hover align-middle text-center mb-0">
             <thead class="table-light">
                 <tr>
-                    <th>SFC ID</th>
+                    <!-- ✅ SFC ID column replaced with Print column -->
+                    <th>Print</th>
                     <th>Product</th>
                     <th>Lot No</th>
                     <th>Roll No</th>
@@ -183,13 +179,21 @@ include 'header.php';
                 <?php if ($result && $result->num_rows > 0): ?>
                     <?php while ($row = $result->fetch_assoc()): ?>
                         <tr>
-                            <td class="fw-bold text-muted">#<?= htmlspecialchars($row['sfc_id']) ?></td>
+                            <!-- ✅ Print button linking to print_sfc.php with sfc_id via GET -->
+                            <td>
+                                <a href="print_sfc.php?id=<?= (int)$row['sfc_id'] ?>" 
+                                   target="_blank"
+                                   class="btn btn-outline-dark btn-sm"
+                                   title="Print Label #<?= (int)$row['sfc_id'] ?>">
+                                    <i class="bi bi-printer-fill"></i>
+                                </a>
+                            </td>
                             <td><span class="badge bg-secondary"><?= htmlspecialchars($row['product']) ?></span></td>
                             <td class="small fw-bold">
                                 <?= htmlspecialchars($row['lot_no']) ?> <?= htmlspecialchars($row['coil_no']) ?>
                             </td>
                             <td><span class="badge outline-primary text-dark border"><?= htmlspecialchars($row['roll_no']) ?></span></td>
-                            <td><?= number_format($row['width']) ?> </td>
+                            <td><?= number_format($row['width']) ?></td>
                             <td class="text-primary fw-bold"><?= number_format($row['length'], 2) ?></td>
                             <td class="small text-muted"><?= date('d/M/Y', strtotime($row['date_created'])) ?></td>
                             <td>

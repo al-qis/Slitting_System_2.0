@@ -60,23 +60,8 @@ try {
         $stock_value   = isset($_POST['stock'])         ? floatval($_POST['stock'])         : 0;
 
         if ($stock_value > 0) {
-            // Generate automatic suffix letter for leftover lot number
-            $base_lot = $lot_no;
-
-            $suffix_check  = "SELECT lot_no FROM stock_raw_material 
-                               WHERE lot_no LIKE '" . $conn->real_escape_string($base_lot) . "%' 
-                               ORDER BY lot_no DESC LIMIT 1";
-            $suffix_result = $conn->query($suffix_check);
-
-            $next_suffix = 'a';
-
-            if ($suffix_result && $suffix_result->num_rows > 0) {
-                $last_lot  = $suffix_result->fetch_assoc()['lot_no'];
-                $last_char = substr($last_lot, -1);
-                $next_suffix = ctype_alpha($last_char) ? chr(ord($last_char) + 1) : 'a';
-            }
-
-            $new_lot_no = $base_lot . $next_suffix;
+            // Use lot_no as-is for the leftover — no automatic suffix assigned
+            $new_lot_no = $lot_no;
 
             // Insert leftover into stock_raw_material
             $insert_stock_query = "INSERT INTO stock_raw_material 
@@ -244,13 +229,9 @@ try {
     // Commit transaction
     $conn->commit();
 
-    // For Cut Into 2: Redirect to print balance sticker page
-    if ($cut_type === 'cut_into_2' && $balance_stock_id > 0) {
-        header("Location: print_balance_sticker_MK_STYLE.php?stock_id=$balance_stock_id");
-        exit;
-    }
-
-    // For normal cut: Show success and redirect
+    // Redirect to raw_material with success for both cut types
+    // Note: print_balance_sticker_MK_STYLE.php redirect removed — file does not exist on server.
+    // Balance stock is already saved to stock_raw_material; user can print from raw_material page.
     $_SESSION['success'] = "✓ Slitting products saved successfully (" . count($roll_nos) . " rolls)";
     header("Location: raw_material.php");
     exit;

@@ -16,11 +16,6 @@ $available_query = "SELECT id, lot_no, coil_no, grade, width, length, status, so
 $available_result = $conn->query($available_query);
 $total_available = $available_result ? $available_result->num_rows : 0;
 
-// Get balance stock (for QR alert)
-$balance_no_qr = $conn->query("SELECT COUNT(*) AS total FROM stock_raw_material 
-                               WHERE status='IN' AND source_type='slitting_cut_into_2'")
-                               ->fetch_assoc()['total'];
-
 // Summary totals
 $current_stock = $conn->query("SELECT COUNT(*) AS total FROM stock_raw_material WHERE status='IN'")
                          ->fetch_assoc()['total'];
@@ -47,20 +42,6 @@ include 'header.php';
         </button>
     </div>
 </div>
-
-<!-- ALERT: Balance Stock Needs QR Codes -->
-<?php if ($balance_no_qr > 0): ?>
-    <div class="alert alert-warning alert-dismissible fade show mb-4" role="alert">
-        <i class="bi bi-exclamation-triangle me-2"></i>
-        <strong>⚠️ You have <?= $balance_no_qr ?> balance stock item(s) that need QR codes!</strong>
-        <br>Generate and print QR codes for leftovers from "Cut Into 2" so they can be scanned like mother coils.
-        <br>
-        <a href="generate_balance_qr.php" class="btn btn-warning btn-sm mt-2">
-            <i class="bi bi-qr-code me-1"></i> Generate QR Codes for Balance Stock
-        </a>
-        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-    </div>
-<?php endif; ?>
 
 <!-- Summary Cards -->
 <div class="row g-3 mb-4 text-center">
@@ -110,7 +91,7 @@ include 'header.php';
         <table class="table table-hover align-middle text-center mb-0 small">
             <thead class="table-light">
                 <tr>
-                    <th>Stock ID</th>
+                    <th>Print</th>
                     <th>Lot No</th>
                     <th>Coil No</th>
                     <th>Grade</th>
@@ -132,7 +113,15 @@ include 'header.php';
                                     : '<span class="badge bg-info">Mother Coil</span>';
                     ?>
                     <tr class="<?= $highlight_class ?>">
-                        <td class="fw-bold">#<?= $stock['id'] ?></td>
+                        <td>
+                            <?php if ($is_balance): ?>
+                                <a href="print_leftover.php?id=<?= $stock['id'] ?>" class="btn btn-warning btn-sm">
+                                    <i class="bi bi-printer-fill"></i>
+                                </a>
+                            <?php else: ?>
+                                <span class="text-muted">—</span>
+                            <?php endif; ?>
+                        </td>
                         <td><strong><?= htmlspecialchars($stock['lot_no']) ?></strong></td>
                         <td><?= htmlspecialchars($stock['coil_no']) ?></td>
                         <td><?= htmlspecialchars($stock['grade'] ?? '-') ?></td>
