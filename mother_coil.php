@@ -214,7 +214,10 @@ include 'header.php';
 
                         <a href="delete_mother.php?id=<?= $id ?>" class="btn btn-danger btn-sm" onclick="return confirm('Are you sure?')">Delete</a>
                         <a href="print_mother.php?id=<?= $id ?>" class="btn btn-info btn-sm" target="_blank">Print</a>
-                    <?php else: ?>
+                        <a href="mother_coil_journal.php?id=<?= $id ?>" class="btn btn-info btn-sm">
+    <i class="bi bi-journal-text"></i> Journal
+</a>
+                        <?php else: ?>
                         <span class="text-muted">View only</span>
                     <?php endif; ?>
                     </td>

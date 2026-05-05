@@ -1,7 +1,6 @@
 <?php
 session_start();
 
-// 1. Authentication & Role Check
 if (!isset($_SESSION['role'])) {
     header("Location: login.php");
     exit;
@@ -14,623 +13,715 @@ if ($_SESSION['role'] !== 'slitting') {
 
 include 'config.php';
 
-// 2. Data Fetching Logic
 $month = (int)date('m');
 $year  = (int)date('Y');
 
-// RAW MATERIAL SUMMARY
-$in_raw = $conn->query("SELECT COUNT(*) AS total FROM mother_coil_audit_log 
-                        WHERE action_type='IN' AND MONTH(performed_at)=$month AND YEAR(performed_at)=$year")
-                ->fetch_assoc()['total'];
+// ── 1. Raw Material Available Stock ─────────────────────────
+$raw_stock = (int)$conn->query("
+    SELECT COUNT(*) AS total FROM stock_raw_material WHERE status='IN'
+")->fetch_assoc()['total'];
 
-$out_raw = $conn->query("SELECT COUNT(*) AS total FROM mother_coil_audit_log 
-                         WHERE action_type='OUT' AND MONTH(performed_at)=$month AND YEAR(performed_at)=$year")
-                 ->fetch_assoc()['total'];
+$raw_mother = (int)$conn->query("
+    SELECT COUNT(*) AS total FROM stock_raw_material 
+    WHERE status='IN' AND source_type='mother_coil'
+")->fetch_assoc()['total'];
 
-$stock_raw = $conn->query("SELECT COUNT(*) AS total FROM mother_coil WHERE stock=1")
-                   ->fetch_assoc()['total'];
+$raw_leftover = (int)$conn->query("
+    SELECT COUNT(*) AS total FROM stock_raw_material 
+    WHERE status='IN' AND source_type='slitting_cut_into_2'
+")->fetch_assoc()['total'];
 
-$afterCutStock_raw = $conn->query("SELECT COUNT(*) AS total FROM raw_material_log 
-                                   WHERE status='IN' AND action='cut_into_2'")
-                           ->fetch_assoc()['total'];
+// ── 2. SFC Active Items ──────────────────────────────────────
+$sfc_total = (int)$conn->query("
+    SELECT COUNT(*) AS total FROM sfc WHERE date_out IS NULL
+")->fetch_assoc()['total'];
 
-// FINISH PRODUCT SUMMARY
-$in_finish = $conn->query("SELECT COUNT(*) AS total FROM slitting_product 
-                           WHERE status='IN' AND is_completed=0
-                           AND (is_recoiled=0 OR is_recoiled IS NULL) 
-                           AND (is_reslitted=0 OR is_reslitted IS NULL)")
-                   ->fetch_assoc()['total'];
+// ── 3. Finish Good Stock ─────────────────────────────────────
+$fg_stock = (int)$conn->query("
+    SELECT COUNT(*) AS total FROM slitting_product 
+    WHERE status='IN' AND stock_counted=1
+    AND (is_recoiled=0 OR is_recoiled IS NULL)
+    AND (is_reslitted=0 OR is_reslitted IS NULL)
+")->fetch_assoc()['total'];
 
-$stock_finish = $conn->query("SELECT COUNT(*) AS total FROM slitting_product 
-                              WHERE status='IN' AND stock_counted=1
-                              AND (is_recoiled=0 OR is_recoiled IS NULL) 
-                              AND (is_reslitted=0 OR is_reslitted IS NULL)")
-                      ->fetch_assoc()['total'];
+$fg_pending = (int)$conn->query("
+    SELECT COUNT(*) AS total FROM slitting_product 
+    WHERE status='IN' AND is_completed=0
+    AND (is_recoiled=0 OR is_recoiled IS NULL)
+    AND (is_reslitted=0 OR is_reslitted IS NULL)
+")->fetch_assoc()['total'];
 
-$out_finish = $conn->query("SELECT COUNT(*) AS total FROM slitting_product 
-                            WHERE status='OUT' 
-                            AND MONTH(date_out)=$month AND YEAR(date_out)=$year")
-                    ->fetch_assoc()['total'];
+$fg_waiting = (int)$conn->query("
+    SELECT COUNT(*) AS total FROM slitting_product WHERE status='WAITING'
+")->fetch_assoc()['total'];
 
-$deliver_finish = $conn->query("SELECT COUNT(*) AS total FROM slitting_product 
-                                WHERE status='DELIVERED' 
-                                AND MONTH(delivered_at)=$month AND YEAR(delivered_at)=$year")
-                        ->fetch_assoc()['total'];
+// ── 4. Delivered This Month ──────────────────────────────────
+$delivered = (int)$conn->query("
+    SELECT COUNT(*) AS total FROM slitting_product 
+    WHERE status='DELIVERED'
+    AND MONTH(delivered_at)=$month AND YEAR(delivered_at)=$year
+")->fetch_assoc()['total'];
 
-// SFC & QC
-$sfc_active = $conn->query("SELECT COUNT(*) AS total FROM sfc WHERE date_out IS NULL")
-                    ->fetch_assoc()['total'] ?? 0;
+$delivered_approved = (int)$conn->query("
+    SELECT COUNT(*) AS total FROM slitting_product WHERE status='APPROVED'
+")->fetch_assoc()['total'];
 
-$waiting_qc = $conn->query("SELECT COUNT(*) AS total FROM slitting_product WHERE status='WAITING'")
-                    ->fetch_assoc()['total'] ?? 0;
+$mtd_in_raw = (int)$conn->query("
+    SELECT COUNT(*) AS total FROM stock_raw_material
+    WHERE MONTH(date_in)=$month AND YEAR(date_in)=$year
+")->fetch_assoc()['total'];
 
-$page_title = "Dashboard - MK Slitting";
+// ── Recent rolls ─────────────────────────────────────────────
+$recent = $conn->query("
+    SELECT lot_no, coil_no, roll_no, width, actual_length, status, date_in
+    FROM slitting_product
+    WHERE (is_recoiled=0 OR is_recoiled IS NULL)
+      AND (is_reslitted=0 OR is_reslitted IS NULL)
+    ORDER BY id DESC LIMIT 8
+");
+$recent_rows = [];
+if ($recent) while ($r = $recent->fetch_assoc()) $recent_rows[] = $r;
+
+$page_title = "Dashboard";
 include 'header.php';
 ?>
 
 <style>
-    /* ── Design tokens ───────────────────────────────────────────── */
-    :root {
-        --navy:      #0B1D35;
-        --accent:    #E8A020;
-        --steel:     #4A7FA5;
-        --green:     #1A8754;
-        --green-bg:  #D1FAE5;
-        --red:       #C0392B;
-        --red-bg:    #FEE2E2;
-        --amber:     #B45309;
-        --amber-bg:  #FEF3C7;
-        --blue:      #1D4ED8;
-        --blue-bg:   #DBEAFE;
-        --purple-bg: #EDE9FE;
-        --purple:    #5B21B6;
-        --surface:   #F3F4F6;
-        --border:    #E2E6EA;
-        --shadow:    0 2px 10px rgba(11,29,53,0.07);
-        --shadow-md: 0 4px 20px rgba(11,29,53,0.11);
-        --radius:    10px;
-    }
+/* ── Google Font ── */
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=DM+Mono:wght@500&display=swap');
 
-    /* ── Page background ─────────────────────────────────────────── */
-    body { background: var(--surface) !important; }
+/* ── Tokens ── */
+:root {
+    --bg:       #F0F2F5;
+    --surface:  #FFFFFF;
+    --border:   #E4E7EC;
+    --navy:     #0D1B2A;
+    --navy2:    #1B2E45;
+    --text:     #1A2332;
+    --muted:    #8A96A3;
+    --shadow-s: 0 1px 4px rgba(13,27,42,.06);
+    --shadow-m: 0 4px 20px rgba(13,27,42,.10);
+    --shadow-l: 0 8px 40px rgba(13,27,42,.14);
+    --r:        14px;
+    --r-sm:     8px;
+}
 
-    /* ── Page header row ─────────────────────────────────────────── */
-    .dash-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 24px;
-    }
+body {
+    background: var(--bg) !important;
+    font-family: 'DM Sans', sans-serif !important;
+    color: var(--text);
+}
 
-    .dash-title {
-        font-size: 22px;
-        font-weight: 700;
-        color: var(--navy);
-        letter-spacing: -0.3px;
-    }
+/* ── Top bar ── */
+.db-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 28px;
+    padding: 0 2px;
+}
+.db-greeting {
+    font-size: 24px;
+    font-weight: 800;
+    color: var(--navy);
+    letter-spacing: -.5px;
+    line-height: 1.1;
+}
+.db-greeting span {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--muted);
+    margin-top: 3px;
+    letter-spacing: 0;
+}
+.db-pills {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 7px 16px;
+    border-radius: 30px;
+}
+.pill-date {
+    background: var(--navy);
+    color: #fff;
+}
+.pill-scanner {
+    background: #E8F9F1;
+    color: #0F7A4B;
+    border: 1px solid #B2EDD3;
+}
+.dot-live {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: #0F7A4B;
+    animation: blink 2s ease-in-out infinite;
+}
+@keyframes blink {
+    0%,100% { opacity:1; transform:scale(1); }
+    50%      { opacity:.3; transform:scale(.55); }
+}
 
-    .dash-title span {
-        display: block;
-        font-size: 12px;
-        font-weight: 500;
-        color: #9AAABB;
-        letter-spacing: 0;
-        margin-top: 2px;
-    }
+/* ── Section heading ── */
+.sec-head {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.sec-head::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+}
 
-    .date-badge {
-        background: var(--navy);
-        color: #fff;
-        font-size: 12px;
-        font-weight: 600;
-        padding: 6px 16px;
-        border-radius: 20px;
-        letter-spacing: 0.3px;
-    }
+/* ══════════════════════════════════════════
+   4 MAIN KPI CARDS — clean row
+══════════════════════════════════════════ */
+.kpi-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 28px;
+}
 
-    /* ── Scanner alert ───────────────────────────────────────────── */
-    .scan-alert {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        background: var(--blue-bg);
-        border: 1px solid #BFDBFE;
-        border-radius: var(--radius);
-        padding: 11px 16px;
-        font-size: 13px;
-        color: var(--blue);
-        font-weight: 500;
-        margin-bottom: 20px;
-    }
+.kpi {
+    background: var(--surface);
+    border-radius: var(--r);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-s);
+    padding: 0;
+    overflow: hidden;
+    text-decoration: none;
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    transition: transform .2s, box-shadow .2s;
+    position: relative;
+}
+.kpi:hover {
+    transform: translateY(-4px);
+    box-shadow: var(--shadow-l);
+    color: var(--text);
+}
 
-    /* ── Scanner live pill ───────────────────────────────────────── */
-    .scanner-pill {
-        display: inline-flex;
-        align-items: center;
-        gap: 7px;
-        background: var(--green-bg);
-        color: var(--green);
-        font-size: 12px;
-        font-weight: 600;
-        padding: 5px 14px;
-        border-radius: 20px;
-        border: 1px solid #A7F3D0;
-    }
+/* Coloured top stripe */
+.kpi-stripe {
+    height: 5px;
+    background: var(--kc);
+    border-radius: var(--r) var(--r) 0 0;
+}
 
-    .pulse-dot {
-        width: 7px; height: 7px;
-        border-radius: 50%;
-        background: var(--green);
-        animation: pulse 1.8s ease-in-out infinite;
-    }
+/* Icon + number block */
+.kpi-body {
+    padding: 20px 22px 16px;
+    flex: 1;
+}
 
-    @keyframes pulse {
-        0%, 100% { opacity: 1; transform: scale(1); }
-        50%       { opacity: 0.4; transform: scale(0.65); }
-    }
+.kpi-icon {
+    width: 42px; height: 42px;
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    background: var(--ki-bg);
+    color: var(--kc);
+    margin-bottom: 18px;
+}
 
-    /* ── Section label ───────────────────────────────────────────── */
-    .section-label {
-        font-size: 10px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 2px;
-        color: #9AAABB;
-        margin-bottom: 12px;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-    }
+.kpi-num {
+    font-size: 42px;
+    font-weight: 800;
+    color: var(--kc);
+    line-height: 1;
+    letter-spacing: -1px;
+    margin-bottom: 5px;
+}
 
-    .section-label::after {
-        content: '';
-        flex: 1;
-        height: 1px;
-        background: var(--border);
-    }
+.kpi-label {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--muted);
+}
 
-    /* ── KPI metric cards ────────────────────────────────────────── */
-    .kpi-grid {
-        display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        gap: 14px;
-        margin-bottom: 24px;
-    }
+/* Sub-row at bottom of card */
+.kpi-foot {
+    border-top: 1px solid var(--border);
+    padding: 10px 22px;
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    background: #FAFBFC;
+}
+.kpi-foot-item {
+    font-size: 11px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.kpi-foot-item strong {
+    color: var(--text);
+    font-weight: 700;
+}
+.kpi-dot {
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--kc);
+    opacity: .6;
+    flex-shrink: 0;
+}
 
-    .kpi-card {
-        background: var(--kpi-bg, #EFF6FF);
-        border-radius: var(--radius);
-        border: 1px solid var(--kpi-color, var(--steel));
-        border-top: 4px solid var(--kpi-color, var(--steel));
-        padding: 18px 20px;
-        box-shadow: var(--shadow);
-        position: relative;
-        overflow: hidden;
-        transition: transform 0.18s, box-shadow 0.18s;
-    }
+/* Card colour themes */
+.kpi-green  { --kc: #059669; --ki-bg: #ECFDF5; }
+.kpi-amber  { --kc: #D97706; --ki-bg: #FFFBEB; }
+.kpi-blue   { --kc: #2563EB; --ki-bg: #EFF6FF; }
+.kpi-violet { --kc: #7C3AED; --ki-bg: #F5F3FF; }
 
-    .kpi-card:hover {
-        transform: translateY(-2px);
-        box-shadow: var(--shadow-md);
-    }
+/* ══════════════════════════════════════════
+   QUICK ACTIONS
+══════════════════════════════════════════ */
+.qa-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 28px;
+}
 
-    /* top accent now handled by border-top on .kpi-card */
+.qa-btn {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 15px 18px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    box-shadow: var(--shadow-s);
+    text-decoration: none;
+    color: var(--text);
+    font-weight: 600;
+    font-size: 13px;
+    transition: all .18s;
+    position: relative;
+    overflow: hidden;
+}
+.qa-btn::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    background: var(--qa-c, var(--border));
+    border-radius: 2px 0 0 2px;
+    transform: scaleY(0);
+    transition: transform .18s;
+}
+.qa-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-m);
+    color: var(--text);
+    border-color: rgba(0,0,0,.1);
+}
+.qa-btn:hover::before { transform: scaleY(1); }
 
-    .kpi-icon {
-        width: 36px; height: 36px;
-        border-radius: 8px;
-        display: flex; align-items: center; justify-content: center;
-        font-size: 16px;
-        margin-bottom: 14px;
-        background: var(--kpi-bg, #f0f4f8);
-        color: var(--kpi-color, var(--steel));
-    }
+.qa-icon {
+    width: 40px; height: 40px;
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    flex-shrink: 0;
+    background: var(--qa-bg);
+    color: var(--qa-c);
+}
+.qa-sub {
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--muted);
+    display: block;
+    margin-top: 1px;
+}
+.qa-arrow {
+    margin-left: auto;
+    font-size: 14px;
+    color: var(--muted);
+    transition: transform .18s, color .18s;
+}
+.qa-btn:hover .qa-arrow {
+    transform: translateX(3px);
+    color: var(--qa-c);
+}
 
-    .kpi-num {
-        font-size: 30px;
-        font-weight: 800;
-        color: var(--kpi-color, var(--navy));
-        line-height: 1;
-        margin-bottom: 4px;
-    }
+/* ══════════════════════════════════════════
+   RECENT ACTIVITY
+══════════════════════════════════════════ */
+.activity-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    box-shadow: var(--shadow-s);
+    overflow: hidden;
+    margin-bottom: 28px;
+}
+.ac-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 22px;
+    border-bottom: 1px solid var(--border);
+}
+.ac-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--navy);
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    display: flex; align-items: center; gap: 8px;
+}
+.ac-title-icon {
+    width: 28px; height: 28px;
+    border-radius: 7px;
+    background: #EFF6FF;
+    color: #2563EB;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px;
+}
+.ac-link {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    text-decoration: none;
+    display: flex; align-items: center; gap: 3px;
+    transition: color .15s;
+}
+.ac-link:hover { color: var(--navy); }
 
-    .kpi-lbl {
-        font-size: 11px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.7px;
-        color: #9AAABB;
-    }
+.ac-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 22px;
+    border-bottom: 1px solid #F5F6F8;
+    transition: background .12s;
+}
+.ac-row:last-child { border-bottom: none; }
+.ac-row:hover { background: #FAFBFC; }
 
-    .kpi-sub {
-        font-size: 11px;
-        color: #5A6A7A;
-        margin-top: 10px;
-        padding-top: 10px;
-        border-top: 1px solid rgba(0,0,0,0.08);
-    }
+.ac-lot {
+    font-family: 'DM Mono', monospace;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--navy);
+    min-width: 180px;
+    letter-spacing: -.3px;
+}
 
-    .kpi-sub strong { color: #5A6A7A; }
+.ac-chips {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    flex: 1;
+}
 
-    /* ── Data panels ─────────────────────────────────────────────── */
-    .panels-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 16px;
-        margin-bottom: 24px;
-    }
+.chip {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 20px;
+}
+.chip-w { background: #EFF6FF; color: #1E40AF; }
+.chip-l { background: #F0FDF4; color: #166534; }
 
-    .panel {
-        background: #fff;
-        border-radius: var(--radius);
-        border: 1px solid var(--border);
-        box-shadow: var(--shadow);
-        overflow: hidden;
-    }
+.ac-date {
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
+    font-family: 'DM Mono', monospace;
+}
 
-    .panel-head {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 14px 18px;
-        border-bottom: 1px solid var(--border);
-    }
+/* Status badges */
+.sb {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 5px;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    white-space: nowrap;
+}
+.sb-in        { background:#DCFCE7; color:#166534; }
+.sb-waiting   { background:#FEF3C7; color:#92400E; }
+.sb-approved  { background:#DBEAFE; color:#1E40AF; }
+.sb-delivered { background:#D1FAE5; color:#065F46; }
+.sb-rejected  { background:#FEE2E2; color:#991B1B; }
 
-    .panel-title {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 13px;
-        font-weight: 700;
-        color: var(--navy);
-        text-transform: uppercase;
-        letter-spacing: 0.4px;
-    }
-
-    .panel-icon {
-        width: 26px; height: 26px;
-        border-radius: 6px;
-        display: flex; align-items: center; justify-content: center;
-        font-size: 12px;
-    }
-
-    .panel-link {
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--steel);
-        text-decoration: none;
-        display: flex;
-        align-items: center;
-        gap: 3px;
-        transition: color 0.15s;
-    }
-
-    .panel-link:hover { color: var(--navy); }
-
-    .panel-body { padding: 16px 18px; }
-
-    .stat-grid {
-        display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        gap: 10px;
-    }
-
-    .stat-cell {
-        background: #fff;
-        border-radius: 8px;
-        padding: 12px 8px;
-        text-align: center;
-        border: 1px solid var(--border);
-        border-left: 3px solid currentColor;
-    }
-
-    .stat-num {
-        font-size: 24px;
-        font-weight: 800;
-        line-height: 1;
-        margin-bottom: 4px;
-    }
-
-    .stat-lbl {
-        font-size: 9px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.8px;
-        color: #9AAABB;
-    }
-
-    /* ── Quick action buttons ────────────────────────────────────── */
-    .actions-grid {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 12px;
-    }
-
-    .action-btn {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 14px 16px;
-        background: #fff;
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        text-decoration: none;
-        color: var(--navy);
-        font-weight: 600;
-        font-size: 13px;
-        box-shadow: var(--shadow);
-        transition: all 0.18s ease;
-    }
-
-    .action-btn:hover {
-        border-color: var(--navy);
-        border-left: 3px solid var(--navy);
-        box-shadow: var(--shadow-md);
-        transform: translateY(-1px);
-        color: var(--navy);
-        background: #F8FAFF;
-    }
-
-    .action-icon {
-        width: 36px; height: 36px;
-        border-radius: 8px;
-        display: flex; align-items: center; justify-content: center;
-        font-size: 16px;
-        flex-shrink: 0;
-    }
-
-    .action-sub {
-        font-size: 11px;
-        font-weight: 400;
-        color: #9AAABB;
-        display: block;
-        margin-top: 1px;
-    }
-
-    /* ── Colour helpers ──────────────────────────────────────────── */
-    .c-green  { color: var(--green); }
-    .c-red    { color: var(--red); }
-    .c-blue   { color: var(--blue); }
-    .c-amber  { color: var(--amber); }
-    .c-navy   { color: var(--navy); }
-    .c-steel  { color: var(--steel); }
-
-    /* ── Responsive ──────────────────────────────────────────────── */
-    @media (max-width: 992px) {
-        .kpi-grid     { grid-template-columns: repeat(2, 1fr); }
-        .panels-grid  { grid-template-columns: 1fr; }
-        .actions-grid { grid-template-columns: repeat(2, 1fr); }
-    }
-
-    @media (max-width: 576px) {
-        .kpi-grid     { grid-template-columns: repeat(2, 1fr); gap: 10px; }
-        .kpi-num      { font-size: 24px; }
-        .stat-grid    { grid-template-columns: repeat(2, 1fr); }
-        .actions-grid { grid-template-columns: 1fr 1fr; }
-        .dash-header  { flex-direction: column; align-items: flex-start; gap: 10px; }
-    }
+/* ── Responsive ── */
+@media(max-width:992px) {
+    .kpi-row  { grid-template-columns: repeat(2,1fr); }
+    .qa-grid  { grid-template-columns: repeat(2,1fr); }
+}
+@media(max-width:576px) {
+    .kpi-row  { grid-template-columns: 1fr 1fr; gap:10px; }
+    .kpi-num  { font-size:32px; }
+    .qa-grid  { grid-template-columns: 1fr 1fr; }
+    .db-topbar{ flex-direction:column; align-items:flex-start; gap:12px; }
+    .ac-lot   { min-width:120px; font-size:11px; }
+}
 </style>
 
-<!-- ══ Page Header ═══════════════════════════════════════════════ -->
-<div class="dash-header">
-    <div class="dash-title">
+<!-- ══ Top Bar ════════════════════════════════════════════════ -->
+<div class="db-topbar">
+    <div class="db-greeting">
         Dashboard
-        <span>Metakote Slitting — <?= date('F Y') ?></span>
+        <span>Metakote Slitting &nbsp;·&nbsp; <?= date('F Y') ?></span>
     </div>
-    <div class="d-flex align-items-center gap-3">
-        <div class="scanner-pill">
-            <div class="pulse-dot"></div>
+    <div class="db-pills">
+        <div class="pill pill-scanner">
+            <div class="dot-live"></div>
             Scanner Ready
         </div>
-        <div class="date-badge"><?= date('d M Y') ?></div>
+        <div class="pill pill-date">
+            <i class="bi bi-calendar3"></i>
+            <?= date('d M Y') ?>
+        </div>
     </div>
 </div>
 
-<!-- ══ Scan Alert ════════════════════════════════════════════════ -->
 <?php if (isset($_GET['scan'])): ?>
-<div class="scan-alert">
-    <i class="bi bi-qr-code-scan"></i>
-    Scan result: <strong><?= htmlspecialchars($_GET['scan']) ?></strong>
+<div class="alert alert-info d-flex align-items-center gap-2 py-2 mb-3 rounded-3">
+    <i class="bi bi-qr-code-scan fs-5"></i>
+    <span>Scan result: <strong><?= htmlspecialchars($_GET['scan']) ?></strong></span>
 </div>
 <?php endif; ?>
 
-<!-- ══ KPI Cards ═════════════════════════════════════════════════ -->
-<div class="section-label">Overview</div>
+<!-- ══ 4 KPI CARDS ════════════════════════════════════════════ -->
+<div class="sec-head">Live Overview</div>
 
-<div class="kpi-grid">
-    <div class="kpi-card" style="--kpi-color:var(--green); --kpi-bg:var(--green-bg);">
-        <div class="kpi-icon"><i class="bi bi-box-seam-fill"></i></div>
-        <div class="kpi-num"><?= (int)$stock_raw ?></div>
-        <div class="kpi-lbl">Mother Coils in Stock</div>
-    </div>
+<div class="kpi-row">
 
-    <div class="kpi-card" style="--kpi-color:var(--amber); --kpi-bg:var(--amber-bg);">
-        <div class="kpi-icon"><i class="bi bi-scissors"></i></div>
-        <div class="kpi-num"><?= (int)$in_finish ?></div>
-        <div class="kpi-lbl">Pending Production</div>
-        <div class="kpi-sub">Stock counted: <strong><?= (int)$stock_finish ?></strong></div>
-    </div>
-
-    <div class="kpi-card" style="--kpi-color:var(--blue); --kpi-bg:var(--blue-bg);">
-        <div class="kpi-icon"><i class="bi bi-box-seam"></i></div>
-        <div class="kpi-num"><?= (int)$sfc_active ?></div>
-        <div class="kpi-lbl">Active SFC Items</div>
-        <div class="kpi-sub">Awaiting next process</div>
-    </div>
-
-    <div class="kpi-card" style="--kpi-color:var(--red); --kpi-bg:var(--red-bg);">
-        <div class="kpi-icon"><i class="bi bi-truck"></i></div>
-        <div class="kpi-num"><?= (int)$deliver_finish ?></div>
-        <div class="kpi-lbl">Delivered This Month</div>
-        <div class="kpi-sub">
-            Out: <strong><?= (int)$out_finish ?></strong> &nbsp;·&nbsp; QC Waiting: <strong><?= (int)$waiting_qc ?></strong>
+    <!-- 1 · Raw Material Stock -->
+    <a href="raw_material.php" class="kpi kpi-green">
+        <div class="kpi-stripe"></div>
+        <div class="kpi-body">
+            <div class="kpi-icon">
+                <i class="bi bi-boxes"></i>
+            </div>
+            <div class="kpi-num"><?= $raw_stock ?></div>
+            <div class="kpi-label">Raw Material Stock</div>
         </div>
-    </div>
+        <div class="kpi-foot">
+            <div class="kpi-foot-item">
+                <div class="kpi-dot"></div>
+                Mother: <strong><?= $raw_mother ?></strong>
+            </div>
+            <div class="kpi-foot-item">
+                <div class="kpi-dot"></div>
+                Leftover: <strong><?= $raw_leftover ?></strong>
+            </div>
+        </div>
+    </a>
+
+    <!-- 2 · SFC Items -->
+    <a href="sfc.php" class="kpi kpi-amber">
+        <div class="kpi-stripe"></div>
+        <div class="kpi-body">
+            <div class="kpi-icon">
+                <i class="bi bi-box-seam-fill"></i>
+            </div>
+            <div class="kpi-num"><?= $sfc_total ?></div>
+            <div class="kpi-label">SFC Items</div>
+        </div>
+        <div class="kpi-foot">
+            <div class="kpi-foot-item">
+                <div class="kpi-dot"></div>
+                Awaiting next process
+            </div>
+        </div>
+    </a>
+
+    <!-- 3 · Finish Good Stock -->
+    <a href="finish_product.php" class="kpi kpi-blue">
+        <div class="kpi-stripe"></div>
+        <div class="kpi-body">
+            <div class="kpi-icon">
+                <i class="bi bi-check-circle-fill"></i>
+            </div>
+            <div class="kpi-num"><?= $fg_stock ?></div>
+            <div class="kpi-label">Finish Good Stock</div>
+        </div>
+        <div class="kpi-foot">
+            <div class="kpi-foot-item">
+                <div class="kpi-dot"></div>
+                Pending: <strong><?= $fg_pending ?></strong>
+            </div>
+            <div class="kpi-foot-item">
+                <div class="kpi-dot"></div>
+                QC Wait: <strong><?= $fg_waiting ?></strong>
+            </div>
+        </div>
+    </a>
+
+    <!-- 4 · Delivered This Month -->
+    <a href="finish_product.php" class="kpi kpi-violet">
+        <div class="kpi-stripe"></div>
+        <div class="kpi-body">
+            <div class="kpi-icon">
+                <i class="bi bi-truck"></i>
+            </div>
+            <div class="kpi-num"><?= $delivered ?></div>
+            <div class="kpi-label">Delivered This Month</div>
+        </div>
+        <div class="kpi-foot">
+            <div class="kpi-foot-item">
+                <div class="kpi-dot"></div>
+                Approved: <strong><?= $delivered_approved ?></strong>
+            </div>
+            <div class="kpi-foot-item">
+                <div class="kpi-dot"></div>
+                MTD In: <strong><?= $mtd_in_raw ?></strong>
+            </div>
+        </div>
+    </a>
+
 </div>
 
-<!-- ══ Breakdown Panels ══════════════════════════════════════════ -->
-<div class="section-label">Monthly Breakdown</div>
+<!-- ══ QUICK ACTIONS ══════════════════════════════════════════ -->
+<div class="sec-head">Quick Actions</div>
 
-<div class="panels-grid">
-
-    <!-- Raw Material -->
-    <div class="panel">
-        <div class="panel-head">
-            <div class="panel-title">
-                <div class="panel-icon" style="background:var(--green-bg); color:var(--green);">
-                    <i class="bi bi-boxes"></i>
-                </div>
-                Raw Material
-            </div>
-            <a href="raw_material.php" class="panel-link">
-                View all <i class="bi bi-arrow-right"></i>
-            </a>
-        </div>
-        <div class="panel-body">
-            <div class="stat-grid">
-                <div class="stat-cell">
-                    <div class="stat-num c-green"><?= (int)$in_raw ?></div>
-                    <div class="stat-lbl">MTD IN</div>
-                </div>
-                <div class="stat-cell">
-                    <div class="stat-num c-red"><?= (int)$out_raw ?></div>
-                    <div class="stat-lbl">MTD OUT</div>
-                </div>
-                <div class="stat-cell">
-                    <div class="stat-num c-navy"><?= (int)$stock_raw ?></div>
-                    <div class="stat-lbl">LIVE STOCK</div>
-                </div>
-                <div class="stat-cell">
-                    <div class="stat-num c-amber"><?= (int)$afterCutStock_raw ?></div>
-                    <div class="stat-lbl">AFTER CUT</div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Slitting Product -->
-    <div class="panel">
-        <div class="panel-head">
-            <div class="panel-title">
-                <div class="panel-icon" style="background:var(--blue-bg); color:var(--blue);">
-                    <i class="bi bi-check-circle"></i>
-                </div>
-                Slitting Product
-            </div>
-            <a href="finish_product.php" class="panel-link">
-                View all <i class="bi bi-arrow-right"></i>
-            </a>
-        </div>
-        <div class="panel-body">
-            <div class="stat-grid">
-                <div class="stat-cell">
-                    <div class="stat-num c-green"><?= (int)$in_finish ?></div>
-                    <div class="stat-lbl">IN</div>
-                </div>
-                <div class="stat-cell">
-                    <div class="stat-num c-blue"><?= (int)$stock_finish ?></div>
-                    <div class="stat-lbl">STOCK</div>
-                </div>
-                <div class="stat-cell">
-                    <div class="stat-num c-red"><?= (int)$out_finish ?></div>
-                    <div class="stat-lbl">OUT</div>
-                </div>
-                <div class="stat-cell">
-                    <div class="stat-num c-amber"><?= (int)$deliver_finish ?></div>
-                    <div class="stat-lbl">DELIVER</div>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- ══ Quick Actions ═════════════════════════════════════════════ -->
-<div class="section-label">Quick Actions</div>
-
-<div class="actions-grid">
-    <a href="raw_material.php" class="action-btn">
-        <div class="action-icon" style="background:var(--green-bg); color:var(--green);">
-            <i class="bi bi-boxes"></i>
-        </div>
+<div class="qa-grid">
+    <a href="raw_material.php" class="qa-btn" style="--qa-c:#059669; --qa-bg:#ECFDF5;">
+        <div class="qa-icon"><i class="bi bi-boxes"></i></div>
         <div>
             Raw Material
-            <span class="action-sub">View &amp; scan stock</span>
+            <span class="qa-sub">View &amp; scan stock</span>
         </div>
+        <i class="bi bi-arrow-right qa-arrow"></i>
     </a>
 
-    <a href="finish_product.php" class="action-btn">
-        <div class="action-icon" style="background:var(--blue-bg); color:var(--blue);">
-            <i class="bi bi-scissors"></i>
-        </div>
+    <a href="finish_product.php" class="qa-btn" style="--qa-c:#2563EB; --qa-bg:#EFF6FF;">
+        <div class="qa-icon"><i class="bi bi-scissors"></i></div>
         <div>
             Finish Product
-            <span class="action-sub">Slitting records</span>
+            <span class="qa-sub">Slitting records</span>
         </div>
+        <i class="bi bi-arrow-right qa-arrow"></i>
     </a>
 
-    <a href="sfc.php" class="action-btn">
-        <div class="action-icon" style="background:var(--amber-bg); color:var(--amber);">
-            <i class="bi bi-box-seam"></i>
-        </div>
+    <a href="sfc.php" class="qa-btn" style="--qa-c:#D97706; --qa-bg:#FFFBEB;">
+        <div class="qa-icon"><i class="bi bi-box-seam"></i></div>
         <div>
             SFC Inventory
-            <span class="action-sub"><?= (int)$sfc_active ?> active items</span>
+            <span class="qa-sub"><?= $sfc_total ?> active items</span>
         </div>
+        <i class="bi bi-arrow-right qa-arrow"></i>
     </a>
 
-    <a href="stock_log.php" class="action-btn">
-        <div class="action-icon" style="background:var(--purple-bg); color:var(--purple);">
-            <i class="bi bi-clock-history"></i>
+    <a href="recoiling.php" class="qa-btn" style="--qa-c:#7C3AED; --qa-bg:#F5F3FF;">
+        <div class="qa-icon"><i class="bi bi-arrow-repeat"></i></div>
+        <div>
+            Recoiling
+            <span class="qa-sub">Recoil queue</span>
         </div>
+        <i class="bi bi-arrow-right qa-arrow"></i>
+    </a>
+
+    <a href="mother_coil.php" class="qa-btn" style="--qa-c:#0891B2; --qa-bg:#ECFEFF;">
+        <div class="qa-icon"><i class="bi bi-layer-forward"></i></div>
+        <div>
+            Mother Coil
+            <span class="qa-sub">Coil registry</span>
+        </div>
+        <i class="bi bi-arrow-right qa-arrow"></i>
+    </a>
+
+    <a href="stock_log.php" class="qa-btn" style="--qa-c:#DC2626; --qa-bg:#FEF2F2;">
+        <div class="qa-icon"><i class="bi bi-clock-history"></i></div>
         <div>
             Stock Log
-            <span class="action-sub">Full audit trail</span>
+            <span class="qa-sub">Full audit trail</span>
         </div>
-    </a>
-
-    <a href="sfc_tracking_report.php" class="action-btn">
-        <div class="action-icon" style="background:#FCE7F3; color:#9D174D;">
-            <i class="bi bi-graph-up"></i>
-        </div>
-        <div>
-            SFC Report
-            <span class="action-sub">Tracking &amp; analytics</span>
-        </div>
-    </a>
-
-    <a href="raw_material_export.php" class="action-btn">
-        <div class="action-icon" style="background:#ECFDF5; color:#065F46;">
-            <i class="bi bi-file-earmark-excel"></i>
-        </div>
-        <div>
-            Export Data
-            <span class="action-sub">Download Excel</span>
-        </div>
+        <i class="bi bi-arrow-right qa-arrow"></i>
     </a>
 </div>
 
-<!-- ══ Hidden scanner form — identical to original ═══════════════ -->
-<form id="scanForm" method="post" action="scan_mother_action.php" autocomplete="off" style="position:absolute; left:-9999px;">
+<!-- ══ RECENT PRODUCTION ══════════════════════════════════════ -->
+<?php if (!empty($recent_rows)): ?>
+<div class="sec-head">Recent Production</div>
+
+<div class="activity-card">
+    <div class="ac-head">
+        <div class="ac-title">
+            <div class="ac-title-icon"><i class="bi bi-activity"></i></div>
+            Latest Rolls
+        </div>
+        <a href="finish_product.php" class="ac-link">
+            View all <i class="bi bi-arrow-right"></i>
+        </a>
+    </div>
+
+    <?php foreach ($recent_rows as $row):
+        $st = strtoupper($row['status'] ?? 'IN');
+        $badge = match($st) {
+            'WAITING'   => '<span class="sb sb-waiting">Waiting QC</span>',
+            'APPROVED'  => '<span class="sb sb-approved">Approved</span>',
+            'DELIVERED' => '<span class="sb sb-delivered">Delivered</span>',
+            'REJECTED'  => '<span class="sb sb-rejected">Rejected</span>',
+            default     => '<span class="sb sb-in">In Stock</span>',
+        };
+    ?>
+    <div class="ac-row">
+        <div class="ac-lot">
+            <?= htmlspecialchars($row['lot_no']) ?>
+            <?= htmlspecialchars($row['coil_no']) ?>&#8209;<?= str_replace('R','R-', htmlspecialchars($row['roll_no'])) ?>
+        </div>
+        <div class="ac-chips">
+            <?= $badge ?>
+            <span class="chip chip-w"><?= number_format((float)$row['width']) ?> mm</span>
+            <?php if ($row['actual_length']): ?>
+                <span class="chip chip-l"><?= number_format((float)$row['actual_length'], 1) ?> m</span>
+            <?php endif; ?>
+        </div>
+        <div class="ac-date">
+            <?= $row['date_in'] ? date('d M Y', strtotime($row['date_in'])) : '' ?>
+        </div>
+    </div>
+    <?php endforeach; ?>
+</div>
+<?php endif; ?>
+
+<!-- ══ Hidden scanner form ════════════════════════════════════ -->
+<form id="scanForm" method="post" action="scan_mother_action.php" autocomplete="off"
+      style="position:absolute; left:-9999px;">
     <input id="qrInput" type="text" name="qr" inputmode="none" autofocus>
 </form>
 
 <script>
-    // Scanner Focus Logic — identical to original
-    const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 
-    document.addEventListener('click', function () {
-        const el = document.activeElement;
-        if (!isTouchDevice || (el.tagName !== 'INPUT' && el.tagName !== 'SELECT' && el.tagName !== 'TEXTAREA')) {
-            document.getElementById('qrInput').focus();
-        }
-    });
+document.addEventListener('click', function () {
+    const el = document.activeElement;
+    if (!isTouchDevice || !['INPUT','SELECT','TEXTAREA'].includes(el.tagName)) {
+        document.getElementById('qrInput').focus();
+    }
+});
 
-    const qrInput = document.getElementById('qrInput');
-    qrInput.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' && this.value.trim() !== '') {
-            document.getElementById('scanForm').submit();
-        }
-    });
+document.getElementById('qrInput').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && this.value.trim() !== '') {
+        document.getElementById('scanForm').submit();
+    }
+});
 </script>
 
 <?php include 'footer.php'; ?>

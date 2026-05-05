@@ -8,47 +8,125 @@ if (!isset($_SESSION['role'])) {
 
 include 'config.php';
 
-// ============================================================
-// FIXED: Run the query ONCE, store result in memory using
-// fetch_all() so the result set can be iterated in the table
-// without running a second identical query.
-// ============================================================
-$available_query = "SELECT id, lot_no, coil_no, grade, width, length, status, source_type, date_in 
-                    FROM stock_raw_material 
-                    WHERE status='IN' 
-                    ORDER BY date_in DESC";
+$month = (int)date('m');
+$year  = (int)date('Y');
 
-$available_result = $conn->query($available_query);
+// ── Available stock rows ─────────────────────────────────────
+$available_result = $conn->query(
+    "SELECT id, lot_no, coil_no, grade, width, length, status, source_type, date_in 
+     FROM stock_raw_material 
+     WHERE status='IN' 
+     ORDER BY date_in DESC"
+);
 
-// Guard: if query() fails it returns false, not a result object
 if ($available_result === false) {
     $available_rows  = [];
     $total_available = 0;
 } else {
-    // fetch_all() loads all rows into a PHP array at once.
-    // This frees the result object and lets us count + loop
-    // without running the query a second time.
     $available_rows  = $available_result->fetch_all(MYSQLI_ASSOC);
     $total_available = count($available_rows);
     $available_result->free();
 }
-// ============================================================
 
-// Summary totals — these are simple COUNT queries with no user
-// input so query() is acceptable. Added error guards.
-$res_stock = $conn->query("SELECT COUNT(*) AS total FROM stock_raw_material WHERE status='IN'");
-$current_stock = $res_stock ? (int)$res_stock->fetch_assoc()['total'] : 0;
+// ── Summary counts ───────────────────────────────────────────
 
-$res_cut = $conn->query("SELECT COUNT(*) AS total FROM stock_raw_material 
-                         WHERE status='IN' AND source_type='slitting_cut_into_2'");
-$afterCutStock = $res_cut ? (int)$res_cut->fetch_assoc()['total'] : 0;
+// Current available stock
+$current_stock = (int)$conn->query(
+    "SELECT COUNT(*) AS total FROM stock_raw_material WHERE status='IN'"
+)->fetch_assoc()['total'];
+
+$afterCutStock = (int)$conn->query(
+    "SELECT COUNT(*) AS total FROM stock_raw_material 
+     WHERE status='IN' AND source_type='slitting_cut_into_2'"
+)->fetch_assoc()['total'];
+
+// MTD IN — coils scanned/added into stock this month
+$mtd_in = (int)$conn->query(
+    "SELECT COUNT(*) AS total FROM stock_raw_material 
+     WHERE MONTH(date_in) = $month AND YEAR(date_in) = $year"
+)->fetch_assoc()['total'];
+
+// MTD OUT — coils consumed (sent to slitting) this month
+// updated_at is set when status changes to OUT in save_slitting.php
+$mtd_out = (int)$conn->query(
+    "SELECT COUNT(*) AS total FROM stock_raw_material 
+     WHERE status = 'OUT' 
+       AND MONTH(updated_at) = $month AND YEAR(updated_at) = $year"
+)->fetch_assoc()['total'];
+
+// MTD IN breakdown — mother coils vs leftovers
+$mtd_in_mother = (int)$conn->query(
+    "SELECT COUNT(*) AS total FROM stock_raw_material 
+     WHERE source_type = 'mother_coil'
+       AND MONTH(date_in) = $month AND YEAR(date_in) = $year"
+)->fetch_assoc()['total'];
+
+$mtd_in_leftover = (int)$conn->query(
+    "SELECT COUNT(*) AS total FROM stock_raw_material 
+     WHERE source_type = 'slitting_cut_into_2'
+       AND MONTH(date_in) = $month AND YEAR(date_in) = $year"
+)->fetch_assoc()['total'];
 
 $page_title = "Raw Material - Available Stock";
 include 'header.php'; 
 ?>
 
+<style>
+    .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 12px;
+        margin-bottom: 24px;
+    }
+    .sum-card {
+        background: #fff;
+        border-radius: 10px;
+        border: 1px solid #e5e7eb;
+        border-top: 4px solid var(--c, #6b7280);
+        padding: 16px 18px;
+        box-shadow: 0 1px 6px rgba(0,0,0,.06);
+        text-align: center;
+    }
+    .sum-card .num {
+        font-size: 32px;
+        font-weight: 900;
+        color: var(--c, #374151);
+        line-height: 1;
+        margin-bottom: 4px;
+    }
+    .sum-card .lbl {
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: #9ca3af;
+    }
+    .sum-card .sub {
+        font-size: 11px;
+        color: #6b7280;
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid #f3f4f6;
+    }
+    .sum-card .sub strong { color: #374151; }
+
+    /* colour themes */
+    .c-stock   { --c: #059669; }
+    .c-mother  { --c: #0284c7; }
+    .c-balance { --c: #d97706; }
+    .c-in      { --c: #16a34a; }
+    .c-out     { --c: #dc2626; }
+
+    @media(max-width:992px) {
+        .summary-grid { grid-template-columns: repeat(3,1fr); }
+    }
+    @media(max-width:576px) {
+        .summary-grid { grid-template-columns: repeat(2,1fr); }
+    }
+</style>
+
 <div class="d-flex justify-content-between align-items-center mb-4">
-    <h2><i class="bi bi-boxes me-2"></i>Raw Material - Available Stock</h2>
+    <h2><i class="bi bi-boxes me-2"></i>Raw Material — Available Stock</h2>
     <div class="d-flex gap-2">
         <a href="stock_log.php" class="btn btn-secondary shadow-sm">
             <i class="bi bi-clock-history me-1"></i> View Stock Log
@@ -62,49 +140,63 @@ include 'header.php';
     </div>
 </div>
 
-<!-- Summary Cards -->
-<div class="row g-3 mb-4 text-center">
-    <div class="col-md-4">
-        <div class="card border-0 shadow-sm bg-primary text-white">
-            <div class="card-body p-2">
-                <h6 class="small mb-1">CURRENT AVAILABLE STOCK</h6>
-                <h4 class="fw-bold mb-0"><?= $current_stock ?></h4>
-                <small>Ready for Use</small>
-            </div>
+<!-- ── 5 Summary Cards ─────────────────────────────────────── -->
+<div class="summary-grid">
+
+    <!-- Total available now -->
+    <div class="sum-card c-stock">
+        <div class="num"><?= $current_stock ?></div>
+        <div class="lbl">Available Stock</div>
+        <div class="sub">Ready for slitting</div>
+    </div>
+
+    <!-- Mother coils in stock -->
+    <div class="sum-card c-mother">
+        <div class="num"><?= $current_stock - $afterCutStock ?></div>
+        <div class="lbl">Mother Coils</div>
+        <div class="sub">Currently in stock</div>
+    </div>
+
+    <!-- Leftover/balance in stock -->
+    <div class="sum-card c-balance">
+        <div class="num"><?= $afterCutStock ?></div>
+        <div class="lbl">Balance Stock</div>
+        <div class="sub">Cut Into 2 leftovers</div>
+    </div>
+
+    <!-- MTD IN -->
+    <div class="sum-card c-in">
+        <div class="num"><?= $mtd_in ?></div>
+        <div class="lbl">MTD IN</div>
+        <div class="sub">
+            Mother: <strong><?= $mtd_in_mother ?></strong>
+            &nbsp;·&nbsp;
+            Leftover: <strong><?= $mtd_in_leftover ?></strong>
         </div>
     </div>
-    <div class="col-md-4">
-        <div class="card border-0 shadow-sm bg-info text-white">
-            <div class="card-body p-2">
-                <h6 class="small mb-1">MOTHER COILS</h6>
-                <h4 class="fw-bold mb-0"><?= $current_stock - $afterCutStock ?></h4>
-                <small>In Stock</small>
-            </div>
-        </div>
+
+    <!-- MTD OUT -->
+    <div class="sum-card c-out">
+        <div class="num"><?= $mtd_out ?></div>
+        <div class="lbl">MTD OUT</div>
+        <div class="sub">Consumed for slitting</div>
     </div>
-    <div class="col-md-4">
-        <div class="card border-0 shadow-sm bg-warning text-dark">
-            <div class="card-body p-2">
-                <h6 class="small mb-1">BALANCE STOCK</h6>
-                <h4 class="fw-bold mb-0"><?= $afterCutStock ?></h4>
-                <small>Leftovers</small>
-            </div>
-        </div>
-    </div>
+
 </div>
 
-<!-- Important Notice -->
+<!-- ── Info notice ─────────────────────────────────────────── -->
 <div class="alert alert-info mb-4" role="alert">
     <i class="bi bi-info-circle me-2"></i>
-    <strong>How to Use Stock:</strong> 
-    Scan the QR code (mother coil or balance) to mark it as OUT. The cutting form will open automatically. 
+    <strong>How to Use Stock:</strong>
+    Scan the QR code (mother coil or balance) to mark it as OUT. The cutting form will open automatically.
     No manual "USE" button needed.
 </div>
 
-<!-- Available Stock for Slitting Table -->
+<!-- ── Available Stock Table ───────────────────────────────── -->
 <div class="card shadow-sm border-0 mb-5">
-    <div class="card-header bg-success text-white fw-bold py-3">
-        <i class="bi bi-scissors me-2"></i>Available Stock for Slitting
+    <div class="card-header bg-success text-white fw-bold py-3 d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-scissors me-2"></i>Available Stock for Slitting</span>
+        <span class="badge bg-white text-success"><?= $total_available ?> items</span>
     </div>
     <div class="table-responsive">
         <table class="table table-hover align-middle text-center mb-0 small">
@@ -117,16 +209,13 @@ include 'header.php';
                     <th>Length (mtr)</th>
                     <th>Width (mm)</th>
                     <th>Type</th>
+                    <th>Date In</th>
                     <th>Status</th>
                 </tr>
             </thead>
             <tbody>
                 <?php if ($total_available > 0): ?>
                     <?php foreach ($available_rows as $stock):
-                        // ============================================================
-                        // FIXED: Iterating over the pre-fetched PHP array instead of
-                        // re-running the database query a second time.
-                        // ============================================================
                         $is_balance      = ($stock['source_type'] === 'slitting_cut_into_2');
                         $highlight_class = $is_balance ? 'table-warning' : '';
                         $type_badge      = $is_balance
@@ -149,20 +238,21 @@ include 'header.php';
                         <td class="text-success fw-bold"><?= number_format((float)$stock['length']) ?></td>
                         <td><?= number_format((float)$stock['width']) ?></td>
                         <td><?= $type_badge ?></td>
-                        <td>
-                            <span class="badge bg-success">IN</span>
+                        <td class="text-muted">
+                            <?= $stock['date_in'] ? date('d M Y', strtotime($stock['date_in'])) : '—' ?>
                         </td>
+                        <td><span class="badge bg-success">IN</span></td>
                     </tr>
                     <?php endforeach; ?>
                 <?php else: ?>
-                    <tr><td colspan="8" class="py-4 text-muted">No stock available for slitting.</td></tr>
+                    <tr><td colspan="9" class="py-4 text-muted">No stock available for slitting.</td></tr>
                 <?php endif; ?>
             </tbody>
         </table>
     </div>
 </div>
 
-<!-- Manual Entry Modal -->
+<!-- ── Manual Entry Modal ──────────────────────────────────── -->
 <div class="modal fade" id="manualEntryModal" tabindex="-1">
     <div class="modal-dialog">
         <div class="modal-content border-0 shadow">
@@ -171,19 +261,17 @@ include 'header.php';
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
-                <form id="manualEntryForm">
-                    <div class="mb-3">
-                        <label class="form-label fw-bold">Enter Lot No &amp; Coil No</label>
-                        <input type="text" class="form-control form-control-lg" id="combined_input" 
-                               placeholder="e.g., 826175 FK-1" required autofocus>
-                        <div id="validationFeedback" class="invalid-feedback" style="display:none;">
-                            Please enter both Lot No and Coil No separated by a space (e.g., 826175 FK-1).
-                        </div>
-                        <div class="form-text mt-2">
-                            Type the <strong>Lot Number</strong>, then a <strong>space</strong>, then the <strong>Coil Number</strong>.
-                        </div>
+                <div class="mb-3">
+                    <label class="form-label fw-bold">Enter Lot No &amp; Coil No</label>
+                    <input type="text" class="form-control form-control-lg" id="combined_input"
+                           placeholder="e.g., 826175 FK-1" required autofocus>
+                    <div id="validationFeedback" class="invalid-feedback" style="display:none;">
+                        Please enter both Lot No and Coil No separated by a space.
                     </div>
-                </form>
+                    <div class="form-text mt-2">
+                        Type the <strong>Lot Number</strong>, a <strong>space</strong>, then the <strong>Coil Number</strong>.
+                    </div>
+                </div>
             </div>
             <div class="modal-footer bg-light">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -193,21 +281,13 @@ include 'header.php';
     </div>
 </div>
 
-<!-- Hidden form for scanner/manual entry submission -->
+<!-- Hidden scanner form -->
 <form id="scanForm" method="post" action="scan_mother_action.php" style="position:absolute; left:-9999px;">
     <input id="qrInput" type="text" name="qr" autofocus>
 </form>
 
-<?php
-// ============================================================
-// FIXED: Bootstrap JS removed from here.
-// header.php already loads Bootstrap — loading it twice causes
-// modal/dropdown conflicts and wastes bandwidth on every page load.
-// The script block below only contains page-specific logic.
-// ============================================================
-?>
 <script>
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', function () {
     const qrInput      = document.getElementById('qrInput');
     const scanForm     = document.getElementById('scanForm');
     const combinedInput = document.getElementById('combined_input');
@@ -215,79 +295,58 @@ document.addEventListener('DOMContentLoaded', function() {
     const feedback     = document.getElementById('validationFeedback');
     const manualModal  = document.getElementById('manualEntryModal');
 
-    // ===== SCANNER LOGIC =====
+    // ── Scanner focus ──
     if (qrInput) {
-        qrInput.addEventListener('keydown', function(e) {
+        qrInput.addEventListener('keydown', function (e) {
             if (e.key === 'Enter') {
                 e.preventDefault();
-                if (this.value.trim() !== '') {
-                    scanForm.submit();
-                }
+                if (this.value.trim() !== '') scanForm.submit();
             }
         });
 
-        document.addEventListener('click', function() {
-            if (!manualModal.classList.contains('show')) {
-                qrInput.focus();
-            }
+        document.addEventListener('click', function () {
+            if (!manualModal.classList.contains('show')) qrInput.focus();
         });
 
         setInterval(() => {
-            const el          = document.activeElement;
+            const el = document.activeElement;
             const isModalOpen = manualModal.classList.contains('show');
-            if (!isModalOpen && !['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(el.tagName)) {
+            if (!isModalOpen && !['INPUT','TEXTAREA','SELECT','BUTTON'].includes(el.tagName)) {
                 qrInput.focus();
             }
         }, 500);
     }
 
-    // ===== MANUAL ENTRY LOGIC =====
+    // ── Manual entry ──
     if (manualBtn) {
-        manualBtn.addEventListener('click', function() {
-            const rawValue = combinedInput.value.trim();
-
-            if (rawValue === '') {
+        manualBtn.addEventListener('click', function () {
+            const raw = combinedInput.value.trim();
+            if (raw === '') {
                 combinedInput.classList.add('is-invalid');
                 feedback.style.display = 'block';
                 return;
             }
-
-            const parts = rawValue.split(/\s+/);
-
+            const parts = raw.split(/\s+/);
             if (parts.length >= 2) {
-                const lotNo  = parts[0];
-                const coilNo = parts.slice(1).join(' ');
-
                 combinedInput.classList.remove('is-invalid');
                 feedback.style.display = 'none';
-
-                qrInput.value = `LOT=${lotNo};COIL=${coilNo}`;
-
-                const modalInstance = bootstrap.Modal.getInstance(manualModal);
-                if (modalInstance) {
-                    modalInstance.hide();
-                }
-
-                setTimeout(() => {
-                    scanForm.submit();
-                }, 300);
-
+                qrInput.value = `LOT=${parts[0]};COIL=${parts.slice(1).join(' ')}`;
+                const mi = bootstrap.Modal.getInstance(manualModal);
+                if (mi) mi.hide();
+                setTimeout(() => scanForm.submit(), 300);
             } else {
                 combinedInput.classList.add('is-invalid');
                 feedback.style.display = 'block';
             }
         });
 
-        combinedInput.addEventListener('input', function() {
+        combinedInput.addEventListener('input', function () {
             combinedInput.classList.remove('is-invalid');
             feedback.style.display = 'none';
         });
 
-        combinedInput.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                manualBtn.click();
-            }
+        combinedInput.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); manualBtn.click(); }
         });
     }
 });
