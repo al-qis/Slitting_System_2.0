@@ -8,21 +8,40 @@ if (!isset($_SESSION['role'])) {
 
 include 'config.php';
 
-// Get available stock (IN status only)
+// ============================================================
+// FIXED: Run the query ONCE, store result in memory using
+// fetch_all() so the result set can be iterated in the table
+// without running a second identical query.
+// ============================================================
 $available_query = "SELECT id, lot_no, coil_no, grade, width, length, status, source_type, date_in 
                     FROM stock_raw_material 
                     WHERE status='IN' 
                     ORDER BY date_in DESC";
+
 $available_result = $conn->query($available_query);
-$total_available = $available_result ? $available_result->num_rows : 0;
 
-// Summary totals
-$current_stock = $conn->query("SELECT COUNT(*) AS total FROM stock_raw_material WHERE status='IN'")
-                         ->fetch_assoc()['total'];
+// Guard: if query() fails it returns false, not a result object
+if ($available_result === false) {
+    $available_rows  = [];
+    $total_available = 0;
+} else {
+    // fetch_all() loads all rows into a PHP array at once.
+    // This frees the result object and lets us count + loop
+    // without running the query a second time.
+    $available_rows  = $available_result->fetch_all(MYSQLI_ASSOC);
+    $total_available = count($available_rows);
+    $available_result->free();
+}
+// ============================================================
 
-$afterCutStock = $conn->query("SELECT COUNT(*) AS total FROM stock_raw_material 
-                               WHERE status='IN' AND source_type='slitting_cut_into_2'")
-                               ->fetch_assoc()['total'];
+// Summary totals — these are simple COUNT queries with no user
+// input so query() is acceptable. Added error guards.
+$res_stock = $conn->query("SELECT COUNT(*) AS total FROM stock_raw_material WHERE status='IN'");
+$current_stock = $res_stock ? (int)$res_stock->fetch_assoc()['total'] : 0;
+
+$res_cut = $conn->query("SELECT COUNT(*) AS total FROM stock_raw_material 
+                         WHERE status='IN' AND source_type='slitting_cut_into_2'");
+$afterCutStock = $res_cut ? (int)$res_cut->fetch_assoc()['total'] : 0;
 
 $page_title = "Raw Material - Available Stock";
 include 'header.php'; 
@@ -49,7 +68,7 @@ include 'header.php';
         <div class="card border-0 shadow-sm bg-primary text-white">
             <div class="card-body p-2">
                 <h6 class="small mb-1">CURRENT AVAILABLE STOCK</h6>
-                <h4 class="fw-bold mb-0"><?= (int)$current_stock ?></h4>
+                <h4 class="fw-bold mb-0"><?= $current_stock ?></h4>
                 <small>Ready for Use</small>
             </div>
         </div>
@@ -58,7 +77,7 @@ include 'header.php';
         <div class="card border-0 shadow-sm bg-info text-white">
             <div class="card-body p-2">
                 <h6 class="small mb-1">MOTHER COILS</h6>
-                <h4 class="fw-bold mb-0"><?= (int)$current_stock - (int)$afterCutStock ?></h4>
+                <h4 class="fw-bold mb-0"><?= $current_stock - $afterCutStock ?></h4>
                 <small>In Stock</small>
             </div>
         </div>
@@ -67,7 +86,7 @@ include 'header.php';
         <div class="card border-0 shadow-sm bg-warning text-dark">
             <div class="card-body p-2">
                 <h6 class="small mb-1">BALANCE STOCK</h6>
-                <h4 class="fw-bold mb-0"><?= (int)$afterCutStock ?></h4>
+                <h4 class="fw-bold mb-0"><?= $afterCutStock ?></h4>
                 <small>Leftovers</small>
             </div>
         </div>
@@ -102,15 +121,17 @@ include 'header.php';
                 </tr>
             </thead>
             <tbody>
-                <?php 
-                if($total_available > 0):
-                    $available_result = $conn->query($available_query);
-                    while($stock = $available_result->fetch_assoc()): 
-                        $is_balance = ($stock['source_type'] == 'slitting_cut_into_2');
+                <?php if ($total_available > 0): ?>
+                    <?php foreach ($available_rows as $stock):
+                        // ============================================================
+                        // FIXED: Iterating over the pre-fetched PHP array instead of
+                        // re-running the database query a second time.
+                        // ============================================================
+                        $is_balance      = ($stock['source_type'] === 'slitting_cut_into_2');
                         $highlight_class = $is_balance ? 'table-warning' : '';
-                        $type_badge = $is_balance 
-                                    ? '<span class="badge bg-warning text-dark"><i class="bi bi-arrow-return-right"></i> Leftover</span>'
-                                    : '<span class="badge bg-info">Mother Coil</span>';
+                        $type_badge      = $is_balance
+                            ? '<span class="badge bg-warning text-dark"><i class="bi bi-arrow-return-right"></i> Leftover</span>'
+                            : '<span class="badge bg-info">Mother Coil</span>';
                     ?>
                     <tr class="<?= $highlight_class ?>">
                         <td>
@@ -132,10 +153,8 @@ include 'header.php';
                             <span class="badge bg-success">IN</span>
                         </td>
                     </tr>
-                <?php 
-                    endwhile;
-                else: 
-                ?>
+                    <?php endforeach; ?>
+                <?php else: ?>
                     <tr><td colspan="8" class="py-4 text-muted">No stock available for slitting.</td></tr>
                 <?php endif; ?>
             </tbody>
@@ -154,7 +173,7 @@ include 'header.php';
             <div class="modal-body">
                 <form id="manualEntryForm">
                     <div class="mb-3">
-                        <label class="form-label fw-bold">Enter Lot No & Coil No</label>
+                        <label class="form-label fw-bold">Enter Lot No &amp; Coil No</label>
                         <input type="text" class="form-control form-control-lg" id="combined_input" 
                                placeholder="e.g., 826175 FK-1" required autofocus>
                         <div id="validationFeedback" class="invalid-feedback" style="display:none;">
@@ -179,49 +198,55 @@ include 'header.php';
     <input id="qrInput" type="text" name="qr" autofocus>
 </form>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<?php
+// ============================================================
+// FIXED: Bootstrap JS removed from here.
+// header.php already loads Bootstrap — loading it twice causes
+// modal/dropdown conflicts and wastes bandwidth on every page load.
+// The script block below only contains page-specific logic.
+// ============================================================
+?>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-    const qrInput = document.getElementById('qrInput');
-    const scanForm = document.getElementById('scanForm');
+    const qrInput      = document.getElementById('qrInput');
+    const scanForm     = document.getElementById('scanForm');
     const combinedInput = document.getElementById('combined_input');
-    const manualBtn = document.getElementById('manualSubmitButton');
-    const feedback = document.getElementById('validationFeedback');
-    const manualModal = document.getElementById('manualEntryModal');
+    const manualBtn    = document.getElementById('manualSubmitButton');
+    const feedback     = document.getElementById('validationFeedback');
+    const manualModal  = document.getElementById('manualEntryModal');
 
     // ===== SCANNER LOGIC =====
-    if(qrInput) {
+    if (qrInput) {
         qrInput.addEventListener('keydown', function(e) {
-            if(e.key === 'Enter') {
+            if (e.key === 'Enter') {
                 e.preventDefault();
-                if(this.value.trim() !== '') {
+                if (this.value.trim() !== '') {
                     scanForm.submit();
                 }
             }
         });
 
         document.addEventListener('click', function() {
-            if(!manualModal.classList.contains('show')) {
+            if (!manualModal.classList.contains('show')) {
                 qrInput.focus();
             }
         });
 
         setInterval(() => {
-            const el = document.activeElement;
+            const el          = document.activeElement;
             const isModalOpen = manualModal.classList.contains('show');
-            
-            if(!isModalOpen && !['INPUT','TEXTAREA','SELECT','BUTTON'].includes(el.tagName)) {
+            if (!isModalOpen && !['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(el.tagName)) {
                 qrInput.focus();
             }
         }, 500);
     }
 
     // ===== MANUAL ENTRY LOGIC =====
-    if(manualBtn) {
+    if (manualBtn) {
         manualBtn.addEventListener('click', function() {
             const rawValue = combinedInput.value.trim();
-            
-            if(rawValue === '') {
+
+            if (rawValue === '') {
                 combinedInput.classList.add('is-invalid');
                 feedback.style.display = 'block';
                 return;
@@ -229,17 +254,17 @@ document.addEventListener('DOMContentLoaded', function() {
 
             const parts = rawValue.split(/\s+/);
 
-            if(parts.length >= 2) {
-                const lotNo = parts[0];
+            if (parts.length >= 2) {
+                const lotNo  = parts[0];
                 const coilNo = parts.slice(1).join(' ');
 
                 combinedInput.classList.remove('is-invalid');
                 feedback.style.display = 'none';
 
                 qrInput.value = `LOT=${lotNo};COIL=${coilNo}`;
-                
+
                 const modalInstance = bootstrap.Modal.getInstance(manualModal);
-                if(modalInstance) {
+                if (modalInstance) {
                     modalInstance.hide();
                 }
 
@@ -259,7 +284,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
 
         combinedInput.addEventListener('keydown', function(e) {
-            if(e.key === 'Enter') {
+            if (e.key === 'Enter') {
                 e.preventDefault();
                 manualBtn.click();
             }

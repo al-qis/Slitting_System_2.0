@@ -14,25 +14,91 @@ if (!in_array($_SESSION['role'], ['slitting', 'mkl3'], true)) {
 include 'config.php';
 
 // Get filter parameters
-$month = isset($_GET['month']) ? (int)$_GET['month'] : (int)date('m');
-$year  = isset($_GET['year'])  ? (int)$_GET['year']  : (int)date('Y');
+$month  = isset($_GET['month']) ? (int)$_GET['month'] : (int)date('m');
+$year   = isset($_GET['year'])  ? (int)$_GET['year']  : (int)date('Y');
 $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 
-if ($month < 1 || $month > 12) { $month = (int)date('m'); }
-if ($year < 2000 || $year > 2100) { $year = (int)date('Y'); }
+if ($month < 1 || $month > 12)   { $month = (int)date('m'); }
+if ($year < 2000 || $year > 2100) { $year  = (int)date('Y'); }
+
+// ============================================================
+// FIXED: Reusable helper — fully parameterized, no injection
+// ============================================================
+$runSfcQuery = function (
+    mysqli $conn,
+    string $table,
+    int    $month,
+    int    $year,
+    string $search
+): mysqli_result|false {
+
+    // Whitelist table names — never allow user input to select a table
+    $allowedTables = ['slitting_product', 'recoiling_product', 'reslit_product'];
+    if (!in_array($table, $allowedTables, true)) {
+        return false;
+    }
+
+    $sql = "SELECT id, product, lot_no, coil_no, roll_no, width, length,
+                   status, date_in, original_source
+            FROM {$table}
+            WHERE original_source = 'sfc'
+            AND (
+                (MONTH(date_in) = ? AND YEAR(date_in) = ?)
+                OR date_in IS NULL
+            )";
+
+    if ($search !== '') {
+        $sql .= " AND (
+                    product LIKE ? OR
+                    lot_no  LIKE ? OR
+                    coil_no LIKE ? OR
+                    id      LIKE ?
+                  )";
+    }
+
+    $sql .= " ORDER BY id DESC";
+
+    $stmt = $conn->prepare($sql);
+
+    if (!$stmt) {
+        return false;
+    }
+
+    if ($search !== '') {
+        $likeSearch = '%' . $search . '%';
+        $stmt->bind_param("iissss",
+            $month, $year,
+            $likeSearch,
+            $likeSearch,
+            $likeSearch,
+            $likeSearch
+        );
+    } else {
+        $stmt->bind_param("ii", $month, $year);
+    }
+
+    $stmt->execute();
+    return $stmt->get_result();
+};
+
+// Run all three queries using the safe helper
+$slittingResult  = $runSfcQuery($conn, 'slitting_product',  $month, $year, $search);
+$recoilingResult = $runSfcQuery($conn, 'recoiling_product', $month, $year, $search);
+$reslitResult    = $runSfcQuery($conn, 'reslit_product',    $month, $year, $search);
+// ============================================================
 
 $page_title = "SFC Tracking Report";
 include 'header.php';
 ?>
 
 <style>
-    .badge-sfc { background-color: #0066ff; }
-    .table-sfc-row { background-color: #e7f3ff; border-left: 4px solid #0066ff; }
-    table th { background-color: #003366; color: white; }
-    .stage-badge { padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; }
-    .stage-slitting { background-color: #dcefff; color: #003d82; }
-    .stage-recoiling { background-color: #fff4dcef; color: #8b5e00; }
-    .stage-reslit { background-color: #e8f5e9; color: #1b5e20; }
+    .badge-sfc       { background-color: #0066ff; }
+    .table-sfc-row   { background-color: #e7f3ff; border-left: 4px solid #0066ff; }
+    table th         { background-color: #003366; color: white; }
+    .stage-badge     { padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; }
+    .stage-slitting  { background-color: #dcefff; color: #003d82; }
+    .stage-recoiling { background-color: #fff4dc;  color: #8b5e00; }
+    .stage-reslit    { background-color: #e8f5e9; color: #1b5e20; }
 </style>
 
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -51,14 +117,14 @@ include 'header.php';
             <input type="hidden" name="search" value="<?= htmlspecialchars($search) ?>">
             <label class="small fw-bold">Month:</label>
             <select name="month" onchange="this.form.submit()" class="form-select form-select-sm w-auto">
-                <?php for($m=1;$m<=12;$m++): ?>
-                    <option value="<?= $m ?>" <?= ($m==$month)?'selected':'' ?>><?= date("F", mktime(0,0,0,$m,1)) ?></option>
+                <?php for ($m = 1; $m <= 12; $m++): ?>
+                    <option value="<?= $m ?>" <?= ($m == $month) ? 'selected' : '' ?>><?= date("F", mktime(0, 0, 0, $m, 1)) ?></option>
                 <?php endfor; ?>
             </select>
             <label class="small fw-bold">Year:</label>
             <select name="year" onchange="this.form.submit()" class="form-select form-select-sm w-auto">
-                <?php for($y=2024; $y<=2030; $y++): ?>
-                    <option value="<?= $y ?>" <?= ($y==$year)?'selected':'' ?>><?= $y ?></option>
+                <?php for ($y = 2024; $y <= 2030; $y++): ?>
+                    <option value="<?= $y ?>" <?= ($y == $year) ? 'selected' : '' ?>><?= $y ?></option>
                 <?php endfor; ?>
             </select>
         </form>
@@ -66,7 +132,7 @@ include 'header.php';
     <div class="col-md-4">
         <form method="get" class="input-group input-group-sm">
             <input type="hidden" name="month" value="<?= $month ?>">
-            <input type="hidden" name="year" value="<?= $year ?>">
+            <input type="hidden" name="year"  value="<?= $year ?>">
             <input type="text" name="search" class="form-control" placeholder="Search ID, Product, Lot, Coil..." value="<?= htmlspecialchars($search) ?>">
             <button class="btn btn-primary" type="submit"><i class="bi bi-search"></i></button>
             <?php if ($search !== ''): ?>
@@ -85,32 +151,13 @@ include 'header.php';
         <table class="table table-hover align-middle text-center mb-0">
             <thead class="table-light">
                 <tr>
-                    <th>ID</th>
-                    <th>Product</th>
-                    <th>Lot & Coil</th>
-                    <th>Roll No</th>
-                    <th>Width</th>
-                    <th>Length</th>
-                    <th>Status</th>
-                    <th>Date In</th>
-                    <th>Stage</th>
+                    <th>ID</th><th>Product</th><th>Lot &amp; Coil</th><th>Roll No</th>
+                    <th>Width</th><th>Length</th><th>Status</th><th>Date In</th><th>Stage</th>
                 </tr>
             </thead>
             <tbody>
-                <?php 
-                $slittingQuery = "SELECT id, product, lot_no, coil_no, roll_no, width, length, status, date_in, original_source 
-                                 FROM slitting_product 
-                                 WHERE original_source = 'sfc' AND (MONTH(date_in)=$month AND YEAR(date_in)=$year OR date_in IS NULL)";
-                if ($search !== '') {
-                    $slittingQuery .= " AND (product LIKE '%$search%' OR lot_no LIKE '%$search%' OR coil_no LIKE '%$search%' OR id LIKE '%$search%')";
-                }
-                $slittingQuery .= " ORDER BY id DESC";
-                
-                $slittingResult = $conn->query($slittingQuery);
-                
-                if ($slittingResult && $slittingResult->num_rows > 0):
-                    while ($row = $slittingResult->fetch_assoc()):
-                ?>
+                <?php if ($slittingResult && $slittingResult->num_rows > 0):
+                    while ($row = $slittingResult->fetch_assoc()): ?>
                 <tr class="table-sfc-row">
                     <td class="fw-bold"><?= $row['id'] ?></td>
                     <td><span class="badge badge-sfc"><?= htmlspecialchars($row['product']) ?></span></td>
@@ -139,32 +186,13 @@ include 'header.php';
         <table class="table table-hover align-middle text-center mb-0">
             <thead class="table-light">
                 <tr>
-                    <th>ID</th>
-                    <th>Product</th>
-                    <th>Lot & Coil</th>
-                    <th>Roll No</th>
-                    <th>Width</th>
-                    <th>Length</th>
-                    <th>Status</th>
-                    <th>Date In</th>
-                    <th>Stage</th>
+                    <th>ID</th><th>Product</th><th>Lot &amp; Coil</th><th>Roll No</th>
+                    <th>Width</th><th>Length</th><th>Status</th><th>Date In</th><th>Stage</th>
                 </tr>
             </thead>
             <tbody>
-                <?php 
-                $recoilingQuery = "SELECT id, product, lot_no, coil_no, roll_no, width, length, status, date_in, original_source 
-                                  FROM recoiling_product 
-                                  WHERE original_source = 'sfc' AND (MONTH(date_in)=$month AND YEAR(date_in)=$year OR date_in IS NULL)";
-                if ($search !== '') {
-                    $recoilingQuery .= " AND (product LIKE '%$search%' OR lot_no LIKE '%$search%' OR coil_no LIKE '%$search%' OR id LIKE '%$search%')";
-                }
-                $recoilingQuery .= " ORDER BY id DESC";
-                
-                $recoilingResult = $conn->query($recoilingQuery);
-                
-                if ($recoilingResult && $recoilingResult->num_rows > 0):
-                    while ($row = $recoilingResult->fetch_assoc()):
-                ?>
+                <?php if ($recoilingResult && $recoilingResult->num_rows > 0):
+                    while ($row = $recoilingResult->fetch_assoc()): ?>
                 <tr class="table-sfc-row">
                     <td class="fw-bold"><?= $row['id'] ?></td>
                     <td><span class="badge badge-sfc"><?= htmlspecialchars($row['product']) ?></span></td>
@@ -193,32 +221,13 @@ include 'header.php';
         <table class="table table-hover align-middle text-center mb-0">
             <thead class="table-light">
                 <tr>
-                    <th>ID</th>
-                    <th>Product</th>
-                    <th>Lot & Coil</th>
-                    <th>Roll No</th>
-                    <th>Width</th>
-                    <th>Length</th>
-                    <th>Status</th>
-                    <th>Date In</th>
-                    <th>Stage</th>
+                    <th>ID</th><th>Product</th><th>Lot &amp; Coil</th><th>Roll No</th>
+                    <th>Width</th><th>Length</th><th>Status</th><th>Date In</th><th>Stage</th>
                 </tr>
             </thead>
             <tbody>
-                <?php 
-                $reslitQuery = "SELECT id, product, lot_no, coil_no, roll_no, width, length, status, date_in, original_source 
-                               FROM reslit_product 
-                               WHERE original_source = 'sfc' AND (MONTH(date_in)=$month AND YEAR(date_in)=$year OR date_in IS NULL)";
-                if ($search !== '') {
-                    $reslitQuery .= " AND (product LIKE '%$search%' OR lot_no LIKE '%$search%' OR coil_no LIKE '%$search%' OR id LIKE '%$search%')";
-                }
-                $reslitQuery .= " ORDER BY id DESC";
-                
-                $reslitResult = $conn->query($reslitQuery);
-                
-                if ($reslitResult && $reslitResult->num_rows > 0):
-                    while ($row = $reslitResult->fetch_assoc()):
-                ?>
+                <?php if ($reslitResult && $reslitResult->num_rows > 0):
+                    while ($row = $reslitResult->fetch_assoc()): ?>
                 <tr class="table-sfc-row">
                     <td class="fw-bold"><?= $row['id'] ?></td>
                     <td><span class="badge badge-sfc"><?= htmlspecialchars($row['product']) ?></span></td>
@@ -245,7 +254,7 @@ include 'header.php';
             <div class="card-body text-center">
                 <h6 class="text-muted small mb-1">IN SLITTING</h6>
                 <h3 class="text-primary fw-bold">
-                    <?php 
+                    <?php
                     $slittingCount = $conn->query("SELECT COUNT(*) as cnt FROM slitting_product WHERE original_source='sfc'")->fetch_assoc()['cnt'];
                     echo (int)$slittingCount;
                     ?>
@@ -258,7 +267,7 @@ include 'header.php';
             <div class="card-body text-center">
                 <h6 class="text-muted small mb-1">IN RECOILING</h6>
                 <h3 class="text-warning fw-bold">
-                    <?php 
+                    <?php
                     $recoilingCount = $conn->query("SELECT COUNT(*) as cnt FROM recoiling_product WHERE original_source='sfc'")->fetch_assoc()['cnt'];
                     echo (int)$recoilingCount;
                     ?>
@@ -271,7 +280,7 @@ include 'header.php';
             <div class="card-body text-center">
                 <h6 class="text-muted small mb-1">IN RESLIT</h6>
                 <h3 class="text-success fw-bold">
-                    <?php 
+                    <?php
                     $reslitCount = $conn->query("SELECT COUNT(*) as cnt FROM reslit_product WHERE original_source='sfc'")->fetch_assoc()['cnt'];
                     echo (int)$reslitCount;
                     ?>

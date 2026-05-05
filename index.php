@@ -442,9 +442,6 @@ include 'header.php';
         <div class="kpi-icon"><i class="bi bi-box-seam-fill"></i></div>
         <div class="kpi-num"><?= (int)$stock_raw ?></div>
         <div class="kpi-lbl">Mother Coils in Stock</div>
-        <div class="kpi-sub">
-            MTD In: <strong><?= (int)$in_raw ?></strong> &nbsp;·&nbsp; MTD Out: <strong><?= (int)$out_raw ?></strong>
-        </div>
     </div>
 
     <div class="kpi-card" style="--kpi-color:var(--amber); --kpi-bg:var(--amber-bg);">
