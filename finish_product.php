@@ -281,7 +281,7 @@ include 'header.php';
         <thead class="table-dark">
             <tr>
                 <th>ID</th><th>Status</th><th>Origin</th><th>Product</th><th>Lot No</th><th>Roll No.</th>
-                <th>Width</th><th>Length</th><th>Actual</th><th>Date Out</th><th>Delivered</th><th>QR</th><th>Action</th>
+<th>Width</th><th>Length</th><th>Actual</th><th>Date In</th><th>Date Out</th><th>Delivered</th><th>Action</th>
             </tr>
         </thead>
         <tbody>
@@ -341,9 +341,10 @@ include 'header.php';
                 <td><?= $row['width'] ?></td>
                 <td><?= $row['length'] ?></td>
                 <td><?= $row['actual_length'] ?></td>
+                <td><?= $row['date_in'] ?></td>
                 <td><?= $row['date_out'] ?></td>
                 <td><?= $row['delivered_at'] ?></td>
-                <td><img src="generate_qr.php?id=<?= $row['id'] ?>&type=slitting" alt="QR"></td>
+                <!-- QR hidden but available: generate_qr.php?id=<?= $row['id'] ?>&type=slitting -->
                 <td>
     <?php if ($row['status'] == 'WAITING'): ?>
         <small><i>Waiting QC...</i></small>
