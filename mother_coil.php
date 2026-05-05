@@ -55,10 +55,6 @@ $success = $_GET['success'] ?? null;
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
 
-    if ($_SESSION['role'] === 'slitting' && $action !== 'add') {
-        die("Admin view-only. Not allowed to modify.");
-    }
-
     $id      = intval($_POST['id'] ?? 0);
     $lot_no  = trim($_POST['lot_no'] ?? '');
     $coil_no = trim($_POST['coil_no'] ?? '');
@@ -76,8 +72,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         die("Field missing");
     }
 
-    // === NEW: DUPLICATE CHECK LOGIC ===
-    // Check if another record already has this Coil No + Lot No combination
+    // === DUPLICATE CHECK LOGIC ===
     $check_sql = "SELECT id FROM mother_coil WHERE coil_no = ? AND lot_no = ? AND id != ?";
     $check_stmt = $conn->prepare($check_sql);
     $check_stmt->bind_param("ssi", $coil_no, $lot_no, $id);
@@ -85,7 +80,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $check_res = $check_stmt->get_result();
 
     if ($check_res->num_rows > 0) {
-        // Duplicate found! Stop and inform user
         die("<div style='color:red; font-family:sans-serif; padding:20px; border:1px solid red; background:#fff5f5;'>
                 <h2>Registration Failed</h2>
                 <p><strong>Duplicate Error:</strong> The combination of Coil: <b>$coil_no</b> and Lot: <b>$lot_no</b> already exists in the system.</p>
@@ -201,7 +195,7 @@ include 'header.php';
                         <img src="generate_qr.php?product=<?= urlencode($row['product'] ?? '') ?>&lot=<?= urlencode($row['lot_no'] ?? '') ?>&coil=<?= urlencode($row['coil_no'] ?? '') ?>&width=<?= urlencode($row['width'] ?? '') ?>&length=<?= urlencode($row['length'] ?? '') ?>&type=mother" width="70" alt="QR">
                     </td>
                     <td>
-                    <?php if ($_SESSION['role'] === 'mkl3'): ?>
+                    <?php if (in_array($_SESSION['role'], ['mkl3', 'slitting'], true)): ?>
                         <button type="button" class="btn btn-warning btn-sm me-1 editBtn"
                             data-id="<?= $id ?>"
                             data-product="<?= htmlspecialchars($row['product'] ?? '', ENT_QUOTES) ?>"
@@ -215,9 +209,9 @@ include 'header.php';
                         <a href="delete_mother.php?id=<?= $id ?>" class="btn btn-danger btn-sm" onclick="return confirm('Are you sure?')">Delete</a>
                         <a href="print_mother.php?id=<?= $id ?>" class="btn btn-info btn-sm" target="_blank">Print</a>
                         <a href="mother_coil_journal.php?id=<?= $id ?>" class="btn btn-info btn-sm">
-    <i class="bi bi-journal-text"></i> Journal
-</a>
-                        <?php else: ?>
+                            <i class="bi bi-journal-text"></i> Journal
+                        </a>
+                    <?php else: ?>
                         <span class="text-muted">View only</span>
                     <?php endif; ?>
                     </td>

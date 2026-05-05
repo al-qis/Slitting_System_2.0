@@ -295,6 +295,7 @@ include 'header.php';
         <?= htmlspecialchars($mother['product']) ?>
         &nbsp;|&nbsp; Grade: <strong><?= htmlspecialchars($mother['grade']) ?></strong>
         &nbsp;|&nbsp; Width: <strong><?= number_format((float)$mother['width']) ?> mm</strong>
+        &nbsp;|&nbsp; Original Length: <strong><?= number_format($input_length, 1) ?> m</strong>
     </div>
     <div class="d-flex flex-wrap gap-3 mt-4">
         <div class="stat-pill">
@@ -576,7 +577,7 @@ include 'header.php';
             <td><?= $sp['actual_length'] ? number_format((float)$sp['actual_length'], 1) : '—' ?></td>
             <td>
                 <?= match(strtoupper($sp['status'] ?? 'IN')) {
-                    'IN'        => '<span class="badge bg-info text-dark">IN</span>',
+                    'IN'        => '<span class="badge bg-info text-dark">STOCK</span>',
                     'WAITING'   => '<span class="badge bg-warning text-dark">WAITING</span>',
                     'APPROVED'  => '<span class="badge bg-primary">APPROVED</span>',
                     'DELIVERED' => '<span class="badge bg-success">DELIVERED</span>',
@@ -606,7 +607,7 @@ include 'header.php';
             <td><?= $ro['actual_length'] ? number_format((float)$ro['actual_length'], 1) : '—' ?></td>
             <td>
                 <?= match(strtoupper($ro['status'] ?? 'IN')) {
-                    'IN'        => '<span class="badge bg-info text-dark">IN</span>',
+                    'IN'        => '<span class="badge bg-info text-dark">STOCK</span>',
                     'WAITING'   => '<span class="badge bg-warning text-dark">WAITING</span>',
                     'APPROVED'  => '<span class="badge bg-primary">APPROVED</span>',
                     'DELIVERED' => '<span class="badge bg-success">DELIVERED</span>',
@@ -620,18 +621,6 @@ include 'header.php';
 
         <?php endforeach; ?>
         </tbody>
-        <tfoot class="table-light">
-            <tr>
-                <td colspan="6" class="text-end fw-bold">Total Actual Output (all stages):</td>
-                <td class="fw-bold text-success"><?= number_format($grandTotal, 1) ?> m</td>
-                <td colspan="2"></td>
-            </tr>
-            <tr>
-                <td colspan="6" class="text-end fw-bold">Input Length:</td>
-                <td class="fw-bold"><?= number_format($input_length, 1) ?> m</td>
-                <td colspan="2"></td>
-            </tr>
-        </tfoot>
     </table>
 </div>
 <?php endif; ?>
