@@ -29,7 +29,7 @@ if (
         exit;
     }
 
-    // 1. Get original product data (Now includes original_source)
+    // 1. Get original product data
     $stmt = $conn->prepare("SELECT * FROM recoiling_product WHERE id = ? LIMIT 1");
     $stmt->bind_param("i", $id);
     $stmt->execute();
@@ -46,46 +46,71 @@ if (
         exit;
     }
 
+    // ── PRE-FLIGHT: Check for duplicate lot_no before touching DB ──────────────
+    $duplicateLots = [];
+    for ($i = 0; $i < $total_rolls; $i++) {
+        $letter      = trim($_POST['letter'][$i] ?? '');
+        $new_lot_no  = $original['lot_no'] . ($letter !== '' ? $letter : '');
+
+        $chk = $conn->prepare("SELECT COUNT(*) AS cnt FROM slitting_product WHERE lot_no = ?");
+        $chk->bind_param("s", $new_lot_no);
+        $chk->execute();
+        $cnt = (int)($chk->get_result()->fetch_assoc()['cnt'] ?? 0);
+        $chk->close();
+
+        if ($cnt > 0) {
+            $duplicateLots[] = $new_lot_no;
+        }
+    }
+
+    if (!empty($duplicateLots)) {
+        $dupList = implode(', ', array_unique($duplicateLots));
+        header("Location: recoiling.php?error=duplicate_lot&lots=" . urlencode($dupList) . "&open_id=$id");
+        exit;
+    }
+    // ───────────────────────────────────────────────────────────────────────────
+
     $conn->begin_transaction();
 
     try {
         $total_actual_length = 0.0;
-        $summary_width = 0.0;
-        $all_remarks = [];
+        $summary_width       = 0.0;
+        $all_remarks         = [];
 
         for ($i = 0; $i < $total_rolls; $i++) {
 
-            $new_width     = floatval($_POST['new_width'][$i] ?? 0);
-            $length        = floatval($_POST['length'][$i] ?? 0);
-            $defect        = floatval($_POST['defect'][$i] ?? 0);
+            $new_width     = floatval($_POST['new_width'][$i]     ?? 0);
+            $length        = floatval($_POST['length'][$i]        ?? 0);
+            $defect        = floatval($_POST['defect'][$i]        ?? 0);
             $actual_length = floatval($_POST['actual_length'][$i] ?? 0);
-            $remark        = trim($_POST['remark'][$i] ?? '');
-            $roll_number   = intval($_POST['roll_number'][$i] ?? 1);
-            $letter        = trim($_POST['letter'][$i] ?? ''); 
+            $remark        = trim($_POST['remark'][$i]            ?? '');
+            $roll_number   = intval($_POST['roll_number'][$i]     ?? 1);
+            $letter        = trim($_POST['letter'][$i]            ?? '');
 
             $new_roll_no = 'R' . $roll_number;
             $new_lot_no  = $original['lot_no'] . ($letter !== '' ? $letter : '');
-            
+
             // Build Remark
             if (!empty($remark) || $defect > 0 || $letter !== '') {
-                $r = "{$new_lot_no} {$original['coil_no']} / {$new_roll_no} : ";
+                $r  = "{$new_lot_no} {$original['coil_no']} / {$new_roll_no} : ";
                 $r .= ($defect > 0) ? "Defect {$defect}m" : "";
                 if (!empty($remark)) $r .= ($defect > 0 ? " - " : "") . $remark;
                 $all_remarks[] = $r;
             }
 
-            $mother_id_val = (!empty($original['mother_id']) && $original['mother_id'] != 0) ? $original['mother_id'] : NULL;
+            $mother_id_val = (!empty($original['mother_id']) && $original['mother_id'] != 0)
+                ? $original['mother_id']
+                : NULL;
 
-            // 2. Insert into slitting_product with original_source maintained
+            // 2. Insert into slitting_product
             $insert_stmt = $conn->prepare("
                 INSERT INTO slitting_product
                 (recoiling_id, mother_id, product, lot_no, coil_no, roll_no, width, length, actual_length, status, is_completed, stock_counted, original_source, source, date_in)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, ?, 'recoiling', NOW())
             ");
 
-            // We pass $original['original_source'] directly into the new product
             $insert_stmt->bind_param(
-                "iissssddds", 
+                "iissssddds",
                 $id,
                 $mother_id_val,
                 $original['product'],
@@ -95,7 +120,7 @@ if (
                 $new_width,
                 $length,
                 $actual_length,
-                $original['original_source'] // THIS IS THE FIX
+                $original['original_source']
             );
 
             if (!$insert_stmt->execute()) {
@@ -112,12 +137,12 @@ if (
         // 3. Update recoiling_product status
         $update_stmt = $conn->prepare("
             UPDATE recoiling_product
-            SET status = 'completed',
+            SET status       = 'completed',
                 completed_at = NOW(),
-                started_at = NOW(),
-                new_width = ?,
-                new_length = ?,
-                remark = ?
+                started_at   = NOW(),
+                new_width    = ?,
+                new_length   = ?,
+                remark       = ?
             WHERE id = ?
         ");
 

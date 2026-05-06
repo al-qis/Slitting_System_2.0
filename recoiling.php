@@ -70,6 +70,41 @@ if ($result && $result->num_rows > 0) {
     }
 }
 
+// ── Read query-string alerts ──────────────────────────────────────────────────
+$alertType    = '';
+$alertMessage = '';
+
+if (isset($_GET['error'])) {
+    $alertType = 'danger';
+    switch ($_GET['error']) {
+        case 'duplicate_lot':
+            $lots         = htmlspecialchars(urldecode($_GET['lots'] ?? ''), ENT_QUOTES, 'UTF-8');
+            $alertMessage = "<strong>Duplicate Lot No. Detected!</strong> The following lot number(s) already exist in the system: <strong>{$lots}</strong>.<br>Please select an alphabet (a, b, c…) in the <em>Letter</em> field to make each lot number unique and avoid duplicates.";
+            break;
+        case 'already_completed':
+            $alertMessage = "This recoiling record has already been completed.";
+            break;
+        case 'process_failed':
+            $msg          = htmlspecialchars(urldecode($_GET['msg'] ?? ''), ENT_QUOTES, 'UTF-8');
+            $alertMessage = "Process failed: {$msg}";
+            break;
+        case 'invalid_id':
+            $alertMessage = "Invalid record ID.";
+            break;
+        case 'not_found':
+            $alertMessage = "Record not found.";
+            break;
+        default:
+            $alertMessage = "An unknown error occurred.";
+    }
+} elseif (isset($_GET['success'])) {
+    $alertType    = 'success';
+    $alertMessage = "<strong>Recoiling completed successfully!</strong> The product has been saved.";
+}
+
+// ID to auto-reopen modal (used after duplicate_lot redirect)
+$reopenId = isset($_GET['open_id']) ? (int)$_GET['open_id'] : 0;
+
 $page_title = "Recoiling Cut";
 include 'header.php';
 ?>
@@ -82,7 +117,16 @@ include 'header.php';
     .roll-box      { border:1px solid #ddd; padding:15px; border-radius:8px; margin-bottom:15px; background:#f9f9f9; }
     .defect-input  { border:2px solid #dc3545; }
     .info-box      { background: #f8f9fa; border-left: 5px solid #0d6efd; padding: 15px; border-radius: 4px; }
+    .duplicate-alert { border-left: 5px solid #dc3545; }
 </style>
+
+<?php if ($alertMessage): ?>
+<div class="alert alert-<?= $alertType ?> alert-dismissible fade show duplicate-alert mb-4" role="alert" id="mainAlert">
+    <i class="bi bi-<?= $alertType === 'danger' ? 'exclamation-triangle-fill' : 'check-circle-fill' ?> me-2"></i>
+    <?= $alertMessage ?>
+    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+<?php endif; ?>
 
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-arrow-repeat"></i> Recoiling Cut</h2>
@@ -123,7 +167,7 @@ include 'header.php';
                         $canRecoil = ($status === 'pending' || $status === 'sfc');
                         $kids      = ($source === 'recoiling_product') ? ($children[$rid] ?? []) : [];
                     ?>
-                    <tr>
+                    <tr <?= ($rid === $reopenId) ? 'id="reopen-row"' : '' ?>>
                         <td><strong><?= $rid ?></strong></td>
                         <td>
                             <span class="badge <?= $status === 'completed' ? 'bg-success' : ($status === 'sfc' ? 'bg-info' : 'bg-warning text-dark') ?>">
@@ -205,6 +249,19 @@ include 'header.php';
 
                 <div class="modal-body">
 
+                    <!-- Duplicate lot warning (shown only when redirected back) -->
+                    <?php if (!empty($alertMessage) && $alertType === 'danger' && $reopenId > 0): ?>
+                    <div class="alert alert-danger border-start border-danger border-4 mb-4" role="alert">
+                        <div class="d-flex align-items-start gap-2">
+                            <i class="bi bi-exclamation-triangle-fill fs-5 mt-1 flex-shrink-0"></i>
+                            <div>
+                                <strong>Duplicate Lot No. Detected</strong><br>
+                                <?= $alertMessage ?>
+                            </div>
+                        </div>
+                    </div>
+                    <?php endif; ?>
+
                     <!-- Info box -->
                     <div class="info-box mb-4">
                         <div class="row g-2">
@@ -277,47 +334,16 @@ include 'header.php';
 <script>
 let productData = {};
 
-// ── Init after DOM ready ──────────────────────────────────────
+// ── Re-open modal automatically after duplicate redirect ──────────────────────
+const reopenId = <?= $reopenId ?>;
+
 document.addEventListener('DOMContentLoaded', function () {
 
     // Wire Recoil buttons via delegation
     document.body.addEventListener('click', function (e) {
         const btn = e.target.closest('.btn-recoil');
         if (!btn) return;
-
-        productData = {
-            rid    : parseInt(btn.dataset.rid),
-            product: btn.dataset.product || '',
-            lot_no : btn.dataset.lot    || '',
-            coil_no: btn.dataset.coil   || '',
-            roll_no: btn.dataset.roll   || '',
-            width  : parseFloat(btn.dataset.width)  || 0,
-            length : parseFloat(btn.dataset.length) || 0,
-            source : btn.dataset.source || ''
-        };
-
-        // Populate hidden fields
-        document.getElementById('recoil_id').value           = productData.rid;
-        document.getElementById('recoil_source_table').value = productData.source;
-
-        // Populate info panel
-        document.getElementById('modal_product').textContent = productData.product;
-        document.getElementById('modal_lot').textContent     = productData.lot_no + ' ' + productData.coil_no;
-        document.getElementById('modal_roll').textContent    = productData.roll_no;
-        document.getElementById('modal_width').textContent   = productData.width;
-        document.getElementById('modal_length').textContent  = productData.length;
-
-        // Reset form
-        document.getElementById('cutNormal').checked        = false;
-        document.getElementById('cutInto2').checked         = false;
-        document.getElementById('rollsContainer').innerHTML = '';
-        document.getElementById('rollDetailsForm').style.display = 'none';
-        document.getElementById('submitBtn').style.display       = 'none';
-
-        // Show modal
-        var modalEl = document.getElementById('recoilingModal');
-        var modal   = bootstrap.Modal.getOrCreateInstance(modalEl);
-        modal.show();
+        openRecoilModal(btn);
     });
 
     // Confirm on submit
@@ -327,7 +353,57 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 
+    // Auto-reopen modal if we were redirected back due to a duplicate
+    if (reopenId > 0) {
+        const targetBtn = document.querySelector(`.btn-recoil[data-rid="${reopenId}"]`);
+        if (targetBtn) {
+            // Scroll to the row so the user sees context
+            const row = document.getElementById('reopen-row');
+            if (row) row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+            // Small delay so the page settles before popping the modal
+            setTimeout(() => openRecoilModal(targetBtn), 400);
+        }
+    }
+
 });
+
+// ── Open & populate modal ─────────────────────────────────────────────────────
+function openRecoilModal(btn) {
+    productData = {
+        rid    : parseInt(btn.dataset.rid),
+        product: btn.dataset.product || '',
+        lot_no : btn.dataset.lot    || '',
+        coil_no: btn.dataset.coil   || '',
+        roll_no: btn.dataset.roll   || '',
+        width  : parseFloat(btn.dataset.width)  || 0,
+        length : parseFloat(btn.dataset.length) || 0,
+        source : btn.dataset.source || ''
+    };
+
+    // Populate hidden fields
+    document.getElementById('recoil_id').value           = productData.rid;
+    document.getElementById('recoil_source_table').value = productData.source;
+
+    // Populate info panel
+    document.getElementById('modal_product').textContent = productData.product;
+    document.getElementById('modal_lot').textContent     = productData.lot_no + ' ' + productData.coil_no;
+    document.getElementById('modal_roll').textContent    = productData.roll_no || '-';
+    document.getElementById('modal_width').textContent   = productData.width;
+    document.getElementById('modal_length').textContent  = productData.length;
+
+    // Reset cut-type & roll form (only if NOT reopening after error — keep state)
+    if (reopenId === 0 || productData.rid !== reopenId) {
+        document.getElementById('cutNormal').checked        = false;
+        document.getElementById('cutInto2').checked         = false;
+        document.getElementById('rollsContainer').innerHTML = '';
+        document.getElementById('rollDetailsForm').style.display = 'none';
+        document.getElementById('submitBtn').style.display       = 'none';
+    }
+
+    var modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('recoilingModal'));
+    modal.show();
+}
 
 // ── Cut type toggle ───────────────────────────────────────────
 function handleCutTypeChange() {
@@ -365,8 +441,16 @@ function buildNormalForm() {
         <input type="hidden" name="length[]"      value="${productData.length}">
         <div class="row g-3">
             <div class="col-md-4">
-                <label class="form-label fw-bold">Letter</label>
-                <select class="form-select" name="letter[]">${letterOptionsHTML()}</select>
+                <label class="form-label fw-bold">
+                    Letter
+                    <span class="text-danger ms-1" title="Required if lot no. already exists">*</span>
+                </label>
+                <select class="form-select" name="letter[]" id="normalLetter">
+                    ${letterOptionsHTML()}
+                </select>
+                <div class="form-text text-danger d-none" id="normalLetterHint">
+                    <i class="bi bi-exclamation-circle"></i> Add a letter — this lot no. may already exist.
+                </div>
             </div>
             <div class="col-md-4">
                 <label class="form-label fw-bold">Defect (m)</label>
@@ -395,6 +479,12 @@ function buildNormalForm() {
                 actEl.value = (calc >= 0 ? calc : 0).toFixed(2);
             });
         }
+
+        // Show hint if reopened due to duplicate
+        if (reopenId > 0 && productData.rid === reopenId) {
+            const hint = div.querySelector('#normalLetterHint');
+            if (hint) hint.classList.remove('d-none');
+        }
     }, 30);
 
     return div;
@@ -411,7 +501,10 @@ function buildCutInto2FormA() {
         <input type="hidden" name="length[]"      value="${productData.length}">
         <div class="row g-3">
             <div class="col-md-4">
-                <label class="small fw-bold">Letter</label>
+                <label class="small fw-bold">
+                    Letter
+                    <span class="text-danger ms-1" title="Required if lot no. already exists">*</span>
+                </label>
                 <select class="form-select form-select-sm" name="letter[]">${letterOptionsHTML()}</select>
             </div>
             <div class="col-md-4">
@@ -455,7 +548,10 @@ function buildCutInto2FormB() {
         <input type="hidden" name="remark[]"      value="">
         <div class="row g-3">
             <div class="col-md-4">
-                <label class="small fw-bold">Letter</label>
+                <label class="small fw-bold">
+                    Letter
+                    <span class="text-danger ms-1" title="Required if lot no. already exists">*</span>
+                </label>
                 <select class="form-select form-select-sm" name="letter[]">${letterOptionsHTML()}</select>
             </div>
             <div class="col-md-8">

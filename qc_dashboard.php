@@ -7,7 +7,7 @@ if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'qc') {
     exit;
 }
 
-$query  = "SELECT id, date_in, coil_no, product, width, length, actual_length
+$query  = "SELECT id, date_in, coil_no, lot_no, product, width, length, actual_length, roll_no
            FROM slitting_product
            WHERE status = 'WAITING'
            ORDER BY date_in DESC";
@@ -48,6 +48,25 @@ if ($result === false) {
             font-size: 0.85rem;
             letter-spacing: 0.05em;
             color: #6c757d;
+        }
+        .coil-ref .lot {
+            font-weight: 700;
+            font-size: 0.9rem;
+            color: #212529;
+        }
+        .coil-ref .coil {
+            font-size: 0.85rem;
+            color: #495057;
+        }
+        .coil-ref .roll-badge {
+            font-size: 0.7rem;
+            background-color: #e9ecef;
+            color: #495057;
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+            padding: 1px 6px;
+            display: inline-block;
+            margin-top: 2px;
         }
     </style>
 </head>
@@ -104,7 +123,7 @@ if ($result === false) {
                 <thead>
                     <tr>
                         <th class="ps-4">Production Date</th>
-                        <th>Coil Number</th>
+                        <th>Lot No.</th>
                         <th>Product Type</th>
                         <th>Dimensions (W x L)</th>
                         <th>Status</th>
@@ -126,9 +145,20 @@ if ($result === false) {
                                 </td>
 
                                 <td>
-                                    <span class="badge bg-light text-dark border fw-bold">
-                                        <?= htmlspecialchars($row['coil_no'] ?? '-', ENT_QUOTES, 'UTF-8') ?>
-                                    </span>
+                                    <div class="coil-ref">
+                                        <div class="lot">
+                                            <?= htmlspecialchars($row['lot_no'] ?? '-', ENT_QUOTES, 'UTF-8') ?>
+                                            <span class="coil ms-1">
+                                                <?= htmlspecialchars($row['coil_no'] ?? '-', ENT_QUOTES, 'UTF-8') ?>
+                                            </span>
+                                        </div>
+                                        <?php if (!empty($row['roll_no'])): ?>
+                                            <span class="roll-badge">
+                                                <i class="bi bi-record-circle" style="font-size:0.65rem;"></i>
+                                                <?= htmlspecialchars($row['roll_no'], ENT_QUOTES, 'UTF-8') ?>
+                                            </span>
+                                        <?php endif; ?>
+                                    </div>
                                 </td>
 
                                 <td>
@@ -184,7 +214,11 @@ if ($result === false) {
                                             <form method="POST" action="qc_process.php" class="modal-content">
                                                 <div class="modal-header bg-danger text-white">
                                                     <h5 class="modal-title">
-                                                        Reject: <?= htmlspecialchars($row['coil_no'] ?? '-', ENT_QUOTES, 'UTF-8') ?>
+                                                        Reject:
+                                                        <?= htmlspecialchars(($row['lot_no'] ?? '-') . ' ' . ($row['coil_no'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
+                                                        <?php if (!empty($row['roll_no'])): ?>
+                                                            <?= htmlspecialchars($row['roll_no'], ENT_QUOTES, 'UTF-8') ?>
+                                                        <?php endif; ?>
                                                     </h5>
                                                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                                                 </div>

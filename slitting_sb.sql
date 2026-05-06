@@ -361,6 +361,37 @@ SET @saved_cs_client     = @@character_set_client;
 SET character_set_client = @saved_cs_client;
 
 --
+-- Table structure for table `slitting_audit_log`
+--
+
+DROP TABLE IF EXISTS `slitting_audit_log`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `slitting_audit_log` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `mother_id` int NOT NULL,
+  `action` varchar(50) NOT NULL COMMENT 'send_to_sfc, send_to_finished, etc',
+  `roll_no` varchar(20) NOT NULL,
+  `destination` varchar(50) NOT NULL COMMENT 'sfc_stock, slitting_product, etc',
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_mother_id` (`mother_id`),
+  KEY `idx_action` (`action`),
+  KEY `idx_created_at` (`created_at`),
+  CONSTRAINT `slitting_audit_log_ibfk_1` FOREIGN KEY (`mother_id`) REFERENCES `mother_coil` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `slitting_audit_log`
+--
+
+LOCK TABLES `slitting_audit_log` WRITE;
+/*!40000 ALTER TABLE `slitting_audit_log` DISABLE KEYS */;
+/*!40000 ALTER TABLE `slitting_audit_log` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
 -- Table structure for table `slitting_product`
 --
 
@@ -381,7 +412,7 @@ CREATE TABLE `slitting_product` (
   `qc_comment` text,
   `is_completed` tinyint(1) DEFAULT '0',
   `stock_counted` tinyint(1) DEFAULT '0',
-  `date_in` date NOT NULL DEFAULT (curdate()),
+  `date_in` datetime DEFAULT NULL,
   `date_out` datetime DEFAULT NULL,
   `delivered_at` datetime DEFAULT NULL,
   `mother_id` int DEFAULT NULL,
@@ -627,4 +658,4 @@ UNLOCK TABLES;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2026-04-30 15:34:20
+-- Dump completed on 2026-05-06  9:56:27
