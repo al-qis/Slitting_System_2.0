@@ -1,7 +1,6 @@
 <?php
 session_start();
 
-// 1. Authentication & Role Check
 if (!isset($_SESSION['role'])) {
     header("Location: login.php");
     exit;
@@ -13,10 +12,10 @@ if (!in_array($_SESSION['role'], ['slitting','mkl3'], true)) {
 
 include 'config.php';
 
-// 2. Handle Action (Post Submission)
+// ── Handle Action ────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_POST['action'])) {
-    $sfcId = (int)$_POST['sfc_id'];
-    $action = $_POST['action']; 
+    $sfcId  = (int)$_POST['sfc_id'];
+    $action = $_POST['action'];
 
     $stmt = $conn->prepare("SELECT * FROM sfc WHERE sfc_id = ? AND date_out IS NULL");
     $stmt->bind_param("i", $sfcId);
@@ -30,46 +29,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
             $original_source = 'sfc';
 
             if ($action === 'RECOIL') {
-                $stmt = $conn->prepare("INSERT INTO recoiling_product (product, lot_no, coil_no, roll_no, width, length, status, date_in, original_source) VALUES (?, ?, ?, ?, ?, ?, 'pending', NOW(), ?)");
-                $stmt->bind_param("ssssdds", 
-                        $sfc['product'],
-                        $sfc['lot_no'], 
-                        $sfc['coil_no'],
-                        $sfc['roll_no'],
-                        $sfc['width'], 
-                        $sfc['length'],
-                        $original_source
-                );
+                $stmt = $conn->prepare("INSERT INTO recoiling_product
+                    (product, lot_no, coil_no, roll_no, width, length, status, date_in, original_source)
+                    VALUES (?, ?, ?, ?, ?, ?, 'pending', NOW(), ?)");
+                $stmt->bind_param("ssssdds",
+                    $sfc['product'], $sfc['lot_no'], $sfc['coil_no'],
+                    $sfc['roll_no'], $sfc['width'],  $sfc['length'], $original_source);
                 $stmt->execute();
                 $stmt->close();
                 log_source_tracking($conn, 0, 'recoiling_product', $original_source, 'sfc', 'RECOIL_FROM_SFC');
 
             } elseif ($action === 'RESLIT') {
-                $stmt = $conn->prepare("INSERT INTO reslit_product (product, lot_no, coil_no, roll_no, width, length, status, date_in, original_source) VALUES (?, ?, ?, ?, ?, ?, 'pending', NOW(), ?)");
-                $stmt->bind_param("ssssdds", 
-                        $sfc['product'], 
-                        $sfc['lot_no'], 
-                        $sfc['coil_no'],
-                        $sfc['roll_no'],
-                        $sfc['width'], 
-                        $sfc['length'],
-                        $original_source
-                );
+                $stmt = $conn->prepare("INSERT INTO reslit_product
+                    (product, lot_no, coil_no, roll_no, width, length, status, date_in, original_source)
+                    VALUES (?, ?, ?, ?, ?, ?, 'pending', NOW(), ?)");
+                $stmt->bind_param("ssssdds",
+                    $sfc['product'], $sfc['lot_no'], $sfc['coil_no'],
+                    $sfc['roll_no'], $sfc['width'],  $sfc['length'], $original_source);
                 $stmt->execute();
                 $stmt->close();
                 log_source_tracking($conn, 0, 'reslit_product', $original_source, 'sfc', 'RESLIT_FROM_SFC');
 
             } elseif ($action === 'SELL') {
-                $stmt = $conn->prepare("INSERT INTO slitting_product (product, lot_no, coil_no, roll_no, width, length, status, date_in, date_out, cut_type, source, original_source) VALUES (?, ?, ?, ?, ?, ?, 'WAITING', NOW(), NOW(), 'sfc_sell', 'sfc', ?)");
-                $stmt->bind_param("ssssdds", 
-                        $sfc['product'], 
-                        $sfc['lot_no'], 
-                        $sfc['coil_no'],
-                        $sfc['roll_no'],
-                        $sfc['width'], 
-                        $sfc['length'],
-                        $original_source
-                );
+                $stmt = $conn->prepare("INSERT INTO slitting_product
+                    (product, lot_no, coil_no, roll_no, width, length,
+                     status, date_in, date_out, cut_type, source, original_source)
+                    VALUES (?, ?, ?, ?, ?, ?, 'WAITING', NOW(), NOW(), 'sfc_sell', 'sfc', ?)");
+                $stmt->bind_param("ssssdds",
+                    $sfc['product'], $sfc['lot_no'], $sfc['coil_no'],
+                    $sfc['roll_no'], $sfc['width'],  $sfc['length'], $original_source);
                 $stmt->execute();
                 $stmt->close();
                 log_source_tracking($conn, 0, 'slitting_product', $original_source, 'sfc', 'SELL_FROM_SFC');
@@ -81,7 +69,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
             $updateStmt->close();
 
             $conn->commit();
-            
+
             if ($action === 'SELL') {
                 header("Location: finish_product.php?success=1&msg=sfc_sold");
             } else {
@@ -97,10 +85,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
     }
 }
 
-// 3. Handle PIN verify via AJAX
+// ── PIN verify via AJAX ──────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['verify_pin'])) {
-    $enteredPin = trim($_POST['verify_pin']);
-    // ── Set your supervisor PIN here ──
+    $enteredPin    = trim($_POST['verify_pin']);
     $supervisorPin = '1234';
     header('Content-Type: application/json');
     echo json_encode(['success' => ($enteredPin === $supervisorPin)]);
@@ -108,34 +95,151 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['verify_pin'])) {
 }
 
 function log_source_tracking($conn, $product_id, $table_name, $original_source, $current_source, $action) {
-    $stmt = $conn->prepare("INSERT INTO source_tracking_log (product_id, table_name, original_source, current_source, action) VALUES (?, ?, ?, ?, ?)");
+    $stmt = $conn->prepare("INSERT INTO source_tracking_log
+        (product_id, table_name, original_source, current_source, action)
+        VALUES (?, ?, ?, ?, ?)");
     $stmt->bind_param("issss", $product_id, $table_name, $original_source, $current_source, $action);
     $stmt->execute();
     $stmt->close();
 }
 
+// ── Helper: get output rolls produced FROM a SFC item ────────
+// Checks slitting_product, reslit_product, recoiling_product
+// matching by lot_no + coil_no + roll_no (the SFC roll that was sent)
+function getSfcOutputs(mysqli $conn, array $sfc): array {
+    $lot  = $conn->real_escape_string($sfc['lot_no']  ?? '');
+    $coil = $conn->real_escape_string($sfc['coil_no'] ?? '');
+    $roll = $conn->real_escape_string($sfc['roll_no'] ?? '');
+    $out  = [];
+
+    // 1. Reslit outputs — find reslit_product matching this SFC's lot/coil/roll
+    //    then get all reslit_rolls from that parent
+    $rp = $conn->query("
+        SELECT rp.id, rp.status, rp.lot_no, rp.coil_no, rp.roll_no
+        FROM reslit_product rp
+        WHERE rp.lot_no='$lot' AND rp.coil_no='$coil' AND rp.roll_no='$roll'
+          AND rp.original_source='sfc'
+        ORDER BY rp.id DESC LIMIT 1
+    ")->fetch_assoc();
+
+    if ($rp) {
+        $rpId    = intval($rp['id']);
+        $rr_res  = $conn->query("
+            SELECT rr.*, rp.lot_no AS parent_lot, rp.coil_no AS parent_coil
+            FROM reslit_rolls rr
+            JOIN reslit_product rp ON rp.id = rr.parent_id
+            WHERE rr.parent_id = $rpId
+            ORDER BY rr.id ASC
+        ");
+        $rolls = [];
+        if ($rr_res) while ($r = $rr_res->fetch_assoc()) $rolls[] = $r;
+
+        $out[] = [
+            'process'    => 'RESLIT',
+            'parent_id'  => $rpId,
+            'status'     => $rp['status'],
+            'rolls'      => $rolls,
+        ];
+    }
+
+    // 2. Recoiling outputs — find recoiling_product, then slitting_product outputs
+    $rcp = $conn->query("
+        SELECT rcp.id, rcp.status, rcp.lot_no, rcp.coil_no, rcp.roll_no
+        FROM recoiling_product rcp
+        WHERE rcp.lot_no='$lot' AND rcp.coil_no='$coil' AND rcp.roll_no='$roll'
+          AND rcp.original_source='sfc'
+        ORDER BY rcp.id DESC LIMIT 1
+    ")->fetch_assoc();
+
+    if ($rcp) {
+        $rcpId    = intval($rcp['id']);
+        $sp_res   = $conn->query("
+            SELECT id, lot_no, coil_no, roll_no, width, actual_length, length, status
+            FROM slitting_product
+            WHERE recoiling_id = $rcpId
+            ORDER BY id ASC
+        ");
+        $rolls = [];
+        if ($sp_res) while ($r = $sp_res->fetch_assoc()) $rolls[] = $r;
+
+        $out[] = [
+            'process'   => 'RECOIL',
+            'parent_id' => $rcpId,
+            'status'    => $rcp['status'],
+            'rolls'     => $rolls,
+        ];
+    }
+
+    // 3. Direct SELL to slitting_product (action=SELL)
+    $sp_res = $conn->query("
+        SELECT id, lot_no, coil_no, roll_no, width, actual_length, length, status
+        FROM slitting_product
+        WHERE lot_no='$lot' AND coil_no='$coil' AND roll_no='$roll'
+          AND source='sfc' AND original_source='sfc'
+        ORDER BY id DESC LIMIT 1
+    ")->fetch_assoc();
+
+    if ($sp_res) {
+        $out[] = [
+            'process'   => 'SELL',
+            'parent_id' => $sp_res['id'],
+            'status'    => $sp_res['status'],
+            'rolls'     => [$sp_res],
+        ];
+    }
+
+    return $out;
+}
+
+// ── Search / fetch SFC rows ──────────────────────────────────
 $search = isset($_GET['search']) ? trim($_GET['search']) : '';
+$show_used = isset($_GET['show_used']) ? (int)$_GET['show_used'] : 0;
 
 if ($search !== '') {
-    $query = "SELECT * FROM sfc WHERE date_out IS NULL AND (
-                sfc_id LIKE ? OR 
-                product LIKE ? OR 
-                lot_no LIKE ? OR 
-                coil_no LIKE ? OR
-                roll_no LIKE ?
+    $baseWhere = $show_used ? "" : "date_out IS NULL AND ";
+    $query = "SELECT * FROM sfc WHERE {$baseWhere}(
+                sfc_id LIKE ? OR product LIKE ? OR lot_no LIKE ? OR coil_no LIKE ? OR roll_no LIKE ?
               ) ORDER BY date_created DESC";
     $stmt = $conn->prepare($query);
-    $likeSearch = "%$search%";
-    $stmt->bind_param("sssss", $likeSearch, $likeSearch, $likeSearch, $likeSearch, $likeSearch);
+    $like = "%$search%";
+    $stmt->bind_param("sssss", $like, $like, $like, $like, $like);
     $stmt->execute();
     $result = $stmt->get_result();
 } else {
-    $result = $conn->query("SELECT * FROM sfc WHERE date_out IS NULL ORDER BY date_created DESC");
+    $where  = $show_used ? "" : "WHERE date_out IS NULL";
+    $result = $conn->query("SELECT * FROM sfc $where ORDER BY date_created DESC");
 }
+
+// Counts
+$total_active = (int)$conn->query("SELECT COUNT(*) AS c FROM sfc WHERE date_out IS NULL")->fetch_assoc()['c'];
+$total_used   = (int)$conn->query("SELECT COUNT(*) AS c FROM sfc WHERE date_out IS NOT NULL")->fetch_assoc()['c'];
 
 $page_title = "SFC Inventory";
 include 'header.php';
 ?>
+
+<style>
+    .sfc-output-block {
+        margin-top: 10px;
+        border-radius: 8px;
+        padding: 10px 14px;
+        font-size: .82rem;
+    }
+    .sfc-output-reslit  { background:#fffbf0; border:1px solid #fde68a; }
+    .sfc-output-recoil  { background:#eff6ff; border:1px solid #bfdbfe; }
+    .sfc-output-sell    { background:#f0fdf4; border:1px solid #bbf7d0; }
+    .sfc-output-title   { font-size:.72rem; font-weight:700; text-transform:uppercase;
+                          letter-spacing:1px; margin-bottom:6px; display:flex; align-items:center; gap:6px; }
+    .sfc-roll-row       { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+                          padding:5px 8px; border-radius:6px; background:rgba(255,255,255,.7);
+                          margin-bottom:4px; border:1px solid #e5e7eb; }
+    .sfc-roll-row:last-child { margin-bottom:0; }
+    .roll-ref  { font-family:monospace; font-weight:700; font-size:.85rem; }
+    .chip-sm   { font-size:.68rem; padding:1px 7px; border-radius:20px; font-weight:600; }
+    .chip-w    { background:#e8f4fd; color:#0369a1; }
+    .chip-l    { background:#f0fdf4; color:#166534; }
+    .chip-act  { background:#fef3c7; color:#92400e; }
+</style>
 
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h2><i class="bi bi-box-seam-fill me-2 text-primary"></i>SFC Inventory Management</h2>
@@ -146,103 +250,243 @@ include 'header.php';
     <?php endif; ?>
 </div>
 
-<!-- Hidden QR scan input (always listening in background) -->
 <input id="qrScanInput" type="text" inputmode="none"
        style="position:fixed; left:-9999px; opacity:0;" autofocus>
-
-<!-- Scan feedback alert -->
 <div id="qrAlert" class="d-none alert py-2 mb-3 shadow-sm"></div>
 
-<!-- QR Scan status indicator -->
 <div class="alert alert-secondary py-2 mb-3 d-flex align-items-center gap-2">
     <i class="bi bi-qr-code-scan fs-5"></i>
     <span class="small">QR Scanner ready — scan an SFC label anytime, or click <strong>Process SFC</strong> (supervisor PIN required).</span>
 </div>
 
-<div class="row mb-3">
+<!-- Summary counts -->
+<div class="d-flex gap-3 mb-3">
+    <div class="card border-0 shadow-sm px-4 py-2 text-center">
+        <div class="fw-bold fs-4 text-primary"><?= $total_active ?></div>
+        <div class="small text-muted">Active</div>
+    </div>
+    <div class="card border-0 shadow-sm px-4 py-2 text-center">
+        <div class="fw-bold fs-4 text-secondary"><?= $total_used ?></div>
+        <div class="small text-muted">Used / Out</div>
+    </div>
+</div>
+
+<div class="row mb-3 g-2 align-items-center">
     <div class="col-md-5">
         <form method="GET" action="sfc.php" class="input-group shadow-sm">
-            <input type="text" name="search" class="form-control" placeholder="Search ID, Product, Lot, or Roll..." value="<?= htmlspecialchars($search) ?>">
+            <input type="hidden" name="show_used" value="<?= $show_used ?>">
+            <input type="text" name="search" class="form-control"
+                   placeholder="Search ID, Product, Lot, or Roll..."
+                   value="<?= htmlspecialchars($search) ?>">
             <button class="btn btn-primary" type="submit">
                 <i class="bi bi-search me-1"></i> Search
             </button>
             <?php if ($search !== ''): ?>
-                <a href="sfc.php" class="btn btn-outline-secondary">Clear</a>
+                <a href="sfc.php?show_used=<?= $show_used ?>" class="btn btn-outline-secondary">Clear</a>
             <?php endif; ?>
         </form>
     </div>
-    <div class="col-md-7 text-end">
+    <div class="col-auto">
+        <a href="sfc.php?show_used=<?= $show_used ? 0 : 1 ?>&search=<?= urlencode($search) ?>"
+           class="btn btn-sm <?= $show_used ? 'btn-dark' : 'btn-outline-dark' ?>">
+            <i class="bi bi-<?= $show_used ? 'eye-slash' : 'eye' ?> me-1"></i>
+            <?= $show_used ? 'Hide Used' : 'Show Used / Out' ?>
+        </a>
+    </div>
+    <div class="col-md-auto ms-auto">
         <a href="sfc_tracking.php" class="btn btn-info btn-sm">
-            <i class="bi bi-graph-up me-1"></i> View SFC Tracking Report
+            <i class="bi bi-graph-up me-1"></i> SFC Tracking Report
         </a>
     </div>
 </div>
 
 <div class="card shadow-sm border-0">
     <div class="card-header bg-dark text-white fw-bold py-3">
-        <i class="bi bi-list-task me-2"></i>Available SFC Material
+        <i class="bi bi-list-task me-2"></i>SFC Material
+        <?= $show_used ? '(All — including used)' : '(Active only)' ?>
     </div>
     <div class="table-responsive">
-        <table class="table table-hover align-middle text-center mb-0">
+        <table class="table table-hover align-middle mb-0">
             <thead class="table-light">
                 <tr>
                     <th>Print</th>
                     <th>Product</th>
-                    <th>Lot No</th>
-                    <th>Roll No</th>
+                    <th>Lot No · Coil · Roll</th>
                     <th>Width (mm)</th>
                     <th>Length (m)</th>
                     <th>Date Created</th>
-                    <th>Action</th>
+                    <th>Status / Output</th>
+                    <th class="no-print">Action</th>
                 </tr>
             </thead>
             <tbody>
-                <?php if ($result && $result->num_rows > 0): ?>
-                    <?php while ($row = $result->fetch_assoc()): ?>
-                        <tr>
-                            <td>
-                                <a href="print_sfc.php?id=<?= (int)$row['sfc_id'] ?>"
-                                   target="_blank"
-                                   class="btn btn-outline-dark btn-sm"
-                                   title="Print Label #<?= (int)$row['sfc_id'] ?>">
-                                    <i class="bi bi-printer-fill"></i>
-                                </a>
-                            </td>
-                            <td><span class="badge bg-secondary"><?= htmlspecialchars($row['product']) ?></span></td>
-                            <td class="small fw-bold">
-                                <?= htmlspecialchars($row['lot_no']) ?> <?= htmlspecialchars($row['coil_no']) ?>
-                            </td>
-                            <td><span class="badge outline-primary text-dark border"><?= htmlspecialchars($row['roll_no']) ?></span></td>
-                            <td><?= number_format($row['width']) ?></td>
-                            <td class="text-primary fw-bold"><?= number_format($row['length'], 2) ?></td>
-                            <td class="small text-muted"><?= date('d/M/Y', strtotime($row['date_created'])) ?></td>
-                            <td>
-                                <!-- Button click requires PIN -->
-                                <button type="button"
-                                        class="btn btn-primary btn-sm px-3 rounded-pill actionBtn shadow-sm"
-                                        data-sfc-id="<?= $row['sfc_id'] ?>"
-                                        data-sfc-lot="<?= htmlspecialchars($row['lot_no']) ?>"
-                                        data-sfc-coil="<?= htmlspecialchars($row['coil_no']) ?>"
-                                        data-sfc-details="<?= htmlspecialchars($row['product']) ?> | <?= htmlspecialchars($row['lot_no']) ?> <?= htmlspecialchars($row['coil_no']) ?> | <?= number_format($row['length'], 2) ?>m">
-                                    <i class="bi bi-shield-lock-fill me-1"></i> Process SFC
-                                </button>
-                            </td>
-                        </tr>
-                    <?php endwhile; ?>
-                <?php else: ?>
-                    <tr>
-                        <td colspan="8" class="py-5 text-muted">
-                            <i class="bi bi-inbox fs-3 d-block mb-2"></i>
-                            No SFC inventory found matching your criteria.
-                        </td>
-                    </tr>
-                <?php endif; ?>
+            <?php if ($result && $result->num_rows > 0):
+                while ($row = $result->fetch_assoc()):
+                    $isUsed   = !empty($row['date_out']);
+                    $outputs  = $isUsed ? getSfcOutputs($conn, $row) : [];
+                    $rowClass = $isUsed ? 'table-secondary' : '';
+            ?>
+                <tr class="<?= $rowClass ?>" style="vertical-align:top">
+                    <td>
+                        <a href="print_sfc.php?id=<?= (int)$row['sfc_id'] ?>"
+                           target="_blank" class="btn btn-outline-dark btn-sm">
+                            <i class="bi bi-printer-fill"></i>
+                        </a>
+                    </td>
+                    <td><span class="badge bg-secondary"><?= htmlspecialchars($row['product']) ?></span></td>
+                    <td class="fw-bold" style="font-family:monospace; font-size:.88rem;">
+                        <?= htmlspecialchars($row['lot_no']) ?>
+                        <?= htmlspecialchars($row['coil_no']) ?>
+                        <?php if ($row['roll_no'] && strtoupper($row['roll_no']) !== 'BALANCE'): ?>
+                            – <?= str_replace('R','R-', htmlspecialchars($row['roll_no'])) ?>
+                        <?php elseif ($row['roll_no']): ?>
+                            <span class="badge bg-warning text-dark ms-1" style="font-size:.65rem">BALANCE</span>
+                        <?php endif; ?>
+                    </td>
+                    <td><?= number_format($row['width']) ?></td>
+                    <td class="text-primary fw-bold"><?= number_format($row['length'], 2) ?></td>
+                    <td class="small text-muted"><?= date('d M Y', strtotime($row['date_created'])) ?></td>
+
+                    <!-- Status + Output Rolls column -->
+                    <td>
+                        <?php if (!$isUsed): ?>
+                            <span class="badge bg-success">IN SFC</span>
+
+                        <?php else: ?>
+                            <!-- Used status badge -->
+                            <?php
+                            $actionLabel = match(strtoupper($row['action'] ?? '')) {
+                                'RESLIT'  => ['RESLIT',   'bg-warning text-dark'],
+                                'RECOIL'  => ['RECOIL',   'bg-primary'],
+                                'SELL'    => ['SELL → QC','bg-success'],
+                                default   => [htmlspecialchars($row['action'] ?? 'USED'), 'bg-secondary'],
+                            };
+                            ?>
+                            <span class="badge <?= $actionLabel[1] ?> mb-1">
+                                USED → <?= $actionLabel[0] ?>
+                            </span>
+                            <small class="text-muted d-block mb-1">
+                                Out: <?= date('d M Y', strtotime($row['date_out'])) ?>
+                            </small>
+
+                            <!-- Output rolls produced from this SFC -->
+                            <?php if (!empty($outputs)): ?>
+                                <?php foreach ($outputs as $out):
+                                    $outClass = match($out['process']) {
+                                        'RESLIT' => 'sfc-output-reslit',
+                                        'RECOIL' => 'sfc-output-recoil',
+                                        default  => 'sfc-output-sell',
+                                    };
+                                    $outIcon = match($out['process']) {
+                                        'RESLIT' => 'bi-arrow-repeat',
+                                        'RECOIL' => 'bi-arrow-counterclockwise',
+                                        default  => 'bi-cart-check',
+                                    };
+                                    $outColor = match($out['process']) {
+                                        'RESLIT' => '#92400e',
+                                        'RECOIL' => '#1d4ed8',
+                                        default  => '#166534',
+                                    };
+                                ?>
+                                <div class="sfc-output-block <?= $outClass ?>">
+                                    <div class="sfc-output-title" style="color:<?= $outColor ?>">
+                                        <i class="bi <?= $outIcon ?>"></i>
+                                        <?= $out['process'] ?> Output
+                                        <span class="badge <?= $out['status']==='completed'||$out['status']==='DELIVERED' ? 'bg-success' : 'bg-warning text-dark' ?>"
+                                              style="font-size:.6rem">
+                                            <?= strtoupper($out['status']) ?>
+                                        </span>
+                                        <span class="ms-auto text-muted" style="font-size:.65rem; font-weight:400;">
+                                            <?= count($out['rolls']) ?> roll<?= count($out['rolls'])>1?'s':'' ?>
+                                        </span>
+                                    </div>
+
+                                    <?php if (!empty($out['rolls'])): ?>
+                                        <?php foreach ($out['rolls'] as $r):
+                                            // Determine ref label for each roll type
+                                            if ($out['process'] === 'RESLIT') {
+                                                $ref = htmlspecialchars(($row['lot_no'] ?? '') . ($r['cut_letter'] ?? ''))
+                                                     . ' ' . htmlspecialchars($row['coil_no'] ?? '')
+                                                     . ' – ' . str_replace('R','R-', htmlspecialchars($r['roll_no'] ?? ''));
+                                                $w   = $r['new_width']    ?? 0;
+                                                $l   = $r['length']       ?? 0;
+                                                $act = $r['actual_length'] ?? 0;
+                                                $st  = $r['status']        ?? 'pending';
+                                            } else {
+                                                $ref = htmlspecialchars($r['lot_no'] ?? '')
+                                                     . ' ' . htmlspecialchars($r['coil_no'] ?? '')
+                                                     . ' – ' . str_replace('R','R-', htmlspecialchars($r['roll_no'] ?? ''));
+                                                $w   = $r['width']        ?? 0;
+                                                $l   = $r['length']       ?? 0;
+                                                $act = $r['actual_length'] ?? 0;
+                                                $st  = $r['status']        ?? 'IN';
+                                            }
+                                            $stBadge = match(strtoupper($st)) {
+                                                'DELIVERED' => '<span class="badge bg-success" style="font-size:.6rem">DELIVERED</span>',
+                                                'APPROVED'  => '<span class="badge bg-primary" style="font-size:.6rem">APPROVED</span>',
+                                                'WAITING'   => '<span class="badge bg-warning text-dark" style="font-size:.6rem">WAITING</span>',
+                                                'COMPLETED' => '<span class="badge bg-success" style="font-size:.6rem">COMPLETED</span>',
+                                                'IN'        => '<span class="badge bg-info text-dark" style="font-size:.6rem">IN STOCK</span>',
+                                                default     => '<span class="badge bg-secondary" style="font-size:.6rem">'.htmlspecialchars($st).'</span>',
+                                            };
+                                        ?>
+                                        <div class="sfc-roll-row">
+                                            <i class="bi bi-arrow-right-circle text-muted"></i>
+                                            <span class="roll-ref"><?= $ref ?></span>
+                                            <span class="chip-sm chip-w"><?= number_format((float)$w) ?> mm</span>
+                                            <?php if ($act > 0): ?>
+                                                <span class="chip-sm chip-act">Actual: <?= number_format((float)$act, 1) ?> m</span>
+                                            <?php elseif ($l > 0): ?>
+                                                <span class="chip-sm chip-l">Nom: <?= number_format((float)$l, 1) ?> m</span>
+                                            <?php endif; ?>
+                                            <?= $stBadge ?>
+                                        </div>
+                                        <?php endforeach; ?>
+                                    <?php else: ?>
+                                        <div class="text-muted fst-italic" style="font-size:.75rem">
+                                            <i class="bi bi-hourglass-split me-1"></i>No output rolls yet
+                                        </div>
+                                    <?php endif; ?>
+                                </div>
+                                <?php endforeach; ?>
+                            <?php else: ?>
+                                <div class="text-muted small fst-italic mt-1">
+                                    <i class="bi bi-hourglass-split me-1"></i>Output not recorded yet
+                                </div>
+                            <?php endif; ?>
+                        <?php endif; ?>
+                    </td>
+
+                    <td class="no-print">
+                        <?php if (!$isUsed): ?>
+                            <button type="button"
+                                    class="btn btn-primary btn-sm px-3 rounded-pill actionBtn shadow-sm"
+                                    data-sfc-id="<?= $row['sfc_id'] ?>"
+                                    data-sfc-lot="<?= htmlspecialchars($row['lot_no']) ?>"
+                                    data-sfc-coil="<?= htmlspecialchars($row['coil_no']) ?>"
+                                    data-sfc-details="<?= htmlspecialchars($row['product']) ?> | <?= htmlspecialchars($row['lot_no']) ?> <?= htmlspecialchars($row['coil_no']) ?> | <?= number_format($row['length'], 2) ?>m">
+                                <i class="bi bi-shield-lock-fill me-1"></i> Process
+                            </button>
+                        <?php else: ?>
+                            <span class="text-muted small">Done</span>
+                        <?php endif; ?>
+                    </td>
+                </tr>
+            <?php endwhile;
+            else: ?>
+                <tr>
+                    <td colspan="8" class="py-5 text-muted text-center">
+                        <i class="bi bi-inbox fs-3 d-block mb-2"></i>
+                        No SFC inventory found.
+                    </td>
+                </tr>
+            <?php endif; ?>
             </tbody>
         </table>
     </div>
 </div>
 
-<!-- ── PIN Modal (button click only) ─────────────────────────────────────── -->
+<!-- PIN Modal -->
 <div class="modal fade" id="pinModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
   <div class="modal-dialog modal-dialog-centered modal-sm">
     <div class="modal-content border-0 shadow">
@@ -268,7 +512,7 @@ include 'header.php';
   </div>
 </div>
 
-<!-- ── Action Modal (scan = direct, button = after PIN) ───────────────────── -->
+<!-- Action Modal -->
 <div class="modal fade" id="actionModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content border-0 shadow">
@@ -307,19 +551,16 @@ include 'header.php';
 
 <script>
 document.addEventListener('DOMContentLoaded', function () {
-
-    const pinModal    = new bootstrap.Modal(document.getElementById('pinModal'));
-    const actionModal = new bootstrap.Modal(document.getElementById('actionModal'));
-    const pinInput    = document.getElementById('pinInput');
-    const pinError    = document.getElementById('pinError');
+    const pinModal     = new bootstrap.Modal(document.getElementById('pinModal'));
+    const actionModal  = new bootstrap.Modal(document.getElementById('actionModal'));
+    const pinInput     = document.getElementById('pinInput');
+    const pinError     = document.getElementById('pinError');
     const pinSubmitBtn = document.getElementById('pinSubmitBtn');
-    const qrInput     = document.getElementById('qrScanInput');
-    const qrAlert     = document.getElementById('qrAlert');
+    const qrInput      = document.getElementById('qrScanInput');
+    const qrAlert      = document.getElementById('qrAlert');
 
-    let pendingSfcId      = null;
-    let pendingSfcDetails = null;
+    let pendingSfcId = null, pendingSfcDetails = null;
 
-    // ── Helper: populate & open action modal ──────────────────────────────
     function openActionModal(sfcId, details) {
         document.getElementById('sfc_id_input').value      = sfcId;
         document.getElementById('sfcIdDisplay').textContent = sfcId;
@@ -327,45 +568,37 @@ document.addEventListener('DOMContentLoaded', function () {
         actionModal.show();
     }
 
-    // ── Button click → PIN modal first ───────────────────────────────────
-    document.querySelectorAll('.actionBtn').forEach(function (btn) {
+    document.querySelectorAll('.actionBtn').forEach(btn => {
         btn.addEventListener('click', function () {
-            pendingSfcId      = this.getAttribute('data-sfc-id');
-            pendingSfcDetails = this.getAttribute('data-sfc-details');
-
-            // Reset PIN modal state
-            pinInput.value = '';
+            pendingSfcId      = this.dataset.sfcId;
+            pendingSfcDetails = this.dataset.sfcDetails;
+            pinInput.value    = '';
             pinError.classList.add('d-none');
             pinModal.show();
-
-            // Auto-focus PIN input after modal animates in
-            document.getElementById('pinModal').addEventListener('shown.bs.modal', function handler() {
+            document.getElementById('pinModal').addEventListener('shown.bs.modal', function h() {
                 pinInput.focus();
-                this.removeEventListener('shown.bs.modal', handler);
+                this.removeEventListener('shown.bs.modal', h);
             });
         });
     });
 
-    // ── PIN submit (button click) ─────────────────────────────────────────
     function submitPin() {
         const pin = pinInput.value.trim();
         if (!pin) return;
-
         pinSubmitBtn.disabled = true;
         pinSubmitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Checking...';
 
         fetch('sfc.php', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
             body: 'verify_pin=' + encodeURIComponent(pin)
         })
         .then(r => r.json())
         .then(data => {
             if (data.success) {
                 pinModal.hide();
-                // Wait for PIN modal to fully close before opening action modal
-                document.getElementById('pinModal').addEventListener('hidden.bs.modal', function handler() {
-                    this.removeEventListener('hidden.bs.modal', handler);
+                document.getElementById('pinModal').addEventListener('hidden.bs.modal', function h() {
+                    this.removeEventListener('hidden.bs.modal', h);
                     openActionModal(pendingSfcId, pendingSfcDetails);
                 });
             } else {
@@ -375,7 +608,7 @@ document.addEventListener('DOMContentLoaded', function () {
             }
         })
         .catch(() => {
-            pinError.innerHTML = '<i class="bi bi-wifi-off me-1"></i>Network error. Try again.';
+            pinError.innerHTML = '<i class="bi bi-wifi-off me-1"></i>Network error.';
             pinError.classList.remove('d-none');
         })
         .finally(() => {
@@ -385,17 +618,12 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     pinSubmitBtn.addEventListener('click', submitPin);
+    pinInput.addEventListener('keydown', e => { if (e.key === 'Enter') submitPin(); });
 
-    // Allow Enter key in PIN input
-    pinInput.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') submitPin();
-    });
-
-    // ── QR Scanner → direct (no PIN) ─────────────────────────────────────
+    // QR scanner
     setInterval(() => {
-        const tag       = document.activeElement.tagName;
-        const modalOpen = document.querySelector('.modal.show');
-        if (!modalOpen && !['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) {
+        const tag = document.activeElement.tagName;
+        if (!document.querySelector('.modal.show') && !['INPUT','TEXTAREA','SELECT'].includes(tag)) {
             qrInput.focus();
         }
     }, 800);
@@ -406,51 +634,42 @@ document.addEventListener('DOMContentLoaded', function () {
         qrInput.value = '';
         if (!scanned) return;
 
-        console.log('QR Scanned:', scanned);
-
-        // Parse QR formats
         const matchLotCoil  = scanned.match(/Lot=([^;]+);COIL=([^;]+)/i);
         const matchPrefixed = scanned.match(/^sfc[_-]?(\d+)$/i);
         const matchPlain    = scanned.match(/^(\d+)$/);
-
         let btn = null;
 
         if (matchLotCoil) {
-            const lot  = matchLotCoil[1].trim().toLowerCase();
+            const lot = matchLotCoil[1].trim().toLowerCase();
             const coil = matchLotCoil[2].trim().toLowerCase();
             document.querySelectorAll('.actionBtn').forEach(b => {
-                const bLot  = (b.getAttribute('data-sfc-lot')  || '').trim().toLowerCase();
-                const bCoil = (b.getAttribute('data-sfc-coil') || '').trim().toLowerCase();
-                if (bLot === lot && bCoil === coil) btn = b;
+                if ((b.dataset.sfcLot||'').toLowerCase()===lot &&
+                    (b.dataset.sfcCoil||'').toLowerCase()===coil) btn = b;
             });
         } else if (matchPrefixed) {
             btn = document.querySelector(`.actionBtn[data-sfc-id="${matchPrefixed[1]}"]`);
         } else if (matchPlain) {
             btn = document.querySelector(`.actionBtn[data-sfc-id="${matchPlain[1]}"]`);
         } else {
-            showAlert('danger', '<i class="bi bi-exclamation-triangle-fill me-2"></i>QR not recognised: <strong>' + scanned + '</strong>');
+            showAlert('danger', 'QR not recognised: <strong>' + scanned + '</strong>');
             return;
         }
 
         if (btn) {
             hideAlert();
-            // Scan bypasses PIN — open action modal directly
-            openActionModal(btn.getAttribute('data-sfc-id'), btn.getAttribute('data-sfc-details'));
+            openActionModal(btn.dataset.sfcId, btn.dataset.sfcDetails);
         } else {
-            showAlert('danger', '<i class="bi bi-exclamation-triangle-fill me-2"></i>No matching SFC found for: <strong>' + scanned + '</strong>. Already processed or not in list.');
+            showAlert('danger', 'No matching active SFC found for: <strong>' + scanned + '</strong>');
         }
     });
 
     function showAlert(type, msg) {
-        qrAlert.className = 'alert alert-' + type + ' py-2 mb-3 shadow-sm d-flex align-items-center gap-2';
-        qrAlert.innerHTML = msg;
+        qrAlert.className = 'alert alert-' + type + ' py-2 mb-3 shadow-sm';
+        qrAlert.innerHTML = '<i class="bi bi-exclamation-triangle-fill me-2"></i>' + msg;
         qrAlert.classList.remove('d-none');
         setTimeout(hideAlert, 5000);
     }
-
-    function hideAlert() {
-        qrAlert.classList.add('d-none');
-    }
+    function hideAlert() { qrAlert.classList.add('d-none'); }
 });
 </script>
 
