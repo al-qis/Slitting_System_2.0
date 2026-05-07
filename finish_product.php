@@ -139,7 +139,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
 }
 
 // ── Send to Recoiling ───────────────────────────────────────────────────────
-// FIXED: wraps in transaction, soft-deletes source roll, sets slitting_product_id FK
 if ($_SERVER['REQUEST_METHOD'] === 'POST'
     && isset($_POST['action'])
     && $_POST['action'] === 'send_to_recoiling') {
@@ -148,7 +147,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
 
     $conn->begin_transaction();
     try {
-        // Lock the row to prevent double-submit
         $stmt = $conn->prepare("SELECT * FROM slitting_product WHERE id=? FOR UPDATE");
         $stmt->bind_param("i", $id);
         $stmt->execute();
@@ -162,16 +160,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
         $original_source = $p['original_source'] ?? 'raw_material';
         $prev_status     = $p['status'];
 
-        // 1. Soft-deactivate the source roll (mark processed, not deleted)
-        // Do NOT set status='OUT' — 'OUT' is not in the slitting_product status ENUM.
-        // is_recoiled=1 is enough to hide this row from the active list.
-        // The row will also be voided by recoiling_handler.php when the recoil completes.
         $stmt = $conn->prepare("UPDATE slitting_product SET is_recoiled=1 WHERE id=?");
         $stmt->bind_param("i", $id);
         $stmt->execute();
         $stmt->close();
 
-        // 2. Create recoiling_product entry — slitting_product_id is the critical FK
         $stmt = $conn->prepare("
             INSERT INTO recoiling_product
                 (slitting_product_id, mother_id, status, product,
@@ -189,7 +182,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
         $new_recoil_id = $conn->insert_id;
         $stmt->close();
 
-        // 3. Write audit trail
         log_process($conn, 'slitting', $id, $mid,
             $prev_status, 'OUT', 'send_to_recoiling',
             "Sent to recoiling_product id={$new_recoil_id}");
@@ -197,7 +189,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
             null, 'pending', 'received_from_slitting',
             "From slitting_product id={$id}");
 
-        // 4. Source tracking log
         $stmt = $conn->prepare("
             INSERT INTO source_tracking_log
                 (product_id, table_name, original_source, current_source, action)
@@ -219,7 +210,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
 }
 
 // ── Send to Reslit ──────────────────────────────────────────────────────────
-// FIXED: wraps in transaction, soft-deletes source roll, sets slitting_product_id FK
+// FIX: $insert_length assigned to a variable before bind_param()
+//      because mysqli cannot pass expressions by reference.
 if ($_SERVER['REQUEST_METHOD'] === 'POST'
     && isset($_POST['action'])
     && $_POST['action'] === 'send_to_reslit') {
@@ -228,7 +220,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
 
     $conn->begin_transaction();
     try {
-        // Lock the row to prevent double-submit
         $stmt = $conn->prepare("SELECT * FROM slitting_product WHERE id=? FOR UPDATE");
         $stmt->bind_param("i", $id);
         $stmt->execute();
@@ -242,15 +233,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
         $original_source = $p['original_source'] ?? 'raw_material';
         $prev_status     = $p['status'];
 
-        // 1. Soft-deactivate the source roll
-        // Do NOT set status='OUT' — 'OUT' is not in the slitting_product status ENUM.
-        // is_reslitted=1 is enough to hide this row from the active list.
         $stmt = $conn->prepare("UPDATE slitting_product SET is_reslitted=1 WHERE id=?");
         $stmt->bind_param("i", $id);
         $stmt->execute();
         $stmt->close();
 
-        // 2. Create reslit_product entry — slitting_product_id is the critical FK
+        // ── FIX: assign expression to a variable before passing to bind_param ──
+        $insert_length = $p['actual_length'] ?: $p['length'];
+
         $stmt = $conn->prepare("
             INSERT INTO reslit_product
                 (slitting_product_id, status, product,
@@ -262,14 +252,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
             $id,
             $p['product'], $p['lot_no'], $p['coil_no'], $p['roll_no'],
             $p['width'],
-            $p['actual_length'] ?: $p['length'],
+            $insert_length,   // ← fixed: variable, not expression
             $original_source
         );
         $stmt->execute();
         $new_reslit_id = $conn->insert_id;
         $stmt->close();
 
-        // 3. Write audit trail
         log_process($conn, 'slitting', $id, $mid,
             $prev_status, 'OUT', 'send_to_reslit',
             "Sent to reslit_product id={$new_reslit_id}");
@@ -277,7 +266,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
             null, 'pending', 'received_from_slitting',
             "From slitting_product id={$id}");
 
-        // 4. Source tracking log
         $stmt = $conn->prepare("
             INSERT INTO source_tracking_log
                 (product_id, table_name, original_source, current_source, action)

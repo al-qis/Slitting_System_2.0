@@ -93,9 +93,15 @@ if ($result === false) {
             <h2 class="fw-bold text-dark">Quality Control Dashboard</h2>
             <p class="text-secondary">Review and approve slitting products for dispatch.</p>
         </div>
-        <button onclick="window.location.reload()" class="btn btn-white border shadow-sm">
-            <i class="bi bi-arrow-clockwise"></i> Refresh Data
-        </button>
+        <!-- ── Buttons: Refresh + QC Log ── -->
+        <div class="d-flex gap-2">
+            <a href="qc_log.php" class="btn btn-dark shadow-sm">
+                <i class="bi bi-clock-history me-1"></i> QC Log
+            </a>
+            <button onclick="window.location.reload()" class="btn btn-white border shadow-sm">
+                <i class="bi bi-arrow-clockwise"></i> Refresh Data
+            </button>
+        </div>
     </div>
 
     <div class="row g-3 mb-4">
