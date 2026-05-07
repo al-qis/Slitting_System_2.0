@@ -1,19 +1,19 @@
 <?php
 // recoiling_handler.php
 //
-// KEY DESIGN DECISION:
-// Recoiling = rewinding / trimming the same physical roll.
-// The output is still the SAME product (same lot, coil, roll number).
+// Three recoiling modes:
 //
-// The correct flow is:
-//   1. Rename roll_no on the SOURCE row to e.g. "R1_void_42"
-//      This frees the UNIQUE KEY (lot_no, coil_no, roll_no) so the new row
-//      can be inserted with the original roll_no.
-//      NOTE: setting is_voided=1 alone does NOT free the unique index —
-//      MySQL still sees the same column values and rejects the INSERT.
-//   2. Insert the new slitting_product row with same lot/coil/roll
-//      but updated actual_length and width.
-//   3. Mark recoiling_product as completed.
+// 1. rewinding    — same lot/coil/roll, operator updates length only.
+//                   No duplicate check (source row voided first).
+//
+// 2. normal       — same lot/coil/roll, defect removed from one end.
+//                   actual_length = original − defect.
+//                   No duplicate check (source row voided first).
+//
+// 3. cut_into_2   — two new rolls, BOTH lengths entered manually.
+//                   coil_no and roll_no stay the same (e.g. R4 → R4, R4).
+//                   Letter suffix on lot_no is OPTIONAL (a/b/c or none).
+//                   Source row lot_no renamed to "*_OLD_{id}" to free UNIQUE KEY.
 
 session_start();
 include 'config.php';
@@ -89,24 +89,33 @@ if (($original['status'] ?? '') === 'completed') {
 
 $parent_slit_id = intval($original['slitting_product_id'] ?? 0) ?: null;
 $mother_id_val  = $original['mother_id'] ?? null;
-$cut_type       = trim($_POST['cut_type'] ?? 'normal');
 
-// ── Duplicate check ONLY for cut_into_2 ───────────────────────────────────
-// For normal recoil: same lot/coil/roll is intentional — skip check entirely.
-// For cut_into_2: new roll numbers must not already exist (excluding source).
+// cut_type comes from the hidden field populated by selectMode() in JS
+$cut_type = trim($_POST['cut_type'] ?? 'normal');
+
+// Normalise: treat 'rewinding' same as 'normal' in terms of DB logic
+// (same lot/coil/roll, source voided, one new row inserted)
+$is_same_roll = in_array($cut_type, ['rewinding', 'normal']);
+
+// ── Duplicate check — ONLY for cut_into_2 WITH a letter suffix ────────────
+// If no letter suffix chosen, the source row void (which renames lot_no to
+// "lot_OLD_{id}") frees the unique key, so no pre-check is needed.
 if ($cut_type === 'cut_into_2') {
-    $duplicateLots = [];
+    $duplicates = [];
     for ($i = 0; $i < $total_rolls; $i++) {
         $letter     = trim($_POST['letter'][$i] ?? '');
-        $new_lot_no = $original['lot_no'] . ($letter !== '' ? $letter : '');
-        $new_roll   = 'R' . intval($_POST['roll_number'][$i] ?? ($i + 1));
+        // Roll and coil stay the same as original; only lot may get a suffix
+        $new_lot_no = $original['lot_no'] . $letter;       // '' = same lot
+        $new_roll   = $original['roll_no'];                // R4 stays R4
         $exclude_id = $parent_slit_id ?? 0;
 
+        // Only check against OTHER non-voided rows (not the source itself)
         $chk = $conn->prepare("
             SELECT COUNT(*) AS cnt
             FROM slitting_product
             WHERE lot_no = ? AND coil_no = ? AND roll_no = ?
               AND id != ?
+              AND (is_voided = 0 OR is_voided IS NULL)
         ");
         $chk->bind_param("sssi", $new_lot_no, $original['coil_no'], $new_roll, $exclude_id);
         $chk->execute();
@@ -114,45 +123,68 @@ if ($cut_type === 'cut_into_2') {
         $chk->close();
 
         if ($cnt > 0) {
-            $duplicateLots[] = "{$new_lot_no} {$original['coil_no']} {$new_roll}";
+            $duplicates[] = "{$new_lot_no} {$original['coil_no']} {$new_roll}";
         }
     }
 
-    if (!empty($duplicateLots)) {
-        $dupList = implode(', ', array_unique($duplicateLots));
+    if (!empty($duplicates)) {
+        $dupList = implode(', ', array_unique($duplicates));
         header("Location: recoiling.php?error=duplicate_lot&lots=" . urlencode($dupList) . "&open_id=$id");
         exit;
     }
 }
+// For rewinding and normal (cut defect): no duplicate check — same roll is intended.
 
 $conn->begin_transaction();
 
 try {
-
-    // ── STEP 1: Free the UNIQUE KEY on the source row ─────────────────────
-    // UNIQUE KEY is on (lot_no, coil_no, roll_no).
-    // We rename roll_no to "R1_void_42" so the unique slot is freed.
-    // The row is kept in the DB for history (is_voided = 1).
+    // ── STEP 1: Void the source slitting_product row ──────────────────────
+    // Free the UNIQUE KEY (lot_no, coil_no, roll_no) so the new row(s) can
+    // reuse the same reference values.
+    //
+    // cut_into_2 strategy: rename lot_no → "lot_OLD_{id}" (keeps roll_no
+    //   intact; both output rolls inherit the original roll_no).
+    // rewinding / cut defect: rename roll_no → "R1_void_{id}" as before.
     if ($parent_slit_id) {
-        $voided_roll = $original['roll_no'] . '_void_' . $parent_slit_id;
+        if ($cut_type === 'cut_into_2') {
+            $voided_lot = $original['lot_no'] . '_OLD_' . $parent_slit_id;
 
-        $void_stmt = $conn->prepare("
-            UPDATE slitting_product
-            SET roll_no       = ?,
-                is_recoiled   = 1,
-                is_voided     = 1,
-                voided_at     = NOW(),
-                voided_reason = 'replaced_by_recoil'
-            WHERE id = ?
-        ");
-        $void_stmt->bind_param("si", $voided_roll, $parent_slit_id);
+            $void_stmt = $conn->prepare("
+                UPDATE slitting_product
+                SET lot_no        = ?,
+                    is_recoiled   = 1,
+                    is_voided     = 1,
+                    voided_at     = NOW(),
+                    voided_reason = ?
+                WHERE id = ?
+            ");
+            $reason = 'replaced_by_recoil_cut_into_2';
+            $void_stmt->bind_param("ssi", $voided_lot, $reason, $parent_slit_id);
+        } else {
+            // rewinding / normal: rename roll_no to free unique key
+            $voided_roll = $original['roll_no'] . '_void_' . $parent_slit_id;
+
+            $void_stmt = $conn->prepare("
+                UPDATE slitting_product
+                SET roll_no       = ?,
+                    is_recoiled   = 1,
+                    is_voided     = 1,
+                    voided_at     = NOW(),
+                    voided_reason = ?
+                WHERE id = ?
+            ");
+            $reason = 'replaced_by_recoil_' . $cut_type;
+            $void_stmt->bind_param("ssi", $voided_roll, $reason, $parent_slit_id);
+        }
+
         $void_stmt->execute();
         $void_stmt->close();
 
+        $voided_ref = ($cut_type === 'cut_into_2') ? ($voided_lot ?? '') : ($voided_roll ?? '');
         log_process($conn, 'slitting', $parent_slit_id, $mother_id_val,
             'IN', 'IN',
             'voided_for_recoil',
-            "roll_no renamed to {$voided_roll}, replaced by recoiling_product id={$id}"
+            "renamed to {$voided_ref}, mode={$cut_type}, recoiling_product id={$id}"
         );
     }
 
@@ -170,15 +202,16 @@ try {
         $roll_number   = intval($_POST['roll_number'][$i]     ?? 1);
         $letter        = trim($_POST['letter'][$i]            ?? '');
 
-        if ($cut_type === 'normal') {
-            // Keep EXACTLY same lot/coil/roll as source — now safe because
-            // the source row's roll_no was renamed in STEP 1 above.
+        if ($is_same_roll) {
+            // rewinding / cut defect — keep original lot/coil/roll
             $new_roll_no = $original['roll_no'];
             $new_lot_no  = $original['lot_no'];
         } else {
-            // cut_into_2: new roll numbers R1, R2
-            $new_roll_no = 'R' . $roll_number;
-            $new_lot_no  = $original['lot_no'] . ($letter !== '' ? $letter : '');
+            // cut_into_2 — coil_no and roll_no stay the same as original.
+            // lot_no gets an optional letter suffix ('' is fine because the
+            // source row was voided with lot_no renamed to *_OLD_*).
+            $new_roll_no = $original['roll_no'];
+            $new_lot_no  = $original['lot_no'] . $letter;   // $letter may be ''
         }
 
         if (!empty($remark) || $defect > 0) {
@@ -221,7 +254,7 @@ try {
 
         log_process($conn, 'slitting', $new_slit_id, $mother_id_val,
             null, 'IN', 'recoiling_output',
-            "New row: {$new_lot_no} {$original['coil_no']} {$new_roll_no} "
+            "Mode={$cut_type} {$new_lot_no} {$original['coil_no']} {$new_roll_no} "
             . "actual={$actual_length}m width={$new_width}mm "
             . "from recoiling_product id={$id}"
         );
@@ -240,17 +273,18 @@ try {
             started_at   = NOW(),
             new_width    = ?,
             new_length   = ?,
-            remark       = ?
+            remark       = ?,
+            cut_type     = ?
         WHERE id = ?
     ");
-    $update_stmt->bind_param("ddsi",
-        $summary_width, $total_actual_length, $combined_remark, $id);
+    $update_stmt->bind_param("ddssi",
+        $summary_width, $total_actual_length, $combined_remark, $cut_type, $id);
     $update_stmt->execute();
     $update_stmt->close();
 
     log_process($conn, 'recoiling', $id, $mother_id_val,
         'pending', 'completed', 'recoiling_complete',
-        "Output rolls: {$total_rolls}, total_length={$total_actual_length}m"
+        "Mode={$cut_type}, rolls={$total_rolls}, total_length={$total_actual_length}m"
     );
 
     $conn->commit();
