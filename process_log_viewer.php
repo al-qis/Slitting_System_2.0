@@ -1,6 +1,8 @@
 <?php
 // process_log_viewer.php
 // Two columns: Mother Coil (source) | Product Roll (the actual slit output)
+// Fix 1: lot_no search now covers recoiling_product and reslit_product too
+// Fix 2: sfc table alias renamed from 'sfc' to 'sfc_t' to avoid name collision
 
 session_start();
 
@@ -17,32 +19,31 @@ $month = isset($_GET['month']) ? (int)$_GET['month'] : (int)date('m');
 $year  = isset($_GET['year'])  ? (int)$_GET['year']  : (int)date('Y');
 
 // ── Main query ─────────────────────────────────────────────────
-// Join mother_coil for Column 1 (source mother)
-// Join slitting_product for Column 2 (the actual slit roll)
-// Only join slitting_product when entity_type = 'slitting'
+// FIX 1: alias 'sfc' → 'sfc_t' to avoid table-name collision
+// FIX 2: lot_no filter now includes rp.lot_no and rs.lot_no
 $sql = "SELECT
             pl.*,
-            mc.lot_no   AS mc_lot,
-            mc.coil_no  AS mc_coil,
-            mc.product  AS mc_product,
-            sp.lot_no   AS sp_lot,
-            sp.coil_no  AS sp_coil,
-            sp.roll_no  AS sp_roll,
-            rp.lot_no   AS rp_lot,
-            rp.coil_no  AS rp_coil,
-            rp.roll_no  AS rp_roll,
-            rs.lot_no   AS rs_lot,
-            rs.coil_no  AS rs_coil,
-            rs.roll_no  AS rs_roll,
-            sfc.lot_no  AS sfc_lot,
-            sfc.coil_no AS sfc_coil,
-            sfc.roll_no AS sfc_roll
+            mc.lot_no    AS mc_lot,
+            mc.coil_no   AS mc_coil,
+            mc.product   AS mc_product,
+            sp.lot_no    AS sp_lot,
+            sp.coil_no   AS sp_coil,
+            sp.roll_no   AS sp_roll,
+            rp.lot_no    AS rp_lot,
+            rp.coil_no   AS rp_coil,
+            rp.roll_no   AS rp_roll,
+            rs.lot_no    AS rs_lot,
+            rs.coil_no   AS rs_coil,
+            rs.roll_no   AS rs_roll,
+            sfc_t.lot_no  AS sfc_lot,
+            sfc_t.coil_no AS sfc_coil,
+            sfc_t.roll_no AS sfc_roll
         FROM process_log pl
-        LEFT JOIN mother_coil      mc  ON mc.id      = pl.mother_id
-        LEFT JOIN slitting_product sp  ON sp.id      = pl.entity_id AND pl.entity_type = 'slitting'
-        LEFT JOIN recoiling_product rp ON rp.id      = pl.entity_id AND pl.entity_type = 'recoiling'
-        LEFT JOIN reslit_product    rs ON rs.id      = pl.entity_id AND pl.entity_type = 'reslit'
-        LEFT JOIN sfc               sfc ON sfc.sfc_id = pl.entity_id AND pl.entity_type = 'sfc'
+        LEFT JOIN mother_coil       mc    ON mc.id        = pl.mother_id
+        LEFT JOIN slitting_product  sp    ON sp.id        = pl.entity_id AND pl.entity_type = 'slitting'
+        LEFT JOIN recoiling_product rp    ON rp.id        = pl.entity_id AND pl.entity_type = 'recoiling'
+        LEFT JOIN reslit_product    rs    ON rs.id        = pl.entity_id AND pl.entity_type = 'reslit'
+        LEFT JOIN sfc               sfc_t ON sfc_t.sfc_id = pl.entity_id AND pl.entity_type = 'sfc'
         WHERE MONTH(pl.performed_at) = ? AND YEAR(pl.performed_at) = ?";
 
 $params = [$month, $year];
@@ -55,12 +56,21 @@ if ($filter_type !== '') {
 }
 
 if ($filter_lot !== '') {
-    $sql     .= " AND (mc.lot_no LIKE ? OR sp.lot_no LIKE ? OR sfc.lot_no LIKE ?)";
+    // FIX 2: search across ALL five entity lot columns, not just mc/sp/sfc
     $like     = '%' . $filter_lot . '%';
+    $sql     .= " AND (
+                    mc.lot_no    LIKE ? OR
+                    sp.lot_no    LIKE ? OR
+                    rp.lot_no    LIKE ? OR
+                    rs.lot_no    LIKE ? OR
+                    sfc_t.lot_no LIKE ?
+                  )";
     $params[] = $like;
     $params[] = $like;
     $params[] = $like;
-    $types   .= "sss";
+    $params[] = $like;
+    $params[] = $like;
+    $types   .= "sssss";
 }
 
 $sql .= " ORDER BY pl.performed_at DESC LIMIT 500";
@@ -71,8 +81,7 @@ $stmt->execute();
 $logs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
 $stmt->close();
 
-// ── Helper: get product lot/coil/roll from the joined row ──────
-// Returns array [lot, coil, roll] depending on entity_type
+// ── Helper: resolve lot/coil/roll from joined columns ──────────
 function getProductRef(array $log): array {
     switch ($log['entity_type']) {
         case 'slitting':
@@ -98,6 +107,7 @@ include 'header.php';
     .log-badge-reslit    { background:#d1fae5; color:#065f46; }
     .log-badge-sfc       { background:#ede9fe; color:#5b21b6; }
     .log-badge-stock     { background:#f1f5f9; color:#334155; }
+    .log-badge-mother    { background:#fce7f3; color:#9d174d; }
     .from-to  { font-family: monospace; font-size: 12px; }
     .ref-cell { font-family: monospace; font-size: 12px; line-height: 1.6; }
     .roll-tag {
@@ -210,8 +220,9 @@ include 'header.php';
                     <td class="text-muted"><?= ++$rowNum ?></td>
 
                     <td>
-                        <span class="badge log-badge-<?= $log['entity_type'] ?>" style="font-size:11px">
-                            <?= strtoupper($log['entity_type']) ?>
+                        <span class="badge log-badge-<?= htmlspecialchars($log['entity_type']) ?>"
+                              style="font-size:11px">
+                            <?= strtoupper(htmlspecialchars($log['entity_type'])) ?>
                         </span>
                     </td>
 
@@ -231,13 +242,15 @@ include 'header.php';
                     <!-- Arrow separator -->
                     <td class="arrow-col">→</td>
 
-                    <!-- Column 2: Product Roll (the actual slit/reslit/recoil output) -->
+                    <!-- Column 2: Product Roll -->
                     <td class="text-start ref-cell">
                         <?php if ($pLot !== '' || $pCoil !== ''): ?>
                             <span class="fw-bold"><?= htmlspecialchars($pLot) ?></span>
                             <span class="text-muted mx-1"><?= htmlspecialchars($pCoil) ?></span>
                             <?php if ($pRoll !== ''): ?>
-                                <span class="roll-tag"><?= htmlspecialchars(str_replace('R','R-',$pRoll)) ?></span>
+                                <span class="roll-tag">
+                                    <?= htmlspecialchars(str_replace('R', 'R-', $pRoll)) ?>
+                                </span>
                             <?php endif; ?>
                         <?php else: ?>
                             <span class="text-muted">—</span>

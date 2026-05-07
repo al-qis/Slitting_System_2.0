@@ -2,7 +2,6 @@
 session_start();
 include 'config.php';
 
-// 1. Authentication & Role Check
 if (!isset($_SESSION['role'])) {
     header("Location: login.php");
     exit;
@@ -31,10 +30,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
 }
 
-// === Delete Product ===
+// === Soft-delete (void) Product ===
+// Hard delete removed — voiding preserves FK chain and history
 if (isset($_GET['delete'])) {
     $id   = intval($_GET['delete']);
-    $stmt = $conn->prepare("DELETE FROM slitting_product WHERE id = ?");
+    $stmt = $conn->prepare("
+        UPDATE slitting_product
+        SET is_voided=1, voided_at=NOW(), voided_reason='manual_delete'
+        WHERE id=?
+    ");
     $stmt->bind_param("i", $id);
     $stmt->execute();
     $stmt->close();
@@ -42,39 +46,39 @@ if (isset($_GET['delete'])) {
     exit;
 }
 
-// === Handle Search Logic ===
+// === Search Logic ===
 $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 
-// ============================================================
-// FIXED: Parameterized query — no string injection possible
-// ============================================================
+// BASE condition: never show voided, recoiled, or reslitted rows
+// These rows have already been sent to recoiling/reslit — they are
+// replaced by a new row once that process completes.
+$base_where = "
+    (is_voided    = 0 OR is_voided    IS NULL)
+    AND (is_recoiled  = 0 OR is_recoiled  IS NULL)
+    AND (is_reslitted = 0 OR is_reslitted IS NULL)
+";
+
 if ($search !== '') {
-    $query = "SELECT * FROM slitting_product
-              WHERE coil_no LIKE ?
-              OR product    LIKE ?
-              OR lot_no     LIKE ?
-              OR roll_no    LIKE ?
-              ORDER BY id DESC";
+    $stmt = $conn->prepare("
+        SELECT * FROM slitting_product
+        WHERE ($base_where)
+          AND (coil_no LIKE ? OR product LIKE ? OR lot_no LIKE ? OR roll_no LIKE ?)
+        ORDER BY id DESC
+    ");
+    if (!$stmt) { die("Query preparation failed: " . htmlspecialchars($conn->error)); }
 
-    $stmt = $conn->prepare($query);
-
-    // Guard: prepare() returns false if SQL has a syntax error
-    if (!$stmt) {
-        die("Query preparation failed: " . htmlspecialchars($conn->error));
-    }
-
-    // Build wildcard in PHP, bind as a safe parameter
-    $likeSearch = '%' . $search . '%';
-    $stmt->bind_param("ssss", $likeSearch, $likeSearch, $likeSearch, $likeSearch);
+    $like = '%' . $search . '%';
+    $stmt->bind_param("ssss", $like, $like, $like, $like);
     $stmt->execute();
     $slitting = $stmt->get_result();
     $stmt->close();
-
 } else {
-    // No user input involved — query() is acceptable here
-    $slitting = $conn->query("SELECT * FROM slitting_product ORDER BY id DESC");
+    $slitting = $conn->query("
+        SELECT * FROM slitting_product
+        WHERE $base_where
+        ORDER BY id DESC
+    ");
 }
-// ============================================================
 
 $success = $_GET['success'] ?? null;
 
@@ -94,16 +98,22 @@ include 'header.php';
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-scissors me-2 text-primary"></i>Slitting Product Inventory</h2>
     <?php if ($success === 'update'): ?>
-        <div class="alert alert-success py-2 mb-0 shadow-sm"><i class="bi bi-check-circle me-2"></i>Product updated!</div>
+        <div class="alert alert-success py-2 mb-0 shadow-sm">
+            <i class="bi bi-check-circle me-2"></i>Product updated!
+        </div>
     <?php elseif ($success === 'delete'): ?>
-        <div class="alert alert-success py-2 mb-0 shadow-sm"><i class="bi bi-trash me-2"></i>Product deleted!</div>
+        <div class="alert alert-success py-2 mb-0 shadow-sm">
+            <i class="bi bi-trash me-2"></i>Product removed from inventory.
+        </div>
     <?php endif; ?>
 </div>
 
 <div class="row mb-3">
     <div class="col-md-5">
         <form method="GET" action="slitting_product.php" class="input-group shadow-sm">
-            <input type="text" name="search" class="form-control" placeholder="Search Coil, Product, Lot..." value="<?= htmlspecialchars($search) ?>">
+            <input type="text" name="search" class="form-control"
+                   placeholder="Search Coil, Product, Lot..."
+                   value="<?= htmlspecialchars($search) ?>">
             <button class="btn btn-primary" type="submit">
                 <i class="bi bi-search me-1"></i> Search
             </button>
@@ -154,22 +164,30 @@ include 'header.php';
                             <?= htmlspecialchars($displayLength ?? '') ?>
                         </span>
                         <?php if ($isActual): ?>
-                            <br><small class="badge bg-info text-dark" style="font-size: 0.65rem;">ACTUAL</small>
+                            <br><small class="badge bg-info text-dark" style="font-size:0.65rem;">ACTUAL</small>
                         <?php endif; ?>
                     </td>
                     <td>
-                        <img src="generate_qr.php?id=<?= $row['id'] ?>&type=slitting" width="60" class="img-thumbnail" alt="QR">
+                        <img src="generate_qr.php?id=<?= $row['id'] ?>&type=slitting"
+                             width="60" class="img-thumbnail" alt="QR">
                     </td>
                     <td>
                         <div class="btn-group shadow-sm">
                             <a href="?edit=<?= $row['id'] ?>" class="btn btn-warning btn-sm">Edit</a>
-                            <a href="select_customer.php?id=<?= $row['id'] ?>" target="_blank" class="btn btn-success btn-sm">Print</a>
-                            <a href="?delete=<?= $row['id'] ?>" onclick="return confirm('Delete this product?')" class="btn btn-danger btn-sm">Delete</a>
+                            <a href="select_customer.php?id=<?= $row['id'] ?>"
+                               target="_blank" class="btn btn-success btn-sm">Print</a>
+                            <a href="?delete=<?= $row['id'] ?>"
+                               onclick="return confirm('Remove this product from inventory?')"
+                               class="btn btn-danger btn-sm">Delete</a>
                         </div>
                     </td>
                 </tr>
             <?php endwhile; else: ?>
-                <tr><td colspan="7" class="py-5 text-muted">No products found matching your criteria.</td></tr>
+                <tr>
+                    <td colspan="7" class="py-5 text-muted">
+                        No products found<?= $search !== '' ? ' matching "' . htmlspecialchars($search) . '"' : '' ?>.
+                    </td>
+                </tr>
             <?php endif; ?>
             </tbody>
         </table>
@@ -177,40 +195,49 @@ include 'header.php';
 </div>
 
 <?php if ($editData): ?>
-<div class="modal fade show" id="editSlittingModal" style="display:block;" tabindex="-1">
+<div class="modal fade show" id="editSlittingModal"
+     style="display:block;" tabindex="-1">
     <div class="modal-dialog modal-dialog-centered">
         <form class="modal-content border-0 shadow" method="post">
             <input type="hidden" name="action" value="update">
             <input type="hidden" name="id" value="<?= $editData['id'] ?>">
             <div class="modal-header bg-warning text-dark">
-                <h5 class="modal-title fw-bold"><i class="bi bi-pencil-square me-2"></i>Edit Slitting Product</h5>
+                <h5 class="modal-title fw-bold">
+                    <i class="bi bi-pencil-square me-2"></i>Edit Slitting Product
+                </h5>
                 <a href="slitting_product.php" class="btn-close"></a>
             </div>
             <div class="modal-body p-4">
                 <div class="row g-3">
                     <div class="col-md-6 mb-3">
                         <label class="form-label fw-bold">Coil No</label>
-                        <input type="text" name="coil_no" class="form-control" value="<?= htmlspecialchars($editData['coil_no'] ?? '') ?>" required>
+                        <input type="text" name="coil_no" class="form-control"
+                               value="<?= htmlspecialchars($editData['coil_no'] ?? '') ?>" required>
                     </div>
                     <div class="col-md-6 mb-3">
                         <label class="form-label fw-bold">Product</label>
-                        <input type="text" name="product" class="form-control" value="<?= htmlspecialchars($editData['product'] ?? '') ?>" required>
+                        <input type="text" name="product" class="form-control"
+                               value="<?= htmlspecialchars($editData['product'] ?? '') ?>" required>
                     </div>
                     <div class="col-md-6 mb-3">
                         <label class="form-label fw-bold">Lot No</label>
-                        <input type="text" name="lot_no" class="form-control" value="<?= htmlspecialchars($editData['lot_no'] ?? '') ?>" required>
+                        <input type="text" name="lot_no" class="form-control"
+                               value="<?= htmlspecialchars($editData['lot_no'] ?? '') ?>" required>
                     </div>
                     <div class="col-md-6 mb-3">
                         <label class="form-label fw-bold">Roll No</label>
-                        <input type="text" name="roll_no" class="form-control" value="<?= htmlspecialchars($editData['roll_no'] ?? '') ?>" required>
+                        <input type="text" name="roll_no" class="form-control"
+                               value="<?= htmlspecialchars($editData['roll_no'] ?? '') ?>" required>
                     </div>
                     <div class="col-md-6 mb-3">
                         <label class="form-label fw-bold">Width</label>
-                        <input type="text" name="width" class="form-control" value="<?= htmlspecialchars($editData['width'] ?? '') ?>" required>
+                        <input type="text" name="width" class="form-control"
+                               value="<?= htmlspecialchars($editData['width'] ?? '') ?>" required>
                     </div>
                     <div class="col-md-6 mb-3">
                         <label class="form-label fw-bold">Length</label>
-                        <input type="text" name="length" class="form-control" value="<?= htmlspecialchars($editData['length'] ?? '') ?>" required>
+                        <input type="text" name="length" class="form-control"
+                               value="<?= htmlspecialchars($editData['length'] ?? '') ?>" required>
                     </div>
                 </div>
             </div>
@@ -224,6 +251,8 @@ include 'header.php';
 <div class="modal-backdrop fade show"></div>
 <?php endif; ?>
 
-<div class="mt-4"><a href="index.php" class="btn btn-secondary shadow-sm">← Back to Dashboard</a></div>
+<div class="mt-4">
+    <a href="index.php" class="btn btn-secondary shadow-sm">← Back to Dashboard</a>
+</div>
 
 <?php include 'footer.php'; ?>

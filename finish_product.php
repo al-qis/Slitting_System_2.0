@@ -1,10 +1,7 @@
 <?php
-// finish_product.php — UPDATED (Schema Migration v2)
-// Changes vs original:
-//   • send_to_reslit  now writes reslit_product.slitting_product_id
-//   • send_to_recoiling now writes recoiling_product.slitting_product_id
-//   • Every status change is recorded in process_log
-//   • Uses `leftover_length` column name (renamed from `stock`)
+// finish_product.php — Schema Migration v2
+// Fixed: send_to_reslit and send_to_recoiling now use a transaction,
+//        soft-deactivate the source roll properly, and write process_log.
 
 session_start();
 
@@ -19,7 +16,7 @@ if ($_SESSION['role'] !== 'slitting') {
 
 include 'config.php';
 
-// ── Helper: write one process_log row ──────────────────────────
+// ── Helper: write one process_log row ──────────────────────────────────────
 function log_process(
     mysqli  $conn,
     string  $entity_type,
@@ -40,14 +37,14 @@ function log_process(
     $stmt->bind_param(
         "siisssss",
         $entity_type, $entity_id, $mother_id,
-        $from_status,  $to_status,
+        $from_status, $to_status,
         $performed_by, $action_detail, $remark
     );
     $stmt->execute();
     $stmt->close();
 }
 
-// --- Handle Excel Export ---
+// ── Excel export redirect ───────────────────────────────────────────────────
 if (isset($_GET['download']) && $_GET['download'] === 'excel') {
     $m = isset($_GET['month']) ? (int)$_GET['month'] : (int)date('m');
     $y = isset($_GET['year'])  ? (int)$_GET['year']  : (int)date('Y');
@@ -62,20 +59,19 @@ $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 if ($month < 1 || $month > 12) { $month = (int)date('m'); }
 if ($year < 2000 || $year > 2100) { $year = (int)date('Y'); }
 
-// --- Handle QC Approve ---
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'qc_approve') {
-    $id = intval($_POST['product_id']);
+// ── QC Approve ─────────────────────────────────────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST'
+    && isset($_POST['action'])
+    && $_POST['action'] === 'qc_approve') {
 
-    // Get current status for log
+    $id  = intval($_POST['product_id']);
     $cur = $conn->query("SELECT status, mother_id FROM slitting_product WHERE id=$id")->fetch_assoc();
-    $prev_status = $cur['status'] ?? null;
-    $mid = intval($cur['mother_id'] ?? 0);
 
     $stmt = $conn->prepare("UPDATE slitting_product SET status='APPROVED', qc_comment=NULL WHERE id=? AND status='WAITING'");
     $stmt->bind_param("i", $id);
     if ($stmt->execute()) {
-        log_process($conn, 'slitting', $id, $mid ?: null,
-            $prev_status, 'APPROVED', 'qc_approve', '');
+        log_process($conn, 'slitting', $id, (int)($cur['mother_id'] ?? 0) ?: null,
+            $cur['status'], 'APPROVED', 'qc_approve', '');
         header("Location: finish_product.php?success=qc_approved");
     } else {
         header("Location: finish_product.php?error=qc_approve_failed");
@@ -84,8 +80,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     exit;
 }
 
-// --- Handle Save Actual Length + OK ---
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'update_ok') {
+// ── Save Actual Length (OK / Stock) ────────────────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST'
+    && isset($_POST['action'])
+    && $_POST['action'] === 'update_ok') {
+
     $id            = intval($_POST['id']);
     $actual_length = trim($_POST['actual_length']);
 
@@ -98,8 +97,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $stmt->execute();
     $stmt->close();
 
-    // UPDATED: read `leftover_length` instead of `stock`
     $product = $conn->query("SELECT * FROM slitting_product WHERE id=$id")->fetch_assoc();
+
+    // If cut_into_2 — write leftover balance to stock_raw_material
     if ($product && $product['cut_type'] === 'cut_into_2'
         && floatval($product['leftover_length'] ?? $product['stock'] ?? 0) > 0) {
 
@@ -123,8 +123,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 ");
                 $stmt->bind_param("ssddi",
                     $stock_lot_no, $product['coil_no'],
-                    $mother['width'], $leftover, $product['mother_id']
-                );
+                    $mother['width'], $leftover, $product['mother_id']);
                 $stmt->execute();
                 $stmt->close();
             }
@@ -139,143 +138,193 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     exit;
 }
 
-// --- Handle Send to Recoiling ---
-// UPDATED: now also writes slitting_product_id into recoiling_product
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'send_to_recoiling') {
-    $id  = intval($_POST['product_id']);
-    $res = $conn->query("SELECT * FROM slitting_product WHERE id=$id");
-    if ($res->num_rows > 0) {
-        $p               = $res->fetch_assoc();
-        $original_source = $p['original_source'] ?? 'raw_material';
-        $mid             = intval($p['mother_id'] ?? 0) ?: null;
+// ── Send to Recoiling ───────────────────────────────────────────────────────
+// FIXED: wraps in transaction, soft-deletes source roll, sets slitting_product_id FK
+if ($_SERVER['REQUEST_METHOD'] === 'POST'
+    && isset($_POST['action'])
+    && $_POST['action'] === 'send_to_recoiling') {
 
-        // UPDATED: include slitting_product_id and mother_id for full FK chain
+    $id = intval($_POST['product_id']);
+
+    $conn->begin_transaction();
+    try {
+        // Lock the row to prevent double-submit
+        $stmt = $conn->prepare("SELECT * FROM slitting_product WHERE id=? FOR UPDATE");
+        $stmt->bind_param("i", $id);
+        $stmt->execute();
+        $p = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        if (!$p) throw new RuntimeException("Roll #$id not found.");
+        if ($p['is_recoiled']) throw new RuntimeException("Roll #$id is already sent to recoiling.");
+
+        $mid             = intval($p['mother_id'] ?? 0) ?: null;
+        $original_source = $p['original_source'] ?? 'raw_material';
+        $prev_status     = $p['status'];
+
+        // 1. Soft-deactivate the source roll (mark processed, not deleted)
+        // Do NOT set status='OUT' — 'OUT' is not in the slitting_product status ENUM.
+        // is_recoiled=1 is enough to hide this row from the active list.
+        // The row will also be voided by recoiling_handler.php when the recoil completes.
+        $stmt = $conn->prepare("UPDATE slitting_product SET is_recoiled=1 WHERE id=?");
+        $stmt->bind_param("i", $id);
+        $stmt->execute();
+        $stmt->close();
+
+        // 2. Create recoiling_product entry — slitting_product_id is the critical FK
         $stmt = $conn->prepare("
             INSERT INTO recoiling_product
-                (slitting_product_id, mother_id, status, product, lot_no,
-                 coil_no, roll_no, width, length, actual_length, original_source)
+                (slitting_product_id, mother_id, status, product,
+                 lot_no, coil_no, roll_no, width, length, actual_length, original_source)
             VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
         ");
         $stmt->bind_param(
             "iissssddds",
             $id, $mid,
-            $p['product'], $p['lot_no'], $p['coil_no'],
-            $p['roll_no'], $p['width'], $p['length'], $p['actual_length'],
+            $p['product'], $p['lot_no'], $p['coil_no'], $p['roll_no'],
+            $p['width'], $p['length'], $p['actual_length'],
             $original_source
         );
+        $stmt->execute();
+        $new_recoil_id = $conn->insert_id;
+        $stmt->close();
 
-        if ($stmt->execute()) {
-            $new_recoil_id = $conn->insert_id;
-            $stmt->close();
-            $conn->query("UPDATE slitting_product SET is_recoiled=1 WHERE id=$id");
+        // 3. Write audit trail
+        log_process($conn, 'slitting', $id, $mid,
+            $prev_status, 'OUT', 'send_to_recoiling',
+            "Sent to recoiling_product id={$new_recoil_id}");
+        log_process($conn, 'recoiling', $new_recoil_id, $mid,
+            null, 'pending', 'received_from_slitting',
+            "From slitting_product id={$id}");
 
-            log_process($conn, 'slitting', $id, $mid,
-                $p['status'], 'OUT', 'send_to_recoiling',
-                "Sent to recoiling_product id={$new_recoil_id}");
-            log_process($conn, 'recoiling', $new_recoil_id, $mid,
-                null, 'pending', 'received_from_slitting',
-                "From slitting_product id={$id}");
+        // 4. Source tracking log
+        $stmt = $conn->prepare("
+            INSERT INTO source_tracking_log
+                (product_id, table_name, original_source, current_source, action)
+            VALUES (?, 'recoiling_product', ?, 'recoiling', 'send_to_recoiling')
+        ");
+        $stmt->bind_param("is", $id, $original_source);
+        $stmt->execute();
+        $stmt->close();
 
-            $src_stmt = $conn->prepare("
-                INSERT INTO source_tracking_log
-                    (product_id, table_name, original_source, current_source, action)
-                VALUES (?, 'recoiling_product', ?, 'recoiling', 'send_to_recoiling')
-            ");
-            $src_stmt->bind_param("is", $id, $original_source);
-            $src_stmt->execute();
-            $src_stmt->close();
+        $conn->commit();
+        header("Location: finish_product.php?success=recoiling");
+        exit;
 
-            header("Location: finish_product.php?success=recoiling");
-            exit;
-        }
+    } catch (Throwable $e) {
+        $conn->rollback();
+        header("Location: finish_product.php?error=recoiling_failed&msg=" . urlencode($e->getMessage()));
+        exit;
     }
 }
 
-// --- Handle Send to Reslit ---
-// UPDATED: now writes slitting_product_id into reslit_product
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'send_to_reslit') {
-    $id  = intval($_POST['product_id']);
-    $res = $conn->query("SELECT * FROM slitting_product WHERE id=$id");
-    if ($res->num_rows > 0) {
-        $p               = $res->fetch_assoc();
-        $original_source = $p['original_source'] ?? 'raw_material';
-        $mid             = intval($p['mother_id'] ?? 0) ?: null;
+// ── Send to Reslit ──────────────────────────────────────────────────────────
+// FIXED: wraps in transaction, soft-deletes source roll, sets slitting_product_id FK
+if ($_SERVER['REQUEST_METHOD'] === 'POST'
+    && isset($_POST['action'])
+    && $_POST['action'] === 'send_to_reslit') {
 
-        // UPDATED: include slitting_product_id and mother_id columns
+    $id = intval($_POST['product_id']);
+
+    $conn->begin_transaction();
+    try {
+        // Lock the row to prevent double-submit
+        $stmt = $conn->prepare("SELECT * FROM slitting_product WHERE id=? FOR UPDATE");
+        $stmt->bind_param("i", $id);
+        $stmt->execute();
+        $p = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        if (!$p) throw new RuntimeException("Roll #$id not found.");
+        if ($p['is_reslitted']) throw new RuntimeException("Roll #$id is already sent to reslit.");
+
+        $mid             = intval($p['mother_id'] ?? 0) ?: null;
+        $original_source = $p['original_source'] ?? 'raw_material';
+        $prev_status     = $p['status'];
+
+        // 1. Soft-deactivate the source roll
+        // Do NOT set status='OUT' — 'OUT' is not in the slitting_product status ENUM.
+        // is_reslitted=1 is enough to hide this row from the active list.
+        $stmt = $conn->prepare("UPDATE slitting_product SET is_reslitted=1 WHERE id=?");
+        $stmt->bind_param("i", $id);
+        $stmt->execute();
+        $stmt->close();
+
+        // 2. Create reslit_product entry — slitting_product_id is the critical FK
         $stmt = $conn->prepare("
             INSERT INTO reslit_product
-                (slitting_product_id, status, product, lot_no, coil_no,
-                 roll_no, width, length, date_in, original_source)
+                (slitting_product_id, status, product,
+                 lot_no, coil_no, roll_no, width, length, date_in, original_source)
             VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, NOW(), ?)
         ");
         $stmt->bind_param(
             "issssdds",
             $id,
-            $p['product'], $p['lot_no'], $p['coil_no'],
-            $p['roll_no'], $p['width'], $p['length'],
+            $p['product'], $p['lot_no'], $p['coil_no'], $p['roll_no'],
+            $p['width'],
+            $p['actual_length'] ?: $p['length'],
             $original_source
         );
+        $stmt->execute();
+        $new_reslit_id = $conn->insert_id;
+        $stmt->close();
 
-        if ($stmt->execute()) {
-            $new_reslit_id = $conn->insert_id;
-            $stmt->close();
-            $conn->query("UPDATE slitting_product SET is_reslitted=1 WHERE id=$id");
+        // 3. Write audit trail
+        log_process($conn, 'slitting', $id, $mid,
+            $prev_status, 'OUT', 'send_to_reslit',
+            "Sent to reslit_product id={$new_reslit_id}");
+        log_process($conn, 'reslit', $new_reslit_id, $mid,
+            null, 'pending', 'received_from_slitting',
+            "From slitting_product id={$id}");
 
-            log_process($conn, 'slitting', $id, $mid,
-                $p['status'], 'OUT', 'send_to_reslit',
-                "Sent to reslit_product id={$new_reslit_id}");
-            log_process($conn, 'reslit', $new_reslit_id, $mid,
-                null, 'pending', 'received_from_slitting',
-                "From slitting_product id={$id}");
+        // 4. Source tracking log
+        $stmt = $conn->prepare("
+            INSERT INTO source_tracking_log
+                (product_id, table_name, original_source, current_source, action)
+            VALUES (?, 'reslit_product', ?, 'reslit', 'send_to_reslit')
+        ");
+        $stmt->bind_param("is", $id, $original_source);
+        $stmt->execute();
+        $stmt->close();
 
-            $src_stmt = $conn->prepare("
-                INSERT INTO source_tracking_log
-                    (product_id, table_name, original_source, current_source, action)
-                VALUES (?, 'reslit_product', ?, 'reslit', 'send_to_reslit')
-            ");
-            $src_stmt->bind_param("is", $id, $original_source);
-            $src_stmt->execute();
-            $src_stmt->close();
+        $conn->commit();
+        header("Location: finish_product.php?success=reslit");
+        exit;
 
-            header("Location: finish_product.php?success=reslit");
-            exit;
-        }
+    } catch (Throwable $e) {
+        $conn->rollback();
+        header("Location: finish_product.php?error=reslit_failed&msg=" . urlencode($e->getMessage()));
+        exit;
     }
 }
 
-// ── Main query ──────────────────────────────────────────────────
-$baseSql = "SELECT * FROM slitting_product
-            WHERE (is_recoiled=0 OR is_recoiled IS NULL)
-            AND (is_reslitted=0 OR is_reslitted IS NULL)
-            AND (
-                (status='IN' AND MONTH(date_in)=? AND YEAR(date_in)=?)
-                OR (status IN ('WAITING','OUT','APPROVED','REJECTED')
-                    AND MONTH(date_out)=? AND YEAR(date_out)=?)
-                OR (status='DELIVERED'
-                    AND MONTH(delivered_at)=? AND YEAR(delivered_at)=?)
-            )";
+// ── Main query ──────────────────────────────────────────────────────────────
+$baseSql = "
+    SELECT * FROM slitting_product
+    WHERE is_voided = 0
+      AND (is_recoiled = 0 OR is_recoiled IS NULL)
+      AND (is_reslitted = 0 OR is_reslitted IS NULL)
+      AND (
+          (status = 'IN' AND MONTH(date_in) = ? AND YEAR(date_in) = ?)
+          OR (status IN ('WAITING','OUT','APPROVED','REJECTED')
+              AND MONTH(date_out) = ? AND YEAR(date_out) = ?)
+          OR (status = 'DELIVERED'
+              AND MONTH(delivered_at) = ? AND YEAR(delivered_at) = ?)
+      )";
 
 if ($search !== '') {
-    $baseSql .= " AND (
-                    product LIKE ? OR
-                    lot_no  LIKE ? OR
-                    coil_no LIKE ? OR
-                    roll_no LIKE ? OR
-                    id      LIKE ?
-                  )";
+    $baseSql .= " AND (product LIKE ? OR lot_no LIKE ? OR coil_no LIKE ? OR roll_no LIKE ? OR id LIKE ?)";
 }
-
 $baseSql .= " ORDER BY id ASC";
 
 $stmt = $conn->prepare($baseSql);
 if (!$stmt) { die("Query prepare failed: " . htmlspecialchars($conn->error)); }
 
 if ($search !== '') {
-    $likeSearch = '%' . $search . '%';
+    $like = '%' . $search . '%';
     $stmt->bind_param("iiiiiisssss",
         $month, $year, $month, $year, $month, $year,
-        $likeSearch, $likeSearch, $likeSearch, $likeSearch, $likeSearch
-    );
+        $like, $like, $like, $like, $like);
 } else {
     $stmt->bind_param("iiiiii", $month, $year, $month, $year, $month, $year);
 }
@@ -284,16 +333,16 @@ $stmt->execute();
 $result = $stmt->get_result();
 $stmt->close();
 
-// Summaries
-$in      = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE status='IN' AND is_completed=0 AND (is_recoiled=0 OR is_recoiled IS NULL) AND (is_reslitted=0 OR is_reslitted IS NULL) AND MONTH(date_in)=$month AND YEAR(date_in)=$year")->fetch_assoc()['total'];
-$stock   = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE status='IN' AND stock_counted=1 AND (is_recoiled=0 OR is_recoiled IS NULL) AND (is_reslitted=0 OR is_reslitted IS NULL) AND MONTH(date_in)=$month AND YEAR(date_in)=$year")->fetch_assoc()['total'];
-$waiting = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE status='WAITING' AND MONTH(date_out)=$month AND YEAR(date_out)=$year")->fetch_assoc()['total'];
-$deliver = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE status='DELIVERED' AND MONTH(delivered_at)=$month AND YEAR(delivered_at)=$year")->fetch_assoc()['total'];
+// Summary counts
+$in      = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='IN' AND is_completed=0 AND (is_recoiled=0 OR is_recoiled IS NULL) AND (is_reslitted=0 OR is_reslitted IS NULL) AND MONTH(date_in)=$month AND YEAR(date_in)=$year")->fetch_assoc()['total'];
+$stock   = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='IN' AND stock_counted=1 AND (is_recoiled=0 OR is_recoiled IS NULL) AND (is_reslitted=0 OR is_reslitted IS NULL) AND MONTH(date_in)=$month AND YEAR(date_in)=$year")->fetch_assoc()['total'];
+$waiting = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='WAITING' AND MONTH(date_out)=$month AND YEAR(date_out)=$year")->fetch_assoc()['total'];
+$deliver = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='DELIVERED' AND MONTH(delivered_at)=$month AND YEAR(delivered_at)=$year")->fetch_assoc()['total'];
 
 $editData = null;
 if (isset($_GET['edit'])) {
-    $id  = intval($_GET['edit']);
-    $res = $conn->query("SELECT * FROM slitting_product WHERE id=$id");
+    $eid = intval($_GET['edit']);
+    $res = $conn->query("SELECT * FROM slitting_product WHERE id=$eid");
     if ($res->num_rows > 0) $editData = $res->fetch_assoc();
 }
 
@@ -302,25 +351,22 @@ include 'header.php';
 ?>
 
 <style>
-    .pending-row   { background-color: #fff3cd; }
-    .completed-row { background-color: #d1e7dd; }
-    .sfc-row       { background-color: #e7f3ff; border-left: 4px solid #0066ff; }
-    table { table-layout: fixed; width: 100%; }
-    table th, table td { word-wrap: break-word; vertical-align: middle; font-size: 13px; }
-    table td img { max-width: 60px; max-height: 60px; display: block; margin: 0 auto; }
-    table th:nth-child(1)  { width: 45px; }
-    table th:nth-child(2)  { width: 110px; }
-    table th:nth-child(3)  { width: 70px; }
-    table th:nth-child(4)  { width: 90px; }
-    table th:nth-child(5)  { width: 110px; }
-    table th:nth-child(6)  { width: 70px; }
-    table th:nth-child(7)  { width: 60px; }
-    table th:nth-child(8)  { width: 60px; }
-    table th:nth-child(9)  { width: 70px; }
-    table th:nth-child(10) { width: 90px; }
-    table th:nth-child(11) { width: 90px; }
-    table th:nth-child(12) { width: 70px; }
-    table th:nth-child(13) { width: 140px; }
+table { table-layout: fixed; width: 100%; }
+table th, table td { word-wrap: break-word; vertical-align: middle; font-size: 13px; }
+table td img { max-width: 60px; max-height: 60px; display: block; margin: 0 auto; }
+table th:nth-child(1)  { width: 45px; }
+table th:nth-child(2)  { width: 110px; }
+table th:nth-child(3)  { width: 70px; }
+table th:nth-child(4)  { width: 90px; }
+table th:nth-child(5)  { width: 110px; }
+table th:nth-child(6)  { width: 70px; }
+table th:nth-child(7)  { width: 60px; }
+table th:nth-child(8)  { width: 60px; }
+table th:nth-child(9)  { width: 70px; }
+table th:nth-child(10) { width: 90px; }
+table th:nth-child(11) { width: 90px; }
+table th:nth-child(12) { width: 70px; }
+table th:nth-child(13) { width: 140px; }
 </style>
 
 <h2 class="mb-4"><i class="bi bi-check-circle me-2"></i>Finish Product</h2>
@@ -330,6 +376,13 @@ include 'header.php';
            style="position:fixed; left:-9999px; opacity:0;" autofocus>
 </form>
 
+<?php if (isset($_GET['error'])): ?>
+<div class="alert alert-danger alert-dismissible fade show">
+    <strong>Error:</strong> <?= htmlspecialchars(urldecode($_GET['msg'] ?? $_GET['error'])) ?>
+    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+<?php endif; ?>
+
 <div class="row mb-3 g-2 align-items-center">
     <div class="col-auto">
         <form method="get" class="d-flex gap-2 align-items-center">
@@ -338,7 +391,7 @@ include 'header.php';
             <select name="month" onchange="this.form.submit()" class="form-select form-select-sm w-auto">
                 <?php for ($m = 1; $m <= 12; $m++): ?>
                     <option value="<?= $m ?>" <?= ($m == $month) ? 'selected' : '' ?>>
-                        <?= date("F", mktime(0, 0, 0, $m, 1)) ?>
+                        <?= date("F", mktime(0,0,0,$m,1)) ?>
                     </option>
                 <?php endfor; ?>
             </select>
@@ -368,17 +421,17 @@ include 'header.php';
 <div class="mb-3 d-flex gap-2">
     <a href="?month=<?= $month ?>&year=<?= $year ?>&download=excel" class="btn btn-success btn-sm">Download Excel</a>
     <button type="button" class="btn btn-warning btn-sm" data-bs-toggle="modal" data-bs-target="#manualEntryModal">Manual Entry</button>
-    <a href="sfc_tracking.php" class="btn btn-info btn-sm">SFC Tracking Report</a>
+    <a href="sfc_tracking.php"      class="btn btn-info btn-sm">SFC Tracking Report</a>
     <a href="process_log_viewer.php" class="btn btn-secondary btn-sm">
         <i class="bi bi-clock-history me-1"></i> Process Log
     </a>
 </div>
 
 <div class="d-flex mb-4 gap-2">
-    <div class="card flex-fill text-center text-bg-info"><div class="card-body p-2"><h6>IN</h6><h2><?= (int)$in ?></h2></div></div>
-    <div class="card flex-fill text-center text-bg-primary"><div class="card-body p-2"><h6>STOCK</h6><h2><?= (int)$stock ?></h2></div></div>
-    <div class="card flex-fill text-center text-bg-warning"><div class="card-body p-2"><h6>WAITING</h6><h2><?= (int)$waiting ?></h2></div></div>
-    <div class="card flex-fill text-center text-bg-success"><div class="card-body p-2"><h6>DELIVER</h6><h2><?= (int)$deliver ?></h2></div></div>
+    <div class="card flex-fill text-center text-bg-info">   <div class="card-body p-2"><h6>IN</h6>      <h2><?= (int)$in ?></h2>     </div></div>
+    <div class="card flex-fill text-center text-bg-primary"><div class="card-body p-2"><h6>STOCK</h6>   <h2><?= (int)$stock ?></h2>  </div></div>
+    <div class="card flex-fill text-center text-bg-warning"><div class="card-body p-2"><h6>WAITING</h6> <h2><?= (int)$waiting ?></h2></div></div>
+    <div class="card flex-fill text-center text-bg-success"><div class="card-body p-2"><h6>DELIVER</h6> <h2><?= (int)$deliver ?></h2></div></div>
 </div>
 
 <div class="table-responsive">
@@ -404,7 +457,6 @@ include 'header.php';
                 'DELIVERED' => 'table-success',
                 default     => ''
             };
-
             if ($isFromSFC) { $rowClass .= ' sfc-row'; }
 
             $statusBadge = match($row['status']) {
@@ -417,8 +469,7 @@ include 'header.php';
                 'REJECTED'  => '<div><span class="badge bg-danger" data-bs-toggle="tooltip"
                                     title="Reason: ' . htmlspecialchars($row['qc_comment'] ?? 'No reason') . '">
                                     REJECTED <i class="bi bi-info-circle"></i></span><br>
-                                    <small class="text-danger fw-bold">'
-                                    . htmlspecialchars($row['qc_comment'] ?? '') . '</small></div>',
+                                    <small class="text-danger fw-bold">' . htmlspecialchars($row['qc_comment'] ?? '') . '</small></div>',
                 'DELIVERED' => '<span class="badge bg-success">DELIVERED</span>',
                 default     => '<span class="badge bg-secondary">' . $row['status'] . '</span>'
             };
@@ -457,13 +508,13 @@ include 'header.php';
     <?php elseif ($row['status'] == 'REJECTED'): ?>
         <div class="d-flex flex-column gap-1">
             <form method="post" onsubmit="return confirm('Reslit this rejected product?')">
-                <input type="hidden" name="action"      value="send_to_reslit">
-                <input type="hidden" name="product_id"  value="<?= $row['id'] ?>">
+                <input type="hidden" name="action"     value="send_to_reslit">
+                <input type="hidden" name="product_id" value="<?= $row['id'] ?>">
                 <button type="submit" class="btn btn-warning btn-sm w-100">Reslit</button>
             </form>
             <form method="post" onsubmit="return confirm('Move rejected product to Recoiling?')">
-                <input type="hidden" name="action"      value="send_to_recoiling">
-                <input type="hidden" name="product_id"  value="<?= $row['id'] ?>">
+                <input type="hidden" name="action"     value="send_to_recoiling">
+                <input type="hidden" name="product_id" value="<?= $row['id'] ?>">
                 <button type="submit" class="btn btn-info btn-sm w-100 text-white">Recoiling</button>
             </form>
         </div>
@@ -474,16 +525,15 @@ include 'header.php';
                class="btn <?= $row['is_completed'] == 0 ? 'btn-primary' : 'btn-outline-primary' ?> btn-sm w-100">
                <?= $row['is_completed'] == 0 ? 'Update' : 'Edit Length' ?>
             </a>
-
             <?php if ($row['stock_counted'] == 1): ?>
                 <form method="post" onsubmit="return confirm('Send to reslit?')">
-                    <input type="hidden" name="action"      value="send_to_reslit">
-                    <input type="hidden" name="product_id"  value="<?= $row['id'] ?>">
+                    <input type="hidden" name="action"     value="send_to_reslit">
+                    <input type="hidden" name="product_id" value="<?= $row['id'] ?>">
                     <button type="submit" class="btn btn-warning btn-sm w-100">Reslit</button>
                 </form>
                 <form method="post" onsubmit="return confirm('Move to Recoiling?')">
-                    <input type="hidden" name="action"      value="send_to_recoiling">
-                    <input type="hidden" name="product_id"  value="<?= $row['id'] ?>">
+                    <input type="hidden" name="action"     value="send_to_recoiling">
+                    <input type="hidden" name="product_id" value="<?= $row['id'] ?>">
                     <button type="submit" class="btn btn-info btn-sm w-100 text-white">Recoiling</button>
                 </form>
                 <a href="select_customer.php?id=<?= $row['id'] ?>" class="btn btn-secondary btn-sm w-100">Print Only</a>
@@ -500,7 +550,7 @@ include 'header.php';
             </tr>
         <?php endwhile; else: ?>
             <tr><td colspan="13" class="py-4 text-muted">
-                No products found matching "<?= htmlspecialchars($search) ?>"
+                No products found<?= $search !== '' ? ' matching "' . htmlspecialchars($search) . '"' : '' ?>.
             </td></tr>
         <?php endif; ?>
         </tbody>
@@ -579,7 +629,6 @@ setInterval(() => {
 qIn.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && qIn.value.trim() !== '') qFm.submit();
 });
-
 var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
 tooltipTriggerList.map(el => new bootstrap.Tooltip(el));
 </script>
