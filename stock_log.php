@@ -8,32 +8,38 @@ if (!isset($_SESSION['role'])) {
 
 include 'config.php';
 
-// 2. Filter Logic (Month & Year)
 $month = isset($_GET['month']) ? (int)$_GET['month'] : (int)date('m');
 $year  = isset($_GET['year'])  ? (int)$_GET['year']  : (int)date('Y');
 
 if ($month < 1 || $month > 12) { $month = (int)date('m'); }
 if ($year < 2020 || $year > 2030) { $year = (int)date('Y'); }
 
-// Query for log - all records (IN and OUT)
-$query = "SELECT id, lot_no, coil_no, grade, width, length, status, source_type, source_id, date_in, updated_at
+$stmt = $conn->prepare("SELECT id, lot_no, coil_no, grade, width, length, status, source_type, source_id, date_in, updated_at
           FROM stock_raw_material
-          WHERE (MONTH(date_in)=$month AND YEAR(date_in)=$year) 
-             OR (MONTH(updated_at)=$month AND YEAR(updated_at)=$year)
-          ORDER BY id DESC";
-$result = $conn->query($query);
+          WHERE (MONTH(date_in) = ? AND YEAR(date_in) = ?)
+             OR (MONTH(updated_at) = ? AND YEAR(updated_at) = ?)
+          ORDER BY id DESC");
+$stmt->bind_param("iiii", $month, $year, $month, $year);
+$stmt->execute();
+$result = $stmt->get_result();
+$stmt->close();
 
-// Count totals for the period
-$in_count = $conn->query("SELECT COUNT(*) AS total FROM stock_raw_material 
-                          WHERE status='IN' AND MONTH(date_in)=$month AND YEAR(date_in)=$year")
-                          ->fetch_assoc()['total'];
+$in_stmt = $conn->prepare("SELECT COUNT(*) AS total FROM stock_raw_material
+                            WHERE status='IN' AND MONTH(date_in) = ? AND YEAR(date_in) = ?");
+$in_stmt->bind_param("ii", $month, $year);
+$in_stmt->execute();
+$in_count = $in_stmt->get_result()->fetch_assoc()['total'];
+$in_stmt->close();
 
-$out_count = $conn->query("SELECT COUNT(*) AS total FROM stock_raw_material 
-                           WHERE status='OUT' AND MONTH(updated_at)=$month AND YEAR(updated_at)=$year")
-                           ->fetch_assoc()['total'];
+$out_stmt = $conn->prepare("SELECT COUNT(*) AS total FROM stock_raw_material
+                             WHERE status='OUT' AND MONTH(updated_at) = ? AND YEAR(updated_at) = ?");
+$out_stmt->bind_param("ii", $month, $year);
+$out_stmt->execute();
+$out_count = $out_stmt->get_result()->fetch_assoc()['total'];
+$out_stmt->close();
 
 $page_title = "Stock Raw Material Log";
-include 'header.php'; 
+include 'header.php';
 ?>
 
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -54,9 +60,9 @@ include 'header.php';
             <div class="col-auto">
                 <label class="small fw-bold text-muted">Month:</label>
                 <select name="month" onchange="this.form.submit()" class="form-select form-select-sm w-auto d-inline-block ms-1">
-                    <?php for($m=1;$m<=12;$m++): ?>
-                        <option value="<?= $m ?>" <?= ($m==$month)?'selected':'' ?>>
-                            <?= date("F", mktime(0,0,0,$m,1)) ?>
+                    <?php for ($m = 1; $m <= 12; $m++): ?>
+                        <option value="<?= $m ?>" <?= ($m == $month) ? 'selected' : '' ?>>
+                            <?= date("F", mktime(0, 0, 0, $m, 1)) ?>
                         </option>
                     <?php endfor; ?>
                 </select>
@@ -64,8 +70,8 @@ include 'header.php';
             <div class="col-auto">
                 <label class="small fw-bold text-muted">Year:</label>
                 <select name="year" onchange="this.form.submit()" class="form-select form-select-sm w-auto d-inline-block ms-1">
-                    <?php for($y=2024; $y<=2030; $y++): ?>
-                        <option value="<?= $y ?>" <?= ($y==$year)?'selected':'' ?>><?= $y ?></option>
+                    <?php for ($y = 2024; $y <= 2030; $y++): ?>
+                        <option value="<?= $y ?>" <?= ($y == $year) ? 'selected' : '' ?>><?= $y ?></option>
                     <?php endfor; ?>
                 </select>
             </div>
@@ -73,7 +79,6 @@ include 'header.php';
     </div>
 </div>
 
-<!-- Summary Cards -->
 <div class="row g-3 mb-4 text-center">
     <div class="col-md-3">
         <div class="card border-0 shadow-sm bg-white">
@@ -107,8 +112,11 @@ include 'header.php';
             <div class="card-body p-2">
                 <h6 class="small mb-1">CURRENT STOCK</h6>
                 <h4 class="fw-bold mb-0">
-                    <?php 
-                    $current = $conn->query("SELECT COUNT(*) AS total FROM stock_raw_material WHERE status='IN'")->fetch_assoc()['total'];
+                    <?php
+                    $current_stmt = $conn->prepare("SELECT COUNT(*) AS total FROM stock_raw_material WHERE status='IN'");
+                    $current_stmt->execute();
+                    $current = $current_stmt->get_result()->fetch_assoc()['total'];
+                    $current_stmt->close();
                     echo $current;
                     ?>
                 </h4>
@@ -118,7 +126,6 @@ include 'header.php';
     </div>
 </div>
 
-<!-- Stock Raw Material Log Table -->
 <div class="card shadow-sm border-0 mb-5">
     <div class="card-header bg-dark text-white fw-bold py-3">
         <i class="bi bi-table me-2"></i>Complete Stock Tracking History
@@ -141,16 +148,18 @@ include 'header.php';
                 </tr>
             </thead>
             <tbody>
-                <?php if($result && $result->num_rows > 0): ?>
-                    <?php while($row = $result->fetch_assoc()): 
-                        $statusBadge = $row['status'] == 'IN' ? '<span class="badge bg-success">IN STOCK</span>' : '<span class="badge bg-secondary">OUT</span>';
-                        $sourceBadge = ($row['source_type'] == 'slitting_cut_into_2') 
-                                     ? '<span class="badge bg-warning text-dark">Cut Into 2</span>' 
-                                     : '<span class="badge bg-info">Mother Coil</span>';
+                <?php if ($result && $result->num_rows > 0): ?>
+                    <?php while ($row = $result->fetch_assoc()):
+                        $statusBadge = $row['status'] == 'IN'
+                            ? '<span class="badge bg-success">IN STOCK</span>'
+                            : '<span class="badge bg-secondary">OUT</span>';
+                        $sourceBadge = ($row['source_type'] == 'slitting_cut_into_2')
+                            ? '<span class="badge bg-warning text-dark">Cut Into 2</span>'
+                            : '<span class="badge bg-info">Mother Coil</span>';
                         $rowClass = ($row['source_type'] == 'slitting_cut_into_2') ? 'table-warning' : '';
                     ?>
                     <tr class="<?= $rowClass ?>">
-                        <td class="fw-bold">#<?= $row['id'] ?></td>
+                        <td class="fw-bold">#<?= intval($row['id']) ?></td>
                         <td><?= htmlspecialchars($row['lot_no']) ?></td>
                         <td><?= htmlspecialchars($row['coil_no']) ?></td>
                         <td><?= htmlspecialchars($row['grade'] ?? '-') ?></td>
@@ -158,8 +167,8 @@ include 'header.php';
                         <td><?= number_format((float)$row['width']) ?></td>
                         <td><?= $statusBadge ?></td>
                         <td><?= $sourceBadge ?></td>
-                        <td class="small"><?= $row['date_in'] ?? '-' ?></td>
-                        <td class="small"><?= $row['updated_at'] ?? '-' ?></td>
+                        <td class="small"><?= htmlspecialchars($row['date_in'] ?? '-') ?></td>
+                        <td class="small"><?= htmlspecialchars($row['updated_at'] ?? '-') ?></td>
                     </tr>
                     <?php endwhile; ?>
                 <?php else: ?>
@@ -171,7 +180,6 @@ include 'header.php';
 </div>
 
 <script>
-// Show success message if set
 <?php if (isset($_SESSION['success'])): ?>
     alert('<?= htmlspecialchars($_SESSION['success']) ?>');
     <?php unset($_SESSION['success']); ?>

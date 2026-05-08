@@ -28,11 +28,11 @@ function productFromCoil(mysqli $conn, string $coil_no): string
 if (isset($_GET['ajax']) && $_GET['ajax'] === 'get_product') {
     header('Content-Type: application/json; charset=utf-8');
 
-    $coil = $_GET['coil'] ?? '';
+    $coil    = $_GET['coil'] ?? '';
     $product = productFromCoil($conn, $coil);
 
     echo json_encode([
-        'ok' => ($product !== ''),
+        'ok'      => ($product !== ''),
         'product' => $product
     ]);
     exit;
@@ -45,22 +45,37 @@ if (!isset($_SESSION['role'])) {
     exit;
 }
 
-if (!in_array($_SESSION['role'], ['slitting','mkl3'], true)) {
+if (!in_array($_SESSION['role'], ['slitting', 'mkl3'], true)) {
     die("Access denied");
 }
 
+// ── Read alert state from URL ─────────────────────────────────
 $success = $_GET['success'] ?? null;
+$error   = $_GET['error']   ?? null;
 
-// --- POST ACTIONS (ADD/UPDATE) ---
+$error_messages = [
+    'not_found'     => '❌ Mother coil not found. It may have already been deleted.',
+    'missing_id'    => '❌ No ID was provided.',
+    'invalid_id'    => '❌ Invalid ID.',
+    'delete_failed' => '❌ Delete failed: ' . htmlspecialchars(urldecode($_GET['msg'] ?? 'Unknown error')),
+];
+
+$success_messages = [
+    '1'      => '✅ Mother coil saved successfully.',
+    '3'      => '✅ Mother coil deleted successfully.',
+    'update' => '✅ Mother coil updated successfully.',
+];
+
+// ── POST ACTIONS (ADD / UPDATE) ───────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $action = $_POST['action'] ?? '';
+    $action  = $_POST['action'] ?? '';
 
     $id      = intval($_POST['id'] ?? 0);
-    $lot_no  = trim($_POST['lot_no'] ?? '');
+    $lot_no  = trim($_POST['lot_no']  ?? '');
     $coil_no = trim($_POST['coil_no'] ?? '');
-    $grade   = trim($_POST['grade'] ?? '');
-    $width   = trim($_POST['width'] ?? '');
-    $length  = trim($_POST['length'] ?? '');
+    $grade   = trim($_POST['grade']   ?? '');
+    $width   = trim($_POST['width']   ?? '');
+    $length  = trim($_POST['length']  ?? '');
 
     if ($action === 'add') {
         $product = productFromCoil($conn, $coil_no);
@@ -72,9 +87,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         die("Field missing");
     }
 
-    // === DUPLICATE CHECK LOGIC ===
-    $check_sql = "SELECT id FROM mother_coil WHERE coil_no = ? AND lot_no = ? AND id != ?";
-    $check_stmt = $conn->prepare($check_sql);
+    // Duplicate check
+    $check_stmt = $conn->prepare("SELECT id FROM mother_coil WHERE coil_no = ? AND lot_no = ? AND id != ?");
     $check_stmt->bind_param("ssi", $coil_no, $lot_no, $id);
     $check_stmt->execute();
     $check_res = $check_stmt->get_result();
@@ -88,14 +102,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
              </div>");
     }
     $check_stmt->close();
-    // === END OF DUPLICATE CHECK ===
 
     if ($action === 'add') {
         $stmt = $conn->prepare("
             INSERT INTO mother_coil (product, grade, lot_no, coil_no, width, length, date_created, status)
             VALUES (?,?,?,?,?,?,NOW(), 'NEW')
         ");
-        if (!$stmt) die("Prepare failed: ".$conn->error);
+        if (!$stmt) die("Prepare failed: " . $conn->error);
 
         $stmt->bind_param("ssssss", $product, $grade, $lot_no, $coil_no, $width, $length);
         $stmt->execute();
@@ -111,25 +124,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             SET product=?, grade=?, lot_no=?, coil_no=?, width=?, length=?
             WHERE id=?
         ");
-        if (!$stmt) die("Prepare failed: ".$conn->error);
+        if (!$stmt) die("Prepare failed: " . $conn->error);
 
         $stmt->bind_param("ssssssi", $product, $grade, $lot_no, $coil_no, $width, $length, $id);
         $stmt->execute();
         $stmt->close();
 
-        header("Location: mother_coil.php?success=1");
+        header("Location: mother_coil.php?success=update");
         exit;
     }
 }
 
-// --- SEARCH LOGIC ---
+// ── SEARCH ────────────────────────────────────────────────────
 $search = trim($_GET['search'] ?? '');
 if ($search !== '') {
     $searchTerm = "%$search%";
-    $stmt = $conn->prepare("SELECT * FROM mother_coil 
-                            WHERE coil_no LIKE ? 
-                            OR lot_no LIKE ? 
-                            OR product LIKE ? 
+    $stmt = $conn->prepare("SELECT * FROM mother_coil
+                            WHERE coil_no LIKE ?
+                            OR lot_no LIKE ?
+                            OR product LIKE ?
                             ORDER BY id ASC");
     $stmt->bind_param("sss", $searchTerm, $searchTerm, $searchTerm);
     $stmt->execute();
@@ -142,7 +155,21 @@ $page_title = 'Mother Coil';
 include 'header.php';
 ?>
 
-<h2 class="mb-4"><i class="bi bi-layer-forward me-2"></i>Mother Coil List</h2>
+<h2 class="mb-3"><i class="bi bi-layer-forward me-2"></i>Mother Coil List</h2>
+
+<?php if ($error && isset($error_messages[$error])): ?>
+    <div class="alert alert-<?= $error === 'has_children' ? 'warning' : 'danger' ?> alert-dismissible fade show shadow-sm mb-3">
+        <?= $error_messages[$error] ?>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+<?php endif; ?>
+
+<?php if ($success && isset($success_messages[$success])): ?>
+    <div class="alert alert-success alert-dismissible fade show shadow-sm mb-3">
+        <?= $success_messages[$success] ?>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+<?php endif; ?>
 
 <div class="row mb-3">
     <div class="col-md-6">
@@ -152,11 +179,15 @@ include 'header.php';
             </button>
         <?php endif; ?>
     </div>
-    
+
     <div class="col-md-6">
         <form method="GET" action="mother_coil.php" class="input-group input-group-sm">
-            <input type="text" name="search" class="form-control" placeholder="Search Coil No, Lot, or Product..." value="<?= htmlspecialchars($search) ?>">
-            <button class="btn btn-primary" type="submit"><i class="bi bi-search"></i> Search</button>
+            <input type="text" name="search" class="form-control"
+                   placeholder="Search Coil No, Lot, or Product..."
+                   value="<?= htmlspecialchars($search) ?>">
+            <button class="btn btn-primary" type="submit">
+                <i class="bi bi-search"></i> Search
+            </button>
             <?php if ($search !== ''): ?>
                 <a href="mother_coil.php" class="btn btn-outline-secondary">Clear</a>
             <?php endif; ?>
@@ -192,23 +223,39 @@ include 'header.php';
                     <td><?= htmlspecialchars($row['length'] ?? '', ENT_QUOTES) ?></td>
                     <td><?= htmlspecialchars($row['date_created'] ?? '', ENT_QUOTES) ?></td>
                     <td>
-                        <img src="generate_qr.php?product=<?= urlencode($row['product'] ?? '') ?>&lot=<?= urlencode($row['lot_no'] ?? '') ?>&coil=<?= urlencode($row['coil_no'] ?? '') ?>&width=<?= urlencode($row['width'] ?? '') ?>&length=<?= urlencode($row['length'] ?? '') ?>&type=mother" width="70" alt="QR">
+                        <img src="generate_qr.php?product=<?= urlencode($row['product'] ?? '') ?>&lot=<?= urlencode($row['lot_no'] ?? '') ?>&coil=<?= urlencode($row['coil_no'] ?? '') ?>&width=<?= urlencode($row['width'] ?? '') ?>&length=<?= urlencode($row['length'] ?? '') ?>&type=mother"
+                             width="70" alt="QR">
                     </td>
                     <td>
                     <?php if (in_array($_SESSION['role'], ['mkl3', 'slitting'], true)): ?>
-                        <button type="button" class="btn btn-warning btn-sm me-1 editBtn"
-                            data-id="<?= $id ?>"
-                            data-product="<?= htmlspecialchars($row['product'] ?? '', ENT_QUOTES) ?>"
-                            data-lot_no="<?= htmlspecialchars($row['lot_no'] ?? '', ENT_QUOTES) ?>"
-                            data-coil_no="<?= htmlspecialchars($row['coil_no'] ?? '', ENT_QUOTES) ?>"
-                            data-grade="<?= htmlspecialchars($row['grade'] ?? '', ENT_QUOTES) ?>"
-                            data-width="<?= htmlspecialchars($row['width'] ?? '', ENT_QUOTES) ?>"
-                            data-length="<?= htmlspecialchars($row['length'] ?? '', ENT_QUOTES) ?>"
-                            data-bs-toggle="modal" data-bs-target="#editMotherModal">Edit</button>
+                        <button type="button"
+                                class="btn btn-warning btn-sm me-1 editBtn"
+                                data-id="<?= $id ?>"
+                                data-product="<?= htmlspecialchars($row['product'] ?? '', ENT_QUOTES) ?>"
+                                data-lot_no="<?= htmlspecialchars($row['lot_no'] ?? '', ENT_QUOTES) ?>"
+                                data-coil_no="<?= htmlspecialchars($row['coil_no'] ?? '', ENT_QUOTES) ?>"
+                                data-grade="<?= htmlspecialchars($row['grade'] ?? '', ENT_QUOTES) ?>"
+                                data-width="<?= htmlspecialchars($row['width'] ?? '', ENT_QUOTES) ?>"
+                                data-length="<?= htmlspecialchars($row['length'] ?? '', ENT_QUOTES) ?>"
+                                data-bs-toggle="modal"
+                                data-bs-target="#editMotherModal">
+                            Edit
+                        </button>
 
-                        <a href="delete_mother.php?id=<?= $id ?>" class="btn btn-danger btn-sm" onclick="return confirm('Are you sure?')">Delete</a>
-                        <a href="print_mother.php?id=<?= $id ?>" class="btn btn-info btn-sm" target="_blank">Print</a>
-                        <a href="mother_coil_journal.php?id=<?= $id ?>" class="btn btn-info btn-sm">
+                        <a href="delete_mother.php?id=<?= $id ?>"
+                           class="btn btn-danger btn-sm"
+                           onclick="return confirm('⚠️ DELETE MOTHER COIL?\n\nThis will permanently delete:\n• All slitting records\n• All recoiling & reslit records\n• All SFC entries\n• All stock & audit logs\n\nlinked to this mother coil.\n\nThis CANNOT be undone. Continue?')">
+                            Delete
+                        </a>
+
+                        <a href="print_mother.php?id=<?= $id ?>"
+                           class="btn btn-info btn-sm"
+                           target="_blank">
+                            Print
+                        </a>
+
+                        <a href="mother_coil_journal.php?id=<?= $id ?>"
+                           class="btn btn-info btn-sm">
                             <i class="bi bi-journal-text"></i> Journal
                         </a>
                     <?php else: ?>
@@ -225,6 +272,7 @@ include 'header.php';
     </tbody>
 </table>
 
+<!-- ── ADD MODAL ─────────────────────────────────────────────── -->
 <div class="modal fade" id="addMotherModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog">
     <div class="modal-content">
@@ -241,7 +289,9 @@ include 'header.php';
           </div>
           <div class="mb-3">
             <label class="form-label">Lot No</label>
-            <input type="text" name="lot_no" id="add_lot_no" class="form-control" required maxlength="8" pattern="^[a-zA-Z0-9]{4,8}$" title="Lot No must be 4 to 8 characters (letters or numbers)">
+            <input type="text" name="lot_no" id="add_lot_no" class="form-control" required
+                   maxlength="8" pattern="^[a-zA-Z0-9]{4,8}$"
+                   title="Lot No must be 4 to 8 characters (letters or numbers)">
           </div>
           <div class="mb-3">
             <label class="form-label">Coil No</label>
@@ -269,6 +319,7 @@ include 'header.php';
   </div>
 </div>
 
+<!-- ── EDIT MODAL ─────────────────────────────────────────────── -->
 <div class="modal fade" id="editMotherModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog">
     <div class="modal-content">
@@ -285,16 +336,31 @@ include 'header.php';
             <select name="product" id="edit_product" class="form-control" required>
               <option value="">-- Select Product --</option>
               <?php
-              $all = ['DS-3020','DS-3825','DS-4525','DS-5030','DS-8460','GB-6440','GB-6440-S101','GB-7640','HBV-4020','JZ-2520','JZ-2520-2C','JZ-2820','JZ-3020','JZ-4020','KB-6440','LN-2520','L1N2-2520-02','LN-2520-04','LN-3020','MV-4020','PS-8525','RS-3020','RS-3825','RS-3825-04','RS-4020','RS-4525','RS-5030','RS-6040','RS-7050','RU-5040-1','RU-5040-1-S101','TS-2620','TS-3020','TS-3525','TS-4525','TU-2620','TU-2620-C','TU-3020','TU-4020'];
+              $all = [
+                  'DS-3020','DS-3825','DS-4525','DS-5030','DS-8460',
+                  'GB-6440','GB-6440-S101','GB-7640',
+                  'HBV-4020',
+                  'JZ-2520','JZ-2520-2C','JZ-2820','JZ-3020','JZ-4020',
+                  'KB-6440',
+                  'LN-2520','L1N2-2520-02','LN-2520-04','LN-3020',
+                  'MV-4020',
+                  'PS-8525',
+                  'RS-3020','RS-3825','RS-3825-04','RS-4020','RS-4525','RS-5030','RS-6040','RS-7050',
+                  'RU-5040-1','RU-5040-1-S101',
+                  'TS-2620','TS-3020','TS-3525','TS-4525',
+                  'TU-2620','TU-2620-C','TU-3020','TU-4020',
+              ];
               foreach ($all as $p) {
-                  echo '<option value="'.htmlspecialchars($p, ENT_QUOTES).'">'.htmlspecialchars($p, ENT_QUOTES).'</option>';
+                  echo '<option value="' . htmlspecialchars($p, ENT_QUOTES) . '">'
+                       . htmlspecialchars($p, ENT_QUOTES) . '</option>';
               }
               ?>
             </select>
           </div>
           <div class="mb-3">
             <label class="form-label">Lot No</label>
-            <input type="text" name="lot_no" id="edit_lot_no" class="form-control" required maxlength="8" pattern="^[a-zA-Z0-9]{4,8}$">
+            <input type="text" name="lot_no" id="edit_lot_no" class="form-control" required
+                   maxlength="8" pattern="^[a-zA-Z0-9]{4,8}$">
           </div>
           <div class="mb-3">
             <label class="form-label">Coil No</label>
@@ -323,94 +389,94 @@ include 'header.php';
 </div>
 
 <script>
-function validateLotNo(input){
-  if(!input) return;
-  const regex = /^[a-zA-Z0-9]{4,8}$/; 
-  if(input.value !== '' && !regex.test(input.value)){
-    input.setCustomValidity('Lot No must be 4-8 characters long (letters and numbers allowed).');
-  } else {
-    input.setCustomValidity('');
-  }
-}
-
-function enableNextField(currentId, nextId){
-  const current = document.getElementById(currentId);
-  const next    = document.getElementById(nextId);
-  if(!current || !next) return;
-
-  current.addEventListener('input', function(){
-    const ok = this.value.trim() !== '';
-    if(ok){
-      next.disabled = false;
+function validateLotNo(input) {
+    if (!input) return;
+    const regex = /^[a-zA-Z0-9]{4,8}$/;
+    if (input.value !== '' && !regex.test(input.value)) {
+        input.setCustomValidity('Lot No must be 4-8 characters long (letters and numbers allowed).');
     } else {
-      next.disabled = true;
-      next.value = '';
+        input.setCustomValidity('');
     }
-  });
 }
 
-enableNextField('add_lot_no', 'add_coil_no');
+function enableNextField(currentId, nextId) {
+    const current = document.getElementById(currentId);
+    const next    = document.getElementById(nextId);
+    if (!current || !next) return;
+
+    current.addEventListener('input', function () {
+        const ok = this.value.trim() !== '';
+        if (ok) {
+            next.disabled = false;
+        } else {
+            next.disabled = true;
+            next.value    = '';
+        }
+    });
+}
+
+enableNextField('add_lot_no',  'add_coil_no');
 enableNextField('add_coil_no', 'add_grade');
-enableNextField('add_grade', 'add_width');
-enableNextField('add_width', 'add_length');
+enableNextField('add_grade',   'add_width');
+enableNextField('add_width',   'add_length');
 
 function setAddProduct(product) {
-  const display = document.getElementById('add_product_display');
-  if(display) display.value = product || '';
+    const display = document.getElementById('add_product_display');
+    if (display) display.value = product || '';
 }
 
 document.getElementById('addMotherModal').addEventListener('shown.bs.modal', function () {
-  const lotInput = document.getElementById('add_lot_no');
-  lotInput.disabled = false;
-  lotInput.focus();
-  setAddProduct('');
+    const lotInput    = document.getElementById('add_lot_no');
+    lotInput.disabled = false;
+    lotInput.focus();
+    setAddProduct('');
 });
 
 const addCoil = document.getElementById('add_coil_no');
 if (addCoil) {
-  addCoil.addEventListener('blur', async function () {
-    const coilValue = (this.value || '').trim();
-    if (!coilValue) {
-      setAddProduct('');
-      return;
-    }
-    try {
-      const res = await fetch('mother_coil.php?ajax=get_product&coil=' + encodeURIComponent(coilValue));
-      const data = await res.json();
-      if (data.ok && data.product) {
-        setAddProduct(data.product);
-      } else {
-        setAddProduct('');
-        alert('Coil code not found in mapping table!');
-      }
-    } catch (e) {
-      console.error(e);
-    }
-  });
+    addCoil.addEventListener('blur', async function () {
+        const coilValue = (this.value || '').trim();
+        if (!coilValue) {
+            setAddProduct('');
+            return;
+        }
+        try {
+            const res  = await fetch('mother_coil.php?ajax=get_product&coil=' + encodeURIComponent(coilValue));
+            const data = await res.json();
+            if (data.ok && data.product) {
+                setAddProduct(data.product);
+            } else {
+                setAddProduct('');
+                alert('Coil code not found in mapping table!');
+            }
+        } catch (e) {
+            console.error(e);
+        }
+    });
 }
 
-const addLot = document.getElementById('add_lot_no');
+const addLot  = document.getElementById('add_lot_no');
 const editLot = document.getElementById('edit_lot_no');
-if(addLot) addLot.addEventListener('input', function(){ validateLotNo(this); });
-if(editLot) editLot.addEventListener('input', function(){ validateLotNo(this); });
+if (addLot)  addLot.addEventListener('input',  function () { validateLotNo(this); });
+if (editLot) editLot.addEventListener('input', function () { validateLotNo(this); });
 
 document.querySelectorAll('.editBtn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.getElementById('edit_id').value       = btn.dataset.id;
-    document.getElementById('edit_product').value  = btn.dataset.product || '';
-    document.getElementById('edit_lot_no').value = (btn.dataset.lot_no || '');
-    document.getElementById('edit_coil_no').value  = btn.dataset.coil_no || '';
-    document.getElementById('edit_grade').value    = btn.dataset.grade || '';
-    document.getElementById('edit_width').value    = btn.dataset.width || '';
-    document.getElementById('edit_length').value   = btn.dataset.length || '';
-  });
+    btn.addEventListener('click', () => {
+        document.getElementById('edit_id').value      = btn.dataset.id;
+        document.getElementById('edit_product').value = btn.dataset.product || '';
+        document.getElementById('edit_lot_no').value  = btn.dataset.lot_no  || '';
+        document.getElementById('edit_coil_no').value = btn.dataset.coil_no || '';
+        document.getElementById('edit_grade').value   = btn.dataset.grade   || '';
+        document.getElementById('edit_width').value   = btn.dataset.width   || '';
+        document.getElementById('edit_length').value  = btn.dataset.length  || '';
+    });
 });
 </script>
 
 <?php if ($_SESSION['role'] === 'slitting'): ?>
-  <div><a href="index.php" class="btn btn-secondary mt-3">← Back</a></div>
+    <div><a href="index.php" class="btn btn-secondary mt-3">← Back</a></div>
 <?php else: ?>
-  <div><a href="logout.php" class="btn btn-secondary mt-3">Logout</a></div>
+    <div><a href="logout.php" class="btn btn-secondary mt-3">Logout</a></div>
 <?php endif; ?>
 
 <?php include 'footer.php'; ?>
