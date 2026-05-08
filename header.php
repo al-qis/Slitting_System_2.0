@@ -37,6 +37,7 @@
                     'reslit.php'           => ['icon' => 'intersect', 'label' => 'Reslit Product'],
                     'finish_product.php'   => ['icon' => 'check-circle', 'label' => 'Finish Product'],
                     'report.php'           => ['icon' => 'file-earmark-bar-graph', 'label' => 'Report'],
+                    'tracking_product.php' => ['icon' => 'globe2', 'label' => 'Traceability'],
                 ];
 
                 foreach ($menu_items as $url => $info):
