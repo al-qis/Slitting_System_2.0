@@ -210,8 +210,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
 }
 
 // ── Send to Reslit ──────────────────────────────────────────────────────────
-// FIX: $insert_length assigned to a variable before bind_param()
-//      because mysqli cannot pass expressions by reference.
 if ($_SERVER['REQUEST_METHOD'] === 'POST'
     && isset($_POST['action'])
     && $_POST['action'] === 'send_to_reslit') {
@@ -238,7 +236,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
         $stmt->execute();
         $stmt->close();
 
-        // ── FIX: assign expression to a variable before passing to bind_param ──
         $insert_length = $p['actual_length'] ?: $p['length'];
 
         $stmt = $conn->prepare("
@@ -252,7 +249,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
             $id,
             $p['product'], $p['lot_no'], $p['coil_no'], $p['roll_no'],
             $p['width'],
-            $insert_length,   // ← fixed: variable, not expression
+            $insert_length,
             $original_source
         );
         $stmt->execute();
@@ -338,6 +335,14 @@ $page_title = 'Finish Product';
 include 'header.php';
 ?>
 
+<!-- ═══ CHANGE 1: SweetAlert2 CDN — added to <head> via header.php include above.
+     Since header.php outputs the full <head>, paste these two lines into header.php
+     right after the Bootstrap CSS <link> tag: -->
+<!--
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css">
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.all.min.js"></script>
+-->
+
 <style>
 table { table-layout: fixed; width: 100%; }
 table th, table td { word-wrap: break-word; vertical-align: middle; font-size: 13px; }
@@ -364,12 +369,30 @@ table th:nth-child(13) { width: 140px; }
            style="position:fixed; left:-9999px; opacity:0;" autofocus>
 </form>
 
+<!-- ═══ CHANGE 2: Error + Success alert banners ═══════════════════════════ -->
 <?php if (isset($_GET['error'])): ?>
 <div class="alert alert-danger alert-dismissible fade show">
     <strong>Error:</strong> <?= htmlspecialchars(urldecode($_GET['msg'] ?? $_GET['error'])) ?>
     <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
 </div>
 <?php endif; ?>
+
+<?php if (isset($_GET['success'])): ?>
+<div class="alert alert-success alert-dismissible fade show">
+    <i class="bi bi-check-circle me-2"></i>
+    <?php
+    $successMessages = [
+        'qc_approved' => 'Roll approved by QC successfully.',
+        'recoiling'   => 'Roll sent to Recoiling successfully.',
+        'reslit'      => 'Roll sent to Reslit successfully.',
+        'stock'       => 'Actual length saved. Roll is now in Finish Good stock.',
+    ];
+    echo htmlspecialchars($successMessages[$_GET['success']] ?? 'Action completed successfully.');
+    ?>
+    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+<?php endif; ?>
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
 
 <div class="row mb-3 g-2 align-items-center">
     <div class="col-auto">
@@ -409,7 +432,7 @@ table th:nth-child(13) { width: 140px; }
 <div class="mb-3 d-flex gap-2">
     <a href="?month=<?= $month ?>&year=<?= $year ?>&download=excel" class="btn btn-success btn-sm">Download Excel</a>
     <button type="button" class="btn btn-warning btn-sm" data-bs-toggle="modal" data-bs-target="#manualEntryModal">Manual Entry</button>
-    <a href="sfc_tracking.php"      class="btn btn-info btn-sm">SFC Tracking Report</a>
+    <a href="sfc_tracking.php"       class="btn btn-info btn-sm">SFC Tracking Report</a>
     <a href="process_log_viewer.php" class="btn btn-secondary btn-sm">
         <i class="bi bi-clock-history me-1"></i> Process Log
     </a>
@@ -605,21 +628,184 @@ table th:nth-child(13) { width: 140px; }
     </div></div>
 </div>
 
+<!-- ═══ CHANGE 3: Updated JS block — adds SweetAlert2 scan notifications ═══
+     Replaces the original <script> block at the bottom entirely.           -->
 <script>
+// ── QR Scanner (unchanged from original) ─────────────────────
 const qIn = document.getElementById('qrInputProduct');
 const qFm = document.getElementById('scanFormProduct');
+
 setInterval(() => {
     if (!document.querySelector('.modal.show') &&
-        !['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)) {
+        !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) {
         qIn.focus();
     }
 }, 800);
+
 qIn.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && qIn.value.trim() !== '') qFm.submit();
 });
+
+// ── Tooltips (unchanged from original) ───────────────────────
 var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
 tooltipTriggerList.map(el => new bootstrap.Tooltip(el));
+
+// ── SweetAlert2 scan result notifications (NEW) ───────────────
+// Reads the ?scan= param returned by scan_product_action.php
+// and shows the appropriate popup. Fires once then cleans the URL.
+(function () {
+    const params = new URLSearchParams(window.location.search);
+    const scan   = params.get('scan');
+    const reason = params.get('reason') ?? '';
+    const pid    = params.get('pid')    ?? '';
+
+    if (!scan) return;
+
+    function escHtml(str) {
+        return String(str ?? '')
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    const alerts = {
+
+        // ── Product successfully sent to QC ───────────────────
+        'waiting': {
+            icon: 'success',
+            title: 'Sent to QC ✓',
+            text:  'Product has been moved to QC Waiting.',
+            timer: 2500,
+            showConfirmButton: false,
+        },
+
+        // ── Product marked as delivered ───────────────────────
+        'delivered': {
+            icon: 'success',
+            title: 'Delivered ✓',
+            text:  'Product has been marked as Delivered.',
+            timer: 2500,
+            showConfirmButton: false,
+        },
+
+        // ── MAIN BLOCK: product in Reslit or Recoil ───────────
+        'blocked_qc': {
+            icon:  'error',
+            title: 'Cannot Send to QC',
+            html:
+                '<div style="text-align:left; font-size:14px; line-height:1.7">' +
+                '  <p><strong>Invalid Action:</strong> This product must be in ' +
+                '  <strong>Finish Good</strong> status to proceed to QC.</p>' +
+                '  <p style="margin-top:8px">Current blocking reason: ' +
+                '  <span style="color:#dc3545; font-weight:700">' + escHtml(reason) + '</span></p>' +
+                '  <p style="color:#6b7280; font-size:12px; margin-top:8px">' +
+                '  Products currently in <strong>Reslit</strong> or <strong>Recoil</strong> ' +
+                '  are blocked even if they were previously in Finish Good.' +
+                '  </p>' +
+                (pid ? '<p style="color:#9ca3af; font-size:11px; margin-top:6px">Roll ID: #' + escHtml(pid) + '</p>' : '') +
+                '</div>',
+            confirmButtonText:  'Understood',
+            confirmButtonColor: '#dc3545',
+        },
+
+        // ── Product rejected by QC ────────────────────────────
+        'rejected_blocked': {
+            icon:  'warning',
+            title: 'Product is Rejected',
+            html:
+                '<p style="font-size:14px">This product was <strong>rejected by QC</strong>.</p>' +
+                '<p style="font-size:13px; color:#6b7280; margin-top:8px">' +
+                'Send it to <strong>Reslit</strong> or <strong>Recoil</strong> ' +
+                'before scanning again.</p>',
+            confirmButtonText:  'OK',
+            confirmButtonColor: '#f59e0b',
+        },
+
+        // ── Actual length not recorded yet ────────────────────
+        'not_stock': {
+            icon:  'warning',
+            title: 'Not in Finish Good Yet',
+            html:
+                '<p style="font-size:14px">Actual length has not been recorded for this roll.</p>' +
+                '<p style="font-size:13px; color:#6b7280; margin-top:8px">' +
+                'Click <strong>Update</strong> on the product row first, ' +
+                'then scan again.</p>',
+            confirmButtonText: 'OK',
+        },
+
+        // ── Already in QC queue ───────────────────────────────
+        'already_waiting': {
+            icon:  'info',
+            title: 'Already in QC Queue',
+            text:  'This product is already waiting for QC approval.',
+            timer: 2500,
+            showConfirmButton: false,
+        },
+
+        // ── Already delivered ─────────────────────────────────
+        'already_delivered': {
+            icon:  'info',
+            title: 'Already Delivered',
+            text:  'This product has already been delivered.',
+            timer: 2500,
+            showConfirmButton: false,
+        },
+
+        // ── Voided roll ───────────────────────────────────────
+        'voided': {
+            icon:  'error',
+            title: 'Roll is Voided',
+            text:  'This roll has been voided and cannot be processed.',
+            confirmButtonColor: '#dc3545',
+        },
+
+        // ── Product not found in database ─────────────────────
+        'notfound': {
+            icon:  'error',
+            title: 'Product Not Found',
+            html:
+                '<p style="font-size:14px">No matching product found in the system.</p>' +
+                '<p style="font-size:13px; color:#6b7280; margin-top:8px">' +
+                'Check the QR code and try again.</p>',
+            confirmButtonColor: '#dc3545',
+        },
+
+        // ── QR code could not be parsed ───────────────────────
+        'invalid': {
+            icon:  'error',
+            title: 'Invalid QR Code',
+            text:  'Could not read the QR code. Expected format: LOT;COIL;ROLL',
+            confirmButtonColor: '#dc3545',
+        },
+
+        // ── Empty scan ────────────────────────────────────────
+        'empty': {
+            icon:  'warning',
+            title: 'Nothing Scanned',
+            text:  'The scanner sent an empty value. Please try again.',
+            timer: 2000,
+            showConfirmButton: false,
+        },
+    };
+
+    const cfg = alerts[scan];
+    if (!cfg) return;
+
+    // Show alert, then re-focus scanner after dismissal
+    if (typeof Swal !== 'undefined') {
+        Swal.fire(cfg).then(() => {
+            if (qIn) qIn.focus();
+        });
+    }
+
+    // Clean URL so refreshing the page does not re-trigger the alert
+    const cleanUrl = window.location.pathname
+        + '?month=' + (params.get('month') ?? '')
+        + '&year='  + (params.get('year')  ?? '');
+    window.history.replaceState({}, '', cleanUrl);
+})();
 </script>
+<!-- ═══════════════════════════════════════════════════════════ -->
 
 <div><a href="index.php" class="btn btn-secondary mt-3">← Back</a></div>
 <?php include 'footer.php'; ?>
