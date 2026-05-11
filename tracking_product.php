@@ -51,15 +51,17 @@ $types  = '';
 
 if ($search !== '') {
     $sql   .= " AND (
-                    sp.lot_no        LIKE ? OR
-                    sp.coil_no       LIKE ? OR
-                    sp.roll_no       LIKE ? OR
-                    sp.product       LIKE ? OR
-                    sp.customer_name LIKE ?
+                    sp.lot_no                           LIKE ? OR
+                    sp.coil_no                          LIKE ? OR
+                    sp.roll_no                          LIKE ? OR
+                    sp.product                          LIKE ? OR
+                    sp.customer_name                    LIKE ? OR
+                    CONCAT(sp.lot_no, ' ', sp.coil_no) LIKE ? OR
+                    CONCAT(sp.coil_no, ' ', sp.lot_no) LIKE ?
                 )";
     $like   = '%' . $search . '%';
-    $params = array_merge($params, [$like, $like, $like, $like, $like]);
-    $types .= 'sssss';
+    $params = array_merge($params, [$like, $like, $like, $like, $like, $like, $like]);
+    $types .= 'sssssss';
 }
 
 if ($filter_status !== '') {
