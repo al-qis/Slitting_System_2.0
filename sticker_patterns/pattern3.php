@@ -1,276 +1,383 @@
 <?php
-// Pattern 3 - YANTAI
+// sticker_patterns/pattern3.php
+// Used by: YANTAI
+// Style: matches pattern2 latest version
 
-$patternCSS = "
-.sticker-container {
+$colourLabel = ucfirst(strtolower($colorName ?? 'WHITE'));
+
+$patternCSS = '
+
+.p3-sticker {
     width: 120mm;
     height: 47mm;
-    background: white;
-    border: 0px;
-    padding: 1.9mm 1.5mm;
+    box-sizing: border-box;
+    font-family: "Arial Narrow", Arial, sans-serif;
     position: relative;
-    margin: 0 auto;
+    display: flex;
+    flex-direction: row;
+    border: none;
+    padding: 0;
+    overflow: hidden;
+    background: transparent;
 }
 
-/* QR Code - Top Right Corner */
-.qr-code {
-    position: absolute;
-    top: 5mm;
-    right: -4mm;
-    width: 27mm;
-    height: 27mm;
+.p3-left {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
 }
 
-.qr-code img {
-    width: 80%;
-    height: 80%;
-    display: block;
-    border: 0px;
-}
-
-.qr-placeholder {
-    width: 100%;
-    height: 100%;
-    border: 2px dashed #ccc;
-    display: none;
+.p3-row {
+    flex: 1.0;
+    display: flex;
+    flex-direction: row;
     align-items: center;
-    justify-content: center;
-    font-size: 10pt;
-    color: #999;
-    text-align: justify;
+    border-bottom: none;
+    padding: 0 0 0 4.5mm;
+    box-sizing: border-box;
 }
 
-.internal-use {
-    position: absolute;
-    top: -8%;
-    left: 39%;
-    transform: translate(-50%, -50%);
-    background: none;
-    padding: 0mm 0mm;
-    font-size: 8pt;
-    font-weight: bold;
-    color: #333;
+.p3-lbl {
+    font-size: 16px;
+    font-weight: 400;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
     white-space: nowrap;
-    pointer-events: none;
-    z-index: 10;
-}
-
-.roll-number {
-    position: absolute;
-    bottom: 9mm;
-    right: 4mm;
-    font-size: 32pt;
-    font-weight: bold;
+    width: 19mm;
+    flex-shrink: 0;
     line-height: 1;
 }
 
-/* Main Content - Left Side */
-.content-left {
-    width: calc(100% - 15mm);
-    padding-right: 5mm;
-}
-
-.row {
-    display: flex;
-    align-items: center;
-    justify-content: flex-start;
-    margin-bottom: 1.8mm;
-    font-size: 12pt;
-}
-
-.label {
-    width: 28mm;
+.p3-colon {
+    font-size: 14px;
+    color: #000;
+    width: 3.5mm;
     flex-shrink: 0;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    line-height: 1;
+    padding-left: 0.5mm;
 }
 
-.colon {
-    width: 2mm;
-    text-align: center;
-    flex-shrink: 0;
-}
-
-.value {
-    text-align: center;
-    font-weight: bold;
-    border-bottom: 1.5px solid black;
-    padding-bottom: 0.5mm;
-    min-height: 18px;
-}
-
-.value.underline-text {
-    border-bottom: none;
-    text-decoration: underline;
+.p3-val-area {
     flex: 1;
-}
-
-.value.no-line {
-    border-bottom: none !important;
-    font-weight: normal !important;
-}
-
-/* Row 2 - Grade */
-.row:nth-child(2) .value {
-    width: 70mm !important;
-}
-
-/* Row 3 - Size */
-.row:nth-child(3) .size-row {
-    width: 70mm !important;
-}
- 
-/* Row 4 - Lot No */
-.row:nth-child(4) .value {
-    width: 70mm !important;
-}
-
-/* Row 5 - Customer */
-.row:nth-child(5) .value {
-    width: 80mm !important;
-}
-
-/* Row 6 - Ref No */
-.row:nth-child(6) .value {
-    width: 70mm !important;
-    border-bottom: none !important;
-    font-weight: normal !important;
-}
-
-/* Size Row with mm x Mtr */
-.size-row {
     display: flex;
     align-items: center;
-    border-bottom: 1px solid black;
-    padding-bottom: 0.5mm;
-    padding-left: 1mm;
+    justify-content: center;
+    height: 100%;
+    position: relative;
 }
 
-.size-number {
+.p3-val-area.has-line::after {
+    content: "";
+    position: absolute;
+    bottom: 1.5px;
+    left: 1mm;
+    right: 1mm;
+    height: 1px;
+    background: #000;
+}
+
+.p3-val-tombo {
+    font-size: 13px;
+    font-weight: 400;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    text-decoration: underline;
     text-align: center;
-    font-weight: bold;
-    font-size: 15pt;
-    min-width: 15mm;
+    line-height: 1;
 }
 
-.size-unit {
-    padding: 0 2mm;
-    font-size: 15pt;
-    font-weight: normal;
+.p3-val-grade {
+    font-size: 24px;
+    font-weight: 400;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    text-align: center;
+    line-height: 1;
 }
 
-.size-x {
-    padding: 0 2mm;
-    font-weight: bold;
+.p3-val-lot {
+    font-size: 24px;
+    font-weight: 400;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    text-align: center;
+    line-height: 1;
 }
 
-/* JIS Box */
-.jis-box {
-    border: 1px solid black;
-    padding: 1mm 5mm;
+.p3-val-cust {
+    font-size: 14px;
+    font-weight: 400;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    text-align: center;
+    line-height: 1;
+}
+
+.p3-size-inner {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 1.5mm;
+    width: 100%;
+}
+.p3-size-num {
+    font-size: 20px;
+    font-weight: 300;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    line-height: 1;
+    min-width: 8mm;
+    text-align: right;
+}
+.p3-size-unit {
+    font-size: 14px;
+    font-weight: 300;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    line-height: 1;
+}
+.p3-size-x {
+    font-size: 14px;
+    font-weight: 500;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    line-height: 1;
+}
+
+/* JIS box */
+.p3-jis-box {
+    border: 1px solid #000;
+    padding: 0.5mm 2mm;
     display: inline-block;
     text-align: center;
     white-space: nowrap;
+    font-size: 12px;
+    font-weight: 400;
+    font-family: "Arial Narrow", Arial, sans-serif;
 }
-";
 
-// Function to convert customer code to full name
+/* ── RIGHT SECTION ───────────────────────────── */
+.p3-right {
+    width: 33mm;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    box-sizing: border-box;
+    padding: 1mm 1.5mm 1mm 1.5mm;
+}
+
+.p3-top-block {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    justify-content: space-between;
+    width: 100%;
+}
+
+.p3-colour-block {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    line-height: 1.25;
+    padding-top: 0.5mm;
+}
+.p3-colour-name {
+    font-size: 14px;
+    font-weight: 700;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    white-space: nowrap;
+    margin-top: 2mm;
+}
+
+.p3-qr img {
+    width: 19mm;
+    height: 19mm;
+    display: block;
+    background: #fff;
+    margin-top: 3mm;
+}
+
+.p3-internal {
+    font-size: 11px;
+    font-weight: 300;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #1b1b1b;
+    text-align: center;
+    white-space: nowrap;
+    line-height: 1;
+    width: 100%;
+    margin-top: 0.5mm;
+    padding-left: 10mm;
+}
+
+.p3-roll {
+    font-size: 27px;
+    font-weight: 300;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    line-height: 1;
+    white-space: nowrap;
+    text-align: left;
+    width: 100%;
+    margin-top: -1mm;
+}
+
+.p3-wgt-block {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    margin-top: 1mm;
+}
+.p3-wgt-lbl {
+    font-size: 10px;
+    font-weight: 700;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    white-space: nowrap;
+    line-height: 1.2;
+}
+.p3-wgt-val {
+    font-size: 14px;
+    font-weight: 300;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    line-height: 1.2;
+}
+';
+
 function getCustomerFullName($code) {
     $customers = [
-        'NAE' => 'NICHIAS AUTOPARTS EUROPE (NAE)',
-        'NAX' => 'NAX MFG, SA.DE C.V',
+        'NAE'     => 'NICHIAS AUTOPARTS EUROPE (NAE)',
+        'NAX'     => 'NAX MFG, SA.DE C.V',
         'NCI MFG' => 'NCI MFG., INC.',
-        'TAIHO' => 'TAIHO MFG OF TN. INC',
-        'NRI' => 'PT NICHIAS ROCKWOOL IND.',
-        'ASHUKA' => 'ASHUKA TECHNOLOGIES SDN. BHD.',
-        'NIPPON' => 'NTC(NIPPON GASKET)',
-        'NTC' => 'NICHIAS THAILAND',
-        'SGC' => 'SHANGHAI XINGSHENG',
-        'STAMPING' => 'MK STAMPING',
-        'YANTAI' => 'NICHIAS (SHANGHAI) AUTOPARTS TRADING',
-        'NIP' => 'NICHIAS IND. PRODUCTS PVT. LTD.',
-        'STOCK' => 'STOCK',
-        'TRIAL' => 'TRIAL'
+        'TAIHO'   => 'TAIHO MFG OF TN. INC',
+        'NRI'     => 'PT NICHIAS ROCKWOOL IND.',
+        'ASHUKA'  => 'ASHUKA TECHNOLOGIES SDN. BHD.',
+        'NIPPON'  => 'NTC(NIPPON GASKET)',
+        'NTC'     => 'NICHIAS THAILAND',
+        'SGC'     => 'SHANGHAI XINGSHENG',
+        'STAMPING'=> 'MK STAMPING',
+        'YANTAI'  => 'NICHIAS (SHANGHAI) AUTOPARTS TRADING',
+        'NIP'     => 'NICHIAS IND. PRODUCTS PVT. LTD.',
+        'STOCK'   => 'STOCK',
+        'TRIAL'   => 'TRIAL',
     ];
-    
-    return $customers[$code] ?? $code; // Return code if not found
+    return $customers[$code] ?? $code;
 }
 
-function render_sticker($product, $customer, $ref_no, $tomboNo, $lotNo, $qrImageUrl) {
-    ob_start();
-    ?>
-    <div class="sticker-container">
-        <!-- QR Code -->
-        <div class="qr-code">
-            <img src="<?= $qrImageUrl ?>" alt="QR Code" 
-                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-            <div class="qr-placeholder">
-                QR Code<br>Failed to Load<br>
-                <small style="font-size:7pt;">Check generate qr</small>
+function render_sticker(
+    array  $product,
+    string $customer,
+    string $ref_no,
+    string $tomboNo,
+    string $lotNo,
+    string $qrImageUrl
+): string {
+
+    $width_mm = floatval($product['width']      ?? 0);
+    $length_m = floatval($product['length']     ?? 0);
+    $actual_m = floatval($product['actual_length'] ?? $product['length'] ?? 0);
+    $std_wgt  = floatval($product['std_weight'] ?? 0);
+    $est_wgt  = ($width_mm > 0 && $actual_m > 0 && $std_wgt > 0)
+        ? round(($actual_m * $width_mm / 1000) * $std_wgt) : '-';
+
+    $rollRaw     = strtoupper(trim($product['roll_no'] ?? ''));
+    $rollDisplay = preg_replace('/^R(\d+)$/i', 'R-$1', $rollRaw);
+    if ($rollDisplay === '') $rollDisplay = '-';
+
+    $w_disp          = number_format((float)($product['width']  ?? 0));
+    $l_disp          = number_format((float)$actual_m);
+    $customerDisplay = getCustomerFullName($customer);
+    $colourLabel     = ucfirst(strtolower($GLOBALS['colorName'] ?? 'White'));
+
+    $h = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES, 'UTF-8');
+
+    return '
+<div class="p3-sticker">
+
+    <div class="p3-left">
+
+        <div class="p3-row" style="margin-bottom:-2mm;">
+            <div class="p3-lbl">TOMBO No.</div>
+            <div class="p3-colon">:</div>
+            <div class="p3-val-area">
+                <span class="p3-val-tombo">' . $h($tomboNo) . '</span>
             </div>
-            <div class="internal-use">INTERNAL USE</div>
         </div>
-        
-        <!-- Roll Number -->
-        <div class="roll-number">
-            <?= htmlspecialchars($product['roll_no']) ?>
+
+        <div class="p3-row">
+            <div class="p3-lbl">Grade</div>
+            <div class="p3-colon">:</div>
+            <div class="p3-val-area has-line">
+                <span class="p3-val-grade">' . $h($product['product'] ?? '-') . '</span>
+            </div>
         </div>
-        
-        <!-- Content -->
-        <div class="content-left">
-            <!-- TOMBO No -->
-            <div class="row">
-                <div class="label">TOMBO No.</div>
-                <div class="colon">:</div>
-                <div class="value underline-text"><?= $tomboNo ?></div>
-            </div>
-            
-            <!-- Grade -->
-            <div class="row">
-                <div class="label">Grade</div>
-                <div class="colon">:</div>
-                <div class="value"><?= htmlspecialchars($product['product']) ?></div>
-            </div>
-            
-            <!-- Size -->
-            <div class="row">
-                <div class="label">Size</div>
-                <div class="colon">:</div>
-                <div class="size-row">
-                    <span class="size-number"><?= number_format($product['width'], 0) ?></span>
-                    <span class="size-unit">mm</span>
-                    <span class="size-x">x</span>
-                    <span class="size-number"><?= number_format($product['actual_length'] ?? $product['length'], 0) ?></span>
-                    <span class="size-unit">Mtr</span>
+
+        <div class="p3-row">
+            <div class="p3-lbl">Size</div>
+            <div class="p3-colon">:</div>
+            <div class="p3-val-area has-line">
+                <div class="p3-size-inner">
+                    <span class="p3-size-num">' . $w_disp . '</span>
+                    <span class="p3-size-unit">mm</span>
+                    <span class="p3-size-x">x</span>
+                    <span class="p3-size-num">' . $l_disp . '</span>
+                    <span class="p3-size-unit">Mtr</span>
                 </div>
             </div>
-            
-            <!-- Lot No -->
-            <div class="row">
-                <div class="label">Lot No.</div>
-                <div class="colon">:</div>
-                <div class="value"><?= htmlspecialchars($lotNo) ?></div>
+        </div>
+
+        <div class="p3-row">
+            <div class="p3-lbl">Lot No.</div>
+            <div class="p3-colon">:</div>
+            <div class="p3-val-area has-line">
+                <span class="p3-val-lot">' . $h($lotNo) . '</span>
             </div>
-            
-            <!-- Customer - Show full name, single line, smaller font -->
-            <div class="row">
-                <div class="label">Customer</div>
-                <div class="colon">:</div>
-                <div class="value" style="font-size: 9pt; font-weight: normal; text-overflow: ellipsis;"><?= htmlspecialchars(getCustomerFullName($customer)) ?></div>
+        </div>
+
+        <div class="p3-row">
+            <div class="p3-lbl">Customer</div>
+            <div class="p3-colon">:</div>
+            <div class="p3-val-area has-line">
+                <span class="p3-val-cust" style="font-size:12px;">' . $h($customerDisplay) . '</span>
             </div>
-            
-            <!-- Ref No with JIS Box on same line -->
-            <div class="row" style="margin-bottom: 0;">
-                <div class="label">Ref. No.</div>
-                <div class="colon">:</div>
-                <div class="value no-line" style="width: 35mm; text-align: center; margin-left: -10mm;"><?= htmlspecialchars($ref_no) ?></div>
-                <div style="position: absolute; left: 78mm; margin-top: -2.5mm;">
-                    <div class="jis-box">
-                        <span style="font-weight: normal; font-size: 10pt; white-space: nowrap;">JIS G4313 SUS301</span>
-                    </div>
-                </div>
+        </div>
+
+        <!-- Ref No + JIS box -->
+        <div class="p3-row">
+            <div class="p3-lbl">Ref. No.</div>
+            <div class="p3-colon">:</div>
+            <div class="p3-val-area">
+                <span class="p3-val-cust">' . $h($ref_no) . '</span>
             </div>
+            <div style="padding-right:2mm; flex-shrink:0;">
+                <span class="p3-jis-box">JIS G4313 SUS301</span>
+            </div>
+        </div>
+
+    </div>
+
+    <div class="p3-right">
+        <div class="p3-top-block">
+            <div class="p3-colour-block">
+                <span class="p3-colour-name">' . $h($colourLabel) . '</span>
+            </div>
+            <div class="p3-qr">
+                <img src="' . $h($qrImageUrl) . '" alt="QR Code">
+            </div>
+        </div>
+        <div class="p3-internal">INTERNAL USE</div>
+        <div class="p3-roll">' . $h($rollDisplay) . '</div>
+        <div class="p3-wgt-block">
+            <span class="p3-wgt-lbl">Est. Wgt (kg)</span>
+            <span class="p3-wgt-val">' . $est_wgt . '</span>
         </div>
     </div>
-    <?php
-    return ob_get_clean();
+
+</div>';
 }
-?>

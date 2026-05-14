@@ -1,297 +1,387 @@
 <?php
-// Pattern 1 - NAE,NRI,STAMPING with Standard Weight Lookup
+// sticker_patterns/pattern1.php
+// Used by: NAE, NRI, STAMPING
+// Style: matches pattern2 latest version
 
-$patternCSS = "
-.sticker-container {
+$colourLabel = ucfirst(strtolower($colorName ?? 'WHITE'));
+
+$patternCSS = '
+
+.p1-sticker {
     width: 120mm;
     height: 47mm;
-    background: white;
-    border: 0px;
-    padding: 1.9mm 1.5mm;
+    box-sizing: border-box;
+    font-family: "Arial Narrow", Arial, sans-serif;
     position: relative;
-    margin: 0 auto;
-    page-break-after: always;
+    display: flex;
+    flex-direction: row;
+    border: none;
+    padding: 0;
     overflow: hidden;
+    background: transparent;
 }
 
-/* QR Code - Top Right Corner */
-.qr-code {
-    position: absolute;
-    top: 5mm;
-    right: -4mm;
-    width: 27mm;
-    height: 27mm;
+.p1-left {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
 }
 
-.qr-code img {
-    width: 80%;
-    height: 80%;
-    display: block;
-    border: 0px;
+.p1-row {
+    flex: 1.0;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    border-bottom: none;
+    padding: 0 0 0 4.5mm;
+    box-sizing: border-box;
 }
 
-.qr-placeholder {
-    width: 100%;
-    height: 100%;
-    border: 2px dashed #ccc;
-    display: none;
+.p1-lbl {
+    font-size: 16px;
+    font-weight: 400;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    white-space: nowrap;
+    width: 19mm;
+    flex-shrink: 0;
+    line-height: 1;
+}
+
+.p1-colon {
+    font-size: 14px;
+    color: #000;
+    width: 3.5mm;
+    flex-shrink: 0;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    line-height: 1;
+    padding-left: 0.5mm;
+}
+
+.p1-val-area {
+    flex: 1;
+    display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 10pt;
-    color: #999;
-    text-align: justify;
+    height: 100%;
+    position: relative;
 }
 
-.internal-use {
+.p1-val-area.has-line::after {
+    content: "";
     position: absolute;
-    top: -8%;
-    left: 39%;
-    transform: translate(-50%, -50%);
-    background: none;
-    padding: 0mm 0mm;
-    font-size: 8pt;
-    font-weight: bold;
-    color: #333;
-    white-space: nowrap;
-    pointer-events: none;
-    z-index: 10;
+    bottom: 1.5px;
+    left: 1mm;
+    right: 1mm;
+    height: 1px;
+    background: #000;
 }
 
-.roll-number {
-    position: absolute;
-    bottom: 9mm;
-    right: 4mm;
-    font-size: 32pt;
-    font-weight: bold;
-    line-height: 1;
-    background: none;
-    background-color: transparent;
-    
-}
-
-/* Main Content - Left Side */
-.content-left {
-    width: calc(100% - 15mm);
-    padding-right: 5mm;
-}
-
-.row {
-    display: flex;
-    align-items: center;
-    justify-content: flex-start;
-    margin-bottom: 1.8mm;
-    font-size: 12pt;
-}
-
-.label {
-    width: 28mm;
-    flex-shrink: 0;
-}
-
-.colon {
-    width: 2mm;
-    text-align: center;
-    flex-shrink: 0;
-}
-
-.value {
-    text-align: center;
-    font-weight: bold;
-    border-bottom: 1.5px solid black;
-    padding-bottom: 0.5mm;
-    min-height: 18px;
-}
-
-.value.underline-text {
-    border-bottom: none;
+.p1-val-tombo {
+    font-size: 13px;
+    font-weight: 400;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
     text-decoration: underline;
-    flex: 1;
-}
-
-.value.no-line {
-    border-bottom: none !important;
-    font-weight: normal !important;
-}
-
-/* Row 2 - Grade */
-.row:nth-child(2) .value {
-    width: 70mm !important;
-}
-
-/* Row 3 - Size */
-.row:nth-child(3) .size-row {
-    width: 70mm !important;
-}
- 
-/* Row 4 - Lot No */
-.row:nth-child(4) .value {
-    width: 70mm !important;
-}
-
-/* Row 5 - Customer */
-.row:nth-child(5) .value {
-    width: 80mm !important;
-}
-
-/* Row 6 - Ref No */
-.row:nth-child(6) .value {
-    width: 70mm !important;
-    border-bottom: none !important;
-    font-weight: normal !important;
-}
-
-/* Size Row with mm x Mtr */
-.size-row {
-    display: flex;
-    align-items: center;
-    border-bottom: 1px solid black;
-    padding-bottom: 0.5mm;
-    padding-left: 4mm;
-}
-
-.size-number {
     text-align: center;
-    font-weight: bold;
-    font-size: 15pt;
-    min-width: 15mm;
+    line-height: 1;
 }
 
-.size-unit {
-    padding: 0 2mm;
-    font-size: 15pt;
-    font-weight: normal;
+.p1-val-grade {
+    font-size: 24px;
+    font-weight: 400;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    text-align: center;
+    line-height: 1;
 }
 
-.size-x {
-    padding: 0 2mm;
-    font-weight: bold;
-}
-";
-
-// Function to convert customer code to full name
-function getCustomerFullName($code) {
-    $customers = [
-        'NAE' => 'NICHIAS AUTOPARTS EUROPE (NAE)',
-        'NAX' => 'NAX MFG, SA.DE C.V',
-        'NCI MFG' => 'NCI MFG., INC.',
-        'TAIHO' => 'TAIHO MFG OF TN. INC',
-        'NRI' => 'PT NICHIAS ROCKWOOL IND.',
-        'ASHUKA' => 'ASHUKA TECHNOLOGIES SDN. BHD.',
-        'NIPPON' => 'NTC(NIPPON GASKET)',
-        'NTC' => 'NICHIAS THAILAND',
-        'SGC' => 'SHANGHAI XINGSHENG',
-        'STAMPING' => 'MK STAMPING',
-        'YANTAI' => 'NICHIAS (SHANGHAI) AUTOPARTS TRADING',
-        'NIP' => 'NICHIAS IND. PRODUCTS PVT. LTD.',
-        'STOCK' => 'STOCK',
-        'TRIAL' => 'TRIAL'
-    ];
-    
-    return $customers[$code] ?? $code; // Return code if not found
+.p1-val-lot {
+    font-size: 24px;
+    font-weight: 400;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    text-align: center;
+    line-height: 1;
 }
 
-// Function to get standard weight from database
-function getStandardWeight($conn, $product_code) {
-    $stmt = $conn->prepare("SELECT std_weight FROM std_wgt WHERE product_code = ?");
-    $stmt->bind_param("s", $product_code);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    
-    if ($row = $result->fetch_assoc()) {
-        return (float)$row['std_weight'];
-    }
-    
-    $stmt->close();
-    return 0; // Default if not found
+.p1-val-cust {
+    font-size: 14px;
+    font-weight: 400;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    text-align: center;
+    line-height: 1;
 }
 
-function render_sticker($product, $customer, $ref_no, $tomboNo, $lotNo, $qrImageUrl) {
-    // Get standard weight directly from product
-    $std_weight = $product['std_weight'] ?? 0;
-    
-    // Calculate estimated weight
-    // Formula: est_weight = std_weight x [(width x actual_length) / 1000]
-    $width = $product['width'];
-    $actual_length = $product['actual_length'] ?? $product['length'];
-    $est_weight = $std_weight * (($width * $actual_length) / 1000);
-    
-    // Round to nearest whole number (141.75 = 142, 141.11 = 141)
-    $est_weight = round($est_weight);
-    
-    ob_start();
-    ?>
-    <div class="sticker-container">
-        <!-- QR Code -->
-        <div class="qr-code">
-            <img src="<?= $qrImageUrl ?>" alt="QR Code" 
-                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-            <div class="qr-placeholder">
-                QR Code<br>Failed to Load<br>
-                <small style="font-size:7pt;">Check generate qr</small>
+.p1-size-inner {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 1.5mm;
+    width: 100%;
+}
+.p1-size-num {
+    font-size: 20px;
+    font-weight: 300;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    line-height: 1;
+    min-width: 8mm;
+    text-align: right;
+}
+.p1-size-unit {
+    font-size: 14px;
+    font-weight: 300;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    line-height: 1;
+}
+.p1-size-x {
+    font-size: 14px;
+    font-weight: 500;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    line-height: 1;
+}
+
+/* Est Wgt inline on last row */
+.p1-estwgt-inline {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: center;
+    padding-right: 2mm;
+    flex-shrink: 0;
+}
+.p1-estwgt-lbl {
+    font-size: 10px;
+    font-weight: 700;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    white-space: nowrap;
+    line-height: 1.2;
+}
+.p1-estwgt-val {
+    font-size: 14px;
+    font-weight: 300;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    line-height: 1.2;
+    text-align: right;
+}
+
+/* ── RIGHT SECTION ───────────────────────────── */
+.p1-right {
+    width: 33mm;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    box-sizing: border-box;
+    padding: 1mm 1.5mm 1mm 1.5mm;
+}
+
+.p1-top-block {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    justify-content: space-between;
+    width: 100%;
+}
+
+.p1-colour-block {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    line-height: 1.25;
+    padding-top: 0.5mm;
+}
+.p1-colour-name {
+    font-size: 14px;
+    font-weight: 700;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    white-space: nowrap;
+    margin-top: 2mm;
+}
+
+.p1-sticker-b {
+    font-size: 11px;
+    font-weight: 700;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    white-space: nowrap;
+}
+
+.p1-qr img {
+    width: 19mm;
+    height: 19mm;
+    display: block;
+    background: #fff;
+    margin-top: 3mm;
+}
+
+.p1-internal {
+    font-size: 11px;
+    font-weight: 300;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #1b1b1b;
+    text-align: center;
+    white-space: nowrap;
+    line-height: 1;
+    width: 100%;
+    margin-top: 0.5mm;
+    padding-left: 10mm;
+}
+
+.p1-roll {
+    font-size: 27px;
+    font-weight: 300;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    line-height: 1;
+    white-space: nowrap;
+    text-align: left;
+    width: 100%;
+    margin-top: -1mm;
+}
+
+.p1-wgt-block {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    margin-top: 1mm;
+}
+.p1-wgt-lbl {
+    font-size: 10px;
+    font-weight: 700;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    white-space: nowrap;
+    line-height: 1.2;
+}
+.p1-wgt-val {
+    font-size: 14px;
+    font-weight: 300;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    line-height: 1.2;
+}
+';
+
+function render_sticker(
+    array  $product,
+    string $customer,
+    string $ref_no,
+    string $tomboNo,
+    string $lotNo,
+    string $qrImageUrl
+): string {
+
+    $width_mm = floatval($product['width']      ?? 0);
+    $length_m = floatval($product['length']     ?? 0);
+    $actual_m = floatval($product['actual_length'] ?? $product['length'] ?? 0);
+    $std_wgt  = floatval($product['std_weight'] ?? 0);
+    $est_wgt  = ($width_mm > 0 && $actual_m > 0 && $std_wgt > 0)
+        ? round(($actual_m * $width_mm / 1000) * $std_wgt) : '-';
+
+    $rollRaw     = strtoupper(trim($product['roll_no'] ?? ''));
+    $rollDisplay = preg_replace('/^R(\d+)$/i', 'R-$1', $rollRaw);
+    if ($rollDisplay === '') $rollDisplay = '-';
+
+    $w_disp = number_format((float)($product['width']  ?? 0));
+    $l_disp = number_format((float)($actual_m));
+
+    $colourLabel = ucfirst(strtolower($GLOBALS['colorName'] ?? 'White'));
+
+    $h = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES, 'UTF-8');
+
+    return '
+<div class="p1-sticker">
+
+    <div class="p1-left">
+
+        <div class="p1-row" style="margin-bottom:-2mm;">
+            <div class="p1-lbl">TOMBO No.</div>
+            <div class="p1-colon">:</div>
+            <div class="p1-val-area">
+                <span class="p1-val-tombo">' . $h($tomboNo) . '</span>
             </div>
-            <div class="internal-use">INTERNAL USE</div>
         </div>
-        
-        <!-- Roll Number -->
-        <div class="roll-number">
-            <?= htmlspecialchars($product['roll_no']) ?>
+
+        <div class="p1-row">
+            <div class="p1-lbl">Grade</div>
+            <div class="p1-colon">:</div>
+            <div class="p1-val-area has-line">
+                <span class="p1-val-grade">' . $h($product['product'] ?? '-') . '</span>
+            </div>
         </div>
-        
-        <!-- Content -->
-        <div class="content-left">
-            <!-- TOMBO No -->
-            <div class="row">
-                <div class="label">TOMBO No.</div>
-                <div class="colon">:</div>
-                <div class="value underline-text"><?= $tomboNo ?></div>
-            </div>
-            
-            <!-- Grade -->
-            <div class="row">
-                <div class="label">Grade</div>
-                <div class="colon">:</div>
-                <div class="value"><?= htmlspecialchars($product['product']) ?></div>
-            </div>
-            
-            <!-- Size -->
-            <div class="row">
-                <div class="label">Size</div>
-                <div class="colon">:</div>
-                <div class="size-row">
-                    <span class="size-number"><?= number_format($product['width'], 0) ?></span>
-                    <span class="size-unit">mm</span>
-                    <span class="size-x">x</span>
-                    <span class="size-number"><?= number_format($product['actual_length'] ?? $product['length'], 0) ?></span>
-                    <span class="size-unit">Mtr</span>
+
+        <div class="p1-row">
+            <div class="p1-lbl">Size</div>
+            <div class="p1-colon">:</div>
+            <div class="p1-val-area has-line">
+                <div class="p1-size-inner">
+                    <span class="p1-size-num">' . $w_disp . '</span>
+                    <span class="p1-size-unit">mm</span>
+                    <span class="p1-size-x">x</span>
+                    <span class="p1-size-num">' . $l_disp . '</span>
+                    <span class="p1-size-unit">Mtr</span>
                 </div>
             </div>
-            
-            <!-- Lot No -->
-            <div class="row">
-                <div class="label">Lot No.</div>
-                <div class="colon">:</div>
-                <div class="value"><?= htmlspecialchars($lotNo) ?></div>
-            </div>
-            
-            <!-- Customer - Show full name, single line, smaller font -->
-            <div class="row">
-                <div class="label">Customer</div>
-                <div class="colon">:</div>
-                <div class="value" style="font-size: 10pt; font-weight: normal; text-overflow: ellipsis;"><?= htmlspecialchars(getCustomerFullName($customer)) ?></div>
-            </div>
-            
-            <!-- Ref No with Est. Wgt on same line -->
-            <div class="row" style="margin-bottom: 0mm;">
-                <div class="label">Ref. No.</div>
-                <div class="colon">:</div>
-                <div class="value no-line" style="width: 50mm; text-align: center; white-space: nowrap; overflow: visible;"><?= htmlspecialchars($ref_no) ?></div>
-                <div style="margin-right: -13mm; margin-left: 1mm; display: flex; align-items: center; white-space: nowrap;">
-                    <span style="font-weight: normal; font-size: 11pt;">Est. Wgt (kg): </span>
-                    <span style="font-weight: bold; font-size: 18pt; display: inline-block; min-width: -10px; text-align: center; margin-left: 5mm;"><?= $est_weight > 0 ? number_format($est_weight, 0) : '0' ?></span>                </div>
+        </div>
+
+        <div class="p1-row">
+            <div class="p1-lbl">Lot No.</div>
+            <div class="p1-colon">:</div>
+            <div class="p1-val-area has-line">
+                <span class="p1-val-lot">' . $h($lotNo) . '</span>
             </div>
         </div>
+
+        <div class="p1-row">
+            <div class="p1-lbl">Customer</div>
+            <div class="p1-colon">:</div>
+            <div class="p1-val-area has-line">
+                <span class="p1-val-cust">' . $h($customer) . '</span>
+            </div>
+        </div>
+
+        <!-- Ref No + Est Wgt on same row -->
+        <div class="p1-row">
+            <div class="p1-lbl">Ref. No.</div>
+            <div class="p1-colon">:</div>
+            <div class="p1-val-area">
+                <span class="p1-val-cust">' . $h($ref_no) . '</span>
+            </div>
+            <div class="p1-estwgt-inline">
+                <span class="p1-estwgt-lbl">Est. Wgt (kg)</span>
+                <span class="p1-estwgt-val">' . $est_wgt . '</span>
+            </div>
+        </div>
+
     </div>
-    <?php
-    return ob_get_clean();
+
+    <div class="p1-right">
+        <div class="p1-top-block">
+            <div class="p1-colour-block">
+                <span class="p1-colour-name">' . $h($colourLabel) . '</span>
+                <span class="p1-sticker-b">Sticker B</span>
+            </div>
+            <div class="p1-qr">
+                <img src="' . $h($qrImageUrl) . '" alt="QR Code">
+            </div>
+        </div>
+        <div class="p1-internal">INTERNAL USE</div>
+        <div class="p1-roll">' . $h($rollDisplay) . '</div>
+        <div class="p1-wgt-block">
+            <span class="p1-wgt-lbl">Est. Wgt (kg)</span>
+            <span class="p1-wgt-val">' . $est_wgt . '</span>
+        </div>
+    </div>
+
+</div>';
 }
-?>

@@ -97,51 +97,12 @@ if (strpos($product['product'], 'MV') !== false) $tomboNo = "1608 (METAFOAM)";
 
 $lotNo = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
 
-$protocol  = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? "https" : "http";
-$host      = $_SERVER['HTTP_HOST'];
-$basePath  = rtrim(dirname($_SERVER['PHP_SELF']), '/');
+$protocol   = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? "https" : "http";
+$host       = $_SERVER['HTTP_HOST'];
+$basePath   = rtrim(dirname($_SERVER['PHP_SELF']), '/');
 $qrImageUrl = $protocol . "://" . $host . $basePath . "/generate_qr.php?id=" . $id . "&type=slitting";
 
-// ── Load pattern ──────────────────────────────────────────────
-$patternFile = "sticker_patterns/{$pattern}.php";
-if (!file_exists($patternFile)) die("Error: Pattern file not found.");
-include $patternFile;
-
-$isPreview = isset($_GET['customer']) || isset($_POST['customer']);
-
-// ── NCI 2 resolution (must happen before save, so $customer/$ref_no are final)
-if ($customer === 'NCI 2') {
-    $coil_no = $product['coil_no'] ?? '';
-    $width   = (int)($product['width'] ?? 0);
-    $prefix  = getCoilPrefix($coil_no);
-    if ($prefix !== '' && $width > 0) {
-        $row = lookupCustomerPartByInternalCode($conn, $prefix . '-' . $width);
-        if ($row) { $customer = $row['customer']; $ref_no = $row['part_no']; }
-    }
-}
-
-// ══════════════════════════════════════════════════════════════
-// SAVE customer_name + ref_no directly onto slitting_product.
-// Only on POST (real print), skip internal labels.
-// ══════════════════════════════════════════════════════════════
-$skip = ['STOCK', 'TRIAL', 'SFC', ''];
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && $id > 0 && !in_array($customer, $skip, true)) {
-    $stmt = $conn->prepare("
-        UPDATE slitting_product
-        SET customer_name = ?,
-            ref_no        = ?
-        WHERE id = ?
-    ");
-    if ($stmt) {
-        $stmt->bind_param("ssi", $customer, $ref_no, $id);
-        $stmt->execute();
-        $stmt->close();
-    }
-}
-// ══════════════════════════════════════════════════════════════
-
-// ── Sticker background color ──────────────────────────────────
+// ── Sticker colour — MUST be set BEFORE include $patternFile ─
 $PRODUCT_COLOR = [
     "DS-3020"=>"GREEN","DS-3825"=>"GREEN","DS-4525"=>"GREEN",
     "DS-5030"=>"GREEN","DS-8460"=>"GREEN",
@@ -160,11 +121,39 @@ $PRODUCT_COLOR = [
     "RS-5030"=>"BLUE","RS-6040"=>"BLUE","RS-7050"=>"BLUE",
     "RU-5040-1"=>"BLUE","RU-5040-1-S101"=>"BLUE","RV-3825"=>"BLUE",
 ];
-
+$BG        = ['BLUE'=>'#0099ff','GREEN'=>'#129e16','YELLOW'=>'#FFFF00','WHITE'=>'#ffffff'];
 $gradeKey  = strtoupper(trim($product['product'] ?? ''));
 $colorName = $PRODUCT_COLOR[$gradeKey] ?? 'WHITE';
-$BG        = ['BLUE'=>'#0099ff','GREEN'=>'#129e16','YELLOW'=>'#FFFF00','WHITE'=>'#ffffff'];
 $stickerBg = $BG[$colorName] ?? '#ffffff';
+
+// ── Load pattern AFTER $colorName is set ─────────────────────
+$patternFile = "sticker_patterns/{$pattern}.php";
+if (!file_exists($patternFile)) die("Error: Pattern file not found.");
+include $patternFile;
+
+$isPreview = isset($_GET['customer']) || isset($_POST['customer']);
+
+// ── NCI 2 resolution ─────────────────────────────────────────
+if ($customer === 'NCI 2') {
+    $coil_no = $product['coil_no'] ?? '';
+    $width   = (int)($product['width'] ?? 0);
+    $prefix  = getCoilPrefix($coil_no);
+    if ($prefix !== '' && $width > 0) {
+        $row = lookupCustomerPartByInternalCode($conn, $prefix . '-' . $width);
+        if ($row) { $customer = $row['customer']; $ref_no = $row['part_no']; }
+    }
+}
+
+// ── Save customer_name + ref_no ───────────────────────────────
+$skip = ['STOCK', 'TRIAL', 'SFC', ''];
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $id > 0 && !in_array($customer, $skip, true)) {
+    $stmt = $conn->prepare("UPDATE slitting_product SET customer_name=?, ref_no=? WHERE id=?");
+    if ($stmt) {
+        $stmt->bind_param("ssi", $customer, $ref_no, $id);
+        $stmt->execute();
+        $stmt->close();
+    }
+}
 ?>
 <!DOCTYPE html>
 <html>
@@ -176,31 +165,53 @@ $stickerBg = $BG[$colorName] ?? '#ffffff';
             body  { margin: 0; padding: 0; }
             .no-print { display: none; }
             .qs24-floating-btn,[class*="floating"]{display:none!important;visibility:hidden!important;opacity:0!important;}
-            .sticker-bg-wrap{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}
+            .sticker-bg-wrap {
+                background: #ffffff !important;
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+            }
         }
-        *{margin:0;padding:0;box-sizing:border-box;}
-        body{font-family:Arial,sans-serif;padding:0;background:#f5f5f5;}
-        @media screen{body{padding:20px;}}
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { font-family:Arial,sans-serif; padding:0; background:#f5f5f5; }
+        @media screen { body { padding:20px; } }
+
         <?php echo $patternCSS; ?>
-        .sticker-bg-wrap .sticker,.sticker-bg-wrap .sticker-container,
-        .sticker-bg-wrap .sticker-wrap,.sticker-bg-wrap .sticker-area,
-        .sticker-bg-wrap .label,.sticker-bg-wrap .label-container
-        {background:transparent!important;background-color:transparent!important;}
-        .sticker-bg-wrap table,.sticker-bg-wrap tr,
-        .sticker-bg-wrap td,.sticker-bg-wrap th
-        {background:transparent!important;background-color:transparent!important;}
-        .no-print{text-align:center;margin:20px 0;}
-        .info-bar{max-width:120mm;margin:0 auto 10px;padding:10px;
-            background:#e3f2fd;border-left:4px solid #2196F3;border-radius:4px;}
-        .info-bar strong{color:#1976D2;}
-        .btn{padding:10px 30px;font-size:16px;cursor:pointer;margin:0 10px;border:none;border-radius:4px;}
-        .btn-print{background:#4CAF50;color:white;}
-        .btn-back{background:#666;color:white;text-decoration:none;display:inline-block;}
-        button[type="button"]:not(.btn),.floating-btn,iframe{display:none!important;}
-        .sticker-bg-wrap{background:<?= $stickerBg ?>!important;width:120mm;height:47mm;
-            margin:0 auto;overflow:hidden;position:relative;}
-        @media screen{.sticker-bg-wrap{box-shadow:0 2px 10px rgba(0,0,0,0.12);border-radius:6px;}}
-        @media print{.sticker-bg-wrap{box-shadow:none!important;border-radius:0!important;}}
+
+        /* Force inner elements transparent so wrapper bg colour shows on screen */
+        .sticker-bg-wrap .p1-sticker,
+        .sticker-bg-wrap .p2-sticker,
+        .sticker-bg-wrap .sticker-container
+        { background:transparent!important; background-color:transparent!important; }
+
+        .no-print { text-align:center; margin:20px 0; }
+        .info-bar {
+            max-width:120mm; margin:0 auto 10px; padding:10px;
+            background:#e3f2fd; border-left:4px solid #2196F3; border-radius:4px;
+        }
+        .info-bar strong { color:#1976D2; }
+        .btn { padding:10px 30px; font-size:16px; cursor:pointer; margin:0 10px; border:none; border-radius:4px; }
+        .btn-print { background:#4CAF50; color:white; }
+        .btn-back  { background:#666; color:white; text-decoration:none; display:inline-block; }
+        button[type="button"]:not(.btn),.floating-btn,iframe { display:none!important; }
+
+        /* Sticker wrapper — coloured on screen, white on print */
+        .sticker-bg-wrap {
+            width:120mm; height:47mm;
+            margin:0 auto; overflow:hidden; position:relative;
+        }
+        @media screen {
+            .sticker-bg-wrap {
+                background: <?= $stickerBg ?> !important;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.12);
+                border-radius: 6px;
+            }
+        }
+        @media print {
+            .sticker-bg-wrap {
+                box-shadow: none !important;
+                border-radius: 0 !important;
+            }
+        }
     </style>
 </head>
 <body>
@@ -215,18 +226,18 @@ $stickerBg = $BG[$colorName] ?? '#ffffff';
 </div>
 <?php endif; ?>
 
+<div class="sticker-bg-wrap">
 <?php
-echo '<div class="sticker-bg-wrap">';
 if (function_exists('render_sticker')) {
     echo render_sticker($product, $customer, $ref_no, $tomboNo, $lotNo, $qrImageUrl);
 } else {
     echo "<div style='padding:20px;background:red;color:white;'>Error: render_sticker() not found.</div>";
 }
-echo '</div>';
 ?>
+</div>
 
 <div class="no-print">
-    <button class="btn btn-print" onclick="window.print()">Print Sticker</button>
+    <button type="button" class="btn btn-print" onclick="window.print()">Print Sticker</button>
     <a href="select_customer.php?id=<?= $id ?>" class="btn btn-back">← Edit Customer/Ref</a>
     <a href="finish_product.php" class="btn btn-back">← Back to List</a>
 </div>
