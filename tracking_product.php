@@ -17,9 +17,6 @@ $filter_year     = intval($_GET['year']   ?? date('Y'));
 $filter_customer = trim($_GET['customer'] ?? '');
 
 // ── Main query ────────────────────────────────────────────────
-// customer_name + ref_no live directly on slitting_product.
-// No delivery_records table needed.
-// LEFT JOIN mother_coil for grade only.
 $sql = "
     SELECT
         sp.id,
@@ -176,9 +173,28 @@ include 'header.php';
 .trk-header::after {
     content:''; position:absolute; top:-50px; right:-40px;
     width:180px; height:180px; background:rgba(255,255,255,.05); border-radius:50%;
+    pointer-events: none;
 }
 .trk-header h2 { font-size:20px; font-weight:800; letter-spacing:-.3px; margin:0 0 3px; }
 .trk-header p  { opacity:.7; font-size:13px; margin:0; }
+
+.btn-print-report {
+    position: relative; z-index: 10;
+    background: rgba(255,255,255,.15);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,.4);
+    border-radius: 7px;
+    padding: 7px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: background .15s;
+    flex-shrink: 0;
+}
+.btn-print-report:hover { background: rgba(255,255,255,.28); }
 
 /* ── KPI row ──────────────────────────────────────────────── */
 .kpi-row { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin-bottom:20px; }
@@ -302,8 +318,9 @@ include 'header.php';
 
 /* ── Print ────────────────────────────────────────────────── */
 @media print {
-    .trk-header .no-print, .filter-bar, .kpi-row,
-    .results-bar .btn-export, .no-print { display:none !important; }
+    .filter-bar, .kpi-row,
+    .results-bar .btn-export,
+    .no-print { display:none !important; }
     .trk-wrap  { box-shadow:none; border:1px solid #ccc; }
     .trk-table thead th { background:#0f2744 !important; -webkit-print-color-adjust:exact; }
 }
@@ -314,19 +331,19 @@ include 'header.php';
 
 <!-- ── Page Header ──────────────────────────────────────────── -->
 <div class="trk-header">
-    <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+    <div style="display:flex; justify-content:space-between; align-items:center; position:relative; z-index:10;">
         <div>
             <h2><i class="bi bi-globe2 me-2"></i>Global Traceability & Delivery Tracking</h2>
             <p>Full lifecycle — raw material to customer delivery · customer & ref captured at print time</p>
         </div>
-        <button onclick="window.print()" class="btn-export no-print" style="margin-top:2px;">
+        <button type="button" onclick="window.print()" class="btn-print-report no-print">
             <i class="bi bi-printer"></i> Print Report
         </button>
     </div>
 </div>
 
 <!-- ── KPI Cards ────────────────────────────────────────────── -->
-<div class="kpi-row">
+<div class="kpi-row no-print">
     <?php
     $kpiDef = [
         ['DELIVERED',   'Delivered',   'kpi-delivered'],
