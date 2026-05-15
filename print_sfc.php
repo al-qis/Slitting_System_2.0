@@ -180,6 +180,25 @@ include $patternFile;
         /* Force hide INTERNAL USE */
         .internal-use { display: none !important; }
 
+        /* Hide roll number on SFC prints */
+        .sticker-bg-wrap .p2-roll { display: none !important; }
+
+        /* SFC text — directly below the QR code, right panel */
+        .sfc-label-overlay {
+            position: absolute;
+            top: 30.5mm;
+            right: 1.5mm;
+            width: 33mm;
+            font-family: "Arial Narrow", Arial, sans-serif;
+            font-size: 40px;
+            font-weight: 500;
+            color: #000;
+            text-align: center;
+            white-space: nowrap;
+            pointer-events: none;
+            z-index: 20;
+        }
+
         .no-print { text-align: center; margin: 20px 0; }
         .info-bar {
             max-width: 120mm; margin: 0 auto 10px; padding: 10px;
@@ -208,16 +227,6 @@ include $patternFile;
             .sticker-bg-wrap { box-shadow:none!important; border-radius:0!important; }
         }
 
-        /*
-         * LAYOUT (pattern2.php):
-         *   QR:       top:5mm → ~32mm, right edge
-         *   Roll No:  bottom:9mm → ~20mm, right edge (32pt ≈ 11mm tall)
-         *
-         * Safe zones right edge:
-         *   Colour label → top: 1mm   (above QR which starts at 5mm)
-         *   Est.Wgt      → bottom: 1mm (below roll which ends ~bottom:20mm, safe <8mm)
-         */
-
         /* Colour name — top-right, above QR */
         .colour-overlay {
             position: absolute;
@@ -233,29 +242,7 @@ include $patternFile;
             z-index: 20;
         }
 
-        /* Est. Wgt — bottom-right, below roll number */
-        .est-wgt-overlay {
-            position: absolute;
-            bottom: 1mm;
-            right: 2mm;
-            font-family: Arial, sans-serif;
-            text-align: right;
-            line-height: 1.25;
-            pointer-events: none;
-            z-index: 20;
-        }
-        .est-wgt-overlay .ewgt-label {
-            font-size: 6pt;
-            font-weight: 700;
-            color: #000;
-            display: block;
-        }
-        .est-wgt-overlay .ewgt-value {
-            font-size: 10pt;
-            font-weight: 900;
-            color: #000;
-            display: block;
-        }
+
     </style>
 </head>
 <body>
@@ -277,16 +264,10 @@ if (function_exists('render_sticker')) {
     echo "<div style='padding:20px;background:red;color:white;'>Error: render_sticker() not found in pattern file!</div>";
 }
 
-// Colour name — top-right, above QR
-echo '<div class="colour-overlay">' . htmlspecialchars($colourDisplay) . '</div>';
 
-// Est. Wgt — bottom-right, below roll number
-if ($est_wgt !== null) {
-    echo '<div class="est-wgt-overlay">'
-       . '<span class="ewgt-label">Est. Wgt (kg)</span>'
-       . '<span class="ewgt-value">' . $est_wgt . '</span>'
-       . '</div>';
-}
+// SFC label — below QR
+echo '<div class="sfc-label-overlay">SFC</div>';
+
 
 echo '</div>';
 ?>
