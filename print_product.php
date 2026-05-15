@@ -12,20 +12,6 @@ function getCoilPrefix($coil_no) {
     return strtoupper($m[0] ?? '');
 }
 
-function lookupCustomerPartByInternalCode($conn, $internal_code) {
-    $stmt = $conn->prepare("
-        SELECT customer, part_no
-        FROM nci_product_mapping
-        WHERE internal_code = ?
-        LIMIT 1
-    ");
-    $stmt->bind_param("s", $internal_code);
-    $stmt->execute();
-    $row = $stmt->get_result()->fetch_assoc();
-    $stmt->close();
-    return $row ?: null;
-}
-
 // ── Resolve ID, customer, ref_no ─────────────────────────────
 $id       = null;
 $customer = 'STOCK';
@@ -60,8 +46,8 @@ $result = $stmt->get_result();
 if ($result->num_rows == 0) die("Product not found");
 $product = $result->fetch_assoc();
 
-// ── NCI auto-lookup ───────────────────────────────────────────
-$nci_data = null;
+// ── NCI auto-lookup (original NCI customer) ───────────────────
+// This handles the case where customer = 'NCI' (single auto-match by grade+width)
 if ($customer === 'NCI') {
     $product_width = intval($product['width']);
     $stmt_nci = $conn->prepare("SELECT * FROM nci_product_mapping
@@ -79,17 +65,77 @@ if ($customer === 'NCI') {
     $stmt_nci->close();
 }
 
+// ── NCI 2 resolution ─────────────────────────────────────────
+// MUST run before pattern selection and render_sticker(), so the
+// correct customer + part_no are used in pattern4 and the sticker.
+//
+// Logic: derive the internal_code from the coil prefix + width
+// (e.g. coil "A12" with width 115 → internal_code "A-115"),
+// then look up customer + part_no from nci_product_mapping.
+if ($customer === 'NCI 2') {
+    $coil_no = $product['coil_no'] ?? '';
+    $width   = (int)($product['width'] ?? 0);
+    $prefix  = getCoilPrefix($coil_no);
+
+    if ($prefix !== '' && $width > 0) {
+        $internal_code = $prefix . '-' . $width;
+        $stmt_nci2 = $conn->prepare("
+            SELECT customer, part_no
+            FROM nci_product_mapping
+            WHERE internal_code = ?
+            LIMIT 1
+        ");
+        $stmt_nci2->bind_param("s", $internal_code);
+        $stmt_nci2->execute();
+        $row = $stmt_nci2->get_result()->fetch_assoc();
+        $stmt_nci2->close();
+
+        if ($row) {
+            $customer = $row['customer'];
+            $ref_no   = $row['part_no'];
+        }
+        // If no mapping found, customer stays 'NCI 2' and pattern4
+        // will still be used — the sticker will show 'NCI 2' and
+        // the original ref_no so the operator can notice the gap.
+    }
+}
+
 // ── Determine pattern ─────────────────────────────────────────
+// NOTE: pattern4 is keyed on the *original* customer value 'NCI 2'.
+// After the NCI 2 block above, $customer has been overwritten with
+// the real customer name (e.g. "DELPHI (Mexico)"), so we can no
+// longer rely on in_array() for pattern4. We capture the pattern
+// BEFORE the customer is overwritten, or use a flag.
+//
+// Solution: check for NCI 2 before the resolution block above is
+// needed — we do this by tracking whether the incoming customer
+// was 'NCI 2'.
+
+// Re-read the original requested customer to decide the pattern.
 $pattern = 'pattern2';
+
+// Determine the originally-requested customer (before any NCI resolution)
+$original_customer_request = null;
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $original_customer_request = $_POST['customer'] === 'OTHER'
+        ? $_POST['custom_customer']
+        : $_POST['customer'];
+} elseif (isset($_GET['id'])) {
+    $original_customer_request = $_GET['customer'] ?? 'STOCK';
+    if ($original_customer_request === 'OTHER' && isset($_GET['custom_customer'])) {
+        $original_customer_request = $_GET['custom_customer'];
+    }
+}
+
 $pattern1_customers = ['NAE', 'NRI', 'STAMPING'];
 $pattern2_customers = ['NAX', 'TAIHO', 'ASHUKA', 'NTC', 'STOCK', 'NCI MFG', 'NIP', 'SGC', 'MTX'];
 $pattern3_customers = ['YANTAI'];
 $pattern4_customers = ['NCI 2'];
 
-if      (in_array($customer, $pattern1_customers)) $pattern = 'pattern1';
-elseif  (in_array($customer, $pattern2_customers)) $pattern = 'pattern2';
-elseif  (in_array($customer, $pattern3_customers)) $pattern = 'pattern3';
-elseif  (in_array($customer, $pattern4_customers)) $pattern = 'pattern4';
+if      (in_array($original_customer_request, $pattern1_customers)) $pattern = 'pattern1';
+elseif  (in_array($original_customer_request, $pattern2_customers)) $pattern = 'pattern2';
+elseif  (in_array($original_customer_request, $pattern3_customers)) $pattern = 'pattern3';
+elseif  (in_array($original_customer_request, $pattern4_customers)) $pattern = 'pattern4';
 
 // ── Sticker data ──────────────────────────────────────────────
 $tomboNo = "1600 (METAKOTE)";
@@ -124,6 +170,42 @@ $PRODUCT_COLOR = [
 $BG        = ['BLUE'=>'#0099ff','GREEN'=>'#129e16','YELLOW'=>'#FFFF00','WHITE'=>'#ffffff'];
 $gradeKey  = strtoupper(trim($product['product'] ?? ''));
 $colorName = $PRODUCT_COLOR[$gradeKey] ?? 'WHITE';
+
+// ── NCI 2 colour override ─────────────────────────────────────
+// For NCI 2 orders, colour is determined by product grade + width,
+// overriding the default grade-only lookup above.
+// Key format: "GRADE|WIDTH_MM"  (width as plain integer string)
+if ($original_customer_request === 'NCI 2') {
+    $NCI2_COLOR = [
+        // RS-3825 — default is BLUE; NCI 2 uses GREEN for these widths
+        'RS-3825|115' => 'GREEN',
+        'RS-3825|120' => 'GREEN',
+        // RS-4020 — default is BLUE; NCI 2 uses GREEN
+        'RS-4020|125' => 'GREEN',
+        // KB-6440 — default is YELLOW; NCI 2 uses BLUE for all widths
+        'KB-6440|101' => 'BLUE',
+        'KB-6440|111' => 'BLUE',
+        'KB-6440|113' => 'BLUE',
+        'KB-6440|136' => 'BLUE',
+        'KB-6440|137' => 'BLUE',
+        'KB-6440|141' => 'BLUE',
+        'KB-6440|155' => 'BLUE',
+        'KB-6440|167' => 'BLUE',
+        'KB-6440|210' => 'BLUE',
+        // TU-3020 — default is WHITE; NCI 2 uses GREEN
+        'TU-3020|313' => 'GREEN',
+        // TS-3525 — default is WHITE; NCI 2 uses GREEN
+        'TS-3525|154' => 'GREEN',
+        'TS-3525|89'  => 'GREEN',
+        // TU-4020 — default is WHITE; NCI 2 uses GREEN
+        'TU-4020|313' => 'GREEN',
+    ];
+    $nci2ColorKey = $gradeKey . '|' . (string)(int)($product['width'] ?? 0);
+    if (isset($NCI2_COLOR[$nci2ColorKey])) {
+        $colorName = $NCI2_COLOR[$nci2ColorKey];
+    }
+}
+
 $stickerBg = $BG[$colorName] ?? '#ffffff';
 
 // ── Load pattern AFTER $colorName is set ─────────────────────
@@ -132,17 +214,6 @@ if (!file_exists($patternFile)) die("Error: Pattern file not found.");
 include $patternFile;
 
 $isPreview = isset($_GET['customer']) || isset($_POST['customer']);
-
-// ── NCI 2 resolution ─────────────────────────────────────────
-if ($customer === 'NCI 2') {
-    $coil_no = $product['coil_no'] ?? '';
-    $width   = (int)($product['width'] ?? 0);
-    $prefix  = getCoilPrefix($coil_no);
-    if ($prefix !== '' && $width > 0) {
-        $row = lookupCustomerPartByInternalCode($conn, $prefix . '-' . $width);
-        if ($row) { $customer = $row['customer']; $ref_no = $row['part_no']; }
-    }
-}
 
 // ── Save customer_name + ref_no ───────────────────────────────
 $skip = ['STOCK', 'TRIAL', 'SFC', ''];
@@ -180,6 +251,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $id > 0 && !in_array($customer, $sk
         /* Force inner elements transparent so wrapper bg colour shows on screen */
         .sticker-bg-wrap .p1-sticker,
         .sticker-bg-wrap .p2-sticker,
+        .sticker-bg-wrap .p3-sticker,
+        .sticker-bg-wrap .p4-sticker,
         .sticker-bg-wrap .sticker-container
         { background:transparent!important; background-color:transparent!important; }
 

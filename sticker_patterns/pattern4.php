@@ -204,7 +204,7 @@ $patternCSS = '
 }
 
 .p4-roll {
-    font-size: 27px;
+    font-size: 28.5px;
     font-weight: 300;
     font-family: "Arial Narrow", Arial, sans-serif;
     color: #000;
@@ -212,7 +212,8 @@ $patternCSS = '
     white-space: nowrap;
     text-align: left;
     width: 100%;
-    margin-top: -1mm;
+    margin-top: 6mm;
+    padding-right: 10mm;
 }
 
 .p4-wgt-block {
@@ -245,7 +246,7 @@ function getCustomerFullName($code) {
         'NCI MFG' => 'NCI MFG., INC.',
         'TAIHO'   => 'TAIHO MFG OF TN. INC',
         'NRI'     => 'PT NICHIAS ROCKWOOL IND.',
-        'NSA'  => 'ASHUKA TECHNOLOGIES SDN. BHD.',
+        'NSA'     => 'ASHUKA TECHNOLOGIES SDN. BHD.',
         'NIPPON'  => 'NTC(NIPPON GASKET)',
         'NTC'     => 'NICHIAS THAILAND',
         'SGC'     => 'SHANGHAI XINGSHENG',
@@ -364,8 +365,6 @@ function render_sticker(
         <div class="p4-internal">INTERNAL USE</div>
         <div class="p4-roll">' . $h($rollDisplay) . '</div>
         <div class="p4-wgt-block">
-            <span class="p4-wgt-lbl">Est. Wgt (kg)</span>
-            <span class="p4-wgt-val">' . $est_wgt . '</span>
         </div>
     </div>
 
