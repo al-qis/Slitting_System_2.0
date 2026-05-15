@@ -28,6 +28,7 @@
                 <?php
                 $current_page = basename($_SERVER['PHP_SELF']);
                 $menu_items = [
+                    'settings.php' => ['icon' => 'gear', 'label' => 'Settings'],
                     'index.php'            => ['icon' => 'speedometer2', 'label' => 'Dashboard'],
                     'mother_coil.php'      => ['icon' => 'layer-forward', 'label' => 'Mother Coil'],
                     'raw_material.php'     => ['icon' => 'box-seam', 'label' => 'Raw Material'],

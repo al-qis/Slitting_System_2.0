@@ -1,6 +1,7 @@
 <?php
 // sticker_patterns/pattern2.php
-// Used by: NAX, TAIHO, ASHUKA, NTC, STOCK, NCI MFG, NIP, SFC
+// Used by: NAX, TAIHO, ASHUKA, NTC, STOCK, , NIP, SFC, MTX, YTEC.
+
 // No Est.Wgt | No Sticker B
 
 $colourLabel = ucfirst(strtolower($colorName ?? 'WHITE'));
@@ -223,16 +224,20 @@ function getCustomerFullName($code) {
         'NCI MFG' => 'NCI MFG., INC.',
         'TAIHO'   => 'TAIHO MFG OF TN. INC',
         'NRI'     => 'PT NICHIAS ROCKWOOL IND.',
-        'ASHUKA'  => 'ASHUKA TECHNOLOGIES SDN. BHD.',
+        'NSA'  => 'ASHUKA TECHNOLOGIES SDN. BHD.',
         'NIPPON'  => 'NTC(NIPPON GASKET)',
         'NTC'     => 'NICHIAS THAILAND',
         'SGC'     => 'SHANGHAI XINGSHENG',
-        'STAMPING'=> 'MK STAMPING',
+        'STPG'    => 'MK STAMPING',
         'YANTAI'  => 'NICHIAS (SHANGHAI) AUTOPARTS TRADING',
         'NIP'     => 'NICHIAS IND. PRODUCTS PVT. LTD.',
         'STOCK'   => 'STOCK',
         'TRIAL'   => 'TRIAL',
         'SFC'     => 'SFC',
+        'MTX'     => 'NC-PT NRI(FORWARD MATRIX)',
+        'YTEC'    => 'YTEC CO., LTD.',
+        'NVC'     => 'NICHIAS VIETNAM CO., LTD',
+
     ];
     return $customers[$code] ?? $code;
 }

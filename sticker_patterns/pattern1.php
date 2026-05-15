@@ -272,6 +272,29 @@ $patternCSS = '
 }
 ';
 
+function getCustomerFullName($code) {
+    $customers = [
+        'NAE'     => 'NICHIAS AUTOPARTS EUROPE (NAE)',
+        'NAX'     => 'NAX MFG, SA.DE C.V',
+        'NCI MFG' => 'NCI MFG., INC.',
+        'TAIHO'   => 'TAIHO MFG OF TN. INC',
+        'NRI'     => 'PT NICHIAS ROCKWOOL IND.',
+        'ASHUKA'  => 'ASHUKA TECHNOLOGIES SDN. BHD.',
+        'NIPPON'  => 'NTC(NIPPON GASKET)',
+        'NTC'     => 'NICHIAS THAILAND',
+        'SGC'     => 'SHANGHAI XINGSHENG',
+        'STAMPING'=> 'MK STAMPING',
+        'YANTAI'  => 'NICHIAS (SHANGHAI) AUTOPARTS TRADING',
+        'NIP'     => 'NICHIAS IND. PRODUCTS PVT. LTD.',
+        'STOCK'   => 'STOCK',
+        'TRIAL'   => 'TRIAL',
+        'SFC'     => 'SFC',
+        'NC-PT NRI(FORWARD MATRIX)' => 'NC-PT NRI(FORWARD MATRIX)',
+        'YTEC CO., LTD.'            => 'YTEC CO., LTD.',
+    ];
+    return $customers[$code] ?? $code;
+}
+
 function render_sticker(
     array  $product,
     string $customer,
@@ -296,7 +319,7 @@ function render_sticker(
     $l_disp = number_format((float)($actual_m));
 
     $colourLabel = ucfirst(strtolower($GLOBALS['colorName'] ?? 'White'));
-
+    $customerDisplay = getCustomerFullName($customer);
     $h = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES, 'UTF-8');
 
     return '
@@ -346,7 +369,7 @@ function render_sticker(
             <div class="p1-lbl">Customer</div>
             <div class="p1-colon">:</div>
             <div class="p1-val-area has-line">
-                <span class="p1-val-cust">' . $h($customer) . '</span>
+                <span class="p1-val-cust">' . $h($customerDisplay) . '</span>
             </div>
         </div>
 
@@ -358,8 +381,7 @@ function render_sticker(
                 <span class="p1-val-cust">' . $h($ref_no) . '</span>
             </div>
             <div class="p1-estwgt-inline">
-                <span class="p1-estwgt-lbl">Est. Wgt (kg)</span>
-                <span class="p1-estwgt-val">' . $est_wgt . '</span>
+                
             </div>
         </div>
 
