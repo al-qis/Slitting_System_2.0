@@ -29,8 +29,8 @@ CREATE TABLE `coil_product_map` (
   `coil_code` varchar(10) NOT NULL,
   `product` varchar(50) NOT NULL,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `coil_code` (`coil_code`)
-) ENGINE=InnoDB AUTO_INCREMENT=48 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+  KEY `idx_coil_code` (`coil_code`)
+) ENGINE=InnoDB AUTO_INCREMENT=68 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -39,7 +39,7 @@ CREATE TABLE `coil_product_map` (
 
 LOCK TABLES `coil_product_map` WRITE;
 /*!40000 ALTER TABLE `coil_product_map` DISABLE KEYS */;
-INSERT INTO `coil_product_map` VALUES (1,'A','RS-3825'),(2,'B','TS-4525'),(3,'BP','RS-3825-04'),(4,'CG','DS-3020'),(5,'CH','DS-3825'),(6,'CI','DS-4525'),(7,'CJ','DS-5030'),(8,'CM','DS-8460'),(9,'EC','LN-2520-04'),(10,'ED','L1N2-2520-02'),(11,'FK','LN-2520'),(12,'FL','LN-2420'),(13,'FN','YW-2520-SG'),(14,'FR','LN-1715-1'),(15,'FV','LZ-2520 - 788'),(16,'G','RS-4020'),(17,'H','RS-5030'),(18,'HPM','HBV-4020'),(19,'J','RS-6040'),(20,'K','RS-7050'),(21,'LA','TS-5030'),(22,'LG','RS-4025'),(23,'LQ','TS-3525-SG'),(24,'N','TU-3020'),(25,'P','TS-3525'),(26,'P6','PS-6020'),(27,'PM','MV-4020'),(28,'PS','PS-8525'),(29,'QA','JZ-2520-2C'),(30,'QB','JZ-4020'),(31,'QE','JZ-3020'),(32,'QM','JZ-2820'),(33,'RA','RU-5040-1'),(34,'RG','RB-6440'),(35,'RH','GB-6440-05'),(36,'RK','KB-6440'),(37,'RL','GB-7640'),(38,'RN','RB-5040-2'),(39,'RR','GB-6440'),(40,'RU','RU-5040-1-S101'),(41,'TG','TU-4020'),(42,'V','RS-3020'),(43,'Z','TU-2620'),(44,'JCM','DS-8460'),(45,'JPM','MV-4020'),(46,'JQA','JZ-2520'),(47,'JQE','JZ-3020');
+INSERT INTO `coil_product_map` VALUES (1,'A','RS-3825'),(2,'B','RS-4525'),(3,'B','TS-4525'),(4,'BP','RS-3825-04'),(5,'CG','DS-3020'),(6,'CH','DS-3825'),(7,'CI','DS-4525'),(8,'CJ','DS-5030'),(9,'CM','DS-8460'),(10,'EC','LN-2520-04'),(11,'ED','L1N2-2520-02'),(12,'FJ','LZ-2420'),(13,'FK','LN-2520'),(14,'FK','LN-2520-788'),(15,'FK','LN-2520-936'),(16,'FK','LN-2520-1025'),(17,'FN','YW-2520-SG'),(18,'FR','LN-1715-1'),(19,'FR','LN-1715-838'),(20,'FR','LN-2520-838'),(21,'FV','LZ-2520'),(22,'FV','LZ-2520-788'),(23,'G','RS-4020'),(24,'H','RS-5030'),(25,'HPM','HBV-4020'),(26,'HPM','MV-4020'),(27,'J','RS-6040'),(28,'JCM','DS-8460'),(29,'JPM','MV-4020'),(30,'JQA','JZ-2520'),(31,'JQE','JZ-3020'),(32,'K','RS-7050'),(33,'LA','TS-5030'),(34,'LG','RS-4025'),(35,'LG','RS-4525'),(36,'LG','TS-4025'),(37,'LI','TS-9080-SG'),(38,'LJ','TS-9080'),(39,'LM','TS-2620'),(40,'LQ','TS-3525-SG'),(41,'N','TU-3020'),(42,'O','JV-3825'),(43,'O','RV-3825'),(44,'P','TS-3525'),(45,'P6','PS-6020'),(46,'PS','PS-8525'),(47,'QA','JZ-2520'),(48,'QA','JZ-2520-2C'),(49,'QA','JZ-2520-2C-788'),(50,'QB','JZ-4020'),(51,'QE','JZ-3020'),(52,'QM','JZ-2820'),(53,'QM','JZ-2820-788'),(54,'RA','RU-5040-1'),(55,'RG','RB-6440'),(56,'RH','GB-6440-S101'),(57,'RK','KB-6440'),(58,'RL','GB-7640'),(59,'RN','RB-5040-2'),(60,'RR','GB-6440'),(61,'RU','RU-5040-1-S101'),(62,'TG','TU-4020'),(63,'V','RS-3020'),(64,'V','TS-3020'),(65,'Z','TU-2620'),(66,'ZC','TU-2620-C');
 /*!40000 ALTER TABLE `coil_product_map` ENABLE KEYS */;
 UNLOCK TABLES;
 
@@ -141,6 +141,42 @@ INSERT INTO `nci_product_mapping` VALUES (1,'A-115','RS-3825','115 mm','DELPHI (
 UNLOCK TABLES;
 
 --
+-- Table structure for table `process_log`
+--
+
+DROP TABLE IF EXISTS `process_log`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `process_log` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `entity_type` enum('slitting','recoiling','reslit','sfc','stock','mother') NOT NULL COMMENT 'Which table this log entry relates to',
+  `entity_id` int NOT NULL COMMENT 'The PK of the related row in that table',
+  `mother_id` int DEFAULT NULL COMMENT 'Denormalized for fast mother-coil reporting',
+  `from_status` varchar(50) DEFAULT NULL COMMENT 'Status before the change',
+  `to_status` varchar(50) NOT NULL COMMENT 'Status after the change',
+  `performed_by` varchar(100) DEFAULT NULL COMMENT 'Username or role who triggered this action',
+  `performed_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `action_detail` varchar(255) DEFAULT NULL COMMENT 'Extra context: e.g. "send_to_reslit", "qc_approve"',
+  `remark` text,
+  PRIMARY KEY (`id`),
+  KEY `idx_entity` (`entity_type`,`entity_id`),
+  KEY `idx_mother` (`mother_id`),
+  KEY `idx_performed_at` (`performed_at`),
+  KEY `idx_to_status` (`to_status`),
+  CONSTRAINT `fk_process_log_mother` FOREIGN KEY (`mother_id`) REFERENCES `mother_coil` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Immutable audit log — one row per status change across all processes';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `process_log`
+--
+
+LOCK TABLES `process_log` WRITE;
+/*!40000 ALTER TABLE `process_log` DISABLE KEYS */;
+/*!40000 ALTER TABLE `process_log` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
 -- Temporary view structure for view `production_yield_summary`
 --
 
@@ -200,6 +236,7 @@ DROP TABLE IF EXISTS `recoiling_product`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `recoiling_product` (
   `id` int NOT NULL AUTO_INCREMENT,
+  `slitting_product_id` int DEFAULT NULL COMMENT 'FK → slitting_product.id — the exact roll sent to recoiling',
   `mother_id` int DEFAULT NULL,
   `status` enum('pending','completed') CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT 'pending',
   `source` varchar(50) DEFAULT NULL COMMENT 'Immediate source',
@@ -220,7 +257,10 @@ CREATE TABLE `recoiling_product` (
   `original_source` varchar(50) DEFAULT 'raw_material' COMMENT 'Permanent original source (raw_material, sfc)',
   PRIMARY KEY (`id`),
   KEY `fk_recoiling_mother_idx` (`mother_id`),
-  KEY `idx_recoiling_original_source` (`original_source`)
+  KEY `idx_recoiling_original_source` (`original_source`),
+  KEY `fk_recoiling_from_slitting` (`slitting_product_id`),
+  CONSTRAINT `fk_recoiling_from_slitting` FOREIGN KEY (`slitting_product_id`) REFERENCES `slitting_product` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_recoiling_mother` FOREIGN KEY (`mother_id`) REFERENCES `mother_coil` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -242,6 +282,8 @@ DROP TABLE IF EXISTS `reslit_product`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `reslit_product` (
   `id` int NOT NULL AUTO_INCREMENT,
+  `mother_id` int DEFAULT NULL COMMENT 'FK to mother_coil — NULL for SFC-origin records',
+  `slitting_product_id` int DEFAULT NULL COMMENT 'FK → slitting_product.id — the exact roll that was sent to reslit',
   `status` enum('pending','in_progress','completed') DEFAULT 'pending',
   `source` varchar(50) DEFAULT NULL COMMENT 'Immediate source',
   `product` varchar(100) DEFAULT NULL,
@@ -260,7 +302,11 @@ CREATE TABLE `reslit_product` (
   `completed_at` datetime DEFAULT NULL,
   `date_reslit` date DEFAULT NULL,
   PRIMARY KEY (`id`),
-  KEY `idx_reslit_original_source` (`original_source`)
+  KEY `idx_reslit_original_source` (`original_source`),
+  KEY `fk_reslit_from_slitting` (`slitting_product_id`),
+  KEY `fk_reslit_mother_idx` (`mother_id`),
+  CONSTRAINT `fk_reslit_from_slitting` FOREIGN KEY (`slitting_product_id`) REFERENCES `slitting_product` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_reslit_mother` FOREIGN KEY (`mother_id`) REFERENCES `mother_coil` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -315,6 +361,7 @@ DROP TABLE IF EXISTS `sfc`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `sfc` (
   `sfc_id` int NOT NULL AUTO_INCREMENT,
+  `mother_id` int DEFAULT NULL COMMENT 'FK to mother_coil — NULL for SFC-origin records',
   `product` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL,
   `lot_no` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL,
   `coil_no` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL,
@@ -324,7 +371,9 @@ CREATE TABLE `sfc` (
   `action` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL,
   `date_created` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `date_out` datetime DEFAULT NULL,
-  PRIMARY KEY (`sfc_id`)
+  PRIMARY KEY (`sfc_id`),
+  KEY `fk_sfc_mother_idx` (`mother_id`),
+  CONSTRAINT `fk_sfc_mother` FOREIGN KEY (`mother_id`) REFERENCES `mother_coil` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -378,7 +427,7 @@ CREATE TABLE `slitting_audit_log` (
   KEY `idx_mother_id` (`mother_id`),
   KEY `idx_action` (`action`),
   KEY `idx_created_at` (`created_at`),
-  CONSTRAINT `slitting_audit_log_ibfk_1` FOREIGN KEY (`mother_id`) REFERENCES `mother_coil` (`id`)
+  CONSTRAINT `fk_slitting_audit_mother` FOREIGN KEY (`mother_id`) REFERENCES `mother_coil` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -408,13 +457,16 @@ CREATE TABLE `slitting_product` (
   `length` decimal(10,2) DEFAULT NULL,
   `actual_length` decimal(10,2) DEFAULT NULL,
   `length_type` varchar(20) DEFAULT NULL,
-  `status` enum('IN','WAITING','APPROVED','REJECTED','DELIVERED') DEFAULT 'IN',
+  `status` enum('IN','WAITING','APPROVED','REJECTED','DELIVERED','OUT') DEFAULT 'IN',
   `qc_comment` text,
   `is_completed` tinyint(1) DEFAULT '0',
   `stock_counted` tinyint(1) DEFAULT '0',
   `date_in` datetime DEFAULT NULL,
   `date_out` datetime DEFAULT NULL,
   `delivered_at` datetime DEFAULT NULL,
+  `customer_name` varchar(150) DEFAULT NULL COMMENT 'Customer captured at sticker print time',
+  `ref_no` varchar(150) DEFAULT NULL COMMENT 'Customer ref / part number at print time',
+  `delivered_by` varchar(100) DEFAULT NULL COMMENT 'Who delivered this roll to customer',
   `mother_id` int DEFAULT NULL,
   `from_log_id` int DEFAULT NULL,
   `cut_type` varchar(20) DEFAULT 'normal' COMMENT 'normal or cut_into_2',
@@ -427,21 +479,30 @@ CREATE TABLE `slitting_product` (
   `reslit_reason` varchar(255) DEFAULT NULL,
   `parent_id` int DEFAULT NULL,
   `cut_reason` varchar(255) DEFAULT NULL,
-  `stock` decimal(10,2) DEFAULT NULL,
+  `leftover_length` decimal(10,2) DEFAULT NULL COMMENT 'Leftover length (meters) saved back to stock after Cut Into 2',
   `std_weight` decimal(10,4) DEFAULT '0.0000' COMMENT 'Standard weight for calculation',
   `recoiling_id` int DEFAULT NULL,
+  `parent_slit_id` int DEFAULT NULL COMMENT 'Self-ref FK: if this roll came from recoiling/reslitting another roll',
   `source` varchar(50) NOT NULL DEFAULT 'raw_material',
   `original_source` varchar(50) DEFAULT 'raw_material' COMMENT 'Permanent original source (raw_material, sfc)',
+  `is_voided` tinyint(1) NOT NULL DEFAULT '0' COMMENT '1 = soft-deleted, hidden from all active views',
+  `voided_at` datetime DEFAULT NULL COMMENT 'Timestamp when the row was voided',
+  `voided_reason` varchar(255) DEFAULT NULL COMMENT 'Reason for voiding: manual_delete, duplicate, etc.',
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `unique_production_roll` (`lot_no`,`coil_no`,`roll_no`),
   KEY `idx_recoiling_id` (`recoiling_id`),
-  KEY `fk_slitting_std_wgt` (`product`),
-  KEY `fk_slitting_mother` (`mother_id`),
   KEY `fk_slitting_log` (`from_log_id`),
   KEY `idx_original_source` (`original_source`),
+  KEY `fk_slit_parent` (`parent_slit_id`),
+  KEY `fk_slitting_std_wgt` (`product`),
+  KEY `idx_is_voided` (`is_voided`),
+  KEY `fk_slitting_mother` (`mother_id`),
+  KEY `idx_customer_name` (`customer_name`),
+  CONSTRAINT `fk_slit_parent` FOREIGN KEY (`parent_slit_id`) REFERENCES `slitting_product` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
   CONSTRAINT `fk_slitting_log` FOREIGN KEY (`from_log_id`) REFERENCES `raw_material_log` (`id`) ON DELETE SET NULL,
-  CONSTRAINT `fk_slitting_mother` FOREIGN KEY (`mother_id`) REFERENCES `mother_coil` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
-  CONSTRAINT `fk_slitting_std_wgt` FOREIGN KEY (`product`) REFERENCES `std_wgt` (`product_code`) ON DELETE RESTRICT ON UPDATE CASCADE
+  CONSTRAINT `fk_slitting_mother` FOREIGN KEY (`mother_id`) REFERENCES `mother_coil` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_slitting_std_wgt` FOREIGN KEY (`product`) REFERENCES `std_wgt` (`product_code`) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -496,12 +557,10 @@ CREATE TABLE `std_wgt` (
   `id` int NOT NULL AUTO_INCREMENT,
   `product_code` varchar(100) NOT NULL,
   `std_weight` decimal(10,4) NOT NULL COMMENT 'Standard weight for calculation',
-  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `unique_product` (`product_code`),
   KEY `idx_product` (`product_code`)
-) ENGINE=InnoDB AUTO_INCREMENT=54 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Standard weight lookup table';
+) ENGINE=InnoDB AUTO_INCREMENT=64 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Standard weight lookup table';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -510,7 +569,7 @@ CREATE TABLE `std_wgt` (
 
 LOCK TABLES `std_wgt` WRITE;
 /*!40000 ALTER TABLE `std_wgt` DISABLE KEYS */;
-INSERT INTO `std_wgt` VALUES (1,'DS-3020',1.7300,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(2,'DS-3825',2.1690,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(3,'DS-4525',2.2600,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(4,'DS-5030',2.6600,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(5,'DS-8460',5.1100,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(6,'GB-6440',3.5100,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(7,'GB-6440-S101',3.5100,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(8,'GB-7640',3.6700,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(9,'JZ-2520',1.6700,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(10,'JZ-2520-2C',1.6700,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(11,'JZ-2820',1.7000,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(12,'JZ-3020',1.7300,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(13,'JZ-4020',1.8600,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(14,'KB-6440',3.5120,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(15,'L1N2-2520-02',1.6700,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(16,'LN-1715-1',1.5600,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(17,'LN-2520',1.6700,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(18,'LN-2520-02',1.6700,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(19,'LN-2520-04',1.6700,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(20,'LZ-2420',1.6100,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(21,'LZ-2520',1.6700,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(22,'MV-4020',1.7300,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(23,'PS-6020',1.9100,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(24,'PS-8525',2.2400,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(25,'RS-3020',1.7300,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(26,'RS-3825',2.1690,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(27,'RS-3825-04',2.1690,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(28,'RS-4020',1.8600,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(29,'RS-4025',2.1900,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(30,'RS-4525',2.2600,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(31,'RS-5030',2.6600,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(32,'RS-6040',3.4600,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(33,'RS-7050',4.2600,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(34,'RU-5040-1',3.3300,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(35,'RU-5040-1-S101',3.3300,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(36,'RV-3825',2.1690,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(37,'TS-2620',1.6780,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(38,'TS-3020',1.7300,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(39,'TS-3525',2.1300,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(40,'TS-3525-SG',2.1300,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(41,'TS-4025',2.1900,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(42,'TS-4525',2.2600,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(43,'TS-5030',2.6600,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(44,'TS-9080',6.5300,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(45,'TS-9080-SG',6.5300,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(46,'TU-2620',1.6780,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(47,'TU-2620-C',1.6790,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(48,'TU-3020',1.7300,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(49,'TU-4020',1.8600,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(50,'JV-3825',2.1690,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(51,'YW-2520-SG',1.6700,'2026-01-13 06:45:32','2026-01-13 06:45:32'),(52,'HBV-4020',1.7300,'2026-01-14 08:37:08','2026-01-14 08:37:08');
+INSERT INTO `std_wgt` VALUES (1,'DS-3020',1.7300),(2,'DS-3825',2.1690),(3,'DS-4525',2.2600),(4,'DS-5030',2.6600),(5,'DS-8460',5.1100),(6,'GB-6440',3.5100),(7,'GB-6440-S101',3.5100),(8,'GB-7640',3.6700),(9,'HBV-4020',1.7300),(10,'JV-3825',2.1690),(11,'JZ-2520',1.6700),(12,'JZ-2520-2C',1.6700),(13,'JZ-2520-2C-788',1.6700),(14,'JZ-2820',1.7000),(15,'JZ-2820-788',1.7000),(16,'JZ-3020',1.7300),(17,'JZ-4020',1.8600),(18,'KB-6440',3.5120),(19,'L1N2-2520-02',1.6700),(20,'LN-1715-1',1.5600),(21,'LN-1715-838',1.6700),(22,'LN-2520',1.6700),(23,'LN-2520-02',1.6700),(24,'LN-2520-04',1.6700),(25,'LN-2520-788',1.6700),(26,'LN-2520-838',1.6700),(27,'LN-2520-936',1.6700),(28,'LN-2520-1025',1.6700),(29,'LZ-2420',1.6100),(30,'LZ-2520',1.6700),(31,'LZ-2520-788',1.6700),(32,'MV-4020',1.7300),(33,'PS-6020',1.9100),(34,'PS-8525',2.2400),(35,'RB-5040-2',3.5100),(36,'RB-6440',3.5120),(37,'RS-3020',1.7300),(38,'RS-3825',2.1690),(39,'RS-3825-04',2.1700),(40,'RS-4020',1.8600),(41,'RS-4025',2.1900),(42,'RS-4525',2.2600),(43,'RS-5030',2.6600),(44,'RS-6040',3.4600),(45,'RS-7050',4.2600),(46,'RU-5040-1',3.3300),(47,'RU-5040-1-S101',3.3300),(48,'RV-3825',2.1690),(49,'TS-2620',1.6780),(50,'TS-3020',1.7300),(51,'TS-3525',2.1300),(52,'TS-3525-SG',2.1300),(53,'TS-4025',2.1900),(54,'TS-4525',2.2600),(55,'TS-5030',2.6600),(56,'TS-9080',6.5300),(57,'TS-9080-SG',6.5300),(58,'TU-2620',1.6780),(59,'TU-2620-C',1.6780),(60,'TU-3020',1.7300),(61,'TU-4020',1.8600),(62,'YW-2520-SG',1.6700),(63,'RT-3520',2.1690);
 /*!40000 ALTER TABLE `std_wgt` ENABLE KEYS */;
 UNLOCK TABLES;
 
@@ -536,7 +595,7 @@ CREATE TABLE `stock_raw_material` (
   `updated_at` datetime DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `fk_mother_source` (`source_id`),
-  CONSTRAINT `fk_mother_source` FOREIGN KEY (`source_id`) REFERENCES `mother_coil` (`id`) ON DELETE CASCADE
+  CONSTRAINT `fk_mother_source` FOREIGN KEY (`source_id`) REFERENCES `mother_coil` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -658,4 +717,4 @@ UNLOCK TABLES;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2026-05-06  9:56:27
+-- Dump completed on 2026-05-18 14:42:23
