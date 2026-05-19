@@ -23,22 +23,25 @@
                 <img src="assets/nichiaslogo.jpg" alt="Logo" style="max-width: 35px;" class="me-2 rounded shadow-sm">
                 <h6 class="m-0 fw-bold">MK SLITTING</h6>
             </div>
-            
+
             <ul class="nav flex-column">
                 <?php
                 $current_page = basename($_SERVER['PHP_SELF']);
                 $menu_items = [
-                    'settings.php' => ['icon' => 'gear', 'label' => 'Settings'],
-                    'index.php'            => ['icon' => 'speedometer2', 'label' => 'Dashboard'],
-                    'mother_coil.php'      => ['icon' => 'layer-forward', 'label' => 'Mother Coil'],
-                    'raw_material.php'     => ['icon' => 'box-seam', 'label' => 'Raw Material'],
-                    'sfc.php'              => ['icon' => 'box-seam-fill', 'label' => 'SFC Inventory'],
-                    'slitting_product.php' => ['icon' => 'scissors', 'label' => 'Slitting Product'],
-                    'recoiling.php'        => ['icon' => 'arrow-repeat', 'label' => 'Recoiling Cut'],
-                    'reslit.php'           => ['icon' => 'intersect', 'label' => 'Reslit Product'],
-                    'finish_product.php'   => ['icon' => 'check-circle', 'label' => 'Finish Product'],
-                    'report.php'           => ['icon' => 'file-earmark-bar-graph', 'label' => 'Report'],
-                    'tracking_product.php' => ['icon' => 'globe2', 'label' => 'Traceability'],
+                    'settings.php'         => ['icon' => 'gear',                   'label' => 'Settings'],
+                    'index.php'            => ['icon' => 'speedometer2',            'label' => 'Dashboard'],
+                    'mother_coil.php'      => ['icon' => 'layer-forward',           'label' => 'Mother Coil'],
+                    'raw_material.php'     => ['icon' => 'box-seam',                'label' => 'Raw Material'],
+                    'sfc.php'              => ['icon' => 'box-seam-fill',           'label' => 'SFC Inventory'],
+                    'slitting_product.php' => ['icon' => 'scissors',                'label' => 'Slitting Product'],
+                    'recoiling.php'        => ['icon' => 'arrow-repeat',            'label' => 'Recoiling Cut'],
+                    'reslit.php'           => ['icon' => 'intersect',               'label' => 'Reslit Product'],
+                    'finish_product.php'   => ['icon' => 'check-circle',            'label' => 'Finish Product'],
+                    // ── NEW: Pallet Management ────────────────────────────────
+                    'pallet.php'           => ['icon' => 'archive',                 'label' => 'Pallet'],
+                    // ─────────────────────────────────────────────────────────
+                    'report.php'           => ['icon' => 'file-earmark-bar-graph',  'label' => 'Report'],
+                    'tracking_product.php' => ['icon' => 'globe2',                  'label' => 'Traceability'],
                 ];
 
                 foreach ($menu_items as $url => $info):
@@ -50,7 +53,7 @@
                     </a>
                 </li>
                 <?php endforeach; ?>
-                
+
                 <li class="nav-item mt-4 pt-2 border-top border-secondary">
                     <a class="nav-link text-danger" href="logout.php">
                         <i class="bi bi-box-arrow-right me-2"></i> Logout

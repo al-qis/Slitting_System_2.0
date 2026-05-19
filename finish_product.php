@@ -1,7 +1,17 @@
 <?php
-// finish_product.php — Schema Migration v2
-// Fixed: send_to_reslit and send_to_recoiling now use a transaction,
-//        soft-deactivate the source roll properly, and write process_log.
+// finish_product.php
+// ============================================================
+// CHANGES FROM ORIGINAL:
+//  1. Scan no longer sends individual rolls to QC directly.
+//     Instead it redirects operator to pallet.php to assign
+//     the roll to a pallet first.
+//  2. Status badges updated — palletised rolls show which
+//     pallet they are on.
+//  3. "Send to QC" column button removed; replaced with
+//     "Add to Pallet" link when roll is in Finish Good state.
+//  4. All other existing logic (reslit, recoiling, actual
+//     length update, Excel export) is unchanged.
+// ============================================================
 
 session_start();
 
@@ -16,7 +26,33 @@ if ($_SESSION['role'] !== 'slitting') {
 
 include 'config.php';
 
-// ── Helper: write one process_log row ──────────────────────────────────────
+// ============================================================
+// INLINED PALLET HELPERS — no external file needed
+// ============================================================
+function getPallet(mysqli $conn, int $pallet_id): ?array {
+    $stmt = $conn->prepare("SELECT * FROM pallets WHERE id = ?");
+    $stmt->bind_param("i", $pallet_id); $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc(); $stmt->close();
+    return $row ?: null;
+}
+function getPalletItems(mysqli $conn, int $pallet_id): array {
+    $stmt = $conn->prepare("
+        SELECT pi.seq, pi.added_at,
+               sp.id AS product_id,
+               sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
+               sp.width, sp.length, sp.actual_length, sp.status
+        FROM pallet_items pi
+        JOIN slitting_product sp ON sp.id = pi.slitting_product_id
+        WHERE pi.pallet_id = ?
+        ORDER BY pi.seq ASC
+    ");
+    $stmt->bind_param("i", $pallet_id); $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC); $stmt->close();
+    return $rows;
+}
+// ============================================================
+
+// ── Helper: write one process_log row ────────────────────────
 function log_process(
     mysqli  $conn,
     string  $entity_type,
@@ -44,7 +80,7 @@ function log_process(
     $stmt->close();
 }
 
-// ── Excel export redirect ───────────────────────────────────────────────────
+// ── Excel export redirect ─────────────────────────────────────
 if (isset($_GET['download']) && $_GET['download'] === 'excel') {
     $m = isset($_GET['month']) ? (int)$_GET['month'] : (int)date('m');
     $y = isset($_GET['year'])  ? (int)$_GET['year']  : (int)date('Y');
@@ -59,28 +95,7 @@ $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 if ($month < 1 || $month > 12) { $month = (int)date('m'); }
 if ($year < 2000 || $year > 2100) { $year = (int)date('Y'); }
 
-// ── QC Approve ─────────────────────────────────────────────────────────────
-if ($_SERVER['REQUEST_METHOD'] === 'POST'
-    && isset($_POST['action'])
-    && $_POST['action'] === 'qc_approve') {
-
-    $id  = intval($_POST['product_id']);
-    $cur = $conn->query("SELECT status, mother_id FROM slitting_product WHERE id=$id")->fetch_assoc();
-
-    $stmt = $conn->prepare("UPDATE slitting_product SET status='APPROVED', qc_comment=NULL WHERE id=? AND status='WAITING'");
-    $stmt->bind_param("i", $id);
-    if ($stmt->execute()) {
-        log_process($conn, 'slitting', $id, (int)($cur['mother_id'] ?? 0) ?: null,
-            $cur['status'], 'APPROVED', 'qc_approve', '');
-        header("Location: finish_product.php?success=qc_approved");
-    } else {
-        header("Location: finish_product.php?error=qc_approve_failed");
-    }
-    $stmt->close();
-    exit;
-}
-
-// ── Save Actual Length (OK / Stock) ────────────────────────────────────────
+// ── Save Actual Length (OK / Stock) ──────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST'
     && isset($_POST['action'])
     && $_POST['action'] === 'update_ok') {
@@ -138,7 +153,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     exit;
 }
 
-// ── Send to Recoiling ───────────────────────────────────────────────────────
+// ── Send to Recoiling ─────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST'
     && isset($_POST['action'])
     && $_POST['action'] === 'send_to_recoiling') {
@@ -209,7 +224,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     }
 }
 
-// ── Send to Reslit ──────────────────────────────────────────────────────────
+// ── Send to Reslit ────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST'
     && isset($_POST['action'])
     && $_POST['action'] === 'send_to_reslit') {
@@ -283,33 +298,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     }
 }
 
-// ── Main query ──────────────────────────────────────────────────────────────
+// ── Main query ────────────────────────────────────────────────
+// Now also LEFT JOINs pallet_items and pallets so we can show
+// which pallet each roll is on.
 $baseSql = "
-    SELECT * FROM slitting_product
-    WHERE is_voided = 0
-      AND (is_recoiled = 0 OR is_recoiled IS NULL)
-      AND (is_reslitted = 0 OR is_reslitted IS NULL)
+    SELECT sp.*,
+           pi.pallet_id,
+           p.pallet_no,
+           p.status AS pallet_status
+    FROM slitting_product sp
+    LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+    LEFT JOIN pallets p       ON p.id = pi.pallet_id
+    WHERE sp.is_voided = 0
+      AND (sp.is_recoiled = 0 OR sp.is_recoiled IS NULL)
+      AND (sp.is_reslitted = 0 OR sp.is_reslitted IS NULL)
       AND (
-          (status = 'IN' AND MONTH(date_in) = ? AND YEAR(date_in) = ?)
-          OR (status IN ('WAITING','OUT','APPROVED','REJECTED')
-              AND MONTH(date_out) = ? AND YEAR(date_out) = ?)
-          OR (status = 'DELIVERED'
-              AND MONTH(delivered_at) = ? AND YEAR(delivered_at) = ?)
+          (sp.status = 'IN' AND MONTH(sp.date_in) = ? AND YEAR(sp.date_in) = ?)
+          OR (sp.status IN ('WAITING','OUT','APPROVED','REJECTED')
+              AND MONTH(sp.date_out) = ? AND YEAR(sp.date_out) = ?)
+          OR (sp.status = 'DELIVERED'
+              AND MONTH(sp.delivered_at) = ? AND YEAR(sp.delivered_at) = ?)
       )";
 
 if ($search !== '') {
-    $baseSql .= " AND (product LIKE ? OR lot_no LIKE ? OR coil_no LIKE ? OR roll_no LIKE ? OR id LIKE ?)";
+    $baseSql .= " AND (sp.product LIKE ? OR sp.lot_no LIKE ? OR sp.coil_no LIKE ? OR sp.roll_no LIKE ? OR sp.id LIKE ? OR p.pallet_no LIKE ?)";
 }
-$baseSql .= " ORDER BY id ASC";
+$baseSql .= " ORDER BY sp.id ASC";
 
 $stmt = $conn->prepare($baseSql);
 if (!$stmt) { die("Query prepare failed: " . htmlspecialchars($conn->error)); }
 
 if ($search !== '') {
     $like = '%' . $search . '%';
-    $stmt->bind_param("iiiiiisssss",
+    $stmt->bind_param("iiiiiissssss",
         $month, $year, $month, $year, $month, $year,
-        $like, $like, $like, $like, $like);
+        $like, $like, $like, $like, $like, $like);
 } else {
     $stmt->bind_param("iiiiii", $month, $year, $month, $year, $month, $year);
 }
@@ -324,6 +347,16 @@ $stock   = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_produc
 $waiting = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='WAITING' AND MONTH(date_out)=$month AND YEAR(date_out)=$year")->fetch_assoc()['total'];
 $deliver = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='DELIVERED' AND MONTH(delivered_at)=$month AND YEAR(delivered_at)=$year")->fetch_assoc()['total'];
 
+// How many rolls are currently assigned to a building pallet (palletised)
+$palletised = $conn->query("
+    SELECT IFNULL(COUNT(*),0) AS total
+    FROM pallet_items pi
+    JOIN pallets p ON p.id = pi.pallet_id
+    JOIN slitting_product sp ON sp.id = pi.slitting_product_id
+    WHERE p.status = 'building'
+      AND MONTH(sp.date_in) = $month AND YEAR(sp.date_in) = $year
+")->fetch_assoc()['total'];
+
 $editData = null;
 if (isset($_GET['edit'])) {
     $eid = intval($_GET['edit']);
@@ -335,31 +368,26 @@ $page_title = 'Finish Product';
 include 'header.php';
 ?>
 
-<!-- ═══ CHANGE 1: SweetAlert2 CDN — added to <head> via header.php include above.
-     Since header.php outputs the full <head>, paste these two lines into header.php
-     right after the Bootstrap CSS <link> tag: -->
-<!--
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css">
-<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.all.min.js"></script>
--->
-
 <style>
 table { table-layout: fixed; width: 100%; }
 table th, table td { word-wrap: break-word; vertical-align: middle; font-size: 13px; }
 table td img { max-width: 60px; max-height: 60px; display: block; margin: 0 auto; }
-table th:nth-child(1)  { width: 45px; }
-table th:nth-child(2)  { width: 110px; }
-table th:nth-child(3)  { width: 70px; }
-table th:nth-child(4)  { width: 90px; }
-table th:nth-child(5)  { width: 110px; }
-table th:nth-child(6)  { width: 70px; }
-table th:nth-child(7)  { width: 60px; }
-table th:nth-child(8)  { width: 60px; }
-table th:nth-child(9)  { width: 70px; }
-table th:nth-child(10) { width: 90px; }
-table th:nth-child(11) { width: 90px; }
-table th:nth-child(12) { width: 70px; }
-table th:nth-child(13) { width: 140px; }
+table th:nth-child(1)  { width: 40px; }
+table th:nth-child(2)  { width: 100px; }
+table th:nth-child(3)  { width: 65px; }
+table th:nth-child(4)  { width: 85px; }
+table th:nth-child(5)  { width: 100px; }
+table th:nth-child(6)  { width: 65px; }
+table th:nth-child(7)  { width: 55px; }
+table th:nth-child(8)  { width: 55px; }
+table th:nth-child(9)  { width: 65px; }
+table th:nth-child(10) { width: 90px; }  /* pallet column */
+table th:nth-child(11) { width: 85px; }
+table th:nth-child(12) { width: 85px; }
+table th:nth-child(13) { width: 130px; }
+
+.badge-pallet { background:#e0f2fe; color:#0369a1; font-size:10px; font-weight:700;
+                padding:3px 7px; border-radius:10px; white-space:nowrap; }
 </style>
 
 <h2 class="mb-4"><i class="bi bi-check-circle me-2"></i>Finish Product</h2>
@@ -369,7 +397,7 @@ table th:nth-child(13) { width: 140px; }
            style="position:fixed; left:-9999px; opacity:0;" autofocus>
 </form>
 
-<!-- ═══ CHANGE 2: Error + Success alert banners ═══════════════════════════ -->
+<!-- Alerts -->
 <?php if (isset($_GET['error'])): ?>
 <div class="alert alert-danger alert-dismissible fade show">
     <strong>Error:</strong> <?= htmlspecialchars(urldecode($_GET['msg'] ?? $_GET['error'])) ?>
@@ -382,18 +410,18 @@ table th:nth-child(13) { width: 140px; }
     <i class="bi bi-check-circle me-2"></i>
     <?php
     $successMessages = [
-        'qc_approved' => 'Roll approved by QC successfully.',
         'recoiling'   => 'Roll sent to Recoiling successfully.',
         'reslit'      => 'Roll sent to Reslit successfully.',
         'stock'       => 'Actual length saved. Roll is now in Finish Good stock.',
+        'palletised'  => 'Roll added to pallet successfully.',
     ];
     echo htmlspecialchars($successMessages[$_GET['success']] ?? 'Action completed successfully.');
     ?>
     <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
 </div>
 <?php endif; ?>
-<!-- ═══════════════════════════════════════════════════════════════════════ -->
 
+<!-- Month/Year filter + search -->
 <div class="row mb-3 g-2 align-items-center">
     <div class="col-auto">
         <form method="get" class="d-flex gap-2 align-items-center">
@@ -419,7 +447,7 @@ table th:nth-child(13) { width: 140px; }
             <input type="hidden" name="month" value="<?= $month ?>">
             <input type="hidden" name="year"  value="<?= $year ?>">
             <input type="text" name="search" class="form-control"
-                   placeholder="Search ID, Product, Lot, Coil..."
+                   placeholder="Search ID, Product, Lot, Coil, Pallet No..."
                    value="<?= htmlspecialchars($search) ?>">
             <button class="btn btn-primary" type="submit"><i class="bi bi-search"></i></button>
             <?php if ($search !== ''): ?>
@@ -429,20 +457,26 @@ table th:nth-child(13) { width: 140px; }
     </div>
 </div>
 
-<div class="mb-3 d-flex gap-2">
+<div class="mb-3 d-flex gap-2 flex-wrap">
     <a href="?month=<?= $month ?>&year=<?= $year ?>&download=excel" class="btn btn-success btn-sm">Download Excel</a>
     <button type="button" class="btn btn-warning btn-sm" data-bs-toggle="modal" data-bs-target="#manualEntryModal">Manual Entry</button>
     <a href="sfc_tracking.php"       class="btn btn-info btn-sm">SFC Tracking Report</a>
     <a href="process_log_viewer.php" class="btn btn-secondary btn-sm">
         <i class="bi bi-clock-history me-1"></i> Process Log
     </a>
+    <!-- NEW: quick link to pallet page -->
+    <a href="pallet.php" class="btn btn-primary btn-sm">
+        <i class="bi bi-archive me-1"></i> Manage Pallets
+    </a>
 </div>
 
-<div class="d-flex mb-4 gap-2">
-    <div class="card flex-fill text-center text-bg-info">   <div class="card-body p-2"><h6>IN</h6>      <h2><?= (int)$in ?></h2>     </div></div>
-    <div class="card flex-fill text-center text-bg-primary"><div class="card-body p-2"><h6>STOCK</h6>   <h2><?= (int)$stock ?></h2>  </div></div>
-    <div class="card flex-fill text-center text-bg-warning"><div class="card-body p-2"><h6>WAITING</h6> <h2><?= (int)$waiting ?></h2></div></div>
-    <div class="card flex-fill text-center text-bg-success"><div class="card-body p-2"><h6>DELIVER</h6> <h2><?= (int)$deliver ?></h2></div></div>
+<!-- KPI summary cards — now includes Palletised count -->
+<div class="d-flex mb-4 gap-2 flex-wrap">
+    <div class="card flex-fill text-center text-bg-info">   <div class="card-body p-2"><h6>IN</h6>          <h2><?= (int)$in ?></h2>         </div></div>
+    <div class="card flex-fill text-center text-bg-primary"><div class="card-body p-2"><h6>STOCK</h6>       <h2><?= (int)$stock ?></h2>      </div></div>
+    <div class="card flex-fill text-center" style="background:#e0f2fe;"><div class="card-body p-2"><h6 style="color:#0369a1;">PALLETISED</h6><h2 style="color:#0369a1;"><?= (int)$palletised ?></h2></div></div>
+    <div class="card flex-fill text-center text-bg-warning"><div class="card-body p-2"><h6>WAITING QC</h6> <h2><?= (int)$waiting ?></h2>    </div></div>
+    <div class="card flex-fill text-center text-bg-success"><div class="card-body p-2"><h6>DELIVER</h6>    <h2><?= (int)$deliver ?></h2>    </div></div>
 </div>
 
 <div class="table-responsive">
@@ -451,7 +485,7 @@ table th:nth-child(13) { width: 140px; }
             <tr>
                 <th>ID</th><th>Status</th><th>Origin</th><th>Product</th>
                 <th>Lot No</th><th>Roll No.</th><th>Width</th><th>Length</th>
-                <th>Actual</th><th>Date In</th><th>Date Out</th><th>Delivered</th>
+                <th>Actual</th><th>Pallet</th><th>Date In</th><th>Date Out</th>
                 <th>Action</th>
             </tr>
         </thead>
@@ -477,9 +511,7 @@ table th:nth-child(13) { width: 140px; }
                 'OUT'       => '<span class="badge bg-danger">OUT</span>',
                 'WAITING'   => '<span class="badge bg-warning text-dark">WAITING QC</span>',
                 'APPROVED'  => '<span class="badge bg-success">APPROVED</span>',
-                'REJECTED'  => '<div><span class="badge bg-danger" data-bs-toggle="tooltip"
-                                    title="Reason: ' . htmlspecialchars($row['qc_comment'] ?? 'No reason') . '">
-                                    REJECTED <i class="bi bi-info-circle"></i></span><br>
+                'REJECTED'  => '<div><span class="badge bg-danger">REJECTED</span><br>
                                     <small class="text-danger fw-bold">' . htmlspecialchars($row['qc_comment'] ?? '') . '</small></div>',
                 'DELIVERED' => '<span class="badge bg-success">DELIVERED</span>',
                 default     => '<span class="badge bg-secondary">' . $row['status'] . '</span>'
@@ -493,13 +525,29 @@ table th:nth-child(13) { width: 140px; }
             };
 
             $lotCoil = trim($row['lot_no'] ?? '') . ' ' . trim($row['coil_no'] ?? '');
+
+            // Pallet display
+            $palletDisplay = '—';
+            if ($row['pallet_id']) {
+                $pStatus = $row['pallet_status'] ?? 'building';
+                $pBadgeClass = match($pStatus) {
+                    'building'   => 'badge-pallet',
+                    'pending_qc' => 'badge bg-warning text-dark',
+                    'approved'   => 'badge bg-success',
+                    'delivered'  => 'badge bg-success',
+                    'rejected'   => 'badge bg-danger',
+                    default      => 'badge bg-secondary'
+                };
+                $palletDisplay = '<a href="pallet.php?pallet_id=' . $row['pallet_id'] . '"
+                    class="' . $pBadgeClass . '" style="font-size:10px;">'
+                    . htmlspecialchars($row['pallet_no']) . '</a>';
+            }
         ?>
             <tr class="<?= $rowClass ?>">
                 <td><?= $row['id'] ?></td>
                 <td><?= $statusBadge ?></td>
                 <td>
-                    <span class="badge <?= $originDisplay['class'] ?>"
-                          title="Source: <?= htmlspecialchars($originalSource) ?>">
+                    <span class="badge <?= $originDisplay['class'] ?>">
                         <?= $originDisplay['label'] ?>
                     </span>
                 </td>
@@ -509,14 +557,14 @@ table th:nth-child(13) { width: 140px; }
                 <td><?= $row['width'] ?></td>
                 <td><?= $row['length'] ?></td>
                 <td><?= $row['actual_length'] ?></td>
+                <td><?= $palletDisplay ?></td>
                 <td><?= $row['date_in'] ?></td>
                 <td><?= $row['date_out'] ?></td>
-                <td><?= $row['delivered_at'] ?></td>
                 <td>
-    <?php if ($row['status'] == 'WAITING'): ?>
-        <small><i>Waiting QC...</i></small>
+    <?php if ($row['status'] === 'WAITING'): ?>
+        <small><i>Waiting QC on pallet <?= htmlspecialchars($row['pallet_no'] ?? '...') ?></i></small>
 
-    <?php elseif ($row['status'] == 'REJECTED'): ?>
+    <?php elseif ($row['status'] === 'REJECTED'): ?>
         <div class="d-flex flex-column gap-1">
             <form method="post" onsubmit="return confirm('Reslit this rejected product?')">
                 <input type="hidden" name="action"     value="send_to_reslit">
@@ -530,13 +578,39 @@ table th:nth-child(13) { width: 140px; }
             </form>
         </div>
 
-    <?php elseif ($row['status'] == 'IN'): ?>
+    <?php elseif ($row['status'] === 'IN'): ?>
         <div class="d-flex flex-column gap-1">
-            <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&search=<?= urlencode($search) ?>"
-               class="btn <?= $row['is_completed'] == 0 ? 'btn-primary' : 'btn-outline-primary' ?> btn-sm w-100">
-               <?= $row['is_completed'] == 0 ? 'Update' : 'Edit Length' ?>
-            </a>
-            <?php if ($row['stock_counted'] == 1): ?>
+
+            <?php if ($row['is_completed'] == 0): ?>
+                <!-- No actual length yet — must update first -->
+                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&search=<?= urlencode($search) ?>"
+                   class="btn btn-primary btn-sm w-100">Update</a>
+
+            <?php elseif ($row['pallet_id']): ?>
+                <!-- Already palletised -->
+                <a href="pallet.php?pallet_id=<?= $row['pallet_id'] ?>"
+                   class="btn btn-outline-primary btn-sm w-100">
+                   <i class="bi bi-archive me-1"></i><?= htmlspecialchars($row['pallet_no']) ?>
+                </a>
+                <form method="post" onsubmit="return confirm('Send to reslit?')">
+                    <input type="hidden" name="action"     value="send_to_reslit">
+                    <input type="hidden" name="product_id" value="<?= $row['id'] ?>">
+                    <button type="submit" class="btn btn-warning btn-sm w-100">Reslit</button>
+                </form>
+                <form method="post" onsubmit="return confirm('Move to Recoiling?')">
+                    <input type="hidden" name="action"     value="send_to_recoiling">
+                    <input type="hidden" name="product_id" value="<?= $row['id'] ?>">
+                    <button type="submit" class="btn btn-info btn-sm w-100 text-white">Recoiling</button>
+                </form>
+
+            <?php else: ?>
+                <!-- Stock counted, not yet on a pallet -->
+                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&search=<?= urlencode($search) ?>"
+                   class="btn btn-outline-primary btn-sm w-100">Edit Length</a>
+                <!-- ★ NEW: Add to Pallet button ★ -->
+                <a href="pallet.php" class="btn btn-primary btn-sm w-100">
+                    <i class="bi bi-archive me-1"></i> Add to Pallet
+                </a>
                 <form method="post" onsubmit="return confirm('Send to reslit?')">
                     <input type="hidden" name="action"     value="send_to_reslit">
                     <input type="hidden" name="product_id" value="<?= $row['id'] ?>">
@@ -549,9 +623,10 @@ table th:nth-child(13) { width: 140px; }
                 </form>
                 <a href="select_customer.php?id=<?= $row['id'] ?>" class="btn btn-secondary btn-sm w-100">Print Only</a>
             <?php endif; ?>
+
         </div>
 
-    <?php elseif ($row['status'] == 'APPROVED'): ?>
+    <?php elseif ($row['status'] === 'APPROVED'): ?>
         <a href="select_customer.php?id=<?= $row['id'] ?>" class="btn btn-success btn-sm w-100">Print & Deliver</a>
 
     <?php else: ?>
@@ -568,6 +643,7 @@ table th:nth-child(13) { width: 140px; }
     </table>
 </div>
 
+<!-- Actual Length Edit Modal -->
 <?php if ($editData): ?>
 <div class="modal fade show" id="updateModal"
      style="display:block; background: rgba(0,0,0,0.5);" tabindex="-1">
@@ -610,6 +686,7 @@ table th:nth-child(13) { width: 140px; }
 </script>
 <?php endif; ?>
 
+<!-- Manual Entry Modal -->
 <div class="modal fade" id="manualEntryModal" tabindex="-1">
     <div class="modal-dialog"><div class="modal-content">
         <div class="modal-header">
@@ -628,10 +705,8 @@ table th:nth-child(13) { width: 140px; }
     </div></div>
 </div>
 
-<!-- ═══ CHANGE 3: Updated JS block — adds SweetAlert2 scan notifications ═══
-     Replaces the original <script> block at the bottom entirely.           -->
 <script>
-// ── QR Scanner (unchanged from original) ─────────────────────
+// ── QR Scanner ─────────────────────────────────────────────
 const qIn = document.getElementById('qrInputProduct');
 const qFm = document.getElementById('scanFormProduct');
 
@@ -646,13 +721,11 @@ qIn.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && qIn.value.trim() !== '') qFm.submit();
 });
 
-// ── Tooltips (unchanged from original) ───────────────────────
+// ── Tooltips ────────────────────────────────────────────────
 var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
 tooltipTriggerList.map(el => new bootstrap.Tooltip(el));
 
-// ── SweetAlert2 scan result notifications (NEW) ───────────────
-// Reads the ?scan= param returned by scan_product_action.php
-// and shows the appropriate popup. Fires once then cleans the URL.
+// ── SweetAlert2 scan result notifications ──────────────────
 (function () {
     const params = new URLSearchParams(window.location.search);
     const scan   = params.get('scan');
@@ -669,143 +742,42 @@ tooltipTriggerList.map(el => new bootstrap.Tooltip(el));
     }
 
     const alerts = {
-
-        // ── Product successfully sent to QC ───────────────────
-        'waiting': {
-            icon: 'success',
-            title: 'Sent to QC ✓',
-            text:  'Product has been moved to QC Waiting.',
-            timer: 2500,
-            showConfirmButton: false,
-        },
-
-        // ── Product marked as delivered ───────────────────────
-        'delivered': {
-            icon: 'success',
-            title: 'Delivered ✓',
-            text:  'Product has been marked as Delivered.',
-            timer: 2500,
-            showConfirmButton: false,
-        },
-
-        // ── MAIN BLOCK: product in Reslit or Recoil ───────────
-        'blocked_qc': {
-            icon:  'error',
-            title: 'Cannot Send to QC',
-            html:
-                '<div style="text-align:left; font-size:14px; line-height:1.7">' +
-                '  <p><strong>Invalid Action:</strong> This product must be in ' +
-                '  <strong>Finish Good</strong> status to proceed to QC.</p>' +
-                '  <p style="margin-top:8px">Current blocking reason: ' +
-                '  <span style="color:#dc3545; font-weight:700">' + escHtml(reason) + '</span></p>' +
-                '  <p style="color:#6b7280; font-size:12px; margin-top:8px">' +
-                '  Products currently in <strong>Reslit</strong> or <strong>Recoil</strong> ' +
-                '  are blocked even if they were previously in Finish Good.' +
-                '  </p>' +
-                (pid ? '<p style="color:#9ca3af; font-size:11px; margin-top:6px">Roll ID: #' + escHtml(pid) + '</p>' : '') +
-                '</div>',
-            confirmButtonText:  'Understood',
-            confirmButtonColor: '#dc3545',
-        },
-
-        // ── Product rejected by QC ────────────────────────────
-        'rejected_blocked': {
-            icon:  'warning',
-            title: 'Product is Rejected',
-            html:
-                '<p style="font-size:14px">This product was <strong>rejected by QC</strong>.</p>' +
-                '<p style="font-size:13px; color:#6b7280; margin-top:8px">' +
-                'Send it to <strong>Reslit</strong> or <strong>Recoil</strong> ' +
-                'before scanning again.</p>',
-            confirmButtonText:  'OK',
-            confirmButtonColor: '#f59e0b',
-        },
-
-        // ── Actual length not recorded yet ────────────────────
-        'not_stock': {
-            icon:  'warning',
-            title: 'Not in Finish Good Yet',
-            html:
-                '<p style="font-size:14px">Actual length has not been recorded for this roll.</p>' +
-                '<p style="font-size:13px; color:#6b7280; margin-top:8px">' +
-                'Click <strong>Update</strong> on the product row first, ' +
-                'then scan again.</p>',
-            confirmButtonText: 'OK',
-        },
-
-        // ── Already in QC queue ───────────────────────────────
-        'already_waiting': {
-            icon:  'info',
-            title: 'Already in QC Queue',
-            text:  'This product is already waiting for QC approval.',
-            timer: 2500,
-            showConfirmButton: false,
-        },
-
-        // ── Already delivered ─────────────────────────────────
-        'already_delivered': {
-            icon:  'info',
-            title: 'Already Delivered',
-            text:  'This product has already been delivered.',
-            timer: 2500,
-            showConfirmButton: false,
-        },
-
-        // ── Voided roll ───────────────────────────────────────
-        'voided': {
-            icon:  'error',
-            title: 'Roll is Voided',
-            text:  'This roll has been voided and cannot be processed.',
-            confirmButtonColor: '#dc3545',
-        },
-
-        // ── Product not found in database ─────────────────────
-        'notfound': {
-            icon:  'error',
-            title: 'Product Not Found',
-            html:
-                '<p style="font-size:14px">No matching product found in the system.</p>' +
-                '<p style="font-size:13px; color:#6b7280; margin-top:8px">' +
-                'Check the QR code and try again.</p>',
-            confirmButtonColor: '#dc3545',
-        },
-
-        // ── QR code could not be parsed ───────────────────────
-        'invalid': {
-            icon:  'error',
-            title: 'Invalid QR Code',
-            text:  'Could not read the QR code. Expected format: LOT;COIL;ROLL',
-            confirmButtonColor: '#dc3545',
-        },
-
-        // ── Empty scan ────────────────────────────────────────
-        'empty': {
-            icon:  'warning',
-            title: 'Nothing Scanned',
-            text:  'The scanner sent an empty value. Please try again.',
-            timer: 2000,
-            showConfirmButton: false,
-        },
+        'waiting':          { icon:'success', title:'Sent to QC ✓', text:'Product moved to QC Waiting.', timer:2500, showConfirmButton:false },
+        'delivered':        { icon:'success', title:'Delivered ✓',  text:'Product marked as Delivered.',  timer:2500, showConfirmButton:false },
+        'blocked_qc':       { icon:'error',   title:'Cannot Send to QC',
+                              html:'<p>Current blocking reason: <strong style="color:#dc3545">' + escHtml(reason) + '</strong></p>' + (pid?'<p style="font-size:11px">Roll ID: #'+escHtml(pid)+'</p>':''),
+                              confirmButtonText:'Understood', confirmButtonColor:'#dc3545' },
+        'rejected_blocked': { icon:'warning', title:'Product is Rejected',
+                              html:'<p>Send it to <strong>Reslit</strong> or <strong>Recoil</strong> before scanning again.</p>',
+                              confirmButtonText:'OK', confirmButtonColor:'#f59e0b' },
+        'not_stock':        { icon:'warning', title:'Not in Finish Good Yet',
+                              html:'<p>Actual length not recorded. Click <strong>Update</strong> first.</p>',
+                              confirmButtonText:'OK' },
+        'no_pallet':        { icon:'info',    title:'No Pallet Assigned',
+                              html:'<p>This roll is ready but not on a pallet yet.</p><p>Go to <strong>Pallet Management</strong> to create or open a pallet and scan this roll in.</p>',
+                              confirmButtonText:'Go to Pallets',
+                              preConfirm: () => { window.location.href = 'pallet.php'; } },
+        'already_waiting':  { icon:'info',   title:'Already in QC Queue', text:'Already waiting for QC approval.', timer:2500, showConfirmButton:false },
+        'already_delivered':{ icon:'info',   title:'Already Delivered',   text:'This product has already been delivered.', timer:2500, showConfirmButton:false },
+        'voided':           { icon:'error',  title:'Roll is Voided',       text:'This roll has been voided.',             confirmButtonColor:'#dc3545' },
+        'notfound':         { icon:'error',  title:'Product Not Found',    html:'<p>No matching product found.</p>',       confirmButtonColor:'#dc3545' },
+        'invalid':          { icon:'error',  title:'Invalid QR Code',      text:'Expected format: LOT;COIL;ROLL',          confirmButtonColor:'#dc3545' },
+        'empty':            { icon:'warning',title:'Nothing Scanned',      text:'Empty scan. Please try again.',           timer:2000, showConfirmButton:false },
     };
 
     const cfg = alerts[scan];
     if (!cfg) return;
 
-    // Show alert, then re-focus scanner after dismissal
     if (typeof Swal !== 'undefined') {
-        Swal.fire(cfg).then(() => {
-            if (qIn) qIn.focus();
-        });
+        Swal.fire(cfg).then(() => { if (qIn) qIn.focus(); });
     }
 
-    // Clean URL so refreshing the page does not re-trigger the alert
     const cleanUrl = window.location.pathname
         + '?month=' + (params.get('month') ?? '')
         + '&year='  + (params.get('year')  ?? '');
     window.history.replaceState({}, '', cleanUrl);
 })();
 </script>
-<!-- ═══════════════════════════════════════════════════════════ -->
 
 <div><a href="index.php" class="btn btn-secondary mt-3">← Back</a></div>
 <?php include 'footer.php'; ?>
