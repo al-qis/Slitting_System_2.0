@@ -7,9 +7,50 @@ if (!isset($_GET['id'])) {
 
 $id = intval($_GET['id']);
 
-// Fetch product details
+// ── Fetch product ─────────────────────────────────────────────
 $result = $conn->query("SELECT * FROM slitting_product WHERE id=$id");
 $product = $result->fetch_assoc();
+
+// ── Read existing saved customer & ref_no ─────────────────────
+$savedCustomer = trim($product['customer_name'] ?? '');
+$savedRefNo    = trim($product['ref_no']        ?? '');
+
+// ═══════════════════════════════════════════════════════════════
+// AJAX SAVE — only addition to the original file.
+// Triggered by the Save button via fetch().
+// Returns JSON { ok, msg } — no page change, no print dialog.
+// ═══════════════════════════════════════════════════════════════
+if (
+    isset($_POST['action']) && $_POST['action'] === 'save_only' &&
+    !empty($_SERVER['HTTP_X_REQUESTED_WITH']) &&
+    strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest'
+) {
+    header('Content-Type: application/json');
+
+    $pid      = intval($_POST['id']       ?? 0);
+    $customer = trim($_POST['customer']   ?? '');
+    $ref_no   = trim($_POST['ref_no']     ?? '');
+
+    if ($customer === 'OTHER') {
+        $customer = trim($_POST['custom_customer'] ?? '');
+    }
+
+    if ($pid <= 0) { echo json_encode(['ok'=>false,'msg'=>'Invalid product ID.']); exit; }
+    if ($customer === '') { echo json_encode(['ok'=>false,'msg'=>'Please select a customer first.']); exit; }
+    if ($ref_no   === '') { echo json_encode(['ok'=>false,'msg'=>'Ref No cannot be empty.']); exit; }
+
+    $stmt = $conn->prepare("UPDATE slitting_product SET customer_name=?, ref_no=? WHERE id=?");
+    if (!$stmt) { echo json_encode(['ok'=>false,'msg'=>'DB error: '.$conn->error]); exit; }
+    $stmt->bind_param("ssi", $customer, $ref_no, $pid);
+    $ok = $stmt->execute();
+    $stmt->close();
+
+    echo json_encode([
+        'ok'  => $ok,
+        'msg' => $ok ? "Saved — Customer: {$customer} · Ref: {$ref_no}" : 'Save failed: '.$conn->error,
+    ]);
+    exit;
+}
 
 // ===== PRODUCT -> COLOR MAP =====
 $PRODUCT_COLOR = [
@@ -29,7 +70,7 @@ $PRODUCT_COLOR = [
 
 function stickerBgColor(string $productCode, array $map): string {
   $code = strtoupper(trim($productCode));
-  $name = $map[$code] ?? 'WHITE'; // default kalau tak jumpa
+  $name = $map[$code] ?? 'WHITE';
   return match($name){
     'GREEN'  => '#129e16',
     'YELLOW' => '#FFFF00',
@@ -169,6 +210,43 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
             background: #0aa80a;
         }
 
+        /* ── Save button — only new style added ── */
+        .btn-save {
+            background: #1976D2;
+            color: white;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .btn-save:hover { background: #1565c0; }
+        .btn-save:disabled { background: #90a4ae; cursor: not-allowed; }
+
+        /* ── Save feedback — only new style added ── */
+        #saveFeedback {
+            display: none;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 14px;
+            border-radius: 4px;
+            font-size: 13px;
+            font-weight: 600;
+            margin-top: 10px;
+        }
+        #saveFeedback.show        { display: flex; justify-content: center; }
+        #saveFeedback.state-ok    { background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; }
+        #saveFeedback.state-error { background: #fdecea; color: #c62828; border: 1px solid #ef9a9a; }
+
+        /* Spinner */
+        .spin {
+            display: inline-block;
+            width: 14px; height: 14px;
+            border: 2px solid rgba(255,255,255,.4);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin .6s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
         .btn-back {
             background: #757575;
             color: white;
@@ -213,7 +291,7 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
         <div class="roll-number"><?= htmlspecialchars($product['roll_no'] ?? '') ?></div>
     </div>
 
-    <form method="POST" action="print_product.php">
+    <form method="POST" action="print_product.php" id="mainForm">
         <input type="hidden" name="id" value="<?= $id ?>">
         
         <table class="preview-table">
@@ -243,24 +321,30 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
                 <td>Customer</td>
                 <td>:</td>
                 <td>
-                    <select name="customer" class="form-select" required>
+                    <select name="customer" id="customer" class="form-select" required
+                            onchange="handleCustomerChange(this.value)">
                         <option value="">-- Select Customer --</option>
-                        <option value="NAE">NICHIAS AUTOPARTS EUROPE (NAE)</option>
-                        <option value="NAX">NAX MFG, SA.DE C.V</option>
-                        <option value="NCI MFG">NCI MFG., INC.</option>
-                        <option value="TAIHO">TAIHO MFG OF TN. INC</option>
-                        <option value="NRI">PT NICHIAS ROCKWOOL IND.</option>
-                        <option value="ASHUKA">ASHUKA TECHNOLOGIES SDN. BHD.</option>
-                        <option value="NIPPON">NTC(NIPPON GASKET)</option>
-                        <option value="NTC">NICHIAS THAILAND</option>
-                        <option value="SGC">SHANGHAI XINGSHENG</option>
-                        <option value="STAMPING">MK STAMPING</option>
-                        <option value="YANTAI">NICHIAS (SHANGHAI) AUTOPARTS TRADING</option>
-                        <option value="NIP">NICHIAS IND.PRODUCTS PVT. LTD.</option>
-                        <option value="NCI 2">NCI 2</option>
-                        <option value="STOCK" selected>STOCK</option>
-                        <option value="TRIAL">TRIAL</option>
+                        <option value="NAE"     <?= $savedCustomer==='NAE'     ?'selected':'' ?>>NICHIAS AUTOPARTS EUROPE (NAE)</option>
+                        <option value="NAX"     <?= $savedCustomer==='NAX'     ?'selected':'' ?>>NAX MFG, SA.DE C.V</option>
+                        <option value="NCI MFG" <?= $savedCustomer==='NCI MFG' ?'selected':'' ?>>NCI MFG., INC.</option>
+                        <option value="TAIHO"   <?= $savedCustomer==='TAIHO'   ?'selected':'' ?>>TAIHO MFG OF TN. INC</option>
+                        <option value="NRI"     <?= $savedCustomer==='NRI'     ?'selected':'' ?>>PT NICHIAS ROCKWOOL IND.</option>
+                        <option value="ASHUKA"  <?= $savedCustomer==='ASHUKA'  ?'selected':'' ?>>ASHUKA TECHNOLOGIES SDN. BHD.</option>
+                        <option value="NIPPON"  <?= $savedCustomer==='NIPPON'  ?'selected':'' ?>>NTC(NIPPON GASKET)</option>
+                        <option value="NTC"     <?= $savedCustomer==='NTC'     ?'selected':'' ?>>NICHIAS THAILAND</option>
+                        <option value="SGC"     <?= $savedCustomer==='SGC'     ?'selected':'' ?>>SHANGHAI XINGSHENG</option>
+                        <option value="STAMPING"<?= $savedCustomer==='STAMPING'?'selected':'' ?>>MK STAMPING</option>
+                        <option value="YANTAI"  <?= $savedCustomer==='YANTAI'  ?'selected':'' ?>>NICHIAS (SHANGHAI) AUTOPARTS TRADING</option>
+                        <option value="NIP"     <?= $savedCustomer==='NIP'     ?'selected':'' ?>>NICHIAS IND.PRODUCTS PVT. LTD.</option>
+                        <option value="NCI 2"   <?= $savedCustomer==='NCI 2'   ?'selected':'' ?>>NCI 2</option>
+                        <option value="STOCK"   <?= ($savedCustomer==='' || $savedCustomer==='STOCK') ?'selected':'' ?>>STOCK</option>
+                        <option value="TRIAL"   <?= $savedCustomer==='TRIAL'   ?'selected':'' ?>>TRIAL</option>
+                        <option value="OTHER"   <?= ($savedCustomer!=='' && !in_array($savedCustomer,['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA','NIPPON','NTC','SGC','STAMPING','YANTAI','NIP','NCI 2','STOCK','TRIAL'])) ?'selected':'' ?>>OTHER (type below)</option>
                     </select>
+                    <!-- Hidden custom customer field — shown when OTHER selected -->
+                    <input type="text" name="custom_customer" id="custom_customer"
+                           class="form-control mt-2" placeholder="Enter customer name"
+                           style="display:none;">
                 </td>
             </tr>
             
@@ -269,12 +353,19 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
                 <td>Ref. No.</td>
                 <td>:</td>
                 <td>
-                    <input type="text" name="ref_no" class="form-control" value="STOCK" required>
+                    <input type="text" name="ref_no" id="ref_no"
+                           class="form-control" value="<?= htmlspecialchars($savedRefNo ?: 'STOCK') ?>" required>
                 </td>
             </tr>
         </table>
 
         <div class="action-buttons">
+            <!-- ★ NEW: Save button — saves without printing ★ -->
+            <button type="button" class="btn-action btn-save" id="saveBtn"
+                    onclick="saveOnly()">
+                <i class="bi bi-floppy-fill"></i> Save
+            </button>
+
             <button type="submit" class="btn-action btn-print">
                 <i class="bi bi-printer-fill"></i> Print Sticker
             </button>
@@ -282,9 +373,102 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
                 <i class="bi bi-arrow-left"></i> Back to List
             </a>
         </div>
+
+        <!-- Save feedback — appears below buttons after AJAX save -->
+        <div id="saveFeedback"></div>
+
     </form>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+const PRODUCT_ID = <?= (int)$id ?>;
+
+// Show / hide custom customer text input
+function handleCustomerChange(val) {
+    document.getElementById('custom_customer').style.display =
+        val === 'OTHER' ? 'block' : 'none';
+}
+
+// ── AJAX Save ─────────────────────────────────────────────────
+async function saveOnly() {
+    const btn      = document.getElementById('saveBtn');
+    const selEl    = document.getElementById('customer');
+    const refEl    = document.getElementById('ref_no');
+    const customEl = document.getElementById('custom_customer');
+
+    const ref_no = refEl.value.trim();
+
+    // Basic client validation
+    if (!selEl.value) {
+        showFeedback(false, 'Please select a customer first.');
+        selEl.focus();
+        return;
+    }
+    if (!ref_no) {
+        showFeedback(false, 'Ref No cannot be empty.');
+        refEl.focus();
+        return;
+    }
+
+    // Show spinner, disable button
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spin"></span> Saving…';
+
+    const fd = new FormData();
+    fd.append('action',          'save_only');
+    fd.append('id',              PRODUCT_ID);
+    fd.append('customer',        selEl.value);
+    fd.append('custom_customer', customEl.value.trim());
+    fd.append('ref_no',          ref_no);
+
+    let result;
+    try {
+        const resp = await fetch(window.location.href, {
+            method:  'POST',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            body:    fd,
+        });
+        result = await resp.json();
+    } catch (err) {
+        result = { ok: false, msg: 'Network error: ' + err.message };
+    }
+
+    // Restore button
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-floppy-fill"></i> Save';
+
+    showFeedback(result.ok, result.msg);
+}
+
+function showFeedback(ok, msg) {
+    const el = document.getElementById('saveFeedback');
+    el.className = 'show ' + (ok ? 'state-ok' : 'state-error');
+    el.innerHTML = (ok
+        ? '<i class="bi bi-check-circle-fill"></i> '
+        : '<i class="bi bi-exclamation-circle-fill"></i> '
+    ) + escHtml(msg);
+    if (ok) setTimeout(() => { el.className = ''; el.innerHTML = ''; }, 5000);
+}
+
+function escHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g,
+        c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ── On page load: reveal custom field if OTHER was saved ──────
+(function () {
+    const knownOptions = ['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA',
+                          'NIPPON','NTC','SGC','STAMPING','YANTAI','NIP',
+                          'NCI 2','STOCK','TRIAL',''];
+    const saved = <?= json_encode($savedCustomer) ?>;
+    if (saved !== '' && !knownOptions.includes(saved)) {
+        // Custom customer was saved — show the text input pre-filled
+        const customEl = document.getElementById('custom_customer');
+        customEl.value = saved;
+        customEl.style.display = 'block';
+    }
+})();
+</script>
 </body>
 </html>
