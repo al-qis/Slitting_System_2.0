@@ -1,15 +1,10 @@
 <?php
 // =============================================================
 // pallet.php  —  v2 (Pallet Upgrade)
-// PLACEMENT: C:\Apache24\htdocs\slitting_system\pallet.php
-//
-// NEW vs previous version:
-//   • remove_roll     POST  — calls PalletManager::removeRollFromPallet()
-//   • delete_pallet   POST  — calls PalletManager::deletePallet()
-//   • reopen_pallet   POST  — calls PalletManager::reopenRejectedPallet()
-//   • resubmit_to_qc  POST  — calls PalletManager::resubmitToQC()
-//   • Rejected pallets appear in sidebar with "Edit" button
-//   • Send to QC now delegates to PalletManager::sendToQC()
+// FIX: Slot insertion now replaces the correct empty slot
+//      instead of appending to the bottom of the list.
+//      removeRoll() restores the empty slot at the correct
+//      sequential position instead of always appending at end.
 // =============================================================
 
 session_start();
@@ -144,6 +139,12 @@ $activePalletId = intval($_GET['pallet_id'] ?? 0);
 $activePallet   = $activePalletId ? $pm->getPallet($activePalletId) : null;
 $activeItems    = $activePallet   ? $pm->getPalletItems($activePalletId) : [];
 
+// Build a lookup: seq → item, so PHP can render all 8 slots in order
+$itemsBySeq = [];
+foreach ($activeItems as $item) {
+    $itemsBySeq[(int)$item['seq']] = $item;
+}
+
 // Pallets in 'building' state (open)
 $openPallets = $conn->query(
     "SELECT p.*, COUNT(pi.id) AS item_count
@@ -152,7 +153,7 @@ $openPallets = $conn->query(
      GROUP BY p.id ORDER BY p.created_at DESC LIMIT 30"
 )->fetch_all(MYSQLI_ASSOC);
 
-// Pallets rejected by QC — shown separately so operator knows to action them
+// Pallets rejected by QC
 $rejectedPallets = $conn->query(
     "SELECT p.*, COUNT(pi.id) AS item_count
      FROM pallets p LEFT JOIN pallet_items pi ON pi.pallet_id = p.id
@@ -171,23 +172,52 @@ include 'header.php';
 
 $MAX = PalletManager::MAX_ROLLS;
 
-// Determine the panel state for the active pallet
 $isBuilding = $activePallet && $activePallet['status'] === 'building';
 $isRejected = $activePallet && $activePallet['status'] === 'rejected';
 $isReadOnly = $activePallet && !in_array($activePallet['status'], ['building', 'rejected']);
 ?>
 <style>
+/* ── Layout ── */
 .pallet-sidebar   { position:sticky; top:20px; }
-.roll-card        { border:1px solid var(--bs-border-color); border-radius:8px;
-                    padding:12px 14px; background:#fff; margin-bottom:8px; transition:box-shadow .15s; }
-.roll-card:hover  { box-shadow:0 2px 8px rgba(0,0,0,.1); }
-.roll-seq         { width:28px; height:28px; border-radius:50%; background:#0d6efd; color:#fff;
-                    display:inline-flex; align-items:center; justify-content:center;
-                    font-size:12px; font-weight:700; flex-shrink:0; }
-.pallet-progress  { height:8px; border-radius:4px; background:#e9ecef; overflow:hidden; }
+
+/* ── Slot cards ──
+   Every slot (filled or empty) is the same height so the list
+   never jumps when a card swaps from empty → filled.           */
+.slot-card {
+    border: 1px solid var(--bs-border-color);
+    border-radius: 8px;
+    padding: 12px 14px;
+    background: #fff;
+    margin-bottom: 8px;
+    transition: box-shadow .15s, background .15s;
+    min-height: 60px;          /* keeps empty slots the same height as filled ones */
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.slot-card.slot-empty {
+    background: #f8f9fa;
+    border-style: dashed;
+    color: #adb5bd;
+}
+.slot-card.scan-flash { animation: flashBg .5s ease-out; }
+@keyframes flashBg { 0%{background:#d1fae5} 100%{background:#fff} }
+
+/* Sequence bubble */
+.roll-seq {
+    width: 28px; height: 28px; border-radius: 50%;
+    background: #0d6efd; color: #fff;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; flex-shrink: 0;
+}
+.slot-empty .roll-seq {
+    background: #dee2e6;
+    color: #6c757d;
+}
+
+/* Progress bar */
+.pallet-progress     { height:8px; border-radius:4px; background:#e9ecef; overflow:hidden; }
 .pallet-progress-bar { height:100%; border-radius:4px; background:#0d6efd; transition:width .3s; }
-.scan-flash       { animation:flashBg .5s ease-out; }
-@keyframes flashBg { 0%{background:#d1fae5} 100%{background:transparent} }
 
 /* Status badges */
 .badge-building   { background:#e0f2fe; color:#0369a1; }
@@ -202,16 +232,16 @@ $isReadOnly = $activePallet && !in_array($activePallet['status'], ['building', '
 .constraint-badge { font-size:10px; padding:2px 7px; border-radius:10px;
                     background:#f1f5f9; color:#475569; font-weight:600; }
 
-/* Rejected pallet banner */
-.rejected-banner  { background:#fee2e2; border:1.5px solid #fca5a5; border-radius:10px;
-                    padding:14px 18px; margin-bottom:16px; }
+/* Rejected banner */
+.rejected-banner   { background:#fee2e2; border:1.5px solid #fca5a5; border-radius:10px;
+                     padding:14px 18px; margin-bottom:16px; }
 .rejected-banner h6 { color:#991b1b; font-weight:700; margin:0 0 4px; }
 .rejected-banner p  { color:#7f1d1d; font-size:12px; margin:0; }
 
 /* Edit mode label */
-.edit-mode-pill  { display:inline-flex; align-items:center; gap:5px; font-size:11px;
-                   font-weight:700; padding:3px 10px; border-radius:20px;
-                   background:#fef3c7; color:#92400e; border:1px solid #fcd34d; }
+.edit-mode-pill { display:inline-flex; align-items:center; gap:5px; font-size:11px;
+                  font-weight:700; padding:3px 10px; border-radius:20px;
+                  background:#fef3c7; color:#92400e; border:1px solid #fcd34d; }
 </style>
 
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -269,11 +299,13 @@ if (isset($_GET['success'])): ?>
 
 <div class="row g-4">
 
-    <!-- ── LEFT: Active pallet panel ────────────────────────── -->
+    <!-- ═══════════════════════════════════════════════════════
+         LEFT: Active pallet panel
+    ═══════════════════════════════════════════════════════════ -->
     <div class="col-md-7">
 
         <?php if ($isBuilding): ?>
-        <!-- BUILDING STATE — scan rolls in -->
+        <!-- BUILDING STATE -->
         <div class="card shadow-sm border-0 mb-4">
             <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
                 <div>
@@ -319,12 +351,23 @@ if (isset($_GET['success'])): ?>
                     Scan a product QR, or type Lot + Coil + Roll below.
                 </div>
 
+                <!-- Manual entry row -->
                 <div class="row g-2 mb-3">
-                    <div class="col-md-3"><input type="text" id="manLot"  class="form-control form-control-sm" placeholder="Lot No"  autocomplete="off"></div>
-                    <div class="col-md-3"><input type="text" id="manCoil" class="form-control form-control-sm" placeholder="Coil No" autocomplete="off"></div>
-                    <div class="col-md-3"><input type="text" id="manRoll" class="form-control form-control-sm" placeholder="Roll No" autocomplete="off"></div>
                     <div class="col-md-3">
-                        <button type="button" class="btn btn-primary btn-sm w-100" onclick="manualLookup()">
+                        <input type="text" id="manLot"  class="form-control form-control-sm"
+                               placeholder="Lot No" autocomplete="off">
+                    </div>
+                    <div class="col-md-3">
+                        <input type="text" id="manCoil" class="form-control form-control-sm"
+                               placeholder="Coil No" autocomplete="off">
+                    </div>
+                    <div class="col-md-3">
+                        <input type="text" id="manRoll" class="form-control form-control-sm"
+                               placeholder="Roll No" autocomplete="off">
+                    </div>
+                    <div class="col-md-3">
+                        <button type="button" class="btn btn-primary btn-sm w-100"
+                                onclick="manualLookup()">
                             <i class="bi bi-search me-1"></i> Find & Add
                         </button>
                     </div>
@@ -332,15 +375,32 @@ if (isset($_GET['success'])): ?>
 
                 <div id="scanFeedback" class="mb-3" style="min-height:40px;"></div>
 
+                <!-- =====================================================
+                     SLOT LIST
+                     PHP renders ALL 8 slots in order, 1..MAX_ROLLS.
+                     Each slot has:
+                       id="slot{N}"           — targeted by JS
+                       data-slot="{N}"        — used by JS sort helper
+                       data-filled="0|1"      — 0=empty, 1=has product
+                     JS replaces the inner content of slot{N} in-place,
+                     so the visual order never changes.
+                ===================================================== -->
                 <div id="rollList">
-                    <?php foreach ($activeItems as $item): ?>
-                    <div class="roll-card d-flex align-items-center gap-3" id="rollCard<?= $item['product_id'] ?>">
-                        <span class="roll-seq"><?= $item['seq'] ?></span>
+                    <?php for ($s = 1; $s <= $MAX; $s++):
+                        $item = $itemsBySeq[$s] ?? null;
+                    ?>
+                    <?php if ($item): ?>
+                    <!-- FILLED SLOT -->
+                    <div class="slot-card"
+                         id="slot<?= $s ?>"
+                         data-slot="<?= $s ?>"
+                         data-filled="1">
+                        <span class="roll-seq"><?= $s ?></span>
                         <div class="flex-grow-1">
                             <div class="fw-bold small">
                                 <?= htmlspecialchars($item['lot_no']) ?>
                                 <?= htmlspecialchars($item['coil_no']) ?>
-                                – <?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?>
+                                &ndash; <?= str_replace('R', 'R-', htmlspecialchars($item['roll_no'])) ?>
                             </div>
                             <div class="text-muted" style="font-size:11px;">
                                 <?= htmlspecialchars($item['product']) ?> |
@@ -348,29 +408,32 @@ if (isset($_GET['success'])): ?>
                                 <?= number_format((float)($item['actual_length'] ?: $item['length']), 1) ?>m
                             </div>
                         </div>
-                        <!-- REMOVE button — always shown in building state -->
                         <button type="button"
                                 class="btn btn-outline-danger btn-sm"
                                 title="Remove this roll from the pallet"
-                                onclick="removeRoll(<?= $activePalletId ?>, <?= $item['product_id'] ?>, this)">
+                                data-product-id="<?= $item['product_id'] ?>"
+                                onclick="removeRoll(<?= $activePalletId ?>, <?= $item['product_id'] ?>, <?= $s ?>, this)">
                             <i class="bi bi-x-lg"></i>
                         </button>
                     </div>
-                    <?php endforeach; ?>
 
-                    <?php for ($s = count($activeItems) + 1; $s <= $MAX; $s++): ?>
-                    <div class="roll-card d-flex align-items-center gap-3 text-muted slot-empty" id="slot<?= $s ?>">
-                        <span class="roll-seq" style="background:#dee2e6;color:#6c757d;"><?= $s ?></span>
+                    <?php else: ?>
+                    <!-- EMPTY SLOT -->
+                    <div class="slot-card slot-empty"
+                         id="slot<?= $s ?>"
+                         data-slot="<?= $s ?>"
+                         data-filled="0">
+                        <span class="roll-seq"><?= $s ?></span>
                         <span style="font-size:13px;">Empty slot <?= $s ?></span>
                     </div>
+                    <?php endif; ?>
                     <?php endfor; ?>
-                </div>
+                </div><!-- #rollList -->
             </div>
 
             <div class="card-footer bg-light d-flex justify-content-between align-items-center flex-wrap gap-2">
                 <div class="d-flex gap-2">
                     <a href="pallet.php" class="btn btn-outline-secondary btn-sm">Close panel</a>
-                    <!-- Delete pallet button -->
                     <form method="post"
                           onsubmit="return confirm('Delete pallet <?= htmlspecialchars($activePallet['pallet_no'], ENT_QUOTES) ?>?\n\nAll rolls will be returned to stock — the products themselves are NOT deleted.')">
                         <input type="hidden" name="action"    value="delete_pallet">
@@ -382,7 +445,6 @@ if (isset($_GET['success'])): ?>
                 </div>
                 <div class="d-flex gap-2">
                     <?php
-                    // Use resubmit if this is an edited pallet, otherwise normal send_to_qc
                     $isEdit   = ($activePallet['edit_count'] ?? 0) > 0;
                     $qcAction = $isEdit ? 'resubmit_to_qc' : 'send_to_qc';
                     $qcLabel  = $isEdit ? 'Re-submit to QC' : 'Send to QC';
@@ -394,16 +456,18 @@ if (isset($_GET['success'])): ?>
                                 class="btn btn-warning btn-sm fw-bold"
                                 id="sendToQcBtn"
                                 <?= count($activeItems) < 1 ? 'disabled' : '' ?>
-                                onclick="return confirm('<?= $isEdit ? 'Re-submit this edited pallet to QC?' : 'Send pallet to QC? No more rolls can be added after this.' ?>')">
+                                onclick="return confirm('<?= $isEdit
+                                    ? 'Re-submit this edited pallet to QC?'
+                                    : 'Send pallet to QC? No more rolls can be added after this.' ?>')">
                             <i class="bi bi-send me-1"></i> <?= $qcLabel ?>
                         </button>
                     </form>
                 </div>
             </div>
-        </div>
+        </div><!-- /building card -->
 
         <?php elseif ($isRejected): ?>
-        <!-- REJECTED STATE — show rejection reason + reopen button -->
+        <!-- REJECTED STATE -->
         <div class="card shadow-sm border-0 mb-4 border-danger">
             <div class="card-header text-white d-flex justify-content-between align-items-center"
                  style="background:#991b1b;">
@@ -412,7 +476,9 @@ if (isset($_GET['success'])): ?>
                     <strong><?= htmlspecialchars($activePallet['pallet_no']) ?></strong>
                     <span class="badge bg-white text-danger ms-2">QC REJECTED</span>
                 </div>
-                <span class="badge bg-white text-danger"><?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?></span>
+                <span class="badge bg-white text-danger">
+                    <?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?>
+                </span>
             </div>
 
             <?php if (!empty($activePallet['qc_comment'])): ?>
@@ -433,16 +499,14 @@ if (isset($_GET['success'])): ?>
                     Click <strong>Edit Pallet</strong> to reopen it. You can then remove the defective roll(s),
                     add replacement rolls, and re-submit to QC. All matching constraints still apply.
                 </p>
-
-                <!-- Read-only roll list -->
                 <?php foreach ($activeItems as $item): ?>
-                <div class="roll-card d-flex align-items-center gap-3">
+                <div class="slot-card">
                     <span class="roll-seq" style="background:#991b1b;"><?= $item['seq'] ?></span>
                     <div class="flex-grow-1">
                         <div class="fw-bold small">
                             <?= htmlspecialchars($item['lot_no']) ?>
                             <?= htmlspecialchars($item['coil_no']) ?>
-                            – <?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?>
+                            &ndash; <?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?>
                         </div>
                         <div class="text-muted" style="font-size:11px;">
                             <?= htmlspecialchars($item['product']) ?> |
@@ -457,7 +521,6 @@ if (isset($_GET['success'])): ?>
             <div class="card-footer bg-light d-flex justify-content-between align-items-center">
                 <div class="d-flex gap-2">
                     <a href="pallet.php" class="btn btn-outline-secondary btn-sm">← Back</a>
-                    <!-- Delete rejected pallet -->
                     <form method="post"
                           onsubmit="return confirm('Delete this rejected pallet?\nRolls will be returned to stock.')">
                         <input type="hidden" name="action"    value="delete_pallet">
@@ -467,7 +530,6 @@ if (isset($_GET['success'])): ?>
                         </button>
                     </form>
                 </div>
-                <!-- Reopen for editing -->
                 <form method="post">
                     <input type="hidden" name="action"    value="reopen_pallet">
                     <input type="hidden" name="pallet_id" value="<?= $activePalletId ?>">
@@ -484,7 +546,7 @@ if (isset($_GET['success'])): ?>
         <div class="alert alert-secondary">
             <strong><?= htmlspecialchars($activePallet['pallet_no']) ?></strong> —
             <span class="badge badge-<?= $activePallet['status'] ?>">
-                <?= strtoupper(str_replace('_',' ',$activePallet['status'])) ?>
+                <?= strtoupper(str_replace('_', ' ', $activePallet['status'])) ?>
             </span>
             — read-only.
             <a href="pallet.php" class="ms-2">← Back to list</a>
@@ -502,9 +564,11 @@ if (isset($_GET['success'])): ?>
             </button>
         </div>
         <?php endif; ?>
-    </div>
+    </div><!-- /col-md-7 -->
 
-    <!-- ── RIGHT: Sidebar ───────────────────────────────────── -->
+    <!-- ═══════════════════════════════════════════════════════
+         RIGHT: Sidebar
+    ═══════════════════════════════════════════════════════════ -->
     <div class="col-md-5 pallet-sidebar">
 
         <!-- Rejected pallets (urgent) -->
@@ -555,7 +619,8 @@ if (isset($_GET['success'])): ?>
                         <div class="pallet-progress" style="width:60px;">
                             <div class="pallet-progress-bar"
                                  style="width:<?= ($op['item_count'] / $MAX * 100) ?>%;
-                                        <?= ($op['id'] == $activePalletId) ? 'background:#fff;' : '' ?>"></div>
+                                        <?= ($op['id'] == $activePalletId) ? 'background:#fff;' : '' ?>">
+                            </div>
                         </div>
                     </div>
                 </a>
@@ -572,7 +637,13 @@ if (isset($_GET['success'])): ?>
             <div class="table-responsive">
                 <table class="table table-sm table-hover pallet-table mb-0">
                     <thead class="table-light">
-                        <tr><th>Pallet No</th><th>Status</th><th>Rolls</th><th>Customer</th><th></th></tr>
+                        <tr>
+                            <th>Pallet No</th>
+                            <th>Status</th>
+                            <th>Rolls</th>
+                            <th>Customer</th>
+                            <th></th>
+                        </tr>
                     </thead>
                     <tbody>
                     <?php foreach ($allPallets as $pal): ?>
@@ -582,7 +653,7 @@ if (isset($_GET['success'])): ?>
                         </td>
                         <td>
                             <span class="badge badge-<?= $pal['status'] ?>">
-                                <?= strtoupper(str_replace('_',' ',$pal['status'])) ?>
+                                <?= strtoupper(str_replace('_', ' ', $pal['status'])) ?>
                             </span>
                         </td>
                         <td><?= $pal['item_count'] ?>/<?= $MAX ?></td>
@@ -591,9 +662,11 @@ if (isset($_GET['success'])): ?>
                         </td>
                         <td>
                             <?php if ($pal['status'] === 'building'): ?>
-                            <a href="pallet.php?pallet_id=<?= $pal['id'] ?>" class="btn btn-outline-primary btn-sm">Open</a>
+                            <a href="pallet.php?pallet_id=<?= $pal['id'] ?>"
+                               class="btn btn-outline-primary btn-sm">Open</a>
                             <?php elseif ($pal['status'] === 'rejected'): ?>
-                            <a href="pallet.php?pallet_id=<?= $pal['id'] ?>" class="btn btn-danger btn-sm">Edit</a>
+                            <a href="pallet.php?pallet_id=<?= $pal['id'] ?>"
+                               class="btn btn-danger btn-sm">Edit</a>
                             <?php elseif ($pal['status'] === 'approved'): ?>
                             <form method="post" class="d-inline"
                                   onsubmit="return confirm('Mark entire pallet as DELIVERED?')">
@@ -613,15 +686,17 @@ if (isset($_GET['success'])): ?>
                 </table>
             </div>
         </div>
-    </div>
-</div>
+    </div><!-- /col-md-5 sidebar -->
+</div><!-- /row -->
 
 <!-- ── CREATE PALLET MODAL ───────────────────────────────────── -->
 <div class="modal fade" id="createPalletModal" tabindex="-1">
   <div class="modal-dialog modal-sm">
     <div class="modal-content">
       <div class="modal-header" style="background:#0f2744;">
-        <h5 class="modal-title text-white"><i class="bi bi-plus-circle me-2"></i>New Pallet</h5>
+        <h5 class="modal-title text-white">
+            <i class="bi bi-plus-circle me-2"></i>New Pallet
+        </h5>
         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body pb-2">
@@ -652,184 +727,367 @@ if (isset($_GET['success'])): ?>
   </div>
 </div>
 
+<!-- Hidden QR input always focused for scanner gun -->
 <input id="qrScanInput" type="text" inputmode="none"
        style="position:fixed;left:-9999px;opacity:0;" autofocus>
 
 <script>
+// ─────────────────────────────────────────────────────────────
+// CONSTANTS (injected from PHP)
+// ─────────────────────────────────────────────────────────────
 const PALLET_ID = <?= $activePalletId ?: 'null' ?>;
 const MAX_ROLLS = <?= $MAX ?>;
 let   rollCount = <?= count($activeItems) ?>;
 const qrInput   = document.getElementById('qrScanInput');
 
-// Keep QR focused
+// ─────────────────────────────────────────────────────────────
+// SCANNER FOCUS — keep the hidden input focused so barcode
+// gun input is always captured even after UI interactions.
+// ─────────────────────────────────────────────────────────────
 setInterval(() => {
     const a = document.activeElement;
-    if (!document.querySelector('.modal.show') && !['INPUT','TEXTAREA','SELECT'].includes(a.tagName)) {
+    if (!document.querySelector('.modal.show') &&
+        !['INPUT', 'TEXTAREA', 'SELECT'].includes(a.tagName)) {
         qrInput.focus();
     }
 }, 600);
 
-qrInput.addEventListener('keydown', function(e) {
+qrInput.addEventListener('keydown', function (e) {
     if (e.key !== 'Enter') return;
-    const raw = this.value.trim(); this.value = '';
+    const raw = this.value.trim();
+    this.value = '';
     if (!raw || !PALLET_ID) return;
     processQR(raw);
 });
 
+// ─────────────────────────────────────────────────────────────
+// QR PARSING — format: LOT=xxx;COIL=xxx;ROLL=xxx
+// ─────────────────────────────────────────────────────────────
 function parseQR(raw) {
     const parts = {};
     raw.split(';').forEach(p => {
         const idx = p.indexOf('=');
-        if (idx > -1) parts[p.substring(0, idx).trim().toUpperCase()]
-            = decodeURIComponent(p.substring(idx + 1).trim());
+        if (idx > -1) {
+            parts[p.substring(0, idx).trim().toUpperCase()]
+                = decodeURIComponent(p.substring(idx + 1).trim());
+        }
     });
     return { lot: parts.LOT || '', coil: parts.COIL || '', roll: parts.ROLL || '' };
 }
+
 async function processQR(raw) {
     const { lot, coil, roll } = parseQR(raw);
     if (!lot || !coil) { showFeedback('Could not parse QR: ' + escHtml(raw), false); return; }
     await lookupAndAdd(lot, coil, roll);
 }
+
+// ─────────────────────────────────────────────────────────────
+// MANUAL ENTRY
+// ─────────────────────────────────────────────────────────────
 async function manualLookup() {
     const lot  = document.getElementById('manLot').value.trim();
     const coil = document.getElementById('manCoil').value.trim();
     const roll = document.getElementById('manRoll').value.trim();
-    if (!lot || !coil || !roll) { showFeedback('Enter Lot, Coil and Roll No.', false); return; }
+    if (!lot || !coil || !roll) {
+        showFeedback('Enter Lot, Coil and Roll No.', false);
+        return;
+    }
     await lookupAndAdd(lot, coil, roll);
-    ['manLot','manCoil','manRoll'].forEach(id => document.getElementById(id).value = '');
+    ['manLot', 'manCoil', 'manRoll'].forEach(id => document.getElementById(id).value = '');
 }
 
+// ─────────────────────────────────────────────────────────────
+// LOOKUP + ADD
+// Validates the product then POSTs to add_roll.
+// On success: calls fillSlot(seq, product) which replaces the
+// matching empty slot IN-PLACE — no appending, no reordering.
+// ─────────────────────────────────────────────────────────────
 async function lookupAndAdd(lot, coil, roll) {
     if (!PALLET_ID) return;
-    if (rollCount >= MAX_ROLLS) { showFeedback(`Pallet is full (${MAX_ROLLS}/${MAX_ROLLS}).`, false); return; }
+    if (rollCount >= MAX_ROLLS) {
+        showFeedback(`Pallet is full (${MAX_ROLLS}/${MAX_ROLLS}).`, false);
+        return;
+    }
 
+    // Step 1: look up the product
     let lk;
     try {
-        lk = await fetch(`pallet.php?ajax=lookup_product&lot=${enc(lot)}&coil=${enc(coil)}&roll=${enc(roll)}`).then(r => r.json());
-    } catch { showFeedback('Network error during lookup.', false); return; }
+        lk = await fetch(
+            `pallet.php?ajax=lookup_product&lot=${enc(lot)}&coil=${enc(coil)}&roll=${enc(roll)}`
+        ).then(r => r.json());
+    } catch {
+        showFeedback('Network error during lookup.', false);
+        return;
+    }
     if (!lk.ok) { showFeedback(lk.msg, false); return; }
 
     const p = lk.product;
-    if (p.is_voided == 1)     { showFeedback('This roll has been voided.', false); return; }
-    if (p.stock_counted != 1) { showFeedback(`Roll ${lot} ${coil} ${roll} — actual length not saved yet.`, false); return; }
-    if (p.pallet_id)          { showFeedback(`Already on pallet ${escHtml(p.pallet_no)}.`, false); return; }
 
+    // Client-side guards
+    if (p.is_voided == 1) {
+        showFeedback('This roll has been voided.', false);
+        return;
+    }
+    if (p.stock_counted != 1) {
+        showFeedback(`Roll ${lot} ${coil} ${roll} — actual length not saved yet.`, false);
+        return;
+    }
+    if (p.pallet_id) {
+        showFeedback(`Already on pallet ${escHtml(p.pallet_no)}.`, false);
+        return;
+    }
+
+    // Step 2: add the roll to the pallet
     const fd = new FormData();
-    fd.append('action','add_roll'); fd.append('pallet_id', PALLET_ID); fd.append('product_id', p.id);
-    let ad;
-    try { ad = await fetch('pallet.php', {method:'POST', body:fd}).then(r => r.json()); }
-    catch { showFeedback('Network error while adding roll.', false); return; }
+    fd.append('action',     'add_roll');
+    fd.append('pallet_id',  PALLET_ID);
+    fd.append('product_id', p.id);
 
+    let ad;
+    try {
+        ad = await fetch('pallet.php', { method: 'POST', body: fd }).then(r => r.json());
+    } catch {
+        showFeedback('Network error while adding roll.', false);
+        return;
+    }
     if (!ad.ok) { showFeedback(ad.msg, false); return; }
 
+    // Step 3: update the UI — fill the correct slot in-place
     rollCount = ad.roll_count;
-    addRollCard(ad.seq, p);
+    fillSlot(ad.seq, p);          // <── KEY FIX: targets slot by seq number
     updateProgress(rollCount);
-    showFeedback(`✓ Added: ${escHtml(lot)} ${escHtml(coil)} – R${escHtml(roll)} (slot ${ad.seq})`, true);
+    showFeedback(
+        `✓ Added: ${escHtml(lot)} ${escHtml(coil)} – R-${escHtml(roll)} (slot ${ad.seq})`,
+        true
+    );
 
-    // If first roll was just added, reload the constraint badges
+    // If the first roll was added, reload so constraint badges appear
     if (ad.seq === 1) setTimeout(() => location.reload(), 1200);
 }
 
-function addRollCard(seq, p) {
-    document.getElementById('slot' + seq)?.remove();
-    const len  = p.actual_length > 0 ? p.actual_length : p.length;
-    const html = `<div class="roll-card d-flex align-items-center gap-3 scan-flash" id="rollCard${p.id}">
+// ─────────────────────────────────────────────────────────────
+// fillSlot(seq, product)
+//
+// THE CORE FIX:
+//   Instead of appending a new card to #rollList, we find the
+//   existing slot element with id="slot{seq}" and REPLACE its
+//   innerHTML in-place.  The slot stays exactly where it was
+//   in the DOM — slot 2 is always between slot 1 and slot 3.
+// ─────────────────────────────────────────────────────────────
+function fillSlot(seq, p) {
+    const slotEl = document.getElementById('slot' + seq);
+    if (!slotEl) return;   // safety: should never happen
+
+    const len = parseFloat(p.actual_length) > 0 ? p.actual_length : p.length;
+
+    // Remove the "empty" class so styling changes to filled
+    slotEl.classList.remove('slot-empty');
+    slotEl.setAttribute('data-filled', '1');
+
+    // Replace the inner content — the outer <div id="slot{seq}"> stays put
+    slotEl.innerHTML = `
         <span class="roll-seq">${seq}</span>
         <div class="flex-grow-1">
-            <div class="fw-bold small">${escHtml(p.lot_no)} ${escHtml(p.coil_no)} – ${escHtml(p.roll_no.replace('R','R-'))}</div>
-            <div class="text-muted" style="font-size:11px;">${escHtml(p.product)} | ${(+p.width).toFixed(0)}mm | ${(+len).toFixed(1)}m</div>
+            <div class="fw-bold small">
+                ${escHtml(p.lot_no)} ${escHtml(p.coil_no)}
+                &ndash; ${escHtml(p.roll_no.replace(/^R/, 'R-'))}
+            </div>
+            <div class="text-muted" style="font-size:11px;">
+                ${escHtml(p.product)} |
+                ${(+p.width).toFixed(0)}mm |
+                ${(+len).toFixed(1)}m
+            </div>
         </div>
-        <button type="button" class="btn btn-outline-danger btn-sm" title="Remove from pallet"
-                onclick="removeRoll(${PALLET_ID}, ${p.id}, this)">
+        <button type="button"
+                class="btn btn-outline-danger btn-sm"
+                title="Remove this roll from the pallet"
+                data-product-id="${p.id}"
+                onclick="removeRoll(${PALLET_ID}, ${p.id}, ${seq}, this)">
             <i class="bi bi-x-lg"></i>
         </button>
-    </div>`;
-    document.getElementById('rollList').insertAdjacentHTML('beforeend', html);
+    `;
+
+    // Brief green flash to confirm the scan
+    slotEl.classList.add('scan-flash');
+    slotEl.addEventListener('animationend', () => slotEl.classList.remove('scan-flash'), { once: true });
 }
 
-async function removeRoll(palletId, productId, btn) {
+// ─────────────────────────────────────────────────────────────
+// removeRoll(palletId, productId, seq, btn)
+//
+// THE CORE FIX (remove side):
+//   We know the slot number (seq) from the data attribute on
+//   the remove button, so we can restore EXACTLY that slot to
+//   its empty state without rebuilding any other slot.
+// ─────────────────────────────────────────────────────────────
+async function removeRoll(palletId, productId, seq, btn) {
     if (!confirm('Remove this roll from the pallet?\nThe roll will return to Finish Good stock.')) return;
     btn.disabled = true;
 
     const fd = new FormData();
-    fd.append('action','remove_roll'); fd.append('pallet_id',palletId); fd.append('product_id',productId);
+    fd.append('action',     'remove_roll');
+    fd.append('pallet_id',  palletId);
+    fd.append('product_id', productId);
+
     let d;
-    try { d = await fetch('pallet.php',{method:'POST',body:fd}).then(r=>r.json()); }
-    catch { showFeedback('Network error while removing roll.', false); btn.disabled = false; return; }
+    try {
+        d = await fetch('pallet.php', { method: 'POST', body: fd }).then(r => r.json());
+    } catch {
+        showFeedback('Network error while removing roll.', false);
+        btn.disabled = false;
+        return;
+    }
 
-    if (d.ok) {
-        document.getElementById('rollCard'+productId)?.remove();
-        rollCount = d.new_count;
-        updateProgress(rollCount);
-
-        // Add back an empty slot at the end
-        const slot = rollCount + 1;
-        if (slot <= MAX_ROLLS) {
-            document.getElementById('rollList').insertAdjacentHTML('beforeend',
-                `<div class="roll-card d-flex align-items-center gap-3 text-muted slot-empty" id="slot${slot}">
-                    <span class="roll-seq" style="background:#dee2e6;color:#6c757d;">${slot}</span>
-                    <span style="font-size:13px;">Empty slot ${slot}</span>
-                </div>`);
-        }
-        reNumberSeq();
-        showFeedback(d.msg, true);
-
-        // If pallet is now empty, reload so constraint strip clears
-        if (rollCount === 0) setTimeout(() => location.reload(), 1000);
-    } else {
+    if (!d.ok) {
         showFeedback(d.msg, false);
         btn.disabled = false;
+        return;
     }
+
+    rollCount = d.new_count;
+    updateProgress(rollCount);
+
+    // Restore the slot to its empty state IN-PLACE.
+    // After PalletManager::removeRollFromPallet() re-sequences, the
+    // removed position may now be the last occupied+1 slot — but
+    // visually the simplest and most correct thing is to restore
+    // THIS slot (seq) to empty and then re-sequence all slot labels.
+    clearSlot(seq);
+
+    // Re-sequence: walk all 8 slots and renumber filled ones 1..N,
+    // then update the empty slot labels to match their position.
+    resequenceSlots();
+
+    showFeedback(d.msg, true);
+
+    // If pallet is now empty, reload so constraint strip clears
+    if (rollCount === 0) setTimeout(() => location.reload(), 1000);
 }
 
-function reNumberSeq() {
-    let n = 1;
-    document.querySelectorAll('#rollList .roll-seq').forEach(el => {
-        if (!el.closest('.slot-empty')) el.textContent = n++;
+// ─────────────────────────────────────────────────────────────
+// clearSlot(seq)
+// Restores a single slot element to its "empty" visual state.
+// ─────────────────────────────────────────────────────────────
+function clearSlot(seq) {
+    const slotEl = document.getElementById('slot' + seq);
+    if (!slotEl) return;
+
+    slotEl.classList.add('slot-empty');
+    slotEl.setAttribute('data-filled', '0');
+    slotEl.innerHTML = `
+        <span class="roll-seq">${seq}</span>
+        <span style="font-size:13px;">Empty slot ${seq}</span>
+    `;
+}
+
+// ─────────────────────────────────────────────────────────────
+// resequenceSlots()
+//
+// After a removal, PalletManager compacts seq numbers on the
+// DB side (1,2,3 with no gaps).  We mirror that on the client:
+//   1. Collect all filled slots in DOM order (data-slot asc).
+//   2. Re-number their visible bubble 1..N.
+//   3. Update their onclick seq argument so future removes work.
+// ─────────────────────────────────────────────────────────────
+function resequenceSlots() {
+    // Gather all slots in order
+    const allSlots = Array.from(
+        document.querySelectorAll('#rollList [data-slot]')
+    ).sort((a, b) => +a.dataset.slot - +b.dataset.slot);
+
+    let filledCount = 0;
+    allSlots.forEach(slotEl => {
+        const slotNo = +slotEl.dataset.slot;
+
+        if (slotEl.dataset.filled === '1') {
+            filledCount++;
+            const newSeq = filledCount;
+
+            // Update the visible bubble number
+            const bubble = slotEl.querySelector('.roll-seq');
+            if (bubble) bubble.textContent = newSeq;
+
+            // Update the remove-button's seq argument so the next
+            // removeRoll() call passes the correct (compacted) slot
+            const removeBtn = slotEl.querySelector('button[data-product-id]');
+            if (removeBtn) {
+                const pid = removeBtn.getAttribute('data-product-id');
+                removeBtn.setAttribute(
+                    'onclick',
+                    `removeRoll(${PALLET_ID}, ${pid}, ${newSeq}, this)`
+                );
+            }
+        } else {
+            // Keep empty-slot label in sync with its fixed position
+            const bubble = slotEl.querySelector('.roll-seq');
+            if (bubble) bubble.textContent = slotNo;
+            const label = slotEl.querySelector('span:not(.roll-seq)');
+            if (label) label.textContent = `Empty slot ${slotNo}`;
+        }
     });
 }
+
+// ─────────────────────────────────────────────────────────────
+// UI HELPERS
+// ─────────────────────────────────────────────────────────────
 function updateProgress(count) {
-    document.getElementById('palletProgressBar').style.width = (count/MAX_ROLLS*100)+'%';
-    document.getElementById('rollCountBadge').textContent    = count+' / '+MAX_ROLLS+' rolls';
-    const btn = document.getElementById('sendToQcBtn');
-    if (btn) btn.disabled = count < 1;
-}
-function showFeedback(msg, ok) {
-    document.getElementById('scanFeedback').innerHTML =
-        `<div class="alert alert-${ok?'success':'danger'} py-2 mb-0 d-flex align-items-center gap-2">
-           <i class="bi bi-${ok?'check-circle-fill':'exclamation-triangle-fill'}"></i>
-           <span>${msg}</span>
-         </div>`;
-    setTimeout(() => { document.getElementById('scanFeedback').innerHTML=''; }, 5000);
+    const bar   = document.getElementById('palletProgressBar');
+    const badge = document.getElementById('rollCountBadge');
+    const btn   = document.getElementById('sendToQcBtn');
+
+    if (bar)   bar.style.width = (count / MAX_ROLLS * 100) + '%';
+    if (badge) badge.textContent = count + ' / ' + MAX_ROLLS + ' rolls';
+    if (btn)   btn.disabled = count < 1;
 }
 
-// ── Create pallet modal logic ──────────────────────────────────
-let palletNoValid = false, palletNoTimer;
+function showFeedback(msg, ok) {
+    const el = document.getElementById('scanFeedback');
+    if (!el) return;
+    el.innerHTML = `
+        <div class="alert alert-${ok ? 'success' : 'danger'} py-2 mb-0 d-flex align-items-center gap-2">
+            <i class="bi bi-${ok ? 'check-circle-fill' : 'exclamation-triangle-fill'}"></i>
+            <span>${msg}</span>
+        </div>`;
+    setTimeout(() => { el.innerHTML = ''; }, 5000);
+}
+
+// ─────────────────────────────────────────────────────────────
+// CREATE PALLET MODAL
+// ─────────────────────────────────────────────────────────────
+let palletNoValid = false;
+let palletNoTimer;
 
 document.getElementById('createPalletModal')?.addEventListener('show.bs.modal', () => {
     palletNoValid = false;
     const inp = document.getElementById('palletNoInput');
-    inp.value = ''; inp.classList.remove('is-valid','is-invalid');
+    inp.value = '';
+    inp.classList.remove('is-valid', 'is-invalid');
     document.getElementById('palletNoFeedback').innerHTML = '';
     document.getElementById('createPalletBtn').disabled = true;
     setTimeout(() => inp.focus(), 300);
 });
 
-document.getElementById('palletNoInput')?.addEventListener('input', function() {
+document.getElementById('palletNoInput')?.addEventListener('input', function () {
     clearTimeout(palletNoTimer);
     palletNoValid = false;
     document.getElementById('createPalletBtn').disabled = true;
     const val = this.value.trim();
-    if (!val) { document.getElementById('palletNoFeedback').innerHTML=''; this.classList.remove('is-valid','is-invalid'); return; }
+    if (!val) {
+        document.getElementById('palletNoFeedback').innerHTML = '';
+        this.classList.remove('is-valid', 'is-invalid');
+        return;
+    }
     palletNoTimer = setTimeout(async () => {
         try {
-            const r = await fetch(`pallet.php?ajax=validate_pallet_no&pallet_no=${enc(val)}`).then(x=>x.json());
+            const r = await fetch(
+                `pallet.php?ajax=validate_pallet_no&pallet_no=${enc(val)}`
+            ).then(x => x.json());
             const fb = document.getElementById('palletNoFeedback');
-            this.classList.remove('is-valid','is-invalid');
+            this.classList.remove('is-valid', 'is-invalid');
             if (r.ok) {
                 fb.innerHTML = `<span class="text-success"><i class="bi bi-check-circle me-1"></i>Valid &amp; available</span>`;
-                this.classList.add('is-valid'); palletNoValid = true;
+                this.classList.add('is-valid');
+                palletNoValid = true;
                 document.getElementById('createPalletBtn').disabled = false;
             } else {
                 fb.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>${escHtml(r.msg)}</span>`;
@@ -839,21 +1097,29 @@ document.getElementById('palletNoInput')?.addEventListener('input', function() {
     }, 500);
 });
 
-document.getElementById('palletNoInput')?.addEventListener('keydown', function(e) {
+document.getElementById('palletNoInput')?.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && palletNoValid) submitCreatePallet();
 });
 
 async function submitCreatePallet() {
     const palletNo = document.getElementById('palletNoInput').value.trim();
     if (!palletNo || !palletNoValid) return;
+
     const btn = document.getElementById('createPalletBtn');
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Creating…';
+
     const fd = new FormData();
-    fd.append('action','create_pallet'); fd.append('pallet_no', palletNo);
+    fd.append('action',    'create_pallet');
+    fd.append('pallet_no', palletNo);
+
     let r;
-    try { r = await fetch('pallet.php',{method:'POST',body:fd}).then(x=>x.json()); }
-    catch (_) { r = {ok:false,msg:'Network error.'}; }
+    try {
+        r = await fetch('pallet.php', { method: 'POST', body: fd }).then(x => x.json());
+    } catch (_) {
+        r = { ok: false, msg: 'Network error.' };
+    }
+
     if (r.ok) {
         window.location.href = `pallet.php?pallet_id=${r.pallet_id}&success=created`;
     } else {
@@ -864,10 +1130,16 @@ async function submitCreatePallet() {
     }
 }
 
+// ─────────────────────────────────────────────────────────────
+// UTILITIES
+// ─────────────────────────────────────────────────────────────
 function escHtml(s) {
-    return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    return String(s ?? '').replace(
+        /[&<>"']/g,
+        c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])
+    );
 }
-function enc(s) { return encodeURIComponent(s??''); }
+function enc(s) { return encodeURIComponent(s ?? ''); }
 </script>
 
 <?php include 'footer.php'; ?>

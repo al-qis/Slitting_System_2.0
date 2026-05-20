@@ -11,6 +11,11 @@
 //     "Add to Pallet" link when roll is in Finish Good state.
 //  4. All other existing logic (reslit, recoiling, actual
 //     length update, Excel export) is unchanged.
+//  5. KPI cards are now clickable filter links — clicking a
+//     card filters the table to that status only, with an
+//     active highlight and a dismissible banner.
+//  6. Reslit / Recoiling buttons hidden for palletised rolls
+//     to prevent operator mistakes.
 // ============================================================
 
 session_start();
@@ -92,8 +97,20 @@ $month  = isset($_GET['month']) ? (int)$_GET['month'] : (int)date('m');
 $year   = isset($_GET['year'])  ? (int)$_GET['year']  : (int)date('Y');
 $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 
+// ── Card filter (new) ─────────────────────────────────────────
+// Values: in_pending | stock | palletised | waiting | deliver
+$filter_card = $_GET['filter'] ?? '';
+
 if ($month < 1 || $month > 12) { $month = (int)date('m'); }
 if ($year < 2000 || $year > 2100) { $year = (int)date('Y'); }
+
+// ── Helper: build card URL preserving all params ──────────────
+function cardUrl(string $filterVal, int $month, int $year, string $search): string {
+    $params = ['month' => $month, 'year' => $year];
+    if ($search !== '') $params['search'] = $search;
+    if ($filterVal !== '') $params['filter'] = $filterVal;
+    return '?' . http_build_query($params);
+}
 
 // ── Save Actual Length (OK / Stock) ──────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST'
@@ -298,8 +315,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     }
 }
 
+// ── Card filter SQL condition ─────────────────────────────────
+$cardCondition = '';
+if ($filter_card === 'in_pending') {
+    $cardCondition = " AND sp.status = 'IN' AND sp.is_completed = 0";
+} elseif ($filter_card === 'stock') {
+    $cardCondition = " AND sp.status = 'IN' AND sp.stock_counted = 1 AND pi.pallet_id IS NULL";
+} elseif ($filter_card === 'palletised') {
+    $cardCondition = " AND sp.status = 'IN' AND pi.pallet_id IS NOT NULL AND p.status = 'building'";
+} elseif ($filter_card === 'waiting') {
+    $cardCondition = " AND sp.status = 'WAITING'";
+} elseif ($filter_card === 'deliver') {
+    $cardCondition = " AND sp.status = 'DELIVERED'";
+}
+
 // ── Main query ────────────────────────────────────────────────
-// Now also LEFT JOINs pallet_items and pallets so we can show
+// LEFT JOINs pallet_items and pallets so we can show
 // which pallet each roll is on.
 $baseSql = "
     SELECT sp.*,
@@ -318,7 +349,8 @@ $baseSql = "
               AND MONTH(sp.date_out) = ? AND YEAR(sp.date_out) = ?)
           OR (sp.status = 'DELIVERED'
               AND MONTH(sp.delivered_at) = ? AND YEAR(sp.delivered_at) = ?)
-      )";
+      )
+      {$cardCondition}";
 
 if ($search !== '') {
     $baseSql .= " AND (sp.product LIKE ? OR sp.lot_no LIKE ? OR sp.coil_no LIKE ? OR sp.roll_no LIKE ? OR sp.id LIKE ? OR p.pallet_no LIKE ?)";
@@ -341,7 +373,7 @@ $stmt->execute();
 $result = $stmt->get_result();
 $stmt->close();
 
-// Summary counts
+// Summary counts (always full month — not affected by card filter)
 $in      = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='IN' AND is_completed=0 AND (is_recoiled=0 OR is_recoiled IS NULL) AND (is_reslitted=0 OR is_reslitted IS NULL) AND MONTH(date_in)=$month AND YEAR(date_in)=$year")->fetch_assoc()['total'];
 $stock   = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='IN' AND stock_counted=1 AND (is_recoiled=0 OR is_recoiled IS NULL) AND (is_reslitted=0 OR is_reslitted IS NULL) AND MONTH(date_in)=$month AND YEAR(date_in)=$year")->fetch_assoc()['total'];
 $waiting = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='WAITING' AND MONTH(date_out)=$month AND YEAR(date_out)=$year")->fetch_assoc()['total'];
@@ -381,13 +413,47 @@ table th:nth-child(6)  { width: 65px; }
 table th:nth-child(7)  { width: 55px; }
 table th:nth-child(8)  { width: 55px; }
 table th:nth-child(9)  { width: 65px; }
-table th:nth-child(10) { width: 90px; }  /* pallet column */
+table th:nth-child(10) { width: 90px; }
 table th:nth-child(11) { width: 85px; }
 table th:nth-child(12) { width: 85px; }
 table th:nth-child(13) { width: 130px; }
 
 .badge-pallet { background:#e0f2fe; color:#0369a1; font-size:10px; font-weight:700;
                 padding:3px 7px; border-radius:10px; white-space:nowrap; }
+
+/* ── KPI card filter styles ── */
+.kpi-card-link {
+    text-decoration: none;
+    transition: transform .15s, box-shadow .15s;
+    display: block;
+}
+.kpi-card-link:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 6px 18px rgba(0,0,0,.15);
+    text-decoration: none;
+}
+.kpi-card-link .card {
+    border: 2px solid transparent;
+    transition: border-color .15s;
+    cursor: pointer;
+}
+.kpi-card-link.active-kpi {
+    transform: translateY(-3px);
+}
+.kpi-card-link.active-kpi .card {
+    border-color: rgba(0,0,0,.35) !important;
+    box-shadow: 0 0 0 3px rgba(255,255,255,.6), 0 6px 18px rgba(0,0,0,.2);
+}
+.kpi-active-dot {
+    display: block;
+    font-size: 10px;
+    opacity: .85;
+    margin-top: 2px;
+}
+.kpi-card-palletised-active .card {
+    border-color: #0369a1 !important;
+    box-shadow: 0 0 0 3px rgba(3,105,161,.2), 0 6px 18px rgba(0,0,0,.12) !important;
+}
 </style>
 
 <h2 class="mb-4"><i class="bi bi-check-circle me-2"></i>Finish Product</h2>
@@ -426,6 +492,9 @@ table th:nth-child(13) { width: 130px; }
     <div class="col-auto">
         <form method="get" class="d-flex gap-2 align-items-center">
             <input type="hidden" name="search" value="<?= htmlspecialchars($search) ?>">
+            <?php if ($filter_card !== ''): ?>
+            <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_card) ?>">
+            <?php endif; ?>
             <label class="small fw-bold">Month:</label>
             <select name="month" onchange="this.form.submit()" class="form-select form-select-sm w-auto">
                 <?php for ($m = 1; $m <= 12; $m++): ?>
@@ -446,12 +515,15 @@ table th:nth-child(13) { width: 130px; }
         <form method="get" class="input-group input-group-sm">
             <input type="hidden" name="month" value="<?= $month ?>">
             <input type="hidden" name="year"  value="<?= $year ?>">
+            <?php if ($filter_card !== ''): ?>
+            <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_card) ?>">
+            <?php endif; ?>
             <input type="text" name="search" class="form-control"
                    placeholder="Search ID, Product, Lot, Coil, Pallet No..."
                    value="<?= htmlspecialchars($search) ?>">
             <button class="btn btn-primary" type="submit"><i class="bi bi-search"></i></button>
             <?php if ($search !== ''): ?>
-                <a href="?month=<?= $month ?>&year=<?= $year ?>" class="btn btn-outline-secondary">Clear</a>
+                <a href="?month=<?= $month ?>&year=<?= $year ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>" class="btn btn-outline-secondary">Clear</a>
             <?php endif; ?>
         </form>
     </div>
@@ -464,20 +536,123 @@ table th:nth-child(13) { width: 130px; }
     <a href="process_log_viewer.php" class="btn btn-secondary btn-sm">
         <i class="bi bi-clock-history me-1"></i> Process Log
     </a>
-    <!-- NEW: quick link to pallet page -->
     <a href="pallet.php" class="btn btn-primary btn-sm">
         <i class="bi bi-archive me-1"></i> Manage Pallets
     </a>
 </div>
 
-<!-- KPI summary cards — now includes Palletised count -->
-<div class="d-flex mb-4 gap-2 flex-wrap">
-    <div class="card flex-fill text-center text-bg-info">   <div class="card-body p-2"><h6>IN</h6>          <h2><?= (int)$in ?></h2>         </div></div>
-    <div class="card flex-fill text-center text-bg-primary"><div class="card-body p-2"><h6>STOCK</h6>       <h2><?= (int)$stock ?></h2>      </div></div>
-    <div class="card flex-fill text-center" style="background:#e0f2fe;"><div class="card-body p-2"><h6 style="color:#0369a1;">PALLETISED</h6><h2 style="color:#0369a1;"><?= (int)$palletised ?></h2></div></div>
-    <div class="card flex-fill text-center text-bg-warning"><div class="card-body p-2"><h6>WAITING QC</h6> <h2><?= (int)$waiting ?></h2>    </div></div>
-    <div class="card flex-fill text-center text-bg-success"><div class="card-body p-2"><h6>DELIVER</h6>    <h2><?= (int)$deliver ?></h2>    </div></div>
+<!-- ================================================================
+     KPI SUMMARY CARDS — clickable filters
+     Click a card to filter the table to that status only.
+     Click the active card again (or "Clear filter") to reset.
+================================================================ -->
+<div class="d-flex mb-3 gap-2 flex-wrap">
+
+    <!-- IN (Pending) -->
+    <?php $isActiveIn = ($filter_card === 'in_pending'); ?>
+    <a href="<?= $isActiveIn ? cardUrl('', $month, $year, $search) : cardUrl('in_pending', $month, $year, $search) ?>"
+       class="kpi-card-link flex-fill <?= $isActiveIn ? 'active-kpi' : '' ?>"
+       title="<?= $isActiveIn ? 'Clear filter' : 'Show IN (Pending) rolls only' ?>">
+        <div class="card text-center text-bg-info h-100">
+            <div class="card-body p-2">
+                <h6 class="mb-1">IN</h6>
+                <h2 class="mb-0"><?= (int)$in ?></h2>
+                <?php if ($isActiveIn): ?>
+                    <span class="kpi-active-dot">▲ filtered</span>
+                <?php endif; ?>
+            </div>
+        </div>
+    </a>
+
+    <!-- STOCK -->
+    <?php $isActiveStock = ($filter_card === 'stock'); ?>
+    <a href="<?= $isActiveStock ? cardUrl('', $month, $year, $search) : cardUrl('stock', $month, $year, $search) ?>"
+       class="kpi-card-link flex-fill <?= $isActiveStock ? 'active-kpi' : '' ?>"
+       title="<?= $isActiveStock ? 'Clear filter' : 'Show Finish Good stock only' ?>">
+        <div class="card text-center text-bg-primary h-100">
+            <div class="card-body p-2">
+                <h6 class="mb-1">STOCK</h6>
+                <h2 class="mb-0"><?= (int)$stock ?></h2>
+                <?php if ($isActiveStock): ?>
+                    <span class="kpi-active-dot">▲ filtered</span>
+                <?php endif; ?>
+            </div>
+        </div>
+    </a>
+
+    <!-- PALLETISED -->
+    <?php $isActivePal = ($filter_card === 'palletised'); ?>
+    <a href="<?= $isActivePal ? cardUrl('', $month, $year, $search) : cardUrl('palletised', $month, $year, $search) ?>"
+       class="kpi-card-link flex-fill <?= $isActivePal ? 'active-kpi kpi-card-palletised-active' : '' ?>"
+       title="<?= $isActivePal ? 'Clear filter' : 'Show palletised rolls only' ?>"
+       style="color:#0369a1;">
+        <div class="card text-center h-100" style="background:#e0f2fe;">
+            <div class="card-body p-2">
+                <h6 class="mb-1" style="color:#0369a1;">PALLETISED</h6>
+                <h2 class="mb-0" style="color:#0369a1;"><?= (int)$palletised ?></h2>
+                <?php if ($isActivePal): ?>
+                    <span class="kpi-active-dot" style="color:#0369a1;">▲ filtered</span>
+                <?php endif; ?>
+            </div>
+        </div>
+    </a>
+
+    <!-- WAITING QC -->
+    <?php $isActiveWait = ($filter_card === 'waiting'); ?>
+    <a href="<?= $isActiveWait ? cardUrl('', $month, $year, $search) : cardUrl('waiting', $month, $year, $search) ?>"
+       class="kpi-card-link flex-fill <?= $isActiveWait ? 'active-kpi' : '' ?>"
+       title="<?= $isActiveWait ? 'Clear filter' : 'Show Waiting QC rolls only' ?>">
+        <div class="card text-center text-bg-warning h-100">
+            <div class="card-body p-2">
+                <h6 class="mb-1">WAITING QC</h6>
+                <h2 class="mb-0"><?= (int)$waiting ?></h2>
+                <?php if ($isActiveWait): ?>
+                    <span class="kpi-active-dot">▲ filtered</span>
+                <?php endif; ?>
+            </div>
+        </div>
+    </a>
+
+    <!-- DELIVER -->
+    <?php $isActiveDel = ($filter_card === 'deliver'); ?>
+    <a href="<?= $isActiveDel ? cardUrl('', $month, $year, $search) : cardUrl('deliver', $month, $year, $search) ?>"
+       class="kpi-card-link flex-fill <?= $isActiveDel ? 'active-kpi' : '' ?>"
+       title="<?= $isActiveDel ? 'Clear filter' : 'Show Delivered rolls only' ?>">
+        <div class="card text-center text-bg-success h-100">
+            <div class="card-body p-2">
+                <h6 class="mb-1">DELIVER</h6>
+                <h2 class="mb-0"><?= (int)$deliver ?></h2>
+                <?php if ($isActiveDel): ?>
+                    <span class="kpi-active-dot">▲ filtered</span>
+                <?php endif; ?>
+            </div>
+        </div>
+    </a>
+
 </div>
+
+<!-- Active filter banner -->
+<?php if ($filter_card !== ''): ?>
+<div class="alert alert-info py-2 mb-3 d-flex align-items-center justify-content-between">
+    <span>
+        <i class="bi bi-funnel-fill me-2"></i>
+        Showing: <strong>
+        <?= match($filter_card) {
+            'in_pending'  => 'IN (Pending) only',
+            'stock'       => 'Finish Good Stock only',
+            'palletised'  => 'Palletised rolls only',
+            'waiting'     => 'Waiting QC only',
+            'deliver'     => 'Delivered only',
+            default       => ''
+        } ?>
+        </strong>
+        &nbsp;—&nbsp; click the highlighted card again or use the button to clear.
+    </span>
+    <a href="<?= cardUrl('', $month, $year, $search) ?>" class="btn btn-sm btn-outline-info ms-3 flex-shrink-0">
+        <i class="bi bi-x-lg me-1"></i>Clear filter
+    </a>
+</div>
+<?php endif; ?>
 
 <div class="table-responsive">
     <table class="table table-bordered table-striped align-middle text-center">
@@ -583,31 +758,23 @@ table th:nth-child(13) { width: 130px; }
 
             <?php if ($row['is_completed'] == 0): ?>
                 <!-- No actual length yet — must update first -->
-                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&search=<?= urlencode($search) ?>"
+                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>"
                    class="btn btn-primary btn-sm w-100">Update</a>
 
             <?php elseif ($row['pallet_id']): ?>
-                <!-- Already palletised -->
+                <!-- Already palletised — hide Reslit/Recoiling to prevent mistakes -->
                 <a href="pallet.php?pallet_id=<?= $row['pallet_id'] ?>"
                    class="btn btn-outline-primary btn-sm w-100">
                    <i class="bi bi-archive me-1"></i><?= htmlspecialchars($row['pallet_no']) ?>
                 </a>
-                <form method="post" onsubmit="return confirm('Send to reslit?')">
-                    <input type="hidden" name="action"     value="send_to_reslit">
-                    <input type="hidden" name="product_id" value="<?= $row['id'] ?>">
-                    <button type="submit" class="btn btn-warning btn-sm w-100">Reslit</button>
-                </form>
-                <form method="post" onsubmit="return confirm('Move to Recoiling?')">
-                    <input type="hidden" name="action"     value="send_to_recoiling">
-                    <input type="hidden" name="product_id" value="<?= $row['id'] ?>">
-                    <button type="submit" class="btn btn-info btn-sm w-100 text-white">Recoiling</button>
-                </form>
+                <small class="text-muted text-center d-block mt-1" style="font-size:10px;">
+                    <i class="bi bi-lock me-1"></i>Remove from pallet to Reslit / Recoil
+                </small>
 
             <?php else: ?>
                 <!-- Stock counted, not yet on a pallet -->
-                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&search=<?= urlencode($search) ?>"
+                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>"
                    class="btn btn-outline-primary btn-sm w-100">Edit Length</a>
-                <!-- ★ NEW: Add to Pallet button ★ -->
                 <a href="pallet.php" class="btn btn-primary btn-sm w-100">
                     <i class="bi bi-archive me-1"></i> Add to Pallet
                 </a>
@@ -636,7 +803,7 @@ table th:nth-child(13) { width: 130px; }
             </tr>
         <?php endwhile; else: ?>
             <tr><td colspan="13" class="py-4 text-muted">
-                No products found<?= $search !== '' ? ' matching "' . htmlspecialchars($search) . '"' : '' ?>.
+                No products found<?= $search !== '' ? ' matching "' . htmlspecialchars($search) . '"' : '' ?><?= $filter_card !== '' ? ' for the selected filter' : '' ?>.
             </td></tr>
         <?php endif; ?>
         </tbody>
@@ -653,7 +820,7 @@ table th:nth-child(13) { width: 130px; }
             <input type="hidden" name="id"     value="<?= $editData['id'] ?>">
             <div class="modal-header bg-primary text-white">
                 <h5>Update Product</h5>
-                <a href="finish_product.php?month=<?= $month ?>&year=<?= $year ?>&search=<?= urlencode($search) ?>"
+                <a href="finish_product.php?month=<?= $month ?>&year=<?= $year ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>"
                    class="btn-close"></a>
             </div>
             <div class="modal-body">
@@ -774,7 +941,8 @@ tooltipTriggerList.map(el => new bootstrap.Tooltip(el));
 
     const cleanUrl = window.location.pathname
         + '?month=' + (params.get('month') ?? '')
-        + '&year='  + (params.get('year')  ?? '');
+        + '&year='  + (params.get('year')  ?? '')
+        + (params.get('filter') ? '&filter=' + encodeURIComponent(params.get('filter')) : '');
     window.history.replaceState({}, '', cleanUrl);
 })();
 </script>

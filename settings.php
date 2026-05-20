@@ -20,7 +20,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $new_username = trim($_POST['new_username'] ?? '');
         if ($new_username === '') { echo json_encode(['ok'=>false,'msg'=>'Username cannot be empty.']); exit; }
 
-        // Check uniqueness (exclude self)
         $chk = $conn->prepare("SELECT id FROM users WHERE username=? AND id!=?");
         $chk->bind_param("si", $new_username, $user_id);
         $chk->execute();
@@ -76,14 +75,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
         if (!$coil_code || !$product) { echo json_encode(['ok'=>false,'msg'=>'Coil code and product are required.']); exit; }
 
+        // Check if this exact coil_code + product combo already exists
+        $chk = $conn->prepare("SELECT id FROM coil_product_map WHERE coil_code=? AND product=?");
+        $chk->bind_param("ss", $coil_code, $product);
+        $chk->execute();
+        $chk->store_result();
+        if ($chk->num_rows > 0) {
+            $chk->close();
+            echo json_encode(['ok'=>false,'msg'=>"Mapping {$coil_code} → {$product} already exists."]);
+            exit;
+        }
+        $chk->close();
+
         $conn->begin_transaction();
         try {
-            // coil_product_map
             $s1 = $conn->prepare("INSERT INTO coil_product_map (coil_code, product) VALUES (?,?)");
             $s1->bind_param("ss", $coil_code, $product);
             $s1->execute(); $s1->close();
 
-            // std_wgt (insert or update)
             if ($std_weight > 0) {
                 $s2 = $conn->prepare("INSERT INTO std_wgt (product_code, std_weight) VALUES (?,?)
                                       ON DUPLICATE KEY UPDATE std_weight=VALUES(std_weight)");
@@ -91,7 +100,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $s2->execute(); $s2->close();
             }
 
-            // nci_product_mapping
             if ($nci_code) {
                 $s3 = $conn->prepare("INSERT INTO nci_product_mapping (internal_code, product, width, customer, part_no) VALUES (?,?,?,?,?)");
                 $s3->bind_param("sssss", $nci_code, $product, $nci_width, $customer, $part_no);
@@ -110,18 +118,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     /* ── 4. Update Mapping ──────────────────────────── */
     if ($action === 'update_mapping') {
         $map_id     = intval($_POST['map_id']);
+        $new_coil   = strtoupper(trim($_POST['coil_code'] ?? ''));   // ← now editable
         $product    = trim($_POST['product']    ?? '');
         $std_weight = floatval($_POST['std_weight'] ?? 0);
 
-        if (!$product) { echo json_encode(['ok'=>false,'msg'=>'Product name is required.']); exit; }
+        if (!$new_coil)  { echo json_encode(['ok'=>false,'msg'=>'Coil code cannot be empty.']); exit; }
+        if (!$product)   { echo json_encode(['ok'=>false,'msg'=>'Product name is required.']); exit; }
 
-        // Get old product for std_wgt
-        $old = $conn->query("SELECT product FROM coil_product_map WHERE id=$map_id")->fetch_assoc();
+        // Uniqueness check: make sure no OTHER row already has this coil_code + product combo
+        $chk = $conn->prepare("SELECT id FROM coil_product_map WHERE coil_code=? AND product=? AND id!=?");
+        $chk->bind_param("ssi", $new_coil, $product, $map_id);
+        $chk->execute();
+        $chk->store_result();
+        if ($chk->num_rows > 0) {
+            $chk->close();
+            echo json_encode(['ok'=>false,'msg'=>"Another mapping already uses {$new_coil} → {$product}."]);
+            exit;
+        }
+        $chk->close();
 
         $conn->begin_transaction();
         try {
-            $s1 = $conn->prepare("UPDATE coil_product_map SET product=? WHERE id=?");
-            $s1->bind_param("si", $product, $map_id);
+            // Update both coil_code AND product
+            $s1 = $conn->prepare("UPDATE coil_product_map SET coil_code=?, product=? WHERE id=?");
+            $s1->bind_param("ssi", $new_coil, $product, $map_id);
             $s1->execute(); $s1->close();
 
             if ($std_weight > 0) {
@@ -132,7 +152,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             }
 
             $conn->commit();
-            echo json_encode(['ok'=>true,'msg'=>'Mapping updated successfully.']);
+            echo json_encode([
+                'ok'       => true,
+                'msg'      => 'Mapping updated successfully.',
+                'new_coil' => $new_coil,   // returned so JS can update the table cell live
+            ]);
         } catch (Exception $e) {
             $conn->rollback();
             echo json_encode(['ok'=>false,'msg'=>'Error: '.$e->getMessage()]);
@@ -171,7 +195,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 /* ─── Load page data ────────────────────────────────────────── */
 $current_user = $conn->query("SELECT username FROM users WHERE id=$user_id")->fetch_assoc();
 
-// Joined table: coil_product_map + std_wgt
 $mappings = $conn->query("
     SELECT c.id, c.coil_code, c.product,
            COALESCE(w.std_weight, 0) AS std_weight
@@ -182,7 +205,6 @@ $mappings = $conn->query("
 $mapping_rows = [];
 while ($r = $mappings->fetch_assoc()) $mapping_rows[] = $r;
 
-// nci product mapping
 $nci_rows = [];
 $nci_res  = $conn->query("SELECT * FROM nci_product_mapping ORDER BY internal_code");
 while ($r = $nci_res->fetch_assoc()) $nci_rows[] = $r;
@@ -192,7 +214,6 @@ include 'header.php';
 ?>
 
 <style>
-/* ── Font ──────────────────────────────────────── */
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap');
 
 :root {
@@ -209,7 +230,6 @@ include 'header.php';
 }
 body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text); }
 
-/* ── Page header ──────────────────────────────── */
 .pg-head {
   display:flex; align-items:center; justify-content:space-between;
   margin-bottom:28px;
@@ -217,7 +237,7 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
 .pg-title { font-size:22px; font-weight:800; color:var(--navy); letter-spacing:-.4px; }
 .pg-title span { display:block; font-size:12px; font-weight:500; color:var(--muted); margin-top:2px; letter-spacing:0; }
 
-/* ── Tabs ──────────────────────────────────────── */
+/* ── Tabs ── */
 .stab-bar {
   display:flex; gap:4px;
   background:var(--surface); border:1px solid var(--border);
@@ -235,11 +255,10 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
 .stab:hover { color:var(--text); background:#F5F7FA; }
 .stab.active { background:var(--navy); color:#fff; }
 
-/* ── Tab panels ────────────────────────────────── */
 .tab-panel { display:none; }
 .tab-panel.active { display:block; }
 
-/* ── Section card ──────────────────────────────── */
+/* ── Section card ── */
 .s-card {
   background:var(--surface); border:1px solid var(--border);
   border-radius:var(--r); box-shadow:var(--shadow-s);
@@ -258,7 +277,7 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
 .s-card-sub   { font-size:11px; color:var(--muted); margin-top:1px; }
 .s-card-body  { padding:22px; }
 
-/* ── Form controls ─────────────────────────────── */
+/* ── Form controls ── */
 .f-label { font-size:12px; font-weight:700; color:#334155; margin-bottom:5px; display:block; }
 .f-ctrl {
   width:100%; border-radius:10px; border:1px solid var(--border);
@@ -266,6 +285,13 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
   background:#F8FBFF; color:var(--text); outline:none; transition:.15s;
 }
 .f-ctrl:focus { border-color:#9ab5ff; background:#fff; box-shadow:0 0 0 3px rgba(59,130,246,.08); }
+.f-ctrl[readonly] { background:#F3F4F6; color:var(--muted); cursor:not-allowed; }
+
+/* ── Coil code editable hint ── */
+.coil-edit-hint {
+  font-size:10px; color:#7C3AED; font-weight:600;
+  margin-top:4px; display:flex; align-items:center; gap:4px;
+}
 
 .btn-prim {
   display:inline-flex; align-items:center; gap:7px;
@@ -293,7 +319,7 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
   border:none; cursor:pointer; font-weight:700; transition:.15s;
 }
 
-/* ── Mapping table ─────────────────────────────── */
+/* ── Mapping table ── */
 .map-table { width:100%; border-collapse:collapse; font-size:13px; }
 .map-table th {
   padding:9px 14px; background:#F8FAFC; border-bottom:2px solid var(--border);
@@ -312,7 +338,14 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
   font-family:'DM Mono',monospace; font-size:12px; font-weight:500; color:#059669;
 }
 
-/* ── Search box ────────────────────────────────── */
+/* ── Row flash on save ── */
+@keyframes rowFlash {
+  0%   { background:#EDE9FE; }
+  100% { background:transparent; }
+}
+.row-flash td { animation: rowFlash .8s ease-out forwards; }
+
+/* ── Search box ── */
 .tbl-search {
   position:relative; margin-bottom:14px; max-width:300px;
 }
@@ -327,7 +360,7 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
   color:var(--muted); font-size:13px; pointer-events:none;
 }
 
-/* ── Modal ─────────────────────────────────────── */
+/* ── Modal ── */
 .modal-overlay {
   position:fixed; inset:0; background:rgba(0,0,0,.45); backdrop-filter:blur(4px);
   z-index:9999; display:none; align-items:center; justify-content:center;
@@ -335,18 +368,18 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
 .modal-overlay.open { display:flex; }
 .modal-box {
   background:#fff; border-radius:18px; padding:28px;
-  width:500px; max-width:94vw; max-height:88vh; overflow-y:auto;
+  width:520px; max-width:94vw; max-height:88vh; overflow-y:auto;
   box-shadow:0 20px 60px rgba(0,0,0,.2);
   animation:slideUp .22s cubic-bezier(.16,1,.3,1);
 }
-.modal-box.sm { width:360px; }
+.modal-box.sm { width:380px; }
 @keyframes slideUp {
   from { opacity:0; transform:translateY(20px) scale(.97); }
   to   { opacity:1; transform:translateY(0) scale(1); }
 }
 .modal-title { font-size:16px; font-weight:800; color:var(--navy); margin-bottom:18px; display:flex; align-items:center; gap:8px; }
 
-/* ── Toast ─────────────────────────────────────── */
+/* ── Toast ── */
 #toast-wrap {
   position:fixed; bottom:28px; right:28px; z-index:10000;
   display:flex; flex-direction:column; gap:10px; pointer-events:none;
@@ -366,7 +399,7 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
 .toast-ok   { background:#ECFDF5; color:#065F46; border:1px solid #A7F3D0; }
 .toast-err  { background:#FEF2F2; color:#991B1B; border:1px solid #FECACA; }
 
-/* ── Confirm dialog ────────────────────────────── */
+/* ── Confirm dialog ── */
 .confirm-icon { font-size:40px; text-align:center; margin-bottom:10px; }
 .confirm-msg  { font-size:14px; color:var(--text); text-align:center; margin-bottom:22px; }
 .confirm-btns { display:flex; gap:10px; justify-content:center; }
@@ -375,13 +408,13 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
 .btn-confirm-del { padding:10px 24px; border-radius:10px; border:none; background:#dc2626; color:#fff; font-weight:700; font-size:13px; cursor:pointer; transition:.15s; }
 .btn-confirm-del:hover { background:#b91c1c; }
 
-/* ── Divider ───────────────────────────────────── */
+/* ── Divider ── */
 .divider { height:1px; background:var(--border); margin:18px 0; }
 
-/* ── Scrollable table wrapper ──────────────────── */
+/* ── Scrollable table wrapper ── */
 .tbl-wrap { overflow-x:auto; border-radius:var(--r-sm); }
 
-/* ── Dirty row highlight ────────────────────────── */
+/* ── Dirty row highlight ── */
 .wgt-dirty td { background: #FFFBEB !important; }
 .wgt-dirty td:first-child { border-left: 3px solid #D97706; }
 .wgt-dirty .wgt-inline { border-color:#D97706 !important; background:#FFFBEB !important; }
@@ -418,7 +451,6 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
 ══════════════════════════════════════════════════════════ -->
 <div class="tab-panel active" id="panel-security">
   <div class="row g-3">
-    <!-- Username Card -->
     <div class="col-md-6">
       <div class="s-card">
         <div class="s-card-head">
@@ -433,7 +465,7 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
         <div class="s-card-body">
           <div class="mb-3">
             <label class="f-label">Current Username</label>
-            <input class="f-ctrl" type="text" value="<?= htmlspecialchars($current_user['username']) ?>" readonly style="background:#F3F4F6;color:var(--muted);">
+            <input class="f-ctrl" type="text" value="<?= htmlspecialchars($current_user['username']) ?>" readonly>
           </div>
           <div class="mb-4">
             <label class="f-label">New Username</label>
@@ -446,7 +478,6 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
       </div>
     </div>
 
-    <!-- Password Card -->
     <div class="col-md-6">
       <div class="s-card">
         <div class="s-card-head">
@@ -506,7 +537,8 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
     <div class="s-card-body">
       <div class="tbl-search">
         <i class="bi bi-search"></i>
-        <input type="text" id="map-search" placeholder="Search coil or product…" oninput="filterTable('map-search','map-table')">
+        <input type="text" id="map-search" placeholder="Search coil or product…"
+               oninput="filterTable('map-search','map-table')">
       </div>
       <div class="tbl-wrap">
         <table class="map-table" id="map-table">
@@ -521,16 +553,29 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
           </thead>
           <tbody>
           <?php foreach ($mapping_rows as $i => $m): ?>
-          <tr data-id="<?= $m['id'] ?>" data-product="<?= htmlspecialchars($m['product']) ?>" data-weight="<?= $m['std_weight'] ?>">
+          <tr data-id="<?= $m['id'] ?>"
+              data-coil="<?= htmlspecialchars($m['coil_code']) ?>"
+              data-product="<?= htmlspecialchars($m['product']) ?>"
+              data-weight="<?= $m['std_weight'] ?>">
             <td style="color:var(--muted);font-size:11px;"><?= $i+1 ?></td>
-            <td><span class="code-tag"><?= htmlspecialchars($m['coil_code']) ?></span></td>
-            <td><strong><?= htmlspecialchars($m['product']) ?></strong></td>
+            <td class="cell-coil"><span class="code-tag"><?= htmlspecialchars($m['coil_code']) ?></span></td>
+            <td class="cell-product"><strong><?= htmlspecialchars($m['product']) ?></strong></td>
             <td><span class="weight-tag"><?= number_format($m['std_weight'],4) ?></span></td>
             <td>
-              <button class="btn-edit btn-sm" onclick="openEditMapping(<?= $m['id'] ?>,'<?= htmlspecialchars($m['coil_code']) ?>','<?= htmlspecialchars($m['product']) ?>',<?= $m['std_weight'] ?>)">
+              <button class="btn-edit btn-sm"
+                      onclick="openEditMapping(
+                        <?= $m['id'] ?>,
+                        '<?= htmlspecialchars(addslashes($m['coil_code'])) ?>',
+                        '<?= htmlspecialchars(addslashes($m['product'])) ?>',
+                        <?= $m['std_weight'] ?>
+                      )">
                 <i class="bi bi-pencil"></i> Edit
               </button>
-              <button class="btn-danger btn-sm" style="margin-left:4px;" onclick="confirmDelete(<?= $m['id'] ?>,'<?= htmlspecialchars(addslashes($m['coil_code'].' → '.$m['product'])) ?>')">
+              <button class="btn-danger btn-sm" style="margin-left:4px;"
+                      onclick="confirmDelete(
+                        <?= $m['id'] ?>,
+                        '<?= htmlspecialchars(addslashes($m['coil_code'].' → '.$m['product'])) ?>'
+                      )">
                 <i class="bi bi-trash3"></i> Delete
               </button>
             </td>
@@ -558,7 +603,8 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
     <div class="s-card-body">
       <div class="tbl-search">
         <i class="bi bi-search"></i>
-        <input type="text" id="wgt-search" placeholder="Search product code…" oninput="filterTable('wgt-search','wgt-table')">
+        <input type="text" id="wgt-search" placeholder="Search product code…"
+               oninput="filterTable('wgt-search','wgt-table')">
       </div>
       <div class="tbl-wrap">
         <table class="map-table" id="wgt-table">
@@ -576,17 +622,21 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
             <td style="color:var(--muted);font-size:11px;"><?= $wi ?></td>
             <td><span class="code-tag"><?= htmlspecialchars($w['product_code']) ?></span></td>
             <td>
-              <input type="number" step="0.0001" class="f-ctrl wgt-inline" style="max-width:130px;padding:6px 10px;transition:.2s;"
+              <input type="number" step="0.0001" class="f-ctrl wgt-inline"
+                     style="max-width:130px;padding:6px 10px;transition:.2s;"
                      data-code="<?= htmlspecialchars($w['product_code']) ?>"
                      data-original="<?= $w['std_weight'] ?>"
                      value="<?= $w['std_weight'] ?>"
                      oninput="markDirty(this)">
             </td>
             <td style="white-space:nowrap;">
-              <button class="btn-edit btn-sm wgt-save-btn" style="display:none;" onclick="saveInlineWeight(this)">
+              <button class="btn-edit btn-sm wgt-save-btn" style="display:none;"
+                      onclick="saveInlineWeight(this)">
                 <i class="bi bi-check-lg"></i> Save
               </button>
-              <button class="btn-sm wgt-discard-btn" style="display:none;background:#F3F4F6;color:var(--muted);border:1px solid var(--border);margin-left:4px;" onclick="discardInlineWeight(this)">
+              <button class="btn-sm wgt-discard-btn"
+                      style="display:none;background:#F3F4F6;color:var(--muted);border:1px solid var(--border);margin-left:4px;"
+                      onclick="discardInlineWeight(this)">
                 <i class="bi bi-x-lg"></i> Discard
               </button>
             </td>
@@ -614,7 +664,8 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
     <div class="s-card-body">
       <div class="tbl-search">
         <i class="bi bi-search"></i>
-        <input type="text" id="nci-search" placeholder="Search code, product, customer…" oninput="filterTable('nci-search','nci-table')">
+        <input type="text" id="nci-search" placeholder="Search code, product, customer…"
+               oninput="filterTable('nci-search','nci-table')">
       </div>
       <div class="tbl-wrap">
         <table class="map-table" id="nci-table">
@@ -648,14 +699,17 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
 <!-- Add Mapping Modal -->
 <div class="modal-overlay" id="modal-add">
   <div class="modal-box">
-    <div class="modal-title"><i class="bi bi-plus-circle" style="color:#7C3AED;"></i> Add New Mapping</div>
+    <div class="modal-title">
+      <i class="bi bi-plus-circle" style="color:#7C3AED;"></i> Add New Mapping
+    </div>
     <div class="row g-3">
       <div class="col-6">
-        <label class="f-label">Coil Code *</label>
-        <input class="f-ctrl" type="text" id="add-coil" placeholder="e.g. A" style="text-transform:uppercase;">
+        <label class="f-label">Coil Code <span style="color:#dc2626;">*</span></label>
+        <input class="f-ctrl" type="text" id="add-coil"
+               placeholder="e.g. A" style="text-transform:uppercase;">
       </div>
       <div class="col-6">
-        <label class="f-label">Product *</label>
+        <label class="f-label">Product <span style="color:#dc2626;">*</span></label>
         <input class="f-ctrl" type="text" id="add-product" placeholder="e.g. RS-3825">
       </div>
       <div class="col-6">
@@ -689,23 +743,41 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
   </div>
 </div>
 
-<!-- Edit Mapping Modal -->
+<!-- Edit Mapping Modal — coil code is NOW editable -->
 <div class="modal-overlay" id="modal-edit">
   <div class="modal-box sm">
-    <div class="modal-title"><i class="bi bi-pencil-square" style="color:#2563EB;"></i> Edit Mapping</div>
-    <input type="hidden" id="edit-id">
-    <div class="mb-3">
-      <label class="f-label">Coil Code (read-only)</label>
-      <input class="f-ctrl" type="text" id="edit-coil" readonly style="background:#F3F4F6;color:var(--muted);">
+    <div class="modal-title">
+      <i class="bi bi-pencil-square" style="color:#2563EB;"></i> Edit Mapping
     </div>
+    <input type="hidden" id="edit-id">
+
     <div class="mb-3">
-      <label class="f-label">Product *</label>
+      <label class="f-label">
+        Coil Code <span style="color:#dc2626;">*</span>
+        <span style="font-size:10px;color:#7C3AED;font-weight:600;margin-left:6px;">
+          <i class="bi bi-pencil-fill"></i> Editable
+        </span>
+      </label>
+      <input class="f-ctrl" type="text" id="edit-coil"
+             placeholder="e.g. A"
+             style="font-family:'DM Mono',monospace;letter-spacing:.5px;text-transform:uppercase;"
+             oninput="this.value=this.value.toUpperCase()">
+      <div class="coil-edit-hint">
+        <i class="bi bi-info-circle"></i>
+        Changing the coil code updates the mapping lookup used during scanning.
+      </div>
+    </div>
+
+    <div class="mb-3">
+      <label class="f-label">Product <span style="color:#dc2626;">*</span></label>
       <input class="f-ctrl" type="text" id="edit-product" placeholder="Product code">
     </div>
+
     <div class="mb-4">
       <label class="f-label">Std Weight (g/m)</label>
       <input class="f-ctrl" type="number" step="0.0001" id="edit-weight" placeholder="e.g. 2.1690">
     </div>
+
     <div style="display:flex;gap:10px;justify-content:flex-end;">
       <button class="btn-cancel" onclick="closeModal('modal-edit')">Cancel</button>
       <button class="btn-prim" onclick="doEditMapping()">
@@ -736,7 +808,9 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
   <div class="modal-box sm">
     <div class="confirm-icon">⚠️</div>
     <div class="modal-title" style="justify-content:center;">Unsaved Changes</div>
-    <div class="confirm-msg">You have unsaved weight changes. If you leave now, your edits will be lost.</div>
+    <div class="confirm-msg">
+      You have unsaved weight changes. If you leave now, your edits will be lost.
+    </div>
     <div class="confirm-btns">
       <button class="btn-cancel" id="unsaved-leave">Discard &amp; Leave</button>
       <button class="btn-prim" id="unsaved-stay" style="background:#D97706;">
@@ -751,32 +825,37 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
 
 
 <script>
-/* ── Tab switching ─────────────────────────── */
+/* ── Tab switching ─────────────────────────────────────────── */
 function switchTab(tab) {
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.stab').forEach(b => b.classList.remove('active'));
   document.getElementById('panel-' + tab).classList.add('active');
-  document.getElementById('tab-' + tab).classList.add('active');
+  document.getElementById('tab-'   + tab).classList.add('active');
 }
 
-/* ── Toast ─────────────────────────────────── */
+/* ── Toast ─────────────────────────────────────────────────── */
 function toast(msg, ok = true) {
   const w = document.getElementById('toast-wrap');
   const t = document.createElement('div');
   t.className = 'toast ' + (ok ? 'toast-ok' : 'toast-err');
   t.innerHTML = `<i class="bi bi-${ok ? 'check-circle-fill' : 'exclamation-circle-fill'}"></i> ${msg}`;
   w.appendChild(t);
-  setTimeout(() => { t.style.opacity='0'; t.style.transform='translateX(30px)'; t.style.transition='.3s'; setTimeout(()=>t.remove(),300); }, 3500);
+  setTimeout(() => {
+    t.style.opacity   = '0';
+    t.style.transform = 'translateX(30px)';
+    t.style.transition = '.3s';
+    setTimeout(() => t.remove(), 300);
+  }, 3500);
 }
 
-/* ── Modals ────────────────────────────────── */
+/* ── Modals ─────────────────────────────────────────────────── */
 function openModal(id)  { document.getElementById(id).classList.add('open'); }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
 document.querySelectorAll('.modal-overlay').forEach(o => {
   o.addEventListener('click', e => { if (e.target === o) o.classList.remove('open'); });
 });
 
-/* ── Table search/filter ───────────────────── */
+/* ── Table search ───────────────────────────────────────────── */
 function filterTable(inputId, tableId) {
   const q = document.getElementById(inputId).value.toLowerCase();
   document.querySelectorAll(`#${tableId} tbody tr`).forEach(row => {
@@ -784,30 +863,30 @@ function filterTable(inputId, tableId) {
   });
 }
 
-/* ── Password toggle ───────────────────────── */
+/* ── Password toggle ────────────────────────────────────────── */
 function togglePw(id) {
   const el = document.getElementById(id);
   el.type = (el.type === 'password') ? 'text' : 'password';
 }
 
-/* ── API helper ────────────────────────────── */
+/* ── API helper ─────────────────────────────────────────────── */
 async function post(data) {
   const fd = new FormData();
-  for (const [k,v] of Object.entries(data)) fd.append(k, v);
-  const res = await fetch('settings.php', { method:'POST', body:fd });
+  for (const [k, v] of Object.entries(data)) fd.append(k, v);
+  const res = await fetch('settings.php', { method: 'POST', body: fd });
   return res.json();
 }
 
-/* ── Update Username ───────────────────────── */
+/* ── Update Username ────────────────────────────────────────── */
 async function doUpdateUsername() {
   const v = document.getElementById('inp-username').value.trim();
   if (!v) { toast('Please enter a new username.', false); return; }
-  const r = await post({ action:'update_username', new_username:v });
+  const r = await post({ action: 'update_username', new_username: v });
   toast(r.msg, r.ok);
   if (r.ok) document.getElementById('inp-username').value = '';
 }
 
-/* ── Change Password ───────────────────────── */
+/* ── Change Password ────────────────────────────────────────── */
 async function doChangePassword() {
   const cur  = document.getElementById('inp-cur-pw').value;
   const np   = document.getElementById('inp-new-pw').value;
@@ -816,33 +895,44 @@ async function doChangePassword() {
   if (np !== conf) { toast('New passwords do not match.', false); return; }
   const r = await post({ action:'change_password', current_password:cur, new_password:np, confirm_password:conf });
   toast(r.msg, r.ok);
-  if (r.ok) { document.getElementById('inp-cur-pw').value=''; document.getElementById('inp-new-pw').value=''; document.getElementById('inp-conf-pw').value=''; }
+  if (r.ok) {
+    document.getElementById('inp-cur-pw').value  = '';
+    document.getElementById('inp-new-pw').value  = '';
+    document.getElementById('inp-conf-pw').value = '';
+  }
 }
 
-/* ── Open Add/Edit Mapping ─────────────────── */
+/* ── Open Add Mapping ───────────────────────────────────────── */
 function openAddMapping() {
   ['add-coil','add-product','add-weight','add-nci-code','add-nci-width','add-customer','add-partno']
-    .forEach(id => document.getElementById(id).value='');
+    .forEach(id => document.getElementById(id).value = '');
   openModal('modal-add');
+  setTimeout(() => document.getElementById('add-coil').focus(), 200);
 }
+
+/* ── Open Edit Mapping ──────────────────────────────────────── */
+// Signature now includes coil so JS can pre-populate the editable field
 function openEditMapping(id, coil, product, weight) {
   document.getElementById('edit-id').value      = id;
-  document.getElementById('edit-coil').value    = coil;
+  document.getElementById('edit-coil').value    = coil;     // pre-fill (editable)
   document.getElementById('edit-product').value = product;
   document.getElementById('edit-weight').value  = weight;
   openModal('modal-edit');
+  setTimeout(() => document.getElementById('edit-coil').focus(), 200);
 }
+
+/* ── Confirm Delete ─────────────────────────────────────────── */
 function confirmDelete(id, label) {
-  document.getElementById('confirm-del-id').value   = id;
+  document.getElementById('confirm-del-id').value = id;
   document.getElementById('confirm-msg-text').innerHTML =
     `This will permanently remove <strong>${label}</strong> from the mapping table.`;
   openModal('modal-confirm');
 }
 
-/* ── CRUD ──────────────────────────────────── */
+/* ── Add Mapping (CRUD) ─────────────────────────────────────── */
 async function doAddMapping() {
   const payload = {
-    action:'add_mapping',
+    action:     'add_mapping',
     coil_code:  document.getElementById('add-coil').value.trim().toUpperCase(),
     product:    document.getElementById('add-product').value.trim(),
     std_weight: document.getElementById('add-weight').value,
@@ -851,42 +941,90 @@ async function doAddMapping() {
     customer:   document.getElementById('add-customer').value.trim(),
     part_no:    document.getElementById('add-partno').value.trim(),
   };
+  if (!payload.coil_code || !payload.product) {
+    toast('Coil Code and Product are required.', false); return;
+  }
   const r = await post(payload);
   toast(r.msg, r.ok);
-  if (r.ok) { closeModal('modal-add'); setTimeout(()=>location.reload(),1200); }
+  if (r.ok) { closeModal('modal-add'); setTimeout(() => location.reload(), 1200); }
 }
 
+/* ── Edit Mapping (CRUD) ────────────────────────────────────── */
 async function doEditMapping() {
+  const id      = document.getElementById('edit-id').value;
+  const coil    = document.getElementById('edit-coil').value.trim().toUpperCase();
+  const product = document.getElementById('edit-product').value.trim();
+  const weight  = document.getElementById('edit-weight').value;
+
+  if (!coil)    { toast('Coil code cannot be empty.', false); return; }
+  if (!product) { toast('Product name is required.', false); return; }
+
   const r = await post({
     action:     'update_mapping',
-    map_id:     document.getElementById('edit-id').value,
-    product:    document.getElementById('edit-product').value.trim(),
-    std_weight: document.getElementById('edit-weight').value,
+    map_id:     id,
+    coil_code:  coil,       // ← new field sent to backend
+    product:    product,
+    std_weight: weight,
   });
+
   toast(r.msg, r.ok);
-  if (r.ok) { closeModal('modal-edit'); setTimeout(()=>location.reload(),1200); }
+
+  if (r.ok) {
+    closeModal('modal-edit');
+
+    // ── Live-update the table row without a page reload ──────
+    const row = document.querySelector(`#map-table tr[data-id="${id}"]`);
+    if (row) {
+      // Update data attributes so future opens get correct values
+      row.dataset.coil    = r.new_coil ?? coil;
+      row.dataset.product = product;
+
+      // Update visible cells
+      const coilCell    = row.querySelector('.cell-coil');
+      const productCell = row.querySelector('.cell-product');
+      if (coilCell)    coilCell.innerHTML    = `<span class="code-tag">${escHtml(r.new_coil ?? coil)}</span>`;
+      if (productCell) productCell.innerHTML = `<strong>${escHtml(product)}</strong>`;
+
+      // Update the onclick of the Edit button to reflect new values
+      const editBtn = row.querySelector('.btn-edit');
+      if (editBtn) {
+        editBtn.setAttribute('onclick',
+          `openEditMapping(${id},'${(r.new_coil ?? coil).replace(/'/g,"\\'")}','${product.replace(/'/g,"\\'")}',${weight || 0})`
+        );
+      }
+
+      // Brief purple flash to confirm the save
+      row.classList.add('row-flash');
+      row.addEventListener('animationend', () => row.classList.remove('row-flash'), { once: true });
+    }
+  }
 }
 
+/* ── Delete Mapping (CRUD) ──────────────────────────────────── */
 async function doDeleteMapping() {
   const id = document.getElementById('confirm-del-id').value;
-  const r  = await post({ action:'delete_mapping', map_id:id });
+  const r  = await post({ action: 'delete_mapping', map_id: id });
   toast(r.msg, r.ok);
   closeModal('modal-confirm');
   if (r.ok) {
     const row = document.querySelector(`#map-table tr[data-id="${id}"]`);
-    if (row) { row.style.opacity='0'; row.style.transition='.3s'; setTimeout(()=>row.remove(),300); }
+    if (row) {
+      row.style.opacity    = '0';
+      row.style.transition = '.3s';
+      setTimeout(() => row.remove(), 300);
+    }
   }
 }
 
-/* ── Std Weight dirty-state tracking ───────── */
+/* ── Std Weight: dirty-state tracking ──────────────────────── */
 function markDirty(inp) {
-  const row = inp.closest('tr');
+  const row     = inp.closest('tr');
   const changed = inp.value !== inp.dataset.original;
   row.classList.toggle('wgt-dirty', changed);
   row.querySelector('.wgt-save-btn').style.display    = changed ? '' : 'none';
   row.querySelector('.wgt-discard-btn').style.display = changed ? '' : 'none';
-  inp.style.borderColor  = changed ? '#D97706' : '';
-  inp.style.background   = changed ? '#FFFBEB' : '';
+  inp.style.borderColor = changed ? '#D97706' : '';
+  inp.style.background  = changed ? '#FFFBEB' : '';
 }
 
 function discardInlineWeight(btn) {
@@ -904,7 +1042,6 @@ function hasDirtyWeights() {
   return document.querySelectorAll('.wgt-dirty').length > 0;
 }
 
-/* ── Inline weight save ─────────────────────── */
 async function saveInlineWeight(btn) {
   const row = btn.closest('tr');
   const inp = row.querySelector('.wgt-inline');
@@ -918,20 +1055,19 @@ async function saveInlineWeight(btn) {
   });
   toast(r.msg, r.ok);
   if (r.ok) {
-    // commit: update original, clean state
     inp.dataset.original = inp.value;
     row.classList.remove('wgt-dirty');
     btn.style.display = 'none';
     row.querySelector('.wgt-discard-btn').style.display = 'none';
     inp.style.borderColor = '';
-    inp.style.background  = '#F0FDF4'; // brief green flash
+    inp.style.background  = '#F0FDF4';
     setTimeout(() => inp.style.background = '', 1200);
   }
 }
 
-/* ── Guard: warn before switching tab if dirty ─ */
+/* ── Guard: warn before switching tab if dirty ──────────────── */
 const _origSwitchTab = switchTab;
-window.switchTab = function(tab) {
+window.switchTab = function (tab) {
   if (hasDirtyWeights() && document.getElementById('panel-stdwgt').classList.contains('active')) {
     openModal('modal-unsaved');
     pendingTab = tab;
@@ -942,7 +1078,6 @@ window.switchTab = function(tab) {
 
 let pendingTab = null;
 document.getElementById('unsaved-leave').addEventListener('click', () => {
-  // discard all and leave
   document.querySelectorAll('.wgt-dirty').forEach(row => {
     const inp = row.querySelector('.wgt-inline');
     inp.value = inp.dataset.original;
@@ -959,10 +1094,18 @@ document.getElementById('unsaved-stay').addEventListener('click', () => {
   closeModal('modal-unsaved'); pendingTab = null;
 });
 
-/* ── Guard: browser/tab close ───────────────── */
+/* ── Guard: browser/tab close ───────────────────────────────── */
 window.addEventListener('beforeunload', e => {
   if (hasDirtyWeights()) { e.preventDefault(); e.returnValue = ''; }
 });
+
+/* ── HTML escape helper ─────────────────────────────────────── */
+function escHtml(s) {
+  return String(s ?? '').replace(
+    /[&<>"']/g,
+    c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])
+  );
+}
 </script>
 
 <?php include 'footer.php'; ?>
