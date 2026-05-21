@@ -250,8 +250,7 @@ include 'header.php';
     <?php endif; ?>
 </div>
 
-<input id="qrScanInput" type="text" inputmode="none"
-       style="position:fixed; left:-9999px; opacity:0;" autofocus>
+<input id="qrScanInput" type="hidden" value="">
 <div id="qrAlert" class="d-none alert py-2 mb-3 shadow-sm"></div>
 
 <div class="alert alert-secondary py-2 mb-3 d-flex align-items-center gap-2">
@@ -620,48 +619,7 @@ document.addEventListener('DOMContentLoaded', function () {
     pinSubmitBtn.addEventListener('click', submitPin);
     pinInput.addEventListener('keydown', e => { if (e.key === 'Enter') submitPin(); });
 
-    // QR scanner
-    setInterval(() => {
-        const tag = document.activeElement.tagName;
-        if (!document.querySelector('.modal.show') && !['INPUT','TEXTAREA','SELECT'].includes(tag)) {
-            qrInput.focus();
-        }
-    }, 800);
-
-    qrInput.addEventListener('keydown', function (e) {
-        if (e.key !== 'Enter') return;
-        const scanned = qrInput.value.trim();
-        qrInput.value = '';
-        if (!scanned) return;
-
-        const matchLotCoil  = scanned.match(/Lot=([^;]+);COIL=([^;]+)/i);
-        const matchPrefixed = scanned.match(/^sfc[_-]?(\d+)$/i);
-        const matchPlain    = scanned.match(/^(\d+)$/);
-        let btn = null;
-
-        if (matchLotCoil) {
-            const lot = matchLotCoil[1].trim().toLowerCase();
-            const coil = matchLotCoil[2].trim().toLowerCase();
-            document.querySelectorAll('.actionBtn').forEach(b => {
-                if ((b.dataset.sfcLot||'').toLowerCase()===lot &&
-                    (b.dataset.sfcCoil||'').toLowerCase()===coil) btn = b;
-            });
-        } else if (matchPrefixed) {
-            btn = document.querySelector(`.actionBtn[data-sfc-id="${matchPrefixed[1]}"]`);
-        } else if (matchPlain) {
-            btn = document.querySelector(`.actionBtn[data-sfc-id="${matchPlain[1]}"]`);
-        } else {
-            showAlert('danger', 'QR not recognised: <strong>' + scanned + '</strong>');
-            return;
-        }
-
-        if (btn) {
-            hideAlert();
-            openActionModal(btn.dataset.sfcId, btn.dataset.sfcDetails);
-        } else {
-            showAlert('danger', 'No matching active SFC found for: <strong>' + scanned + '</strong>');
-        }
-    });
+   // Camera scanner handles input — see initCameraScanner below
 
     function showAlert(type, msg) {
         qrAlert.className = 'alert alert-' + type + ' py-2 mb-3 shadow-sm';
@@ -670,6 +628,43 @@ document.addEventListener('DOMContentLoaded', function () {
         setTimeout(hideAlert, 5000);
     }
     function hideAlert() { qrAlert.classList.add('d-none'); }
+});
+</script>
+
+<script src="camera_scanner.js"></script>
+<script>
+initCameraScanner({
+    onScan: function(scanned) {
+        if (!scanned) return;
+ 
+        var matchLotCoil  = scanned.match(/Lot=([^;]+);COIL=([^;]+)/i);
+        var matchPrefixed = scanned.match(/^sfc[_-]?(\d+)$/i);
+        var matchPlain    = scanned.match(/^(\d+)$/);
+        var btn = null;
+ 
+        if (matchLotCoil) {
+            var lot  = matchLotCoil[1].trim().toLowerCase();
+            var coil = matchLotCoil[2].trim().toLowerCase();
+            document.querySelectorAll('.actionBtn').forEach(function(b) {
+                if ((b.dataset.sfcLot||'').toLowerCase()===lot &&
+                    (b.dataset.sfcCoil||'').toLowerCase()===coil) btn = b;
+            });
+        } else if (matchPrefixed) {
+            btn = document.querySelector('.actionBtn[data-sfc-id="'+matchPrefixed[1]+'"]');
+        } else if (matchPlain) {
+            btn = document.querySelector('.actionBtn[data-sfc-id="'+matchPlain[1]+'"]');
+        } else {
+            showAlert('danger', 'QR not recognised: <strong>' + scanned + '</strong>');
+            return;
+        }
+ 
+        if (btn) {
+            hideAlert();
+            openActionModal(btn.dataset.sfcId, btn.dataset.sfcDetails);
+        } else {
+            showAlert('danger', 'No matching active SFC found for: <strong>' + scanned + '</strong>');
+        }
+    }
 });
 </script>
 

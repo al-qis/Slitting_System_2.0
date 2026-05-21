@@ -468,8 +468,7 @@ table th:nth-child(13) { width: 130px; }  /* Action */
 <h2 class="mb-4"><i class="bi bi-check-circle me-2"></i>Finish Product</h2>
 
 <form id="scanFormProduct" method="post" action="scan_product_action.php" autocomplete="off">
-    <input id="qrInputProduct" type="text" name="qr" inputmode="none"
-           style="position:fixed; left:-9999px; opacity:0;" autofocus>
+    <input id="qrInputProduct" type="hidden" name="qr" value="">
 </form>
 
 <!-- Alerts -->
@@ -882,20 +881,13 @@ table th:nth-child(13) { width: 130px; }  /* Action */
     </div></div>
 </div>
 
+<script src="camera_scanner.js"></script>
 <script>
-// ── QR Scanner ─────────────────────────────────────────────
-const qIn = document.getElementById('qrInputProduct');
-const qFm = document.getElementById('scanFormProduct');
-
-setInterval(() => {
-    if (!document.querySelector('.modal.show') &&
-        !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) {
-        qIn.focus();
+initCameraScanner({
+    onScan: function(decodedText) {
+        document.getElementById('qrInputProduct').value = decodedText;
+        document.getElementById('scanFormProduct').submit();
     }
-}, 800);
-
-qIn.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && qIn.value.trim() !== '') qFm.submit();
 });
 
 // ── Tooltips ────────────────────────────────────────────────

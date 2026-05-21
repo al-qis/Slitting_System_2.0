@@ -728,8 +728,8 @@ if (isset($_GET['success'])): ?>
 </div>
 
 <!-- Hidden QR input always focused for scanner gun -->
-<input id="qrScanInput" type="text" inputmode="none"
-       style="position:fixed;left:-9999px;opacity:0;" autofocus>
+<!-- Hidden input for camera scanner -->
+<input id="qrScanInput" type="hidden" value="">
 
 <script>
 // ─────────────────────────────────────────────────────────────
@@ -738,27 +738,7 @@ if (isset($_GET['success'])): ?>
 const PALLET_ID = <?= $activePalletId ?: 'null' ?>;
 const MAX_ROLLS = <?= $MAX ?>;
 let   rollCount = <?= count($activeItems) ?>;
-const qrInput   = document.getElementById('qrScanInput');
-
-// ─────────────────────────────────────────────────────────────
-// SCANNER FOCUS — keep the hidden input focused so barcode
-// gun input is always captured even after UI interactions.
-// ─────────────────────────────────────────────────────────────
-setInterval(() => {
-    const a = document.activeElement;
-    if (!document.querySelector('.modal.show') &&
-        !['INPUT', 'TEXTAREA', 'SELECT'].includes(a.tagName)) {
-        qrInput.focus();
-    }
-}, 600);
-
-qrInput.addEventListener('keydown', function (e) {
-    if (e.key !== 'Enter') return;
-    const raw = this.value.trim();
-    this.value = '';
-    if (!raw || !PALLET_ID) return;
-    processQR(raw);
-});
+// Camera scanner wired up below — no hardware scanner needed
 
 // ─────────────────────────────────────────────────────────────
 // QR PARSING — format: LOT=xxx;COIL=xxx;ROLL=xxx
@@ -1140,6 +1120,17 @@ function escHtml(s) {
     );
 }
 function enc(s) { return encodeURIComponent(s ?? ''); }
+</script>
+
+<script src="camera_scanner.js"></script>
+<script>
+if (PALLET_ID) {
+    initCameraScanner({
+        onScan: function(decodedText) {
+            processQR(decodedText);
+        }
+    });
+}
 </script>
 
 <?php include 'footer.php'; ?>
