@@ -148,13 +148,45 @@ include 'header.php';
     padding: 1px 5px; border-radius: 3px;
 }
 
+/* ── Scanner status pill ──────────────────────────────────── */
+.scanner-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    background: #f0fdf4;
+    border: 1px solid #86efac;
+    color: #166534;
+    cursor: default;
+    user-select: none;
+}
+.scanner-pill .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #22c55e;
+    animation: pulse-dot 2s ease-in-out infinite;
+}
+@keyframes pulse-dot {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%       { opacity: .4; transform: scale(.6); }
+}
+
 @media(max-width:992px) { .summary-grid { grid-template-columns: repeat(3,1fr); } }
 @media(max-width:576px) { .summary-grid { grid-template-columns: repeat(2,1fr); } }
 </style>
 
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-boxes me-2"></i>Raw Material — Available Stock</h2>
-    <div class="d-flex gap-2">
+    <div class="d-flex gap-2 align-items-center">
+        <!-- Visual indicator that hardware scanner is listening -->
+        <span class="scanner-pill">
+            <span class="dot"></span>
+            Scanner Ready
+        </span>
         <a href="stock_log.php" class="btn btn-secondary shadow-sm">
             <i class="bi bi-clock-history me-1"></i> View Stock Log
         </a>
@@ -187,8 +219,6 @@ include 'header.php';
 
 <!-- ═══════════════════════════════════════════════════════════
      ALREADY-USED MOTHER COIL WARNING BANNER
-     Appears when scan_mother_action.php detects the coil has
-     already been slitted and blocks re-entry.
      ═══════════════════════════════════════════════════════════ -->
 <?php if ($scanWarn && $scanWarn['type'] === 'already_used'): ?>
 <div class="already-used-banner alert alert-warning alert-dismissible shadow mb-4" role="alert">
@@ -431,7 +461,7 @@ include 'header.php';
                 <div class="mb-3">
                     <label class="form-label fw-bold">Enter Lot No &amp; Coil No</label>
                     <input type="text" class="form-control form-control-lg" id="combined_input"
-                           placeholder="e.g., 826175 FK-1" required autofocus>
+                           placeholder="e.g., 826175 FK-1" required>
                     <div id="validationFeedback" class="invalid-feedback" style="display:none;">
                         Please enter both Lot No and Coil No separated by a space.
                     </div>
@@ -449,43 +479,53 @@ include 'header.php';
     </div>
 </div>
 
-<!-- Hidden scanner form -->
-<form id="scanForm" method="post" action="scan_mother_action.php" style="position:absolute; left:-9999px;">
-    <input id="qrInput" type="text" name="qr" autofocus>
+<!--
+    Hidden scanner input.
+    ─────────────────────────────────────────────────────────────
+    KEY CHANGES vs the original:
+      1. NO  autofocus  attribute   → prevents keyboard on page load
+      2. inputmode="none"           → tells the OS "no virtual keyboard
+                                      even if this field gets focus"
+      3. readonly                   → second safety net; the field is
+                                      programmatically writable but the
+                                      OS treats it as non-editable so it
+                                      will not show a keyboard
+      4. tabindex="-1"              → excluded from normal Tab navigation
+                                      so accidental Tab presses on a
+                                      keyboard don't land here and trigger
+                                      the keyboard on older Android
+    The JavaScript below uses a document-level keydown listener instead
+    of an interval-based focus loop, so we only redirect keystrokes that
+    arrive without any interactive element having focus (i.e. hardware
+    scanner gun output) — tapping the screen does NOT trigger this.
+    ─────────────────────────────────────────────────────────────
+-->
+<form id="scanForm" method="post" action="scan_mother_action.php"
+      style="position:fixed; left:-9999px; top:-9999px; width:1px; height:1px; overflow:hidden;"
+      aria-hidden="true">
+    <input id="qrInput"
+           type="text"
+           name="qr"
+           inputmode="none"
+           readonly
+           tabindex="-1"
+           autocomplete="off"
+           autocorrect="off"
+           autocapitalize="off"
+           spellcheck="false">
 </form>
 
 <script>
 document.addEventListener('DOMContentLoaded', function () {
-    const qrInput       = document.getElementById('qrInput');
-    const scanForm      = document.getElementById('scanForm');
+    const qrInput     = document.getElementById('qrInput');
+    const scanForm    = document.getElementById('scanForm');
+    const manualModal = document.getElementById('manualEntryModal');
+
+    // ── Manual entry modal wiring ─────────────────────────────
     const combinedInput = document.getElementById('combined_input');
     const manualBtn     = document.getElementById('manualSubmitButton');
     const feedback      = document.getElementById('validationFeedback');
-    const manualModal   = document.getElementById('manualEntryModal');
 
-    // ── Scanner focus management ──────────────────────────────
-    if (qrInput) {
-        qrInput.addEventListener('keydown', function (e) {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                if (this.value.trim() !== '') scanForm.submit();
-            }
-        });
-
-        document.addEventListener('click', function () {
-            if (!manualModal.classList.contains('show')) qrInput.focus();
-        });
-
-        setInterval(() => {
-            const el = document.activeElement;
-            if (
-                !manualModal.classList.contains('show') &&
-                !['INPUT','TEXTAREA','SELECT','BUTTON'].includes(el.tagName)
-            ) { qrInput.focus(); }
-        }, 500);
-    }
-
-    // ── Manual entry processing ───────────────────────────────
     if (manualBtn) {
         manualBtn.addEventListener('click', function () {
             const raw = combinedInput.value.trim();
@@ -498,6 +538,7 @@ document.addEventListener('DOMContentLoaded', function () {
             if (parts.length >= 2) {
                 combinedInput.classList.remove('is-invalid');
                 feedback.style.display = 'none';
+                qrInput.removeAttribute('readonly');   // allow programmatic write
                 qrInput.value = `LOT=${parts[0]};COIL=${parts.slice(1).join(' ')}`;
                 const mi = bootstrap.Modal.getInstance(manualModal);
                 if (mi) mi.hide();
@@ -517,6 +558,56 @@ document.addEventListener('DOMContentLoaded', function () {
             if (e.key === 'Enter') { e.preventDefault(); manualBtn.click(); }
         });
     }
+
+    // ── Hardware scanner keystroke capture ────────────────────
+    //
+    // STRATEGY: instead of keeping a hidden input focused at all times
+    // (which steals focus on touch and triggers the soft keyboard),
+    // we listen for keydown on the DOCUMENT and buffer characters
+    // ourselves.  A hardware barcode scanner sends all characters
+    // within ~50 ms and ends with Enter — we detect that pattern.
+    //
+    // If a real input / textarea / select already has focus (user is
+    // actively typing) we leave those keystrokes alone.
+    //
+    let scanBuffer  = '';
+    let scanTimer   = null;
+    const SCAN_GAP  = 80;   // ms — hardware scanners finish well under this
+
+    document.addEventListener('keydown', function (e) {
+        // If the manual modal is open, do not intercept keystrokes
+        if (manualModal.classList.contains('show')) return;
+
+        // If the user is typing in a real interactive element, leave it alone
+        const tag = document.activeElement.tagName;
+        if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return;
+
+        // Enter = end of barcode — submit whatever is buffered
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            if (scanBuffer.trim().length > 0) {
+                qrInput.removeAttribute('readonly');
+                qrInput.value = scanBuffer.trim();
+                scanBuffer = '';
+                clearTimeout(scanTimer);
+                scanForm.submit();
+            }
+            return;
+        }
+
+        // Ignore modifier-only keypresses (Ctrl, Alt, etc.)
+        if (e.key.length > 1) return;
+
+        // Accumulate the character
+        scanBuffer += e.key;
+
+        // Safety timeout: if no Enter arrives within SCAN_GAP ms,
+        // discard the buffer (avoids ghost characters from stray taps)
+        clearTimeout(scanTimer);
+        scanTimer = setTimeout(function () {
+            scanBuffer = '';
+        }, SCAN_GAP);
+    });
 });
 </script>
 

@@ -16,6 +16,7 @@
 //     active highlight and a dismissible banner.
 //  6. Reslit / Recoiling buttons hidden for palletised rolls
 //     to prevent operator mistakes.
+//  7. ID column hidden — replaced with sequential row number (#).
 // ============================================================
 
 session_start();
@@ -404,19 +405,19 @@ include 'header.php';
 table { table-layout: fixed; width: 100%; }
 table th, table td { word-wrap: break-word; vertical-align: middle; font-size: 13px; }
 table td img { max-width: 60px; max-height: 60px; display: block; margin: 0 auto; }
-table th:nth-child(1)  { width: 40px; }
-table th:nth-child(2)  { width: 100px; }
-table th:nth-child(3)  { width: 65px; }
-table th:nth-child(4)  { width: 85px; }
-table th:nth-child(5)  { width: 100px; }
-table th:nth-child(6)  { width: 65px; }
-table th:nth-child(7)  { width: 55px; }
-table th:nth-child(8)  { width: 55px; }
-table th:nth-child(9)  { width: 65px; }
-table th:nth-child(10) { width: 90px; }
-table th:nth-child(11) { width: 85px; }
-table th:nth-child(12) { width: 85px; }
-table th:nth-child(13) { width: 130px; }
+table th:nth-child(1)  { width: 40px; }   /* # counter */
+table th:nth-child(2)  { width: 100px; }  /* Status */
+table th:nth-child(3)  { width: 65px; }   /* Origin */
+table th:nth-child(4)  { width: 85px; }   /* Product */
+table th:nth-child(5)  { width: 100px; }  /* Lot No */
+table th:nth-child(6)  { width: 65px; }   /* Roll No */
+table th:nth-child(7)  { width: 55px; }   /* Width */
+table th:nth-child(8)  { width: 55px; }   /* Length */
+table th:nth-child(9)  { width: 65px; }   /* Actual */
+table th:nth-child(10) { width: 90px; }   /* Pallet */
+table th:nth-child(11) { width: 85px; }   /* Date In */
+table th:nth-child(12) { width: 85px; }   /* Date Out */
+table th:nth-child(13) { width: 130px; }  /* Action */
 
 .badge-pallet { background:#e0f2fe; color:#0369a1; font-size:10px; font-weight:700;
                 padding:3px 7px; border-radius:10px; white-space:nowrap; }
@@ -453,6 +454,14 @@ table th:nth-child(13) { width: 130px; }
 .kpi-card-palletised-active .card {
     border-color: #0369a1 !important;
     box-shadow: 0 0 0 3px rgba(3,105,161,.2), 0 6px 18px rgba(0,0,0,.12) !important;
+}
+
+/* ── Row counter cell ── */
+.row-counter {
+    font-size: 11px;
+    color: #6c757d;
+    font-weight: 600;
+    text-align: center;
 }
 </style>
 
@@ -543,8 +552,6 @@ table th:nth-child(13) { width: 130px; }
 
 <!-- ================================================================
      KPI SUMMARY CARDS — clickable filters
-     Click a card to filter the table to that status only.
-     Click the active card again (or "Clear filter") to reset.
 ================================================================ -->
 <div class="d-flex mb-3 gap-2 flex-wrap">
 
@@ -658,14 +665,17 @@ table th:nth-child(13) { width: 130px; }
     <table class="table table-bordered table-striped align-middle text-center">
         <thead class="table-dark">
             <tr>
-                <th>ID</th><th>Status</th><th>Origin</th><th>Product</th>
+                <th>#</th><th>Status</th><th>Origin</th><th>Product</th>
                 <th>Lot No</th><th>Roll No.</th><th>Width</th><th>Length</th>
                 <th>Actual</th><th>Pallet</th><th>Date In</th><th>Date Out</th>
                 <th>Action</th>
             </tr>
         </thead>
         <tbody>
-        <?php if ($result && $result->num_rows > 0): while ($row = $result->fetch_assoc()):
+        <?php
+        $rowNum = 0;
+        if ($result && $result->num_rows > 0): while ($row = $result->fetch_assoc()):
+            $rowNum++;
             $isFromSFC = ($row['original_source'] ?? $row['source']) === 'sfc';
 
             $rowClass = match($row['status']) {
@@ -719,7 +729,7 @@ table th:nth-child(13) { width: 130px; }
             }
         ?>
             <tr class="<?= $rowClass ?>">
-                <td><?= $row['id'] ?></td>
+                <td class="row-counter"><?= $rowNum ?></td>
                 <td><?= $statusBadge ?></td>
                 <td>
                     <span class="badge <?= $originDisplay['class'] ?>">

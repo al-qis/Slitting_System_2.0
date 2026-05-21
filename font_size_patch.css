@@ -1,0 +1,213 @@
+/*
+ * font_size_patch.css  — v2 (larger)
+ * ─────────────────────────────────────────────────────────────
+ * Drop-in readability patch for the Metakote Slitting system.
+ * Include AFTER Bootstrap in header.php:
+ *   <link rel="stylesheet" href="font_size_patch.css">
+ *
+ * Rules:
+ *   - No layout, no colours, no functionality changed.
+ *   - Only font-size and line-height are touched.
+ * ─────────────────────────────────────────────────────────────
+ */
+
+/* ── Base body ─────────────────────────────────────────────── */
+body {
+    font-size: 16px !important;
+    line-height: 1.6 !important;
+}
+
+/* ── Tables ────────────────────────────────────────────────── */
+.table th,
+.table td {
+    font-size: 0.9375rem !important;   /* 15 px */
+    line-height: 1.55 !important;
+    vertical-align: middle !important;
+}
+
+.table thead th {
+    font-size: 0.875rem !important;    /* 14 px */
+    letter-spacing: 0.3px !important;
+}
+
+.pallet-table td,
+.pallet-table th,
+.map-table td,
+.map-table th,
+.warn-rolls-table td,
+.warn-rolls-table thead th,
+.trk-table td,
+.trk-table thead th {
+    font-size: 0.9375rem !important;   /* 15 px */
+    line-height: 1.55 !important;
+}
+
+.trk-table thead th,
+.map-table th {
+    font-size: 0.875rem !important;    /* 14 px */
+    letter-spacing: 0.25px !important;
+}
+
+/* ── Badges & chips ────────────────────────────────────────── */
+.badge,
+.s-badge,
+.chip,
+.chip-sm,
+.constraint-badge,
+.pf,
+.sb,
+.code-tag,
+.src-badge {
+    font-size: 0.8125rem !important;   /* 13 px */
+}
+
+.kpi-active-dot {
+    font-size: 0.75rem !important;     /* 12 px */
+}
+
+/* ── KPI / summary cards ───────────────────────────────────── */
+.kpi-num,
+.kpi .num,
+.stat-pill .val,
+.mini-stat .n {
+    font-size: 2.25rem !important;     /* 36 px */
+}
+
+.kpi-label,
+.kpi .lbl,
+.stat-pill .lbl,
+.mini-stat .l {
+    font-size: 0.75rem !important;     /* 12 px */
+    letter-spacing: 0.6px !important;
+}
+
+.kpi-foot-item,
+.kpi-desc {
+    font-size: 0.8125rem !important;   /* 13 px */
+}
+
+/* ── Dashboard / activity feed ─────────────────────────────── */
+.ac-lot  { font-size: 0.875rem  !important; }  /* 14 px */
+.ac-date { font-size: 0.8125rem !important; }  /* 13 px */
+.chip    { font-size: 0.8125rem !important; }  /* 13 px */
+
+/* ── Quick-action buttons ──────────────────────────────────── */
+.qa-btn { font-size: 0.9375rem !important; }   /* 15 px */
+.qa-sub { font-size: 0.8125rem !important; }   /* 13 px */
+
+/* ── Forms & inputs ────────────────────────────────────────── */
+.form-control,
+.form-select,
+.f-ctrl {
+    font-size: 1rem !important;        /* 16 px */
+}
+
+.form-label,
+.f-label {
+    font-size: 0.9375rem !important;   /* 15 px */
+    font-weight: 600 !important;
+}
+
+.form-text { font-size: 0.875rem !important; } /* 14 px */
+
+/* ── Buttons ───────────────────────────────────────────────── */
+.btn    { font-size: 0.9375rem !important; }   /* 15 px */
+.btn-sm { font-size: 0.875rem  !important; }   /* 14 px */
+.btn-lg { font-size: 1.0625rem !important; }   /* 17 px */
+
+.btn-prim,
+.btn-danger,
+.btn-edit,
+.btn-cancel,
+.btn-confirm-del {
+    font-size: 0.9375rem !important;   /* 15 px */
+}
+
+/* ── Alerts & feedback banners ─────────────────────────────── */
+.alert,
+.already-used-banner,
+.rejected-banner p,
+.edit-mode-pill {
+    font-size: 0.9375rem !important;   /* 15 px */
+}
+
+.warn-detail-row,
+.warn-footer-note,
+.warn-rolls-label {
+    font-size: 0.875rem !important;    /* 14 px */
+}
+
+.warn-badge-lot  { font-size: 1.5rem    !important; } /* 24 px */
+.warn-badge-coil { font-size: 1rem      !important; } /* 16 px */
+
+/* ── Modals ────────────────────────────────────────────────── */
+.modal-title,
+.modal-box .modal-title {
+    font-size: 1.0625rem !important;   /* 17 px */
+}
+
+.modal-body,
+.modal-box {
+    font-size: 1rem !important;        /* 16 px */
+}
+
+/* ── Pallet panel ──────────────────────────────────────────── */
+.slot-card { font-size: 1rem      !important; } /* 16 px */
+.roll-seq  { font-size: 0.875rem  !important; } /* 14 px */
+
+.pallet-table td { font-size: 0.9375rem !important; } /* 15 px */
+.pallet-table th { font-size: 0.875rem  !important; } /* 14 px */
+
+/* ── Timeline / journal ────────────────────────────────────── */
+.tl-ref          { font-size: 1.0625rem !important; } /* 17 px */
+.tl-card-foot    { font-size: 0.875rem  !important; } /* 14 px */
+.sub-block-title { font-size: 0.875rem  !important; } /* 14 px */
+.sub-row         { font-size: 1rem      !important; } /* 16 px */
+.section-title   { font-size: 0.875rem  !important; } /* 14 px */
+
+/* ── Settings page ─────────────────────────────────────────── */
+.s-card-title   { font-size: 0.875rem  !important; } /* 14 px */
+.s-card-sub     { font-size: 0.875rem  !important; } /* 14 px */
+.stab           { font-size: 0.9375rem !important; } /* 15 px */
+.coil-edit-hint { font-size: 0.8125rem !important; } /* 13 px */
+.weight-tag     { font-size: 0.9375rem !important; } /* 15 px */
+
+/* ── Report page ───────────────────────────────────────────── */
+.count-pill  { font-size: 0.9375rem !important; } /* 15 px */
+.month-badge { font-size: 1rem      !important; } /* 16 px */
+
+/* ── Reslit / Recoiling modals ─────────────────────────────── */
+.mode-card .mode-title { font-size: 1rem      !important; } /* 16 px */
+.mode-card .mode-desc  { font-size: 0.875rem  !important; } /* 14 px */
+.info-box              { font-size: 1rem      !important; } /* 16 px */
+.roll-box              { font-size: 1rem      !important; } /* 16 px */
+
+/* ── SFC page ──────────────────────────────────────────────── */
+.sfc-output-title { font-size: 0.875rem  !important; } /* 14 px */
+.sfc-roll-row     { font-size: 1rem      !important; } /* 16 px */
+.roll-ref         { font-size: 1rem      !important; } /* 16 px */
+
+/* ── small / .small helpers ────────────────────────────────── */
+small,
+.small {
+    font-size: 0.875rem !important;    /* 14 px */
+}
+
+/* ── Monospace references ──────────────────────────────────── */
+.font-monospace,
+code,
+.ac-lot {
+    font-size: 0.9375rem !important;   /* 15 px */
+}
+
+/* ── Section headings ──────────────────────────────────────── */
+.sec-head,
+.section-label {
+    font-size: 0.8125rem !important;   /* 13 px */
+    letter-spacing: 1.8px !important;
+}
+
+/* ── Page / card titles ────────────────────────────────────── */
+h2 { font-size: 1.5rem    !important; } /* 24 px */
+h5 { font-size: 1.125rem  !important; } /* 18 px */
+h6 { font-size: 1rem      !important; } /* 16 px */
