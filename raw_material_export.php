@@ -47,24 +47,22 @@ $sheet->setTitle("Raw Material Stock");
 
 // ========== HEADER TITLE ==========
 $title = "METAKOTE DEPARTMENT - RAW MATERIAL STOCK LIST $monthName $year";
-$sheet->mergeCells("A1:I1"); 
+$sheet->mergeCells("A1:H1"); 
 $sheet->setCellValue("A1", $title);
 
 $sheet->getStyle("A1")->getFont()->setBold(true)->setSize(18);
 $sheet->getStyle("A1")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
 
 // ========== TABLE HEADERS ==========
-$headers = ["Grade", "Lot No.", "Coil No.", "Width", "Length", "Status", "Source", "Date In", "QR Link"];
+$headers = ["Grade", "Lot No.", "Coil No.", "Width", "Length", "Status", "Source", "Date In"];
 $sheet->fromArray($headers, NULL, 'A3');
-$sheet->getStyle("A3:I3")->getFont()->setBold(true);
-$sheet->getStyle("A3:I3")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
+$sheet->getStyle("A3:H3")->getFont()->setBold(true);
+$sheet->getStyle("A3:H3")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
 
 // ========== DATA POPULATION ==========
 $rowNum = 4;
 while($row = $result->fetch_assoc()){
     // Using coil_no for the QR Code content
-    $qrLink = "https://chart.googleapis.com/chart?chs=100x100&cht=qr&chl=" . urlencode($row['coil_no']); 
-    
     $sheet->fromArray([
         $row['grade'],
         $row['lot_no'],
@@ -73,8 +71,7 @@ while($row = $result->fetch_assoc()){
         $row['length'],
         $row['status'],
         $row['source_type'],
-        $row['date_in'],
-        $qrLink
+        $row['date_in']
     ], NULL, "A{$rowNum}");
     $rowNum++;
 }
@@ -82,7 +79,7 @@ while($row = $result->fetch_assoc()){
 // ========== STYLING ==========
 $lastRow = $rowNum - 1;
 if ($lastRow >= 3) {
-    $sheet->getStyle("A3:I{$lastRow}")->applyFromArray([
+    $sheet->getStyle("A3:H{$lastRow}")->applyFromArray([
         'borders' => [
             'allBorders' => [
                 'borderStyle' => Border::BORDER_THIN
@@ -96,7 +93,7 @@ if ($lastRow >= 3) {
 }
 
 // Auto size columns
-foreach (range('A','I') as $col) {
+foreach (range('A','H') as $col) {
     $sheet->getColumnDimension($col)->setAutoSize(true);
 }
 

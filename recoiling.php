@@ -11,6 +11,132 @@ if ($_SESSION['role'] !== 'slitting') {
 
 include 'config.php';
 
+// ── Excel Download ────────────────────────────────────────────
+if (isset($_GET['download']) && $_GET['download'] === 'excel') {
+    $exRes = $conn->query("
+        SELECT
+            rp.id, rp.status, rp.roll_no, rp.date_in, rp.completed_at, rp.remark,
+            rp.new_length, rp.mother_id,
+            IFNULL(mc.product, rp.product)   AS product,
+            IFNULL(mc.lot_no,  rp.lot_no)    AS lot_no,
+            IFNULL(mc.coil_no, rp.coil_no)   AS coil_no,
+            IFNULL(mc.width,   rp.width)     AS width,
+            IFNULL(mc.length,  rp.length)    AS length,
+            IFNULL(rp.actual_length, IFNULL(mc.length, rp.length)) AS actual_length,
+            rp.cut_type
+        FROM recoiling_product rp
+        LEFT JOIN mother_coil mc ON rp.mother_id = mc.id
+        ORDER BY rp.id ASC
+    ");
+
+    $filename  = 'Recoiling_Report_' . date('Y-m-d') . '.xls';
+    $cols      = 13;
+    $generated = date('d M Y, H:i');
+
+    header('Content-Type: application/vnd.ms-excel');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+    header('Cache-Control: max-age=0');
+?>
+<html><head><meta charset="UTF-8"></head><body>
+
+<table>
+    <tr>
+        <td colspan="<?= $cols ?>" style="background:#1e3a5f;color:#fff;font-size:18px;font-weight:bold;padding:12px 16px;letter-spacing:1px;">
+            RECOILING CUT REPORT
+        </td>
+    </tr>
+    <tr>
+        <td colspan="<?= $cols ?>" style="background:#2c5282;color:#bee3f8;font-size:11px;padding:4px 16px;">
+            Generated: <?= $generated ?> &nbsp;|&nbsp; System: Slitting Management
+        </td>
+    </tr>
+    <tr>
+        <td colspan="<?= $cols ?>" style="background:#e2e8f0;padding:6px 16px;font-size:11px;color:#4a5568;">
+            <strong>Note:</strong> Child rolls (↳) are shown indented under their parent recoiling record.
+        </td>
+    </tr>
+    <tr><td colspan="<?= $cols ?>"></td></tr><!-- spacer -->
+</table>
+
+<table border="1" style="border-collapse:collapse;">
+    <thead>
+        <tr style="background:#343a40;color:#fff;font-weight:bold;font-size:12px;">
+            <th style="padding:8px 10px;">ID</th>
+            <th style="padding:8px 10px;">Status</th>
+            <th style="padding:8px 10px;">Cut Type</th>
+            <th style="padding:8px 10px;">Product</th>
+            <th style="padding:8px 10px;">Lot No.</th>
+            <th style="padding:8px 10px;">Coil No.</th>
+            <th style="padding:8px 10px;">Roll No.</th>
+            <th style="padding:8px 10px;">Width (mm)</th>
+            <th style="padding:8px 10px;">Length (m)</th>
+            <th style="padding:8px 10px;">Actual Length (m)</th>
+            <th style="padding:8px 10px;">New Length (m)</th>
+            <th style="padding:8px 10px;">Date In</th>
+            <th style="padding:8px 10px;">Completed At</th>
+        </tr>
+    </thead>
+    <tbody>
+<?php
+    $td  = 'style="padding:6px 10px;"';
+    $tdN = 'style="padding:6px 10px;text-align:right;"';
+
+    if ($exRes && $exRes->num_rows > 0) {
+        while ($row = $exRes->fetch_assoc()) {
+            echo '<tr style="background:#ffffff;">';
+            echo '<td ' . $td  . '>' . (int)$row['id'] . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars(strtoupper($row['status']   ?? '-')) . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars(strtoupper($row['cut_type'] ?? '-')) . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars($row['product']  ?? '-') . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars($row['lot_no']   ?? '-') . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars($row['coil_no']  ?? '-') . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars($row['roll_no']  ?? '-') . '</td>';
+            echo '<td ' . $tdN . '>' . number_format((float)($row['width']         ?? 0)) . '</td>';
+            echo '<td ' . $tdN . '>' . number_format((float)($row['length']        ?? 0)) . '</td>';
+            echo '<td ' . $tdN . '>' . number_format((float)($row['actual_length'] ?? 0)) . '</td>';
+            echo '<td ' . $tdN . '>' . number_format((float)($row['new_length']    ?? 0)) . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars($row['date_in']      ?? '-') . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars($row['completed_at'] ?? '-') . '</td>';
+            echo '</tr>';
+
+            // Child rolls from slitting_product
+            $children = $conn->query("
+                SELECT lot_no, coil_no, roll_no, width, length, actual_length
+                FROM slitting_product
+                WHERE recoiling_id = " . (int)$row['id'] . "
+                ORDER BY id ASC
+            ");
+            if ($children && $children->num_rows > 0) {
+                while ($child = $children->fetch_assoc()) {
+                    $tdC  = 'style="background:#ebf8ff;padding:5px 10px;color:#2c5282;"';
+                    $tdCN = 'style="background:#ebf8ff;padding:5px 10px;color:#2c5282;text-align:right;"';
+                    echo '<tr>';
+                    echo '<td ' . $tdC  . '>↳</td>';
+                    echo '<td ' . $tdC  . '>COMPLETED</td>';
+                    echo '<td ' . $tdC  . '>-</td>';
+                    echo '<td ' . $tdC  . '>' . htmlspecialchars($row['product'] ?? '-') . '</td>';
+                    echo '<td ' . $tdC  . '>' . htmlspecialchars($child['lot_no']  ?? '-') . '</td>';
+                    echo '<td ' . $tdC  . '>' . htmlspecialchars($child['coil_no'] ?? '-') . '</td>';
+                    echo '<td ' . $tdC  . '>' . htmlspecialchars($child['roll_no'] ?? '-') . '</td>';
+                    echo '<td ' . $tdCN . '>' . number_format((float)($child['width']         ?? 0)) . '</td>';
+                    echo '<td ' . $tdCN . '>' . number_format((float)($child['length']        ?? 0)) . '</td>';
+                    echo '<td ' . $tdCN . '>' . number_format((float)($child['actual_length'] ?? 0)) . '</td>';
+                    echo '<td ' . $tdCN . '>-</td>';
+                    echo '<td ' . $tdC  . '>-</td>';
+                    echo '<td ' . $tdC  . '>-</td>';
+                    echo '</tr>';
+                }
+            }
+        }
+    }
+?>
+    </tbody>
+</table>
+</body></html>
+<?php
+    exit;
+}
+
 $query = "
     (SELECT
         rp.id, rp.status,
@@ -232,9 +358,12 @@ include 'header.php';
     <div class="modal-dialog modal-lg modal-dialog-scrollable">
         <div class="modal-content border-0 shadow-lg">
             <div class="modal-header bg-info text-white">
-                <h5 class="modal-title">
-                    <i class="bi bi-bar-chart-line me-2"></i>Recoiling Summary Report
-                </h5>
+                <div>
+                    <h5 class="modal-title mb-0">
+                        <i class="bi bi-bar-chart-line me-2"></i>Recoiling Summary Report
+                    </h5>
+                    <small class="opacity-75">Recoiling activity by cut type and period</small>
+                </div>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
@@ -360,21 +489,18 @@ include 'header.php';
                         <label class="form-label fw-bold">Step 1: Select Recoiling Mode</label>
                         <div class="mode-grid">
 
-                            <!-- Mode A: Rewinding -->
                             <label class="mode-card" id="card-rewinding" onclick="selectMode('rewinding')">
                                 <input type="radio" name="cut_type_radio" value="rewinding">
                                 <div class="mode-title">Rewinding</div>
                                 <div class="mode-desc">Rewind only — same roll, update length if changed</div>
                             </label>
 
-                            <!-- Mode B: Cut Defect -->
                             <label class="mode-card" id="card-normal" onclick="selectMode('normal')">
                                 <input type="radio" name="cut_type_radio" value="normal">
                                 <div class="mode-title">Cut Defect</div>
                                 <div class="mode-desc">Remove defect at start or end — same roll number</div>
                             </label>
 
-                            <!-- Mode C: Cut Into 2 -->
                             <label class="mode-card" id="card-cut_into_2" onclick="selectMode('cut_into_2')">
                                 <input type="radio" name="cut_type_radio" value="cut_into_2">
                                 <div class="mode-title">Cut Into 2</div>
@@ -454,7 +580,6 @@ function openRecoilModal(btn) {
     document.getElementById('modal_width').textContent    = productData.width;
     document.getElementById('modal_length').textContent   = productData.length;
 
-    // Reset mode selection
     document.querySelectorAll('.mode-card').forEach(c => c.classList.remove('selected'));
     document.querySelectorAll('input[name="cut_type_radio"]').forEach(r => r.checked = false);
     document.getElementById('rollsContainer').innerHTML      = '';
@@ -464,35 +589,21 @@ function openRecoilModal(btn) {
     bootstrap.Modal.getOrCreateInstance(document.getElementById('recoilingModal')).show();
 }
 
-// ── Mode selector ─────────────────────────────────────────────
 function selectMode(mode) {
-    // Highlight card
     document.querySelectorAll('.mode-card').forEach(c => c.classList.remove('selected'));
     document.getElementById('card-' + mode).classList.add('selected');
-
-    // Set hidden cut_type for handler
     document.getElementById('cut_type_hidden').value = mode;
 
-    // Build form
     const container = document.getElementById('rollsContainer');
     container.innerHTML = '';
     document.getElementById('rollDetailsForm').style.display = 'block';
     document.getElementById('submitBtn').style.display       = 'inline-block';
 
-    if (mode === 'rewinding') {
-        container.appendChild(buildRewindingForm());
-    } else if (mode === 'normal') {
-        container.appendChild(buildCutDefectForm());
-    } else if (mode === 'cut_into_2') {
-        container.appendChild(buildCutInto2());
-    }
+    if (mode === 'rewinding')  container.appendChild(buildRewindingForm());
+    else if (mode === 'normal') container.appendChild(buildCutDefectForm());
+    else if (mode === 'cut_into_2') container.appendChild(buildCutInto2());
 }
 
-// ════════════════════════════════════════════════
-// MODE A: REWINDING
-// Same lot/coil/roll — operator just confirms or
-// updates the length if the rewind changed it.
-// ════════════════════════════════════════════════
 function buildRewindingForm() {
     const div = document.createElement('div');
     div.className = 'roll-box';
@@ -502,54 +613,30 @@ function buildRewindingForm() {
             Output: <strong>${productData.lot_no} ${productData.coil_no}
             ${productData.roll_no}</strong> — same reference. Update length only if it changed after rewinding.
         </div>
-
         <input type="hidden" name="roll_number[]" value="1">
         <input type="hidden" name="defect[]"      value="0">
         <input type="hidden" name="letter[]"      value="">
-
         <div class="row g-3">
             <div class="col-md-6">
-                <label class="form-label fw-bold">
-                    Width after rewinding (mm)
-                    <small class="text-muted fw-normal">— edit if trimmed</small>
-                </label>
-                <input type="number" step="0.01" name="new_width[]"
-                       class="form-control"
-                       value="${productData.width}"
-                       min="0.01" required>
+                <label class="form-label fw-bold">Width after rewinding (mm)<small class="text-muted fw-normal"> — edit if trimmed</small></label>
+                <input type="number" step="0.01" name="new_width[]" class="form-control" value="${productData.width}" min="0.01" required>
             </div>
             <div class="col-md-6">
-                <label class="form-label fw-bold text-success">
-                    New Length (m)
-                    <small class="text-muted fw-normal">— original: ${productData.length} m</small>
-                </label>
-                <input type="number" step="0.01" name="actual_length[]"
-                       class="form-control fw-bold"
-                       value="${productData.length.toFixed(2)}"
-                       min="0.01" required>
+                <label class="form-label fw-bold text-success">New Length (m)<small class="text-muted fw-normal"> — original: ${productData.length} m</small></label>
+                <input type="number" step="0.01" name="actual_length[]" class="form-control fw-bold" value="${productData.length.toFixed(2)}" min="0.01" required>
                 <div class="form-text">Enter the same value if length did not change.</div>
             </div>
             <div class="col-12">
                 <label class="form-label">Remark (optional)</label>
-                <input type="text" name="remark[]" class="form-control"
-                       placeholder="e.g. Rewound to remove core damage">
+                <input type="text" name="remark[]" class="form-control" placeholder="e.g. Rewound to remove core damage">
             </div>
-        </div>
-    `;
-    // hidden length[] field (handler reads this)
+        </div>`;
     const lenHidden = document.createElement('input');
-    lenHidden.type  = 'hidden';
-    lenHidden.name  = 'length[]';
-    lenHidden.value = productData.length;
+    lenHidden.type = 'hidden'; lenHidden.name = 'length[]'; lenHidden.value = productData.length;
     div.appendChild(lenHidden);
     return div;
 }
 
-// ════════════════════════════════════════════════
-// MODE B: CUT DEFECT
-// Same lot/coil/roll — defect removed from start
-// or end, actual length = original − defect.
-// ════════════════════════════════════════════════
 function buildCutDefectForm() {
     const div = document.createElement('div');
     div.className = 'roll-box';
@@ -559,52 +646,31 @@ function buildCutDefectForm() {
             Output: <strong>${productData.lot_no} ${productData.coil_no}
             ${productData.roll_no}</strong> — same reference. Actual length = original − defect removed.
         </div>
-
         <input type="hidden" name="roll_number[]" value="1">
         <input type="hidden" name="letter[]"      value="">
-
         <div class="row g-3">
             <div class="col-md-4">
-                <label class="form-label fw-bold">
-                    Width (mm)
-                    <small class="text-muted fw-normal">— edit if trimmed</small>
-                </label>
-                <input type="number" step="0.01" name="new_width[]"
-                       class="form-control"
-                       id="cd_width"
-                       value="${productData.width}"
-                       min="0.01" required>
+                <label class="form-label fw-bold">Width (mm)<small class="text-muted fw-normal"> — edit if trimmed</small></label>
+                <input type="number" step="0.01" name="new_width[]" class="form-control" id="cd_width" value="${productData.width}" min="0.01" required>
             </div>
             <div class="col-md-4">
                 <label class="form-label fw-bold text-danger">Defect removed (m)</label>
-                <input type="number" step="0.01" name="defect[]"
-                       class="form-control border-danger"
-                       id="cd_defect"
-                       value="0" min="0" required>
+                <input type="number" step="0.01" name="defect[]" class="form-control border-danger" id="cd_defect" value="0" min="0" required>
                 <div class="form-text">Length that was cut off and discarded.</div>
             </div>
             <div class="col-md-4">
                 <label class="form-label fw-bold text-success">Actual Length after cut (m)</label>
-                <input type="number" step="0.01" name="actual_length[]"
-                       class="form-control fw-bold"
-                       id="cd_actual"
-                       value="${productData.length.toFixed(2)}"
-                       min="0.01" required>
+                <input type="number" step="0.01" name="actual_length[]" class="form-control fw-bold" id="cd_actual" value="${productData.length.toFixed(2)}" min="0.01" required>
                 <div class="form-text">Original: ${productData.length} m</div>
             </div>
             <div class="col-12">
                 <label class="form-label">Remark (optional)</label>
-                <input type="text" name="remark[]" class="form-control"
-                       placeholder="e.g. Defect at start, cut 2m">
+                <input type="text" name="remark[]" class="form-control" placeholder="e.g. Defect at start, cut 2m">
             </div>
-        </div>
-    `;
+        </div>`;
     const lenHidden = document.createElement('input');
-    lenHidden.type  = 'hidden';
-    lenHidden.name  = 'length[]';
-    lenHidden.value = productData.length;
+    lenHidden.type = 'hidden'; lenHidden.name = 'length[]'; lenHidden.value = productData.length;
     div.appendChild(lenHidden);
-
     setTimeout(() => {
         const defEl = div.querySelector('#cd_defect');
         const actEl = div.querySelector('#cd_actual');
@@ -613,22 +679,11 @@ function buildCutDefectForm() {
             actEl.value = (calc >= 0 ? calc : 0).toFixed(2);
         });
     }, 30);
-
     return div;
 }
 
-// ════════════════════════════════════════════════
-// MODE C: CUT INTO 2
-// Split one roll into two rolls.
-// coil_no and roll_no remain the same (e.g. R4 → R4, R4).
-// lot_no gets an OPTIONAL letter suffix (a / b / c / none).
-// Source row is voided with lot_no renamed to *_OLD_* to free
-// the UNIQUE KEY, so choosing no suffix is safe.
-// ════════════════════════════════════════════════
 function buildCutInto2() {
     const frag = document.createDocumentFragment();
-
-    // ── Info banner ──
     const infoDiv = document.createElement('div');
     infoDiv.className = 'alert alert-secondary py-2 small mb-3';
     infoDiv.innerHTML = `
@@ -637,70 +692,44 @@ function buildCutInto2() {
         into two rolls. Coil No. and Roll No. stay the same.
         The letter suffix is <strong>optional</strong> — if omitted, both rolls keep the original lot number.
         <div class="mt-2 row g-2 align-items-center">
-            <div class="col-auto">
-                <label class="form-label mb-0 fw-bold small">Defect / waste between cuts (m):</label>
-            </div>
-            <div class="col-auto">
-                <input type="number" step="0.01" id="c2_defect" class="form-control form-control-sm"
-                       style="width:100px" value="0" min="0" placeholder="0">
-            </div>
-        </div>
-    `;
+            <div class="col-auto"><label class="form-label mb-0 fw-bold small">Defect / waste between cuts (m):</label></div>
+            <div class="col-auto"><input type="number" step="0.01" id="c2_defect" class="form-control form-control-sm" style="width:100px" value="0" min="0" placeholder="0"></div>
+        </div>`;
     frag.appendChild(infoDiv);
 
-    // Helper: build one roll card
     function buildRollCard(rollLabel, rollIdx, colorClass, iconClass) {
         const div = document.createElement('div');
         div.className = 'roll-box mb-3';
         div.innerHTML = `
-            <h6 class="fw-bold mb-3 ${colorClass} border-bottom pb-2">
-                <i class="bi ${iconClass} me-1"></i> ${rollLabel}
-            </h6>
+            <h6 class="fw-bold mb-3 ${colorClass} border-bottom pb-2"><i class="bi ${iconClass} me-1"></i> ${rollLabel}</h6>
             <input type="hidden" name="roll_number[]" value="${rollIdx}">
             <div class="row g-3">
                 <div class="col-md-4">
-                    <label class="form-label fw-bold small">
-                        Letter suffix
-                        <span class="text-muted fw-normal">(optional — makes lot unique)</span>
-                    </label>
+                    <label class="form-label fw-bold small">Letter suffix <span class="text-muted fw-normal">(optional)</span></label>
                     <select name="letter[]" class="form-select c2-letter" id="c2_letter${rollIdx}">
                         <option value="">-- None (same lot) --</option>
-                        <option value="a">a</option>
-                        <option value="b">b</option>
-                        <option value="c">c</option>
-                        <option value="d">d</option>
+                        <option value="a">a</option><option value="b">b</option>
+                        <option value="c">c</option><option value="d">d</option>
                     </select>
                     <div class="form-text c2-lot-preview" id="c2_lotpreview${rollIdx}">
-                        Lot: <strong>${productData.lot_no}</strong>
-                        &nbsp;|&nbsp; Coil: <strong>${productData.coil_no}</strong>
-                        &nbsp;|&nbsp; Roll: <strong>${productData.roll_no}</strong>
+                        Lot: <strong>${productData.lot_no}</strong> &nbsp;|&nbsp; Coil: <strong>${productData.coil_no}</strong> &nbsp;|&nbsp; Roll: <strong>${productData.roll_no}</strong>
                     </div>
                 </div>
                 <div class="col-md-4">
                     <label class="form-label fw-bold small">Width (mm)</label>
-                    <input type="number" step="0.01" name="new_width[]"
-                           class="form-control" value="${productData.width}"
-                           min="0.01" required>
+                    <input type="number" step="0.01" name="new_width[]" class="form-control" value="${productData.width}" min="0.01" required>
                 </div>
                 <div class="col-md-4">
-                    <label class="form-label fw-bold small text-success">
-                        Actual Length (m) <span class="text-danger">*</span>
-                    </label>
-                    <input type="number" step="0.01" name="actual_length[]"
-                           id="c2_actual${rollIdx}" class="form-control"
-                           placeholder="Enter length" min="0.01" required>
+                    <label class="form-label fw-bold small text-success">Actual Length (m) <span class="text-danger">*</span></label>
+                    <input type="number" step="0.01" name="actual_length[]" id="c2_actual${rollIdx}" class="form-control" placeholder="Enter length" min="0.01" required>
                 </div>
                 <div class="col-12">
-                    <input type="text" name="remark[]" class="form-control"
-                           placeholder="Remark for ${rollLabel} (optional)">
+                    <input type="text" name="remark[]" class="form-control" placeholder="Remark for ${rollLabel} (optional)">
                 </div>
-            </div>
-        `;
-        // Hidden fields
+            </div>`;
         ['length[]', 'defect[]'].forEach((n, vi) => {
             const inp = document.createElement('input');
-            inp.type = 'hidden'; inp.name = n;
-            inp.value = vi === 0 ? productData.length : '0';
+            inp.type = 'hidden'; inp.name = n; inp.value = vi === 0 ? productData.length : '0';
             div.appendChild(inp);
         });
         return div;
@@ -709,25 +738,19 @@ function buildCutInto2() {
     const r1 = buildRollCard('Roll 1', 1, 'text-primary', 'bi-1-circle');
     const r2 = buildRollCard('Roll 2', 2, 'text-success', 'bi-2-circle');
 
-    // Balance summary bar
     const balDiv = document.createElement('div');
     balDiv.className = 'mt-2 p-2 rounded bg-light border small';
-    balDiv.id = 'c2_balance_info';
-    balDiv.style.display = 'none';
-    balDiv.innerHTML = `<i class="bi bi-calculator me-1"></i>
-        <strong>Balance:</strong> <span id="c2_balance_text"></span>`;
+    balDiv.id = 'c2_balance_info'; balDiv.style.display = 'none';
+    balDiv.innerHTML = `<i class="bi bi-calculator me-1"></i><strong>Balance:</strong> <span id="c2_balance_text"></span>`;
 
-    frag.appendChild(r1);
-    frag.appendChild(r2);
-    frag.appendChild(balDiv);
+    frag.appendChild(r1); frag.appendChild(r2); frag.appendChild(balDiv);
 
-    // Wire up interactivity after DOM insert
     setTimeout(() => {
-        const letter1  = document.getElementById('c2_letter1');
-        const letter2  = document.getElementById('c2_letter2');
-        const actual1  = document.getElementById('c2_actual1');
-        const actual2  = document.getElementById('c2_actual2');
-        const defect   = document.getElementById('c2_defect');
+        const letter1 = document.getElementById('c2_letter1');
+        const letter2 = document.getElementById('c2_letter2');
+        const actual1 = document.getElementById('c2_actual1');
+        const actual2 = document.getElementById('c2_actual2');
+        const defect  = document.getElementById('c2_defect');
         const preview1 = document.getElementById('c2_lotpreview1');
         const preview2 = document.getElementById('c2_lotpreview2');
         const balInfo  = document.getElementById('c2_balance_info');
@@ -738,22 +761,18 @@ function buildCutInto2() {
                 ? `${productData.lot_no}<strong>${letter}</strong>`
                 : `<strong>${productData.lot_no}</strong> <em class="text-muted">(same as original)</em>`;
         }
-
         function updatePreview() {
-            const l1 = letter1?.value || '';
-            const l2 = letter2?.value || '';
+            const l1 = letter1?.value || '', l2 = letter2?.value || '';
             preview1.innerHTML = `Lot: ${lotLabel(l1)} &nbsp;|&nbsp; Coil: <strong>${productData.coil_no}</strong> &nbsp;|&nbsp; Roll: <strong>${productData.roll_no}</strong>`;
             preview2.innerHTML = `Lot: ${lotLabel(l2)} &nbsp;|&nbsp; Coil: <strong>${productData.coil_no}</strong> &nbsp;|&nbsp; Roll: <strong>${productData.roll_no}</strong>`;
         }
-
         function updateBalance() {
-            const a1  = parseFloat(actual1?.value || 0);
-            const a2  = parseFloat(actual2?.value || 0);
-            const def = parseFloat(defect?.value  || 0);
+            const a1 = parseFloat(actual1?.value || 0);
+            const a2 = parseFloat(actual2?.value || 0);
+            const def = parseFloat(defect?.value || 0);
             const used = +(a1 + a2 + def).toFixed(3);
             const orig = productData.length;
             const diff = +(orig - used).toFixed(3);
-
             if (a1 > 0 || a2 > 0) {
                 balInfo.style.display = 'block';
                 if (Math.abs(diff) < 0.01) {
@@ -766,14 +785,11 @@ function buildCutInto2() {
                     balText.innerHTML = `= ${used}m — <strong>exceeds original by ${Math.abs(diff)}m</strong>`;
                     balText.style.color = '#991b1b';
                 }
-            } else {
-                balInfo.style.display = 'none';
-            }
+            } else { balInfo.style.display = 'none'; }
         }
-
         [letter1, letter2].forEach(el => el?.addEventListener('change', updatePreview));
         [actual1, actual2, defect].forEach(el => el?.addEventListener('input', updateBalance));
-        updatePreview(); // init
+        updatePreview();
     }, 50);
 
     const wrapper = document.createElement('div');
@@ -808,7 +824,7 @@ function loadSummary() {
             }
 
             const typeLabel = { rewinding:'🔄 Rewinding', normal:'✂️ Cut Defect', cut_into_2:'✂️✂️ Cut Into 2' };
-            const typeCls   = { rewinding:'bg-secondary', normal:'bg-danger',     cut_into_2:'bg-warning text-dark' };
+            const typeCls   = { rewinding:'bg-secondary', normal:'bg-danger', cut_into_2:'bg-warning text-dark' };
 
             tbody.innerHTML = data.rows.map(r => `
                 <tr>

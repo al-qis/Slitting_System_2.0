@@ -1,8 +1,6 @@
 <?php
-// reslit_handler.php — Schema Migration v2
-// Each new slitting_product row gets parent_slit_id set to the source
-// slitting roll via reslit_product.slitting_product_id.
-// Every insert writes to process_log.
+// reslit_handler.php — Fixed: reslit_product has no coil_no column
+// coil_no is fetched from slitting_product via parent_slit_id instead
 
 session_start();
 
@@ -12,7 +10,7 @@ if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'slitting') {
 
 include 'config.php';
 
-// ── Helper: write one process_log row ──────────────────────────────────────
+// ── Helper: write one process_log row ─────────────────────────
 function log_process(
     mysqli  $conn,
     string  $entity_type,
@@ -69,36 +67,48 @@ if (!$parent) { die("Parent reslit record not found."); }
 $originalSource = $parent['original_source'] ?? 'raw_material';
 
 // slitting_product_id on reslit_product = the roll that was sent here.
-// We carry this forward as parent_slit_id on every new slitting_product row.
 $parent_slit_id = $parent['slitting_product_id'] ?? null;
 
-// Derive mother_id from the source slit row
+// ── Fetch coil_no + mother_id from the source slitting row ────
+// reslit_product has NO coil_no column, so we read it from slitting_product
+$coil_no_val   = '';
 $mother_id_val = null;
+
 if ($parent_slit_id) {
     $sp_row = $conn->query(
-        "SELECT mother_id FROM slitting_product WHERE id=" . intval($parent_slit_id)
+        "SELECT mother_id, coil_no FROM slitting_product WHERE id=" . intval($parent_slit_id)
     )->fetch_assoc();
-    $mother_id_val = $sp_row ? (intval($sp_row['mother_id']) ?: null) : null;
+    if ($sp_row) {
+        $mother_id_val = intval($sp_row['mother_id']) ?: null;
+        $coil_no_val   = $sp_row['coil_no'] ?? '';
+    }
+}
+
+// Fallback: try mother_coil if still empty
+if ($coil_no_val === '' && $mother_id_val) {
+    $mc_row = $conn->query(
+        "SELECT coil_no FROM mother_coil WHERE id=" . intval($mother_id_val)
+    )->fetch_assoc();
+    $coil_no_val = $mc_row['coil_no'] ?? '';
 }
 
 $conn->begin_transaction();
 
 try {
-    // ── Validation pass: check for duplicate lot+coil+roll combinations ──
+    // ── Validation: check for duplicate lot+coil+roll ─────────
     foreach ($roll_numbers as $index => $roll_label) {
         $letter      = $cut_letters[$index] ?? '';
         $temp_lot_no = $parent['lot_no'] . $letter;
-        $coil_no     = $parent['coil_no'];
 
         $check = $conn->prepare("
             SELECT id FROM slitting_product
             WHERE lot_no = ? AND coil_no = ? AND roll_no = ?
         ");
-        $check->bind_param("sss", $temp_lot_no, $coil_no, $roll_label);
+        $check->bind_param("sss", $temp_lot_no, $coil_no_val, $roll_label);
         $check->execute();
         if ($check->get_result()->num_rows > 0) {
             throw new Exception(
-                "Duplicate: Lot [{$temp_lot_no}] Coil [{$coil_no}] Roll [{$roll_label}] already exists. Add a letter suffix."
+                "Duplicate: Lot [{$temp_lot_no}] Coil [{$coil_no_val}] Roll [{$roll_label}] already exists. Add a letter suffix."
             );
         }
         $check->close();
@@ -106,18 +116,17 @@ try {
 
     $total_actual = 0;
 
-    // ── Insert pass ───────────────────────────────────────────────────────
+    // ── Insert pass ───────────────────────────────────────────
     foreach ($roll_numbers as $index => $roll_label) {
-        $letter  = $cut_letters[$index]    ?? '';
-        $width   = floatval($new_widths[$index]     ?? 0);
-        $nom_len = floatval($lengths[$index]         ?? 0);
-        $act_len = floatval($actual_lengths[$index]  ?? 0);
+        $letter  = $cut_letters[$index]   ?? '';
+        $width   = floatval($new_widths[$index]    ?? 0);
+        $nom_len = floatval($lengths[$index]        ?? 0);
+        $act_len = floatval($actual_lengths[$index] ?? 0);
 
-        $new_lot_no   = $parent['lot_no'] . $letter;
+        $new_lot_no    = $parent['lot_no'] . $letter;
         $total_actual += $act_len;
 
         // A. Insert into slitting_product
-        //    parent_slit_id carries the chain: new roll → original roll → mother
         $stmt_ins = $conn->prepare("
             INSERT INTO slitting_product
                 (mother_id, parent_slit_id,
@@ -133,7 +142,7 @@ try {
             $parent_slit_id,
             $parent['product'],
             $new_lot_no,
-            $parent['coil_no'],
+            $coil_no_val,
             $roll_label,
             $width,
             $nom_len,
@@ -148,7 +157,7 @@ try {
             null, 'IN', 'reslit_output',
             "Roll {$roll_label} from reslit_product id={$parent_id}, parent_slit_id={$parent_slit_id}");
 
-        // B. Insert into reslit_rolls (keeps the child-roll detail record)
+        // B. Insert into reslit_rolls
         $stmt_roll = $conn->prepare("
             INSERT INTO reslit_rolls
                 (parent_id, roll_no, cut_letter, new_width,
@@ -169,7 +178,7 @@ try {
         $stmt_roll->close();
     }
 
-    // Mark parent reslit_product as completed
+    // Mark parent as completed
     $stmt_upd = $conn->prepare("
         UPDATE reslit_product
         SET status='completed', actual_length=?, completed_at=NOW()
@@ -208,11 +217,9 @@ try {
                         <div class="card-body p-4 text-center">
                             <p class="lead text-danger fw-bold"><?= htmlspecialchars($e->getMessage()) ?></p>
                             <hr>
-                            <p class="text-secondary">Go back and add a letter suffix to make the lot number unique.</p>
+                            <p class="text-secondary">Go back and fix the issue, or add a letter suffix to make the lot number unique.</p>
                             <div class="d-flex justify-content-center gap-3 mt-4">
-                                <button onclick="history.back()" class="btn btn-warning px-4 fw-bold">
-                                    ← Back to Form
-                                </button>
+                                <button onclick="history.back()" class="btn btn-warning px-4 fw-bold">← Back to Form</button>
                                 <a href="reslit.php" class="btn btn-outline-secondary px-4">Cancel</a>
                             </div>
                         </div>

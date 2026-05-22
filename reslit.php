@@ -13,6 +13,125 @@ if ($_SESSION['role'] !== 'slitting') {
 
 include 'config.php';
 
+// ── Excel Download ────────────────────────────────────────────
+if (isset($_GET['download']) && $_GET['download'] === 'excel') {
+    $exRes = $conn->query("
+        SELECT
+            r.id, r.status, r.cut_type, r.product, r.lot_no, r.roll_no,
+            r.width, r.length, r.actual_length, r.date_in, r.completed_at,
+            COALESCE(NULLIF(s.actual_length, 0), r.length) AS effective_length
+        FROM reslit_product r
+        LEFT JOIN (
+            SELECT sp1.*
+            FROM slitting_product sp1
+            INNER JOIN (
+                SELECT lot_no, roll_no, MAX(id) AS max_id
+                FROM slitting_product
+                GROUP BY lot_no, roll_no
+            ) sp2 ON sp1.id = sp2.max_id
+        ) s ON s.lot_no = r.lot_no AND s.roll_no = r.roll_no
+        ORDER BY r.id ASC
+    ");
+
+    $filename = 'Reslit_Report_' . date('Y-m-d') . '.xls';
+    header('Content-Type: application/vnd.ms-excel');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+    header('Cache-Control: max-age=0');
+
+    $cols      = 12; // total columns
+    $generated = date('d M Y, H:i');
+?>
+<html><head><meta charset="UTF-8"></head><body>
+
+<table>
+    <!-- Title block -->
+    <tr>
+        <td colspan="<?= $cols ?>" style="background:#1e3a5f;color:#fff;font-size:18px;font-weight:bold;padding:12px 16px;letter-spacing:1px;">
+            RESLIT PRODUCT REPORT
+        </td>
+    </tr>
+    <tr>
+        <td colspan="<?= $cols ?>" style="background:#2c5282;color:#bee3f8;font-size:11px;padding:4px 16px;">
+            Generated: <?= $generated ?> &nbsp;|&nbsp; System: Slitting Management
+        </td>
+    </tr>
+    <tr><td colspan="<?= $cols ?>" style="background:#e2e8f0;padding:6px 16px;font-size:11px;color:#4a5568;">
+        <strong>Note:</strong> Child rolls (↳) are shown indented under their parent reslit record.
+    </td></tr>
+    <tr><td colspan="<?= $cols ?>"></td></tr><!-- spacer -->
+</table>
+
+<table border="1" style="border-collapse:collapse;">
+    <thead>
+        <tr style="background:#343a40;color:#fff;font-weight:bold;font-size:12px;">
+            <th style="padding:8px 10px;">ID</th>
+            <th style="padding:8px 10px;">Status</th>
+            <th style="padding:8px 10px;">Cut Type</th>
+            <th style="padding:8px 10px;">Product</th>
+            <th style="padding:8px 10px;">Lot No.</th>
+            <th style="padding:8px 10px;">Roll No.</th>
+            <th style="padding:8px 10px;">Width (mm)</th>
+            <th style="padding:8px 10px;">Length (m)</th>
+            <th style="padding:8px 10px;">Effective Length (m)</th>
+            <th style="padding:8px 10px;">Actual Length (m)</th>
+            <th style="padding:8px 10px;">Date In</th>
+            <th style="padding:8px 10px;">Completed At</th>
+        </tr>
+    </thead>
+    <tbody>
+<?php
+
+    $td   = 'style="padding:6px 10px;"';
+    $tdN  = 'style="padding:6px 10px;text-align:right;"';
+
+    if ($exRes && $exRes->num_rows > 0) {
+        while ($row = $exRes->fetch_assoc()) {
+            // Zebra: white rows for parents
+            echo '<tr style="background:#ffffff;">';
+            echo '<td ' . $td  . '>' . (int)$row['id'] . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars(strtoupper($row['status']   ?? '-')) . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars(strtoupper($row['cut_type'] ?? '-')) . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars($row['product']  ?? '-') . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars($row['lot_no']   ?? '-') . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars($row['roll_no']  ?? '-') . '</td>';
+            echo '<td ' . $tdN . '>' . number_format((float)($row['width']            ?? 0)) . '</td>';
+            echo '<td ' . $tdN . '>' . number_format((float)($row['length']           ?? 0)) . '</td>';
+            echo '<td ' . $tdN . '>' . number_format((float)($row['effective_length'] ?? 0)) . '</td>';
+            echo '<td ' . $tdN . '>' . number_format((float)($row['actual_length']    ?? 0)) . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars($row['date_in']      ?? '-') . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars($row['completed_at'] ?? '-') . '</td>';
+            echo '</tr>';
+
+            // Child rolls from reslit_rolls — light blue indent rows
+            $rolls = $conn->query("SELECT * FROM reslit_rolls WHERE parent_id = " . (int)$row['id'] . " ORDER BY id ASC");
+            if ($rolls && $rolls->num_rows > 0) {
+                while ($roll = $rolls->fetch_assoc()) {
+                    $lotDisplay = htmlspecialchars($row['lot_no'] ?? '-') . htmlspecialchars($roll['cut_letter'] ?? '');
+                    $tdC  = 'style="background:#ebf8ff;padding:5px 10px;color:#2c5282;"';
+                    $tdCN = 'style="background:#ebf8ff;padding:5px 10px;color:#2c5282;text-align:right;"';
+                    echo '<tr>';
+                    echo '<td ' . $tdC  . '>↳</td>';
+                    echo '<td ' . $tdC  . '>COMPLETED</td>';
+                    echo '<td ' . $tdC  . '>-</td>';
+                    echo '<td ' . $tdC  . '>' . htmlspecialchars($row['product'] ?? '-') . '</td>';
+                    echo '<td ' . $tdC  . '>' . $lotDisplay . '</td>';
+                    echo '<td ' . $tdC  . '>' . htmlspecialchars($roll['roll_no'] ?? '-') . '</td>';
+                    echo '<td ' . $tdCN . '>' . number_format((float)($roll['new_width']     ?? 0)) . '</td>';
+                    echo '<td ' . $tdCN . '>' . number_format((float)($roll['length']        ?? 0)) . '</td>';
+                    echo '<td ' . $tdCN . '>-</td>';
+                    echo '<td ' . $tdCN . '>' . number_format((float)($roll['actual_length'] ?? 0)) . '</td>';
+                    echo '<td ' . $tdC  . '>-</td>';
+                    echo '<td ' . $tdC  . '>-</td>';
+                    echo '</tr>';
+                }
+            }
+        }
+    }
+
+    ?></tbody></table></body></html><?php
+    exit;
+}
+
 // 2. Fetch Data with Effective Length Logic
 $result = $conn->query("
     SELECT 
@@ -41,7 +160,6 @@ include 'header.php';
 ?>
 
 <style>
-    /* Keep your specialized UI styles for the Parent-Child relation */
     .status-cards { display: flex; gap: 15px; margin-bottom: 30px; }
     .status-card { flex: 1; border-radius: 8px; padding: 20px; text-align: center; color: white; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
     .status-card.pending { background: linear-gradient(135deg, #ffc107, #ff9800); }
@@ -56,6 +174,9 @@ include 'header.php';
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-intersect me-2"></i>Reslit Product Management</h2>
     <div class="d-flex gap-2">
+        <button type="button" class="btn btn-info shadow-sm text-white" data-bs-toggle="modal" data-bs-target="#summaryModal">
+            <i class="bi bi-bar-chart-line me-1"></i> Summary Report
+        </button>
         <a href="?download=excel" class="btn btn-success shadow-sm">
             <i class="bi bi-download me-1"></i> Download Excel
         </a>
@@ -168,6 +289,89 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
     </div>
 </div>
 
+<!-- ═══ SUMMARY REPORT MODAL ══════════════════════════════════ -->
+<div class="modal fade" id="summaryModal" tabindex="-1">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content border-0 shadow-lg">
+            <div class="modal-header bg-info text-white">
+                <div>
+                    <h5 class="modal-title mb-0">
+                        <i class="bi bi-bar-chart-line me-2"></i>Reslit Summary Report
+                    </h5>
+                    <small class="opacity-75">Reslit activity by cut type and period</small>
+                </div>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+
+                <!-- Month filter -->
+                <div class="row g-2 align-items-end mb-4">
+                    <div class="col-auto">
+                        <label class="form-label fw-bold small">Filter by Month</label>
+                        <input type="month" id="summaryMonthFilter"
+                               class="form-control"
+                               value="<?= date('Y-m') ?>">
+                    </div>
+                    <div class="col-auto">
+                        <button class="btn btn-primary btn-sm" onclick="loadSummary()">
+                            <i class="bi bi-search me-1"></i>Load
+                        </button>
+                    </div>
+                    <div class="col-auto">
+                        <button class="btn btn-outline-secondary btn-sm" onclick="clearSummaryFilter()">
+                            All Time
+                        </button>
+                    </div>
+                    <div class="col-auto ms-auto small text-muted" id="summaryRange"></div>
+                </div>
+
+                <!-- KPI cards -->
+                <div class="row g-3 mb-4" id="summaryKpiRow">
+                    <div class="col-6">
+                        <div class="card border-0 shadow-sm text-center p-3"
+                             style="background:linear-gradient(135deg,#dc3545,#ff7043);color:#fff;">
+                            <div class="fw-bold small mb-1"><i class="bi bi-scissors me-1"></i>Normal Reslit</div>
+                            <div class="fs-2 fw-bold" id="kpi_normal">—</div>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="card border-0 shadow-sm text-center p-3"
+                             style="background:linear-gradient(135deg,#fd7e14,#ffc107);color:#fff;">
+                            <div class="fw-bold small mb-1"><i class="bi bi-scissors me-1"></i>✂️ Cut Into 2</div>
+                            <div class="fs-2 fw-bold" id="kpi_cut2">—</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Detail table -->
+                <div class="table-responsive">
+                    <table class="table table-sm table-bordered align-middle" id="summaryTable">
+                        <thead class="table-secondary">
+                            <tr>
+                                <th>Date</th>
+                                <th>Type</th>
+                                <th>Lot No.</th>
+                                <th>Roll No.</th>
+                                <th>Product</th>
+                                <th class="text-end">Length (m)</th>
+                                <th>Output Rolls</th>
+                            </tr>
+                        </thead>
+                        <tbody id="summaryTableBody">
+                            <tr><td colspan="7" class="text-center text-muted py-3">Click Load to view report.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══ RESLIT MODAL ═══════════════════════════════════════════ -->
 <div class="modal fade" id="reslitModal" tabindex="-1">
     <div class="modal-dialog modal-lg modal-dialog-centered">
         <div class="modal-content border-0 shadow">
@@ -313,6 +517,76 @@ function updateLotDisplay(select, rollNum) {
 
 document.getElementById('reslitForm').addEventListener('submit', function(e) {
     if (!confirm('Complete reslit process now? Product will be added back to stock.')) e.preventDefault();
+});
+
+// ── Summary Report ─────────────────────────────────────────────
+function clearSummaryFilter() {
+    document.getElementById('summaryMonthFilter').value = '';
+    loadSummary();
+}
+
+function loadSummary() {
+    const month = document.getElementById('summaryMonthFilter').value;
+    document.getElementById('summaryRange').textContent = month ? 'Showing: ' + month : 'Showing: All time';
+
+    let url = 'reslit_summary_ajax.php';
+    if (month) url += '?month=' + encodeURIComponent(month);
+
+    fetch(url)
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('kpi_normal').textContent = data.counts?.normal     ?? 0;
+            document.getElementById('kpi_cut2').textContent   = data.counts?.cut_into_2 ?? 0;
+
+            const tbody = document.getElementById('summaryTableBody');
+            if (!data.rows || data.rows.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-3">No records for this period.</td></tr>';
+                return;
+            }
+
+            const typeLabel = { normal: '✂️ Normal', cut_into_2: '✂️✂️ Cut Into 2' };
+            const typeCls   = { normal: 'bg-danger',  cut_into_2: 'bg-warning text-dark' };
+
+            tbody.innerHTML = data.rows.map(r => {
+                // Build output rolls summary
+                let rollsHtml = '-';
+                if (r.rolls && r.rolls.length > 0) {
+                    rollsHtml = r.rolls.map(roll => {
+                        const lotSuffix = roll.cut_letter ? `<strong>${escHtml(roll.cut_letter)}</strong>` : '';
+                        return `<span class="badge bg-light text-dark border me-1">
+                                    ${escHtml(roll.roll_no)}${lotSuffix}
+                                    <span class="text-success">${parseFloat(roll.actual_length || 0).toLocaleString()}m</span>
+                                    / ${parseFloat(roll.new_width || 0).toLocaleString()}mm
+                                </span>`;
+                    }).join('');
+                }
+
+                return `
+                <tr>
+                    <td class="small">${escHtml(r.completed_at ?? '-')}</td>
+                    <td><span class="badge ${typeCls[r.cut_type] ?? 'bg-secondary'}">${typeLabel[r.cut_type] ?? escHtml(r.cut_type)}</span></td>
+                    <td class="font-monospace small">${escHtml(r.lot_no ?? '-')}</td>
+                    <td class="small">${escHtml(r.roll_no ?? '-')}</td>
+                    <td class="small">${escHtml(r.product ?? '-')}</td>
+                    <td class="text-end small">${parseFloat(r.actual_length || 0).toLocaleString()}</td>
+                    <td class="small">${rollsHtml}</td>
+                </tr>`;
+            }).join('');
+        })
+        .catch(() => {
+            document.getElementById('summaryTableBody').innerHTML =
+                '<tr><td colspan="8" class="text-danger text-center">Failed to load. Check reslit_summary_ajax.php exists.</td></tr>';
+        });
+}
+
+function escHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    document.getElementById('summaryModal').addEventListener('show.bs.modal', function () {
+        loadSummary();
+    });
 });
 </script>
 
