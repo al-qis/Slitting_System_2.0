@@ -1,10 +1,21 @@
 <?php
 // =============================================================
-// pallet.php  —  v2 (Pallet Upgrade)
-// FIX: Slot insertion now replaces the correct empty slot
-//      instead of appending to the bottom of the list.
-//      removeRoll() restores the empty slot at the correct
-//      sequential position instead of always appending at end.
+// pallet.php  —  v3 (Est. Weight Display)
+// NEW: Each roll slot shows Est. Weight (kg).
+//      A running total weight badge updates live when rolls
+//      are added or removed.
+//
+// Est. Weight formula (same as sticker):
+//   wgt = (actual_length_m × width_mm / 1000) × std_weight
+//
+// Changes from v2:
+//   1. getPalletItems() JOIN → std_wgt to fetch std_weight
+//   2. PHP slot cards show "~X.XX kg" per roll
+//   3. Weight summary bar below progress bar (total + per-roll)
+//   4. JS fillSlot() accepts std_weight, renders weight chip
+//   5. JS recalcTotalWeight() keeps total in sync after
+//      add / remove operations
+//   6. lookup_product AJAX returns std_weight from std_wgt
 // =============================================================
 
 session_start();
@@ -25,7 +36,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'validate_pallet_no') {
     exit;
 }
 
-// ── AJAX: product lookup ──────────────────────────────────────
+// ── AJAX: product lookup (now includes std_weight) ────────────
 if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
     header('Content-Type: application/json');
     $lot  = trim($_GET['lot']  ?? '');
@@ -37,10 +48,12 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
                sp.width, sp.actual_length, sp.length,
                sp.stock_counted, sp.status, sp.is_voided,
                sp.customer_name, sp.ref_no,
-               pi.pallet_id, p.pallet_no
+               pi.pallet_id, p.pallet_no,
+               COALESCE(sw.std_weight, 0) AS std_weight
         FROM slitting_product sp
         LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
         LEFT JOIN pallets p       ON p.id = pi.pallet_id
+        LEFT JOIN std_wgt sw      ON sw.product_code = sp.product
         WHERE sp.lot_no = ? AND sp.coil_no = ? AND sp.roll_no = ?
           AND (sp.is_voided = 0 OR sp.is_voided IS NULL)
         LIMIT 1
@@ -137,12 +150,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'deliv
 // ── Page data ─────────────────────────────────────────────────
 $activePalletId = intval($_GET['pallet_id'] ?? 0);
 $activePallet   = $activePalletId ? $pm->getPallet($activePalletId) : null;
-$activeItems    = $activePallet   ? $pm->getPalletItems($activePalletId) : [];
+
+// Extended getPalletItems with std_weight for weight calculation
+function getPalletItemsWithWeight(mysqli $conn, int $pallet_id): array {
+    $stmt = $conn->prepare("
+        SELECT pi.seq, pi.added_at,
+               sp.id AS product_id,
+               sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
+               sp.width, sp.length, sp.actual_length, sp.status,
+               sp.customer_name, sp.ref_no,
+               COALESCE(sw.std_weight, 0) AS std_weight
+        FROM pallet_items pi
+        JOIN slitting_product sp ON sp.id = pi.slitting_product_id
+        LEFT JOIN std_wgt sw     ON sw.product_code = sp.product
+        WHERE pi.pallet_id = ?
+        ORDER BY pi.seq ASC
+    ");
+    $stmt->bind_param("i", $pallet_id);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    return $rows;
+}
+
+// Helper: calculate estimated weight for one roll
+function calcEstWeight(float $lengthM, float $widthMm, float $stdWeight): float {
+    if ($lengthM <= 0 || $widthMm <= 0 || $stdWeight <= 0) return 0.0;
+    return ($lengthM * $widthMm / 1000) * $stdWeight;
+}
+
+$activeItems = $activePallet ? getPalletItemsWithWeight($conn, $activePalletId) : [];
 
 // Build a lookup: seq → item, so PHP can render all 8 slots in order
 $itemsBySeq = [];
 foreach ($activeItems as $item) {
     $itemsBySeq[(int)$item['seq']] = $item;
+}
+
+// Pre-calculate total Est. Weight for PHP-rendered slots
+$totalEstWgt = 0.0;
+foreach ($activeItems as $item) {
+    $len = (float)($item['actual_length'] ?: $item['length']);
+    $totalEstWgt += calcEstWeight($len, (float)$item['width'], (float)$item['std_weight']);
 }
 
 // Pallets in 'building' state (open)
@@ -180,9 +229,7 @@ $isReadOnly = $activePallet && !in_array($activePallet['status'], ['building', '
 /* ── Layout ── */
 .pallet-sidebar   { position:sticky; top:20px; }
 
-/* ── Slot cards ──
-   Every slot (filled or empty) is the same height so the list
-   never jumps when a card swaps from empty → filled.           */
+/* ── Slot cards ── */
 .slot-card {
     border: 1px solid var(--bs-border-color);
     border-radius: 8px;
@@ -190,7 +237,7 @@ $isReadOnly = $activePallet && !in_array($activePallet['status'], ['building', '
     background: #fff;
     margin-bottom: 8px;
     transition: box-shadow .15s, background .15s;
-    min-height: 60px;          /* keeps empty slots the same height as filled ones */
+    min-height: 68px;
     display: flex;
     align-items: center;
     gap: 12px;
@@ -210,9 +257,64 @@ $isReadOnly = $activePallet && !in_array($activePallet['status'], ['building', '
     display: inline-flex; align-items: center; justify-content: center;
     font-size: 12px; font-weight: 700; flex-shrink: 0;
 }
-.slot-empty .roll-seq {
-    background: #dee2e6;
-    color: #6c757d;
+.slot-empty .roll-seq { background: #dee2e6; color: #6c757d; }
+
+/* ── Weight chip ── */
+.wgt-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: #fef3c7;
+    color: #92400e;
+    border: 1px solid #fcd34d;
+    border-radius: 10px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.wgt-chip i { font-size: 10px; }
+
+/* ── Total weight summary bar ── */
+.weight-summary-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: linear-gradient(135deg, #fef3c7 0%, #fffbeb 100%);
+    border: 1px solid #fcd34d;
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.weight-summary-bar .wgt-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: #78350f;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.weight-summary-bar .wgt-total {
+    font-size: 20px;
+    font-weight: 800;
+    color: #92400e;
+    font-family: 'Courier New', monospace;
+}
+.weight-summary-bar .wgt-unit {
+    font-size: 13px;
+    font-weight: 600;
+    color: #b45309;
+    margin-left: 2px;
+}
+.weight-summary-bar .wgt-avg {
+    font-size: 11px;
+    color: #92400e;
+    background: rgba(255,255,255,.6);
+    border-radius: 6px;
+    padding: 3px 9px;
 }
 
 /* Progress bar */
@@ -341,9 +443,30 @@ if (isset($_GET['success'])): ?>
             <?php endif; ?>
 
             <div class="card-body p-4">
-                <div class="pallet-progress mb-3">
+                <div class="pallet-progress mb-2">
                     <div class="pallet-progress-bar" id="palletProgressBar"
                          style="width:<?= (count($activeItems) / $MAX * 100) ?>%"></div>
+                </div>
+
+                <!-- ── Total Est. Weight Summary Bar ── -->
+                <div class="weight-summary-bar" id="weightSummaryBar">
+                    <div class="wgt-label">
+                        <i class="bi bi-speedometer2"></i>
+                        Est. Total Weight
+                    </div>
+                    <div style="display:flex; align-items:baseline; gap:6px;">
+                        <span class="wgt-total" id="totalWeightDisplay">
+                            <?= $totalEstWgt > 0 ? number_format($totalEstWgt, 2) : '—' ?>
+                        </span>
+                        <span class="wgt-unit"><?= $totalEstWgt > 0 ? 'kg' : '' ?></span>
+                    </div>
+                    <div class="wgt-avg" id="avgWeightDisplay">
+                        <?php if (count($activeItems) > 0 && $totalEstWgt > 0): ?>
+                            avg <?= number_format($totalEstWgt / count($activeItems), 2) ?> kg/roll
+                        <?php else: ?>
+                            no weight data
+                        <?php endif; ?>
+                    </div>
                 </div>
 
                 <div class="alert alert-info py-2 mb-3">
@@ -376,25 +499,23 @@ if (isset($_GET['success'])): ?>
                 <div id="scanFeedback" class="mb-3" style="min-height:40px;"></div>
 
                 <!-- =====================================================
-                     SLOT LIST
-                     PHP renders ALL 8 slots in order, 1..MAX_ROLLS.
-                     Each slot has:
-                       id="slot{N}"           — targeted by JS
-                       data-slot="{N}"        — used by JS sort helper
-                       data-filled="0|1"      — 0=empty, 1=has product
-                     JS replaces the inner content of slot{N} in-place,
-                     so the visual order never changes.
+                     SLOT LIST — PHP renders ALL 8 slots in order.
+                     Each filled slot now shows a weight chip.
                 ===================================================== -->
                 <div id="rollList">
                     <?php for ($s = 1; $s <= $MAX; $s++):
                         $item = $itemsBySeq[$s] ?? null;
                     ?>
-                    <?php if ($item): ?>
+                    <?php if ($item):
+                        $itemLen = (float)($item['actual_length'] ?: $item['length']);
+                        $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)$item['std_weight']);
+                    ?>
                     <!-- FILLED SLOT -->
                     <div class="slot-card"
                          id="slot<?= $s ?>"
                          data-slot="<?= $s ?>"
-                         data-filled="1">
+                         data-filled="1"
+                         data-weight="<?= number_format($itemWgt, 4) ?>">
                         <span class="roll-seq"><?= $s ?></span>
                         <div class="flex-grow-1">
                             <div class="fw-bold small">
@@ -405,9 +526,14 @@ if (isset($_GET['success'])): ?>
                             <div class="text-muted" style="font-size:11px;">
                                 <?= htmlspecialchars($item['product']) ?> |
                                 <?= number_format((float)$item['width']) ?>mm |
-                                <?= number_format((float)($item['actual_length'] ?: $item['length']), 1) ?>m
+                                <?= number_format($itemLen, 1) ?>m
                             </div>
                         </div>
+                        <!-- Weight chip -->
+                        <span class="wgt-chip" title="Est. Weight = (<?= number_format($itemLen,1) ?>m × <?= number_format((float)$item['width']) ?>mm / 1000) × <?= $item['std_weight'] ?>">
+                            <i class="bi bi-speedometer2"></i>
+                            <?= $itemWgt > 0 ? number_format($itemWgt, 2) . ' kg' : 'N/A' ?>
+                        </span>
                         <button type="button"
                                 class="btn btn-outline-danger btn-sm"
                                 title="Remove this roll from the pallet"
@@ -422,7 +548,8 @@ if (isset($_GET['success'])): ?>
                     <div class="slot-card slot-empty"
                          id="slot<?= $s ?>"
                          data-slot="<?= $s ?>"
-                         data-filled="0">
+                         data-filled="0"
+                         data-weight="0">
                         <span class="roll-seq"><?= $s ?></span>
                         <span style="font-size:13px;">Empty slot <?= $s ?></span>
                     </div>
@@ -494,12 +621,33 @@ if (isset($_GET['success'])): ?>
             <?php endif; ?>
 
             <div class="card-body p-4">
+                <?php
+                $rejectedTotalWgt = 0.0;
+                foreach ($activeItems as $item) {
+                    $len = (float)($item['actual_length'] ?: $item['length']);
+                    $rejectedTotalWgt += calcEstWeight($len, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                }
+                ?>
+                <?php if ($rejectedTotalWgt > 0): ?>
+                <div class="weight-summary-bar mb-3">
+                    <div class="wgt-label"><i class="bi bi-speedometer2"></i> Est. Total Weight</div>
+                    <div style="display:flex; align-items:baseline; gap:6px;">
+                        <span class="wgt-total"><?= number_format($rejectedTotalWgt, 2) ?></span>
+                        <span class="wgt-unit">kg</span>
+                    </div>
+                    <div class="wgt-avg"><?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?></div>
+                </div>
+                <?php endif; ?>
+
                 <p class="text-muted mb-3" style="font-size:13px;">
                     <i class="bi bi-info-circle me-1"></i>
                     Click <strong>Edit Pallet</strong> to reopen it. You can then remove the defective roll(s),
-                    add replacement rolls, and re-submit to QC. All matching constraints still apply.
+                    add replacement rolls, and re-submit to QC.
                 </p>
-                <?php foreach ($activeItems as $item): ?>
+                <?php foreach ($activeItems as $item):
+                    $itemLen = (float)($item['actual_length'] ?: $item['length']);
+                    $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                ?>
                 <div class="slot-card">
                     <span class="roll-seq" style="background:#991b1b;"><?= $item['seq'] ?></span>
                     <div class="flex-grow-1">
@@ -511,9 +659,15 @@ if (isset($_GET['success'])): ?>
                         <div class="text-muted" style="font-size:11px;">
                             <?= htmlspecialchars($item['product']) ?> |
                             <?= number_format((float)$item['width']) ?>mm |
-                            <?= number_format((float)($item['actual_length'] ?: $item['length']), 1) ?>m
+                            <?= number_format($itemLen, 1) ?>m
                         </div>
                     </div>
+                    <?php if ($itemWgt > 0): ?>
+                    <span class="wgt-chip">
+                        <i class="bi bi-speedometer2"></i>
+                        <?= number_format($itemWgt, 2) ?> kg
+                    </span>
+                    <?php endif; ?>
                 </div>
                 <?php endforeach; ?>
             </div>
@@ -571,7 +725,6 @@ if (isset($_GET['success'])): ?>
     ═══════════════════════════════════════════════════════════ -->
     <div class="col-md-5 pallet-sidebar">
 
-        <!-- Rejected pallets (urgent) -->
         <?php if (!empty($rejectedPallets)): ?>
         <div class="card shadow-sm border-0 mb-3 border-danger">
             <div class="card-header fw-bold py-2" style="background:#fee2e2;color:#991b1b;">
@@ -727,21 +880,62 @@ if (isset($_GET['success'])): ?>
   </div>
 </div>
 
-<!-- Hidden QR input always focused for scanner gun -->
-<!-- Hidden input for camera scanner -->
 <input id="qrScanInput" type="hidden" value="">
 
 <script>
 // ─────────────────────────────────────────────────────────────
-// CONSTANTS (injected from PHP)
+// CONSTANTS
 // ─────────────────────────────────────────────────────────────
 const PALLET_ID = <?= $activePalletId ?: 'null' ?>;
 const MAX_ROLLS = <?= $MAX ?>;
 let   rollCount = <?= count($activeItems) ?>;
-// Camera scanner wired up below — no hardware scanner needed
 
 // ─────────────────────────────────────────────────────────────
-// QR PARSING — format: LOT=xxx;COIL=xxx;ROLL=xxx
+// EST. WEIGHT HELPERS
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Calculate est. weight for one roll.
+ * Formula: (length_m × width_mm / 1000) × std_weight
+ */
+function calcWeight(lengthM, widthMm, stdWeight) {
+    if (!lengthM || !widthMm || !stdWeight) return 0;
+    return (parseFloat(lengthM) * parseFloat(widthMm) / 1000) * parseFloat(stdWeight);
+}
+
+/**
+ * Recalculate the total weight from all filled slot data-weight attributes
+ * and update the weight summary bar.
+ */
+function recalcTotalWeight() {
+    const slots   = document.querySelectorAll('#rollList [data-slot][data-filled="1"]');
+    let   total   = 0;
+    let   count   = 0;
+
+    slots.forEach(slot => {
+        const w = parseFloat(slot.dataset.weight || 0);
+        if (w > 0) { total += w; count++; }
+    });
+
+    const dispEl = document.getElementById('totalWeightDisplay');
+    const unitEl = dispEl ? dispEl.nextElementSibling : null;
+    const avgEl  = document.getElementById('avgWeightDisplay');
+
+    if (!dispEl) return;
+
+    if (total > 0) {
+        dispEl.textContent = total.toFixed(2);
+        if (unitEl) unitEl.textContent = 'kg';
+        if (avgEl)  avgEl.textContent  = 'avg ' + (total / slots.length).toFixed(2) + ' kg/roll';
+    } else {
+        dispEl.textContent = '—';
+        if (unitEl) unitEl.textContent = '';
+        if (avgEl)  avgEl.textContent  = 'no weight data';
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// QR PARSING
 // ─────────────────────────────────────────────────────────────
 function parseQR(raw) {
     const parts = {};
@@ -778,9 +972,6 @@ async function manualLookup() {
 
 // ─────────────────────────────────────────────────────────────
 // LOOKUP + ADD
-// Validates the product then POSTs to add_roll.
-// On success: calls fillSlot(seq, product) which replaces the
-// matching empty slot IN-PLACE — no appending, no reordering.
 // ─────────────────────────────────────────────────────────────
 async function lookupAndAdd(lot, coil, roll) {
     if (!PALLET_ID) return;
@@ -789,7 +980,6 @@ async function lookupAndAdd(lot, coil, roll) {
         return;
     }
 
-    // Step 1: look up the product
     let lk;
     try {
         lk = await fetch(
@@ -803,21 +993,10 @@ async function lookupAndAdd(lot, coil, roll) {
 
     const p = lk.product;
 
-    // Client-side guards
-    if (p.is_voided == 1) {
-        showFeedback('This roll has been voided.', false);
-        return;
-    }
-    if (p.stock_counted != 1) {
-        showFeedback(`Roll ${lot} ${coil} ${roll} — actual length not saved yet.`, false);
-        return;
-    }
-    if (p.pallet_id) {
-        showFeedback(`Already on pallet ${escHtml(p.pallet_no)}.`, false);
-        return;
-    }
+    if (p.is_voided == 1) { showFeedback('This roll has been voided.', false); return; }
+    if (p.stock_counted != 1) { showFeedback(`Roll ${lot} ${coil} ${roll} — actual length not saved yet.`, false); return; }
+    if (p.pallet_id) { showFeedback(`Already on pallet ${escHtml(p.pallet_no)}.`, false); return; }
 
-    // Step 2: add the roll to the pallet
     const fd = new FormData();
     fd.append('action',     'add_roll');
     fd.append('pallet_id',  PALLET_ID);
@@ -832,39 +1011,34 @@ async function lookupAndAdd(lot, coil, roll) {
     }
     if (!ad.ok) { showFeedback(ad.msg, false); return; }
 
-    // Step 3: update the UI — fill the correct slot in-place
     rollCount = ad.roll_count;
-    fillSlot(ad.seq, p);          // <── KEY FIX: targets slot by seq number
+    fillSlot(ad.seq, p);
     updateProgress(rollCount);
     showFeedback(
         `✓ Added: ${escHtml(lot)} ${escHtml(coil)} – R-${escHtml(roll)} (slot ${ad.seq})`,
         true
     );
 
-    // If the first roll was added, reload so constraint badges appear
     if (ad.seq === 1) setTimeout(() => location.reload(), 1200);
 }
 
 // ─────────────────────────────────────────────────────────────
 // fillSlot(seq, product)
-//
-// THE CORE FIX:
-//   Instead of appending a new card to #rollList, we find the
-//   existing slot element with id="slot{seq}" and REPLACE its
-//   innerHTML in-place.  The slot stays exactly where it was
-//   in the DOM — slot 2 is always between slot 1 and slot 3.
+// Fills an empty slot IN-PLACE; also renders weight chip.
 // ─────────────────────────────────────────────────────────────
 function fillSlot(seq, p) {
     const slotEl = document.getElementById('slot' + seq);
-    if (!slotEl) return;   // safety: should never happen
+    if (!slotEl) return;
 
-    const len = parseFloat(p.actual_length) > 0 ? p.actual_length : p.length;
+    const len       = parseFloat(p.actual_length) > 0 ? parseFloat(p.actual_length) : parseFloat(p.length);
+    const stdWeight = parseFloat(p.std_weight) || 0;
+    const wgt       = calcWeight(len, p.width, stdWeight);
+    const wgtStr    = wgt > 0 ? wgt.toFixed(2) + ' kg' : 'N/A';
 
-    // Remove the "empty" class so styling changes to filled
     slotEl.classList.remove('slot-empty');
     slotEl.setAttribute('data-filled', '1');
+    slotEl.setAttribute('data-weight', wgt.toFixed(4));
 
-    // Replace the inner content — the outer <div id="slot{seq}"> stays put
     slotEl.innerHTML = `
         <span class="roll-seq">${seq}</span>
         <div class="flex-grow-1">
@@ -875,9 +1049,13 @@ function fillSlot(seq, p) {
             <div class="text-muted" style="font-size:11px;">
                 ${escHtml(p.product)} |
                 ${(+p.width).toFixed(0)}mm |
-                ${(+len).toFixed(1)}m
+                ${len.toFixed(1)}m
             </div>
         </div>
+        <span class="wgt-chip" title="Est. Weight = (${len.toFixed(1)}m × ${(+p.width).toFixed(0)}mm / 1000) × ${stdWeight}">
+            <i class="bi bi-speedometer2"></i>
+            ${wgtStr}
+        </span>
         <button type="button"
                 class="btn btn-outline-danger btn-sm"
                 title="Remove this roll from the pallet"
@@ -887,18 +1065,16 @@ function fillSlot(seq, p) {
         </button>
     `;
 
-    // Brief green flash to confirm the scan
+    // Flash animation
     slotEl.classList.add('scan-flash');
     slotEl.addEventListener('animationend', () => slotEl.classList.remove('scan-flash'), { once: true });
+
+    // Update total weight
+    recalcTotalWeight();
 }
 
 // ─────────────────────────────────────────────────────────────
 // removeRoll(palletId, productId, seq, btn)
-//
-// THE CORE FIX (remove side):
-//   We know the slot number (seq) from the data attribute on
-//   the remove button, so we can restore EXACTLY that slot to
-//   its empty state without rebuilding any other slot.
 // ─────────────────────────────────────────────────────────────
 async function removeRoll(palletId, productId, seq, btn) {
     if (!confirm('Remove this roll from the pallet?\nThe roll will return to Finish Good stock.')) return;
@@ -926,34 +1102,23 @@ async function removeRoll(palletId, productId, seq, btn) {
 
     rollCount = d.new_count;
     updateProgress(rollCount);
-
-    // Restore the slot to its empty state IN-PLACE.
-    // After PalletManager::removeRollFromPallet() re-sequences, the
-    // removed position may now be the last occupied+1 slot — but
-    // visually the simplest and most correct thing is to restore
-    // THIS slot (seq) to empty and then re-sequence all slot labels.
     clearSlot(seq);
-
-    // Re-sequence: walk all 8 slots and renumber filled ones 1..N,
-    // then update the empty slot labels to match their position.
     resequenceSlots();
-
+    recalcTotalWeight();   // ← update weight after removal
     showFeedback(d.msg, true);
 
-    // If pallet is now empty, reload so constraint strip clears
     if (rollCount === 0) setTimeout(() => location.reload(), 1000);
 }
 
 // ─────────────────────────────────────────────────────────────
 // clearSlot(seq)
-// Restores a single slot element to its "empty" visual state.
 // ─────────────────────────────────────────────────────────────
 function clearSlot(seq) {
     const slotEl = document.getElementById('slot' + seq);
     if (!slotEl) return;
-
     slotEl.classList.add('slot-empty');
     slotEl.setAttribute('data-filled', '0');
+    slotEl.setAttribute('data-weight', '0');
     slotEl.innerHTML = `
         <span class="roll-seq">${seq}</span>
         <span style="font-size:13px;">Empty slot ${seq}</span>
@@ -962,15 +1127,8 @@ function clearSlot(seq) {
 
 // ─────────────────────────────────────────────────────────────
 // resequenceSlots()
-//
-// After a removal, PalletManager compacts seq numbers on the
-// DB side (1,2,3 with no gaps).  We mirror that on the client:
-//   1. Collect all filled slots in DOM order (data-slot asc).
-//   2. Re-number their visible bubble 1..N.
-//   3. Update their onclick seq argument so future removes work.
 // ─────────────────────────────────────────────────────────────
 function resequenceSlots() {
-    // Gather all slots in order
     const allSlots = Array.from(
         document.querySelectorAll('#rollList [data-slot]')
     ).sort((a, b) => +a.dataset.slot - +b.dataset.slot);
@@ -978,27 +1136,17 @@ function resequenceSlots() {
     let filledCount = 0;
     allSlots.forEach(slotEl => {
         const slotNo = +slotEl.dataset.slot;
-
         if (slotEl.dataset.filled === '1') {
             filledCount++;
             const newSeq = filledCount;
-
-            // Update the visible bubble number
             const bubble = slotEl.querySelector('.roll-seq');
             if (bubble) bubble.textContent = newSeq;
-
-            // Update the remove-button's seq argument so the next
-            // removeRoll() call passes the correct (compacted) slot
             const removeBtn = slotEl.querySelector('button[data-product-id]');
             if (removeBtn) {
                 const pid = removeBtn.getAttribute('data-product-id');
-                removeBtn.setAttribute(
-                    'onclick',
-                    `removeRoll(${PALLET_ID}, ${pid}, ${newSeq}, this)`
-                );
+                removeBtn.setAttribute('onclick', `removeRoll(${PALLET_ID}, ${pid}, ${newSeq}, this)`);
             }
         } else {
-            // Keep empty-slot label in sync with its fixed position
             const bubble = slotEl.querySelector('.roll-seq');
             if (bubble) bubble.textContent = slotNo;
             const label = slotEl.querySelector('span:not(.roll-seq)');
@@ -1014,7 +1162,6 @@ function updateProgress(count) {
     const bar   = document.getElementById('palletProgressBar');
     const badge = document.getElementById('rollCountBadge');
     const btn   = document.getElementById('sendToQcBtn');
-
     if (bar)   bar.style.width = (count / MAX_ROLLS * 100) + '%';
     if (badge) badge.textContent = count + ' / ' + MAX_ROLLS + ' rolls';
     if (btn)   btn.disabled = count < 1;
