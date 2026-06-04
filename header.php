@@ -28,7 +28,10 @@
             <ul class="nav flex-column">
                 <?php
                 $current_page = basename($_SERVER['PHP_SELF']);
-                $menu_items = [
+                $role = $_SESSION['role'] ?? '';
+
+                // Full menu for slitting role
+                $all_menu_items = [
                     'settings.php'         => ['icon' => 'gear',                   'label' => 'Settings'],
                     'index.php'            => ['icon' => 'speedometer2',            'label' => 'Dashboard'],
                     'mother_coil.php'      => ['icon' => 'layer-forward',           'label' => 'Mother Coil'],
@@ -38,12 +41,18 @@
                     'recoiling.php'        => ['icon' => 'arrow-repeat',            'label' => 'Recoiling Cut'],
                     'reslit.php'           => ['icon' => 'intersect',               'label' => 'Reslit Product'],
                     'finish_product.php'   => ['icon' => 'check-circle',            'label' => 'Finish Product'],
-                    // ── NEW: Pallet Management ────────────────────────────────
                     'pallet.php'           => ['icon' => 'archive',                 'label' => 'Pallet'],
-                    // ─────────────────────────────────────────────────────────
                     'report.php'           => ['icon' => 'file-earmark-bar-graph',  'label' => 'Report'],
                     'tracking_product.php' => ['icon' => 'globe2',                  'label' => 'Traceability'],
                 ];
+
+                // Restricted menu for mkl3 role — Settings & Mother Coil only
+                $mkl3_menu_items = [
+                    'settings.php'    => ['icon' => 'gear',           'label' => 'Settings'],
+                    'mother_coil.php' => ['icon' => 'layer-forward',  'label' => 'Mother Coil'],
+                ];
+
+                $menu_items = ($role === 'mkl3') ? $mkl3_menu_items : $all_menu_items;
 
                 foreach ($menu_items as $url => $info):
                     $active = ($current_page == $url) ? 'active-nav' : '';
