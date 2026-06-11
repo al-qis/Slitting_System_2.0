@@ -2,6 +2,10 @@
 // recoiling_summary_ajax.php
 // Returns JSON: { counts: {rewinding, normal, cut_into_2}, rows: [...] }
 // Called by the Summary Report modal in recoiling.php.
+//
+// Params:
+//   ?month=YYYY-MM        — filter by month (optional)
+//   ?cut_type=rewinding   — filter by type: rewinding | normal | cut_into_2 | '' = all
 
 session_start();
 if (!isset($_SESSION['role'])) {
@@ -13,31 +17,35 @@ if (!isset($_SESSION['role'])) {
 include 'config.php';
 header('Content-Type: application/json');
 
-$month = trim($_GET['month'] ?? ''); // e.g. "2025-03"  or ""
+$month    = trim($_GET['month']    ?? '');
+$cut_type = trim($_GET['cut_type'] ?? '');
 
-// Build optional WHERE clause for month filter
-// Filter on completed_at (or date_in as fallback) of recoiling_product
-$where_sql  = "WHERE rp.status = 'completed'";
-$bind_types = '';
-$bind_vals  = [];
+$valid_types = ['rewinding', 'normal', 'cut_into_2'];
+
+// ── Base WHERE (always filter completed) ─────────────────────
+$base_where  = "WHERE rp.status = 'completed'";
+$base_types  = '';
+$base_vals   = [];
 
 if ($month !== '' && preg_match('/^\d{4}-\d{2}$/', $month)) {
-    $where_sql  .= " AND DATE_FORMAT(rp.completed_at, '%Y-%m') = ?";
-    $bind_types  = 's';
-    $bind_vals[] = $month;
+    $base_where  .= " AND DATE_FORMAT(rp.completed_at, '%Y-%m') = ?";
+    $base_types  .= 's';
+    $base_vals[]  = $month;
 }
 
-// ── Count per cut_type ────────────────────────────────────────
+// ── KPI counts always show all 3 types (month filter only) ───
+// So the 3 cards always reflect the full month totals regardless
+// of which type filter button the user pressed.
 $count_sql = "
     SELECT cut_type, COUNT(*) AS cnt
     FROM recoiling_product rp
-    $where_sql
+    $base_where
     GROUP BY cut_type
 ";
 
 $stmt = $conn->prepare($count_sql);
-if ($bind_types) {
-    $stmt->bind_param($bind_types, ...$bind_vals);
+if ($base_types) {
+    $stmt->bind_param($base_types, ...$base_vals);
 }
 $stmt->execute();
 $count_res = $stmt->get_result();
@@ -51,7 +59,17 @@ while ($row = $count_res->fetch_assoc()) {
     }
 }
 
-// ── Detail rows ───────────────────────────────────────────────
+// ── Detail rows — apply cut_type filter on top of base ───────
+$detail_where  = $base_where;
+$detail_types  = $base_types;
+$detail_vals   = $base_vals;
+
+if (in_array($cut_type, $valid_types, true)) {
+    $detail_where  .= " AND rp.cut_type = ?";
+    $detail_types  .= 's';
+    $detail_vals[]  = $cut_type;
+}
+
 $detail_sql = "
     SELECT
         rp.id,
@@ -64,14 +82,14 @@ $detail_sql = "
         IFNULL(rp.roll_no,  '-')         AS roll_no
     FROM recoiling_product rp
     LEFT JOIN mother_coil mc ON rp.mother_id = mc.id
-    $where_sql
+    $detail_where
     ORDER BY rp.completed_at DESC
     LIMIT 500
 ";
 
 $stmt2 = $conn->prepare($detail_sql);
-if ($bind_types) {
-    $stmt2->bind_param($bind_types, ...$bind_vals);
+if ($detail_types) {
+    $stmt2->bind_param($detail_types, ...$detail_vals);
 }
 $stmt2->execute();
 $detail_res = $stmt2->get_result();
@@ -92,7 +110,8 @@ while ($r = $detail_res->fetch_assoc()) {
 }
 
 echo json_encode([
-    'month'  => $month ?: 'all',
-    'counts' => $counts,
-    'rows'   => $rows,
+    'month'    => $month ?: 'all',
+    'cut_type' => $cut_type ?: 'all',
+    'counts'   => $counts,
+    'rows'     => $rows,
 ], JSON_UNESCAPED_UNICODE);

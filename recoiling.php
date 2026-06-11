@@ -226,8 +226,8 @@ include 'header.php';
 ?>
 
 <style>
-    .status-cards { display:flex; gap:15px; margin-bottom:30px; }
-    .status-card  { flex:1; border-radius:8px; padding:20px; text-align:center; color:#fff; box-shadow:0 2px 8px rgba(0,0,0,0.1); }
+    .status-cards { display:flex; gap:15px; margin-bottom:30px; flex-wrap:wrap; }
+    .status-card  { flex:1; min-width:140px; border-radius:8px; padding:20px; text-align:center; color:#fff; box-shadow:0 2px 8px rgba(0,0,0,0.1); }
     .status-card.pending   { background: linear-gradient(135deg,#ffc107,#ff9800); }
     .status-card.completed { background: linear-gradient(135deg,#28a745,#20c997); }
     .roll-box { border:1px solid #ddd; padding:18px; border-radius:8px; margin-bottom:15px; background:#f9f9f9; }
@@ -235,17 +235,36 @@ include 'header.php';
 
     /* Mode selector cards */
     .mode-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-bottom:4px; }
+    @media (max-width: 576px) {
+        /* Stack mode cards vertically on small screens */
+        .mode-grid { grid-template-columns: 1fr; }
+    }
     .mode-card {
         border:2px solid #dee2e6; border-radius:10px; padding:16px 12px;
         text-align:center; cursor:pointer; transition:all .18s; background:#fff;
         position:relative;
     }
-    .mode-card:hover { border-color:#0d6efd; background:#f0f6ff; }
+    .mode-card:hover  { border-color:#0d6efd; background:#f0f6ff; }
     .mode-card.selected { border-color:#0d6efd; background:#e7f0ff; }
     .mode-card input[type=radio] { position:absolute; opacity:0; pointer-events:none; }
     .mode-card .mode-title { font-weight:700; font-size:.9rem; color:#212529; }
     .mode-card .mode-desc  { font-size:.75rem; color:#6c757d; margin-top:3px; }
     .mode-card.selected .mode-title { color:#0d6efd; }
+
+    /* ── Modal footer: sticky so it never scrolls away on tablet ── */
+    #recoilingModal .modal-footer {
+        position: sticky;
+        bottom: 0;
+        z-index: 10;
+        background: #f8f9fa;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    /* Buttons in modal footer stretch to fill on narrow screens */
+    #recoilingModal .modal-footer .btn {
+        flex: 1 1 130px;
+        min-width: 130px;
+    }
 </style>
 
 <?php if ($alertMessage): ?>
@@ -258,7 +277,7 @@ include 'header.php';
 
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-arrow-repeat"></i> Recoiling Cut</h2>
-    <div class="d-flex gap-2">
+    <div class="d-flex gap-2 flex-wrap">
         <button type="button" class="btn btn-info shadow-sm text-white" data-bs-toggle="modal" data-bs-target="#summaryModal">
             <i class="bi bi-bar-chart-line me-1"></i> Summary Report
         </button>
@@ -368,8 +387,8 @@ include 'header.php';
             </div>
             <div class="modal-body">
 
-                <!-- Month filter -->
-                <div class="row g-2 align-items-end mb-4">
+                <!-- Row 1: Month filter + Load -->
+                <div class="row g-2 align-items-end mb-3">
                     <div class="col-auto">
                         <label class="form-label fw-bold small">Filter by Month</label>
                         <input type="month" id="summaryMonthFilter"
@@ -389,26 +408,86 @@ include 'header.php';
                     <div class="col-auto ms-auto small text-muted" id="summaryRange"></div>
                 </div>
 
-                <!-- KPI cards -->
+                <!-- Row 2: Cut type filter buttons -->
+                <div class="mb-4">
+                    <label class="form-label fw-bold small d-block mb-2">Filter by Type</label>
+                    <div class="d-flex flex-wrap gap-2" id="summaryTypeFilters">
+                        <button type="button"
+                                class="btn btn-sm btn-dark active"
+                                data-type=""
+                                onclick="setSummaryType(this, '')">
+                            <i class="bi bi-grid me-1"></i>All Types
+                        </button>
+                        <button type="button"
+                                class="btn btn-sm btn-outline-secondary"
+                                data-type="rewinding"
+                                onclick="setSummaryType(this, 'rewinding')"
+                                style="border-color:#6610f2;color:#6610f2;">
+                            <i class="bi bi-arrow-repeat me-1"></i>Rewinding
+                        </button>
+                        <button type="button"
+                                class="btn btn-sm btn-outline-danger"
+                                data-type="normal"
+                                onclick="setSummaryType(this, 'normal')">
+                            <i class="bi bi-scissors me-1"></i>Cut Defect
+                        </button>
+                        <button type="button"
+                                class="btn btn-sm btn-outline-warning"
+                                data-type="cut_into_2"
+                                onclick="setSummaryType(this, 'cut_into_2')">
+                            ✂️ Cut Into 2
+                        </button>
+                    </div>
+                </div>
+
+                <!-- KPI cards — always show full month totals, clicking a card also filters -->
                 <div class="row g-3 mb-4" id="summaryKpiRow">
                     <div class="col-4">
-                        <div class="card border-0 shadow-sm text-center p-3" style="background:linear-gradient(135deg,#6610f2,#a855f7);color:#fff;">
+                        <div class="card border-0 shadow-sm text-center p-3 kpi-card"
+                             data-type="rewinding"
+                             onclick="setSummaryTypeByCard('rewinding')"
+                             style="background:linear-gradient(135deg,#6610f2,#a855f7);color:#fff;cursor:pointer;"
+                             title="Click to filter by Rewinding">
                             <div class="fw-bold small mb-1"><i class="bi bi-arrow-repeat me-1"></i>Rewinding</div>
                             <div class="fs-2 fw-bold" id="kpi_rewinding">—</div>
+                            <div class="small opacity-75 mt-1" id="kpi_rewinding_label">click to filter</div>
                         </div>
                     </div>
                     <div class="col-4">
-                        <div class="card border-0 shadow-sm text-center p-3" style="background:linear-gradient(135deg,#dc3545,#ff7043);color:#fff;">
+                        <div class="card border-0 shadow-sm text-center p-3 kpi-card"
+                             data-type="normal"
+                             onclick="setSummaryTypeByCard('normal')"
+                             style="background:linear-gradient(135deg,#dc3545,#ff7043);color:#fff;cursor:pointer;"
+                             title="Click to filter by Cut Defect">
                             <div class="fw-bold small mb-1"><i class="bi bi-scissors me-1"></i>Cut Defect</div>
                             <div class="fs-2 fw-bold" id="kpi_normal">—</div>
+                            <div class="small opacity-75 mt-1" id="kpi_normal_label">click to filter</div>
                         </div>
                     </div>
                     <div class="col-4">
-                        <div class="card border-0 shadow-sm text-center p-3" style="background:linear-gradient(135deg,#fd7e14,#ffc107);color:#fff;">
-                            <div class="fw-bold small mb-1"><i class="bi bi-scissors me-1"></i>✂️ Cut Into 2</div>
+                        <div class="card border-0 shadow-sm text-center p-3 kpi-card"
+                             data-type="cut_into_2"
+                             onclick="setSummaryTypeByCard('cut_into_2')"
+                             style="background:linear-gradient(135deg,#fd7e14,#ffc107);color:#fff;cursor:pointer;"
+                             title="Click to filter by Cut Into 2">
+                            <div class="fw-bold small mb-1">✂️ Cut Into 2</div>
                             <div class="fs-2 fw-bold" id="kpi_cut2">—</div>
+                            <div class="small opacity-75 mt-1" id="kpi_cut2_label">click to filter</div>
                         </div>
                     </div>
+                </div>
+
+                <!-- Active filter badge -->
+                <div id="summaryActiveFilter" class="mb-2" style="display:none;">
+                    <span class="badge bg-secondary fs-6 fw-normal px-3 py-2">
+                        <i class="bi bi-funnel-fill me-1"></i>
+                        Showing: <strong id="summaryActiveFilterLabel"></strong>
+                        <button type="button"
+                                class="btn-close btn-close-white btn-sm ms-2"
+                                style="font-size:.6rem;"
+                                onclick="setSummaryType(document.querySelector('#summaryTypeFilters [data-type=\'\']'), '')"
+                                title="Clear type filter"></button>
+                    </span>
                 </div>
 
                 <!-- Detail table -->
@@ -439,7 +518,7 @@ include 'header.php';
     </div>
 </div>
 
-<!-- ═══ MODAL ═══════════════════════════════════════════════════ -->
+<!-- ═══ RECOILING MODAL ══════════════════════════════════════════════════════ -->
 <div class="modal fade" id="recoilingModal" tabindex="-1">
     <div class="modal-dialog modal-xl modal-dialog-scrollable">
         <div class="modal-content border-0 shadow-lg">
@@ -521,9 +600,21 @@ include 'header.php';
 
             </form>
 
-            <div class="modal-footer bg-light">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="submit" form="recoilingForm" class="btn btn-success px-4" id="submitBtn" style="display:none;">
+            <!--
+                FIX: modal-footer is now position:sticky via CSS above so it
+                     never scrolls out of view on tablet.
+                FIX: submitBtn now uses class="d-none" instead of style="display:none"
+                     and is toggled via classList in JS — more reliable on tablet browsers.
+                FIX: Both buttons use flex:1 1 130px so they wrap instead of disappearing
+                     on narrow screens.
+            -->
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                    <i class="bi bi-x-circle me-1"></i> Cancel
+                </button>
+                <button type="submit" form="recoilingForm"
+                        class="btn btn-success px-4 d-none"
+                        id="submitBtn">
                     <i class="bi bi-check-circle me-1"></i> Complete Recoiling
                 </button>
             </div>
@@ -584,7 +675,11 @@ function openRecoilModal(btn) {
     document.querySelectorAll('input[name="cut_type_radio"]').forEach(r => r.checked = false);
     document.getElementById('rollsContainer').innerHTML      = '';
     document.getElementById('rollDetailsForm').style.display = 'none';
-    document.getElementById('submitBtn').style.display       = 'none';
+
+    // FIX: use d-none class toggle instead of inline style
+    const submitBtn = document.getElementById('submitBtn');
+    submitBtn.classList.add('d-none');
+    submitBtn.classList.remove('d-inline-block');
 
     bootstrap.Modal.getOrCreateInstance(document.getElementById('recoilingModal')).show();
 }
@@ -597,9 +692,13 @@ function selectMode(mode) {
     const container = document.getElementById('rollsContainer');
     container.innerHTML = '';
     document.getElementById('rollDetailsForm').style.display = 'block';
-    document.getElementById('submitBtn').style.display       = 'inline-block';
 
-    if (mode === 'rewinding')  container.appendChild(buildRewindingForm());
+    // FIX: use d-none class toggle instead of inline style
+    const submitBtn = document.getElementById('submitBtn');
+    submitBtn.classList.remove('d-none');
+    submitBtn.classList.add('d-inline-block');
+
+    if (mode === 'rewinding')   container.appendChild(buildRewindingForm());
     else if (mode === 'normal') container.appendChild(buildCutDefectForm());
     else if (mode === 'cut_into_2') container.appendChild(buildCutInto2());
 }
@@ -798,24 +897,103 @@ function buildCutInto2() {
 }
 
 // ── Summary Report ─────────────────────────────────────────────
+let summaryActiveCutType = ''; // '' = all, or 'rewinding' | 'normal' | 'cut_into_2'
+
+const typeLabel = { rewinding:'🔄 Rewinding', normal:'✂️ Cut Defect', cut_into_2:'✂️✂️ Cut Into 2' };
+const typeCls   = { rewinding:'bg-secondary', normal:'bg-danger',    cut_into_2:'bg-warning text-dark' };
+const typeFullLabel = {
+    '':          'All Types',
+    rewinding:   '🔄 Rewinding',
+    normal:      '✂️ Cut Defect',
+    cut_into_2:  '✂️ Cut Into 2',
+};
+
 function clearSummaryFilter() {
     document.getElementById('summaryMonthFilter').value = '';
     loadSummary();
 }
 
+// Called by the type filter buttons (row 2)
+function setSummaryType(btn, type) {
+    summaryActiveCutType = type;
+
+    // Update button active states
+    document.querySelectorAll('#summaryTypeFilters .btn').forEach(b => {
+        b.classList.remove('active', 'btn-dark', 'btn-secondary');
+        b.classList.add(b.dataset.type === '' ? 'btn-outline-secondary' : '');
+    });
+
+    // Highlight active button
+    if (btn) {
+        btn.classList.add('active');
+        if (type === '') {
+            btn.classList.remove('btn-outline-secondary');
+            btn.classList.add('btn-dark');
+        }
+    }
+
+    // Update KPI card ring highlight
+    document.querySelectorAll('.kpi-card').forEach(c => {
+        c.style.outline = c.dataset.type === type && type !== ''
+            ? '3px solid #fff'
+            : 'none';
+    });
+
+    // Show/hide active filter badge
+    const badge = document.getElementById('summaryActiveFilter');
+    if (type !== '') {
+        badge.style.display = 'block';
+        document.getElementById('summaryActiveFilterLabel').textContent = typeFullLabel[type] ?? type;
+    } else {
+        badge.style.display = 'none';
+    }
+
+    loadSummary();
+}
+
+// Called when user clicks a KPI card
+function setSummaryTypeByCard(type) {
+    // Toggle off if already active
+    if (summaryActiveCutType === type) {
+        const allBtn = document.querySelector('#summaryTypeFilters [data-type=""]');
+        setSummaryType(allBtn, '');
+    } else {
+        const btn = document.querySelector(`#summaryTypeFilters [data-type="${type}"]`);
+        setSummaryType(btn, type);
+    }
+}
+
 function loadSummary() {
     const month = document.getElementById('summaryMonthFilter').value;
-    document.getElementById('summaryRange').textContent = month ? 'Showing: ' + month : 'Showing: All time';
+    const type  = summaryActiveCutType;
 
-    let url = 'recoiling_summary_ajax.php';
-    if (month) url += '?month=' + encodeURIComponent(month);
+    // Range label
+    let rangeText = month ? month : 'All time';
+    if (type) rangeText += ' · ' + (typeFullLabel[type] ?? type);
+    document.getElementById('summaryRange').textContent = rangeText;
+
+    // Build URL
+    const params = new URLSearchParams();
+    if (month) params.set('month', month);
+    if (type)  params.set('cut_type', type);
+    const url = 'recoiling_summary_ajax.php' + (params.toString() ? '?' + params.toString() : '');
+
+    // Loading state
+    document.getElementById('summaryTableBody').innerHTML =
+        '<tr><td colspan="7" class="text-center text-muted py-3"><span class="spinner-border spinner-border-sm me-2"></span>Loading…</td></tr>';
 
     fetch(url)
         .then(r => r.json())
         .then(data => {
+            // KPI cards always show full month counts (not filtered by type)
             document.getElementById('kpi_rewinding').textContent = data.counts?.rewinding  ?? 0;
             document.getElementById('kpi_normal').textContent    = data.counts?.normal     ?? 0;
             document.getElementById('kpi_cut2').textContent      = data.counts?.cut_into_2 ?? 0;
+
+            // Dim inactive KPI cards when a type is active
+            document.querySelectorAll('.kpi-card').forEach(c => {
+                c.style.opacity = (type !== '' && c.dataset.type !== type) ? '0.45' : '1';
+            });
 
             const tbody = document.getElementById('summaryTableBody');
             if (!data.rows || data.rows.length === 0) {
@@ -823,17 +1001,14 @@ function loadSummary() {
                 return;
             }
 
-            const typeLabel = { rewinding:'🔄 Rewinding', normal:'✂️ Cut Defect', cut_into_2:'✂️✂️ Cut Into 2' };
-            const typeCls   = { rewinding:'bg-secondary', normal:'bg-danger', cut_into_2:'bg-warning text-dark' };
-
             tbody.innerHTML = data.rows.map(r => `
                 <tr>
-                    <td class="small">${escHtml(r.completed_at ?? r.date_in ?? '-')}</td>
+                    <td class="small">${escHtml(r.completed_at ?? '-')}</td>
                     <td><span class="badge ${typeCls[r.cut_type] ?? 'bg-secondary'}">${typeLabel[r.cut_type] ?? escHtml(r.cut_type)}</span></td>
-                    <td class="font-monospace small">${escHtml(r.lot_no ?? '-')}</td>
+                    <td class="font-monospace small">${escHtml(r.lot_no  ?? '-')}</td>
                     <td class="font-monospace small">${escHtml(r.coil_no ?? '-')}</td>
-                    <td class="small">${escHtml(r.roll_no ?? '-')}</td>
-                    <td class="small">${escHtml(r.product ?? '-')}</td>
+                    <td class="small">${escHtml(r.roll_no  ?? '-')}</td>
+                    <td class="small">${escHtml(r.product  ?? '-')}</td>
                     <td class="text-end small">${parseFloat(r.new_length || 0).toLocaleString()}</td>
                 </tr>
             `).join('');

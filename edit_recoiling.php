@@ -38,8 +38,10 @@ $data = $result->fetch_assoc();
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Edit Recoiling Product</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <style>
         body {
             background-color: #f8f9fa;
@@ -55,6 +57,17 @@ $data = $result->fetch_assoc();
         h2 {
             color: #212529;
             margin-bottom: 30px;
+        }
+
+        /* ── Responsive button row ── */
+        .btn-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .btn-row .btn {
+            flex: 1 1 120px;   /* grow, shrink, min-width 120px */
+            min-width: 120px;
         }
     </style>
 </head>
@@ -114,13 +127,15 @@ $data = $result->fetch_assoc();
             <div class="alert alert-info">
                 <small><strong>Note:</strong> Status: <?= strtoupper($data['status']) ?></small>
             </div>
-            
-            <div class="d-flex gap-2">
-                <button type="submit" class="btn btn-primary flex-fill">
-                    <i class="bi bi-save"></i> Update
+
+            <!-- FIX: was d-flex gap-2; now btn-row for responsive wrapping.
+                 FIX: Cancel <i> had class="btn btn-danger" (wrong) → now bi bi-x-circle -->
+            <div class="btn-row">
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-save me-1"></i> Update
                 </button>
-                <a href="recoiling.php" class="btn btn-secondary flex-fill">
-                    <i class="btn btn-danger"></i> Cancel
+                <a href="recoiling.php" class="btn btn-secondary">
+                    <i class="bi bi-x-circle me-1"></i> Cancel
                 </a>
             </div>
         </form>
