@@ -1,5 +1,12 @@
 <?php
 // tracking_product_export.php
+// ─────────────────────────────────────────────────────────────
+// UPDATE: matches tracking_product.php — reslit / recoiled PARENT
+//   rolls are EXCLUDED from the export entirely. The export now
+//   contains only rolls that actually reach a customer (children
+//   and un-transformed rolls), so the traceability sheet shows a
+//   clean parent → customer mapping with no consumed parents.
+// ─────────────────────────────────────────────────────────────
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 use PhpOffice\PhpSpreadsheet\Style\Fill;
@@ -14,6 +21,10 @@ if (!isset($_SESSION['role'])) {
 }
 
 include 'config.php';
+
+// A roll is "consumed" (transformed into child rolls) when either
+// flag is set. Excluded from the export to match the page view.
+const CONSUMED_SQL = "(sp.is_reslitted = 1 OR sp.is_recoiled = 1)";
 
 // ── Filters ───────────────────────────────────────────────────
 $search          = trim($_GET['search']   ?? '');
@@ -32,6 +43,7 @@ $sql = "
     FROM slitting_product sp
     LEFT JOIN mother_coil mc ON mc.id = sp.mother_id
     WHERE sp.is_voided = 0
+      AND NOT " . CONSUMED_SQL . "
 ";
 
 $params = []; $types = '';
@@ -187,7 +199,7 @@ foreach ($rows as $i => $row) {
         strtoupper($row['original_source'] ?? 'RAW MAT'),         // C  Source
         $row['product']       ?? '',                               // D  Product
         $row['grade']         ?? '',                               // E  Grade
-        $row['lot_no']        ?? '',                               // F  Lot No   ← CENTER
+        $row['lot_no']        ?? '',                               // F  Lot No
         $row['coil_no']       ?? '',                               // G  Coil No
         str_replace('R','R-',$row['roll_no'] ?? ''),               // H  Roll No
         (float)($row['width'] ?? 0),                               // I  Width

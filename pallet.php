@@ -1,21 +1,21 @@
 <?php
 // =============================================================
-// pallet.php  —  v3 (Est. Weight Display)
-// NEW: Each roll slot shows Est. Weight (kg).
-//      A running total weight badge updates live when rolls
-//      are added or removed.
+// pallet.php  —  v7 (Flexible Manual Entry Format)
+// NEW: The manual / scanned input now accepts TWO formats:
+//   A) KEY=value pairs (camera QR / hardware scanner):
+//        LOT=826277;COIL=FK-1;ROLL=R1
+//   B) Plain space-separated values (typed by hand):
+//        826277 FK-1 R1
+//   parseQR() auto-detects which one it received.
 //
-// Est. Weight formula (same as sticker):
+// Retained from v6: triple duplicate-scan guard (isAdding lock,
+//   same-pallet drop, slot-present drop); scanner cache-busted
+//   (?v=7).
+// Retained from v5: no first-roll reload; constraint badges live.
+// Retained from v4: client guard only blocks rolls on a DIFFERENT
+//   pallet.
+// Retained from v3: Est. Weight display (per-roll + running total).
 //   wgt = (actual_length_m × width_mm / 1000) × std_weight
-//
-// Changes from v2:
-//   1. getPalletItems() JOIN → std_wgt to fetch std_weight
-//   2. PHP slot cards show "~X.XX kg" per roll
-//   3. Weight summary bar below progress bar (total + per-roll)
-//   4. JS fillSlot() accepts std_weight, renders weight chip
-//   5. JS recalcTotalWeight() keeps total in sync after
-//      add / remove operations
-//   6. lookup_product AJAX returns std_weight from std_wgt
 // =============================================================
 
 session_start();
@@ -425,8 +425,11 @@ if (isset($_GET['success'])): ?>
             </div>
 
             <!-- Constraint badges -->
+            <!-- NOTE: this header carries id="constraintHeader" so JS can
+                 fill it live after the first roll, removing the need for a
+                 full page reload before scanning the second roll. -->
             <?php if (!empty(trim($activePallet['customer_name'] ?? ''))): ?>
-            <div class="px-3 pt-2 pb-1 border-bottom d-flex flex-wrap gap-2 align-items-center">
+            <div id="constraintHeader" class="px-3 pt-2 pb-1 border-bottom d-flex flex-wrap gap-2 align-items-center">
                 <span class="constraint-badge"><i class="bi bi-person-check me-1"></i><?= htmlspecialchars($activePallet['customer_name']) ?></span>
                 <span class="constraint-badge"><i class="bi bi-hash me-1"></i><?= htmlspecialchars($activePallet['ref_no']) ?></span>
                 <span class="constraint-badge"><i class="bi bi-tag me-1"></i><?= htmlspecialchars($activePallet['product_type']) ?></span>
@@ -434,7 +437,7 @@ if (isset($_GET['success'])): ?>
                 <small class="text-muted align-self-center" style="font-size:10px;">All rolls must match</small>
             </div>
             <?php else: ?>
-            <div class="px-3 py-2 border-bottom">
+            <div id="constraintHeader" class="px-3 py-2 border-bottom">
                 <small class="text-muted">
                     <i class="bi bi-qr-code-scan me-1"></i>
                     Scan the first roll — its Customer, Ref No, Product Type and Width will lock as constraints.
@@ -492,6 +495,22 @@ if (isset($_GET['success'])): ?>
                         <button type="button" class="btn btn-primary btn-sm w-100"
                                 onclick="manualLookup()">
                             <i class="bi bi-search me-1"></i> Find & Add
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Combined single-line manual entry (space-separated) -->
+                <div class="row g-2 mb-3">
+                    <div class="col-md-9">
+                        <input type="text" id="manCombined" class="form-control form-control-sm"
+                               placeholder="Or type all-in-one:  826277 FK-1 R1"
+                               autocomplete="off" autocorrect="off" spellcheck="false"
+                               style="font-family:monospace;">
+                    </div>
+                    <div class="col-md-3">
+                        <button type="button" class="btn btn-outline-primary btn-sm w-100"
+                                onclick="combinedLookup()">
+                            <i class="bi bi-box-arrow-in-down me-1"></i> Add
                         </button>
                     </div>
                 </div>
@@ -890,6 +909,11 @@ const PALLET_ID = <?= $activePalletId ?: 'null' ?>;
 const MAX_ROLLS = <?= $MAX ?>;
 let   rollCount = <?= count($activeItems) ?>;
 
+// Guard against overlapping/duplicate scan submissions. While a
+// lookup+add round-trip is in flight, ignore any further scans —
+// this is the front-line defence against a camera double-decode.
+let   isAdding  = false;
+
 // ─────────────────────────────────────────────────────────────
 // EST. WEIGHT HELPERS
 // ─────────────────────────────────────────────────────────────
@@ -935,28 +959,67 @@ function recalcTotalWeight() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// QR PARSING
+// updateConstraintBadges(product)
+// After the FIRST roll seeds the pallet constraints, fill the
+// header badges live. This replaces the old location.reload(),
+// which created a window where the next scan failed.
+// ─────────────────────────────────────────────────────────────
+function updateConstraintBadges(p) {
+    const header = document.getElementById('constraintHeader');
+    if (!header) return;
+    header.className = 'px-3 pt-2 pb-1 border-bottom d-flex flex-wrap gap-2 align-items-center';
+    header.innerHTML = `
+        <span class="constraint-badge"><i class="bi bi-person-check me-1"></i>${escHtml(p.customer_name || '')}</span>
+        <span class="constraint-badge"><i class="bi bi-hash me-1"></i>${escHtml(p.ref_no || '')}</span>
+        <span class="constraint-badge"><i class="bi bi-tag me-1"></i>${escHtml(p.product || '')}</span>
+        <span class="constraint-badge"><i class="bi bi-arrows-expand me-1"></i>${(+p.width).toFixed(0)} mm</span>
+        <small class="text-muted align-self-center" style="font-size:10px;">All rolls must match</small>
+    `;
+}
+
+// ─────────────────────────────────────────────────────────────
+// QR / INPUT PARSING
+// Accepts TWO formats:
+//   A) KEY=value pairs (camera QR / hardware scanner):
+//        LOT=826277;COIL=FK-1;ROLL=R1
+//   B) Plain space-separated values (typed by hand):
+//        826277 FK-1 R1
 // ─────────────────────────────────────────────────────────────
 function parseQR(raw) {
-    const parts = {};
-    raw.split(';').forEach(p => {
-        const idx = p.indexOf('=');
-        if (idx > -1) {
-            parts[p.substring(0, idx).trim().toUpperCase()]
-                = decodeURIComponent(p.substring(idx + 1).trim());
-        }
-    });
-    return { lot: parts.LOT || '', coil: parts.COIL || '', roll: parts.ROLL || '' };
+    raw = (raw || '').trim();
+
+    // ── Format A: contains '=' → KEY=value;KEY=value ──────────
+    if (raw.indexOf('=') > -1) {
+        const parts = {};
+        raw.split(';').forEach(p => {
+            const idx = p.indexOf('=');
+            if (idx > -1) {
+                parts[p.substring(0, idx).trim().toUpperCase()]
+                    = decodeURIComponent(p.substring(idx + 1).trim());
+            }
+        });
+        return { lot: parts.LOT || '', coil: parts.COIL || '', roll: parts.ROLL || '' };
+    }
+
+    // ── Format B: no '=' → split on whitespace ────────────────
+    //    First token = Lot, second = Coil, third = Roll.
+    //    Extra tokens are ignored.
+    const tokens = raw.split(/\s+/).filter(Boolean);
+    return {
+        lot:  tokens[0] || '',
+        coil: tokens[1] || '',
+        roll: tokens[2] || '',
+    };
 }
 
 async function processQR(raw) {
     const { lot, coil, roll } = parseQR(raw);
-    if (!lot || !coil) { showFeedback('Could not parse QR: ' + escHtml(raw), false); return; }
+    if (!lot || !coil) { showFeedback('Could not parse input: ' + escHtml(raw), false); return; }
     await lookupAndAdd(lot, coil, roll);
 }
 
 // ─────────────────────────────────────────────────────────────
-// MANUAL ENTRY
+// MANUAL ENTRY — three separate boxes (Lot / Coil / Roll)
 // ─────────────────────────────────────────────────────────────
 async function manualLookup() {
     const lot  = document.getElementById('manLot').value.trim();
@@ -971,55 +1034,113 @@ async function manualLookup() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// MANUAL ENTRY — single combined box (space-separated)
+//   e.g. "826277 FK-1 R1"
+// ─────────────────────────────────────────────────────────────
+async function combinedLookup() {
+    const el  = document.getElementById('manCombined');
+    const val = el.value.trim();
+    if (!val) { showFeedback('Type the roll, e.g. 826277 FK-1 R1', false); el.focus(); return; }
+    await processQR(val);
+    el.value = '';
+    el.focus();
+}
+
+// ─────────────────────────────────────────────────────────────
 // LOOKUP + ADD
 // ─────────────────────────────────────────────────────────────
 async function lookupAndAdd(lot, coil, roll) {
     if (!PALLET_ID) return;
+
+    // Drop overlapping scans (e.g. camera double-decode) while a
+    // previous add is still being processed.
+    if (isAdding) return;
+
     if (rollCount >= MAX_ROLLS) {
         showFeedback(`Pallet is full (${MAX_ROLLS}/${MAX_ROLLS}).`, false);
         return;
     }
 
-    let lk;
+    isAdding = true;
     try {
-        lk = await fetch(
-            `pallet.php?ajax=lookup_product&lot=${enc(lot)}&coil=${enc(coil)}&roll=${enc(roll)}`
-        ).then(r => r.json());
-    } catch {
-        showFeedback('Network error during lookup.', false);
-        return;
+        let lk;
+        try {
+            lk = await fetch(
+                `pallet.php?ajax=lookup_product&lot=${enc(lot)}&coil=${enc(coil)}&roll=${enc(roll)}`
+            ).then(r => r.json());
+        } catch {
+            showFeedback('Network error during lookup.', false);
+            return;
+        }
+        if (!lk.ok) { showFeedback(lk.msg, false); return; }
+
+        const p = lk.product;
+
+        if (p.is_voided == 1) { showFeedback('This roll has been voided.', false); return; }
+        if (p.stock_counted != 1) { showFeedback(`Roll ${lot} ${coil} ${roll} — actual length not saved yet.`, false); return; }
+
+        // ── Already on a DIFFERENT pallet → real error ───────────
+        if (p.pallet_id && p.pallet_id != PALLET_ID) {
+            showFeedback(`Already on pallet ${escHtml(p.pallet_no)}.`, false);
+            return;
+        }
+
+        // ── Already on THIS pallet → duplicate scan of a roll we
+        //    just added. Silently ignore so a camera double-decode
+        //    cannot trigger a server "already on pallet" error or
+        //    jam the UI. It's already shown in a slot. ───────────
+        if (p.pallet_id && p.pallet_id == PALLET_ID) {
+            return;
+        }
+
+        // ── Belt-and-suspenders: if a slot already shows this
+        //    product id, treat it as a duplicate too (covers the
+        //    race where the lookup hasn't caught up to the just-
+        //    added row yet). ───────────────────────────────────
+        if (document.querySelector(`#rollList [data-product-id="${p.id}"]`)) {
+            return;
+        }
+
+        const fd = new FormData();
+        fd.append('action',     'add_roll');
+        fd.append('pallet_id',  PALLET_ID);
+        fd.append('product_id', p.id);
+
+        let ad;
+        try {
+            ad = await fetch('pallet.php', { method: 'POST', body: fd }).then(r => r.json());
+        } catch {
+            showFeedback('Network error while adding roll.', false);
+            return;
+        }
+        if (!ad.ok) { showFeedback(ad.msg, false); return; }
+
+        rollCount = ad.roll_count;
+        fillSlot(ad.seq, p);
+        updateProgress(rollCount);
+
+        // Clear manual entry fields after ANY successful add
+        ['manLot', 'manCoil', 'manRoll', 'manCombined'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+
+        showFeedback(
+            `✓ Added: ${escHtml(lot)} ${escHtml(coil)} – R-${escHtml(roll)} (slot ${ad.seq})`,
+            true
+        );
+
+        // First roll seeds the pallet constraints. Update the badges
+        // live instead of reloading the page — the old reload created
+        // a window where scanning the 2nd roll failed with a stale
+        // "already on pallet" error and forced a manual refresh.
+        if (ad.seq === 1) {
+            updateConstraintBadges(p);
+        }
+    } finally {
+        // Always release the lock so the next legitimate scan works.
+        isAdding = false;
     }
-    if (!lk.ok) { showFeedback(lk.msg, false); return; }
-
-    const p = lk.product;
-
-    if (p.is_voided == 1) { showFeedback('This roll has been voided.', false); return; }
-    if (p.stock_counted != 1) { showFeedback(`Roll ${lot} ${coil} ${roll} — actual length not saved yet.`, false); return; }
-    if (p.pallet_id) { showFeedback(`Already on pallet ${escHtml(p.pallet_no)}.`, false); return; }
-
-    const fd = new FormData();
-    fd.append('action',     'add_roll');
-    fd.append('pallet_id',  PALLET_ID);
-    fd.append('product_id', p.id);
-
-    let ad;
-    try {
-        ad = await fetch('pallet.php', { method: 'POST', body: fd }).then(r => r.json());
-    } catch {
-        showFeedback('Network error while adding roll.', false);
-        return;
-    }
-    if (!ad.ok) { showFeedback(ad.msg, false); return; }
-
-    rollCount = ad.roll_count;
-    fillSlot(ad.seq, p);
-    updateProgress(rollCount);
-    showFeedback(
-        `✓ Added: ${escHtml(lot)} ${escHtml(coil)} – R-${escHtml(roll)} (slot ${ad.seq})`,
-        true
-    );
-
-    if (ad.seq === 1) setTimeout(() => location.reload(), 1200);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1179,6 +1300,13 @@ function showFeedback(msg, ok) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Enter key on the combined box → Add
+// ─────────────────────────────────────────────────────────────
+document.getElementById('manCombined')?.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); combinedLookup(); }
+});
+
+// ─────────────────────────────────────────────────────────────
 // CREATE PALLET MODAL
 // ─────────────────────────────────────────────────────────────
 let palletNoValid = false;
@@ -1269,7 +1397,8 @@ function escHtml(s) {
 function enc(s) { return encodeURIComponent(s ?? ''); }
 </script>
 
-<script src="camera_scanner.js"></script>
+<!-- Cache-busted (?v=7) so the browser always loads the latest scanner. -->
+<script src="camera_scanner.js?v=7"></script>
 <script>
 if (PALLET_ID) {
     initCameraScanner({

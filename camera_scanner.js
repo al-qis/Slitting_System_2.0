@@ -1,12 +1,28 @@
 /**
- * camera_scanner.js  v4 — INSTANT CLOSE
+ * camera_scanner.js  v7 — CLEAN STOP + DECODE GUARD + new manual format
  * ============================================================
- * ROOT FIX: We no longer call scanner.stop() on close.
- * Instead we REMOVE the #cam-reader div from the DOM entirely.
- * Removing the element kills the video stream immediately —
- * the browser releases the camera hardware right away.
- * Next open creates a fresh #cam-reader div and new scanner.
- * Result: close is instant, no async waiting at all.
+ * v7 changes:
+ *   - Manual-entry placeholder updated to the new space-separated
+ *     format ("826277 FK-1 R1"). The combined value is passed
+ *     straight to onScan(), and pallet.php's parseQR() auto-detects
+ *     space-separated vs KEY=value input.
+ *   - Version bumped to match the cache-busting ?v=7 include.
+ *
+ * Core fix (unchanged from v5/v6):
+ *   Earlier versions removed the #cam-reader element on close
+ *   WITHOUT calling scanner.stop(). The html5-qrcode library's
+ *   internal scan loop kept running on the detached node, still
+ *   holding the camera track. On the NEXT open it could fire
+ *   onDecode again with the PREVIOUS scan's value — a phantom
+ *   re-scan that jammed the UI and stopped the camera reopening.
+ *
+ *   FIX:
+ *     1. closeReader() calls scanner.stop() FIRST, then removes
+ *        the DOM node (camera fully released).
+ *     2. one-shot `hasDecoded` flag → onDecode fires at most once
+ *        per open session.
+ *     3. `thisScanner !== scanner` stale-instance check on every
+ *        callback.
  * ============================================================
  */
 
@@ -304,7 +320,7 @@
         </div>
         <div id="cam-manual-row">
           <input id="cam-manual-input" type="text"
-                 placeholder="LOT=5001;COIL=FK-1;ROLL=R1"
+                 placeholder="826277 FK-1 R1"
                  autocomplete="off" autocorrect="off" spellcheck="false">
           <button id="cam-manual-submit" type="button">Submit</button>
         </div>
@@ -340,24 +356,47 @@
 
     var isOpen     = false;
     var isStarting = false;
+    var hasDecoded = false;   /* one-shot guard per open session */
     var scanner    = null;
 
-    /* ── destroyReader — THE CORE FIX ─────────────────────
-       Remove the #cam-reader element from the DOM.
-       This kills the <video> stream immediately — the browser
-       releases the camera hardware with no async wait at all.
-       No scanner.stop() needed.                             */
-    function destroyReader() {
-      var old = document.getElementById('cam-reader');
-      if (old) old.parentNode.removeChild(old);
-      scanner    = null;
+    /* ── closeReader — THE CORE FIX ───────────────────────
+       Stop the running scanner FIRST so the library's internal
+       scan loop ends and the camera track is released, THEN
+       remove the #cam-reader element. The previous version
+       skipped stop(), leaving a stale loop that could re-fire
+       onDecode on the next open (phantom re-scan).            */
+    function closeReader() {
+      var s = scanner;
+      scanner    = null;        /* drop our reference immediately */
       isStarting = false;
+
+      function removeNode() {
+        var old = document.getElementById('cam-reader');
+        if (old && old.parentNode) old.parentNode.removeChild(old);
+      }
+
+      if (s) {
+        try {
+          /* stop() returns a promise; remove the node once it
+             resolves (or fails — either way the loop has ended). */
+          var p = s.stop();
+          if (p && typeof p.then === 'function') {
+            p.then(removeNode).catch(removeNode);
+          } else {
+            removeNode();
+          }
+        } catch (e) {
+          /* Already stopped or never started — just remove node */
+          removeNode();
+        }
+      } else {
+        removeNode();
+      }
     }
 
-    /* ── closeOverlay — INSTANT ───────────────────────────
-       1. Hide overlay (same frame as tap)
-       2. Destroy reader element (releases camera hardware)
-       Everything is synchronous — zero async delay.        */
+    /* ── closeOverlay — UI hides instantly, scanner stops ──
+       The overlay is hidden synchronously so it still FEELS
+       instant; the camera is released by closeReader().      */
     function closeOverlay() {
       if (!isOpen) return;
       isOpen     = false;
@@ -366,8 +405,8 @@
       /* 1. Hide UI immediately */
       overlay.classList.remove('open');
 
-      /* 2. Kill video element — releases camera instantly */
-      destroyReader();
+      /* 2. Stop scanner + release camera, then remove node */
+      closeReader();
 
       /* 3. Reset state for next open */
       permErr.classList.remove('show');
@@ -381,6 +420,7 @@
       if (isOpen || isStarting) return;
       isOpen     = true;
       isStarting = true;
+      hasDecoded = false;   /* fresh session — allow exactly one decode */
 
       /* Reset UI */
       permErr.classList.remove('show');
@@ -389,8 +429,10 @@
       manRow.classList.remove('show');
       setStatus('loading', 'Starting camera…');
 
+      /* Make sure any previous reader is fully gone first */
+      closeReader();
+
       /* Create a fresh #cam-reader div inside the wrap */
-      destroyReader();
       var readerDiv    = document.createElement('div');
       readerDiv.id     = 'cam-reader';
       /* Insert before the first child (before brackets / scan-line) */
@@ -400,9 +442,10 @@
 
       /* Start scanner on the new element */
       scanner = new Html5Qrcode('cam-reader');
+      var thisScanner = scanner;   /* capture for stale-check */
 
       Html5Qrcode.getCameras().then(function (cameras) {
-        if (!isOpen) { destroyReader(); return; }
+        if (!isOpen || thisScanner !== scanner) { return; }
 
         if (!cameras || cameras.length === 0) {
           isStarting = false;
@@ -410,7 +453,7 @@
           return;
         }
 
-        scanner.start(
+        thisScanner.start(
           { facingMode: 'environment' },
           {
             fps: 10,
@@ -421,17 +464,22 @@
             aspectRatio: 1.0,
           },
           function onDecode(text) {
+            /* Guards: ignore if closed, if this isn't the active
+               scanner, or if we've already decoded this session. */
             if (!isOpen) return;
+            if (thisScanner !== scanner) return;
+            if (hasDecoded) return;
+            hasDecoded = true;
 
-            /* Got a QR — close immediately and fire callback */
+            /* Got a QR — close (stops scanner) then fire callback */
             setStatus('success', '✓ ' + text);
-            closeOverlay();        /* instant — no waiting */
+            closeOverlay();
             onScan(text.trim());
           },
           function () { /* per-frame scan failures — ignore */ }
         ).then(function () {
           isStarting = false;
-          if (!isOpen) { destroyReader(); return; }
+          if (!isOpen || thisScanner !== scanner) { return; }
           setStatus('ready', '📷 Point camera at QR code');
         }).catch(function (err) {
           isStarting = false;
@@ -466,7 +514,11 @@
       }
     }
 
-    /* ── Manual entry ──────────────────────────────────── */
+    /* ── Manual entry ──────────────────────────────────────
+       Whatever the operator types is passed straight to onScan.
+       pallet.php's parseQR() auto-detects the format:
+         - "826277 FK-1 R1"        (space-separated)
+         - "LOT=826277;COIL=FK-1;ROLL=R1"  (KEY=value)        */
     function submitManual() {
       var val = manualIn.value.trim();
       if (!val) { manualIn.focus(); return; }

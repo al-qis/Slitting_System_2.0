@@ -1,5 +1,17 @@
 <?php
 // tracking_product.php — Global Traceability & Delivery Tracking
+// ─────────────────────────────────────────────────────────────
+// UPDATE: Reslit / recoiled PARENT rolls are now HIDDEN from this
+//   view entirely. A parent that was slit/recoiled into child
+//   rolls never goes to a customer — only its children do — so it
+//   is excluded from the table, the record count, and the KPIs.
+//   This keeps the traceability view focused on rolls that
+//   actually reach a customer (e.g. Roll 4 → 4A + 4B shows only
+//   4A and 4B, never the consumed Roll 4).
+//
+//   A roll is "consumed" when is_reslitted = 1 OR is_recoiled = 1.
+//   NOTE: this assumes those flags live on the PARENT row.
+// ─────────────────────────────────────────────────────────────
 session_start();
 
 if (!isset($_SESSION['role'])) {
@@ -8,6 +20,10 @@ if (!isset($_SESSION['role'])) {
 }
 
 include 'config.php';
+
+// SQL fragment: a roll is "consumed" (transformed into child rolls)
+// when either flag is set. Re-used across the queries below.
+const CONSUMED_SQL = "(sp.is_reslitted = 1 OR sp.is_recoiled = 1)";
 
 // ── Inputs ────────────────────────────────────────────────────
 $search          = trim($_GET['search']   ?? '');
@@ -41,6 +57,7 @@ $sql = "
     FROM slitting_product sp
     LEFT JOIN mother_coil mc ON mc.id = sp.mother_id
     WHERE sp.is_voided = 0
+      AND NOT " . CONSUMED_SQL . "
 ";
 
 $params = [];
@@ -96,10 +113,12 @@ $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
 $stmt->close();
 
 // ── Summary KPI counts (all records, not filtered) ───────────
+//    Consumed parents are EXCLUDED so they don't inflate totals.
 $counts_stmt = $conn->prepare("
     SELECT status, COUNT(*) AS total
-    FROM slitting_product
-    WHERE is_voided = 0
+    FROM slitting_product sp
+    WHERE sp.is_voided = 0
+      AND NOT " . CONSUMED_SQL . "
     GROUP BY status
 ");
 $counts_stmt->execute();
@@ -111,10 +130,11 @@ foreach ($counts_raw as $c) {
     if (isset($counts[$c['status']])) $counts[$c['status']] = (int)$c['total'];
 }
 
-// Finish Good = IN + stock_counted
+// Finish Good = IN + stock_counted (consumed parents excluded)
 $fg_stmt = $conn->prepare("
-    SELECT COUNT(*) AS total FROM slitting_product
-    WHERE is_voided = 0 AND status = 'IN' AND stock_counted = 1
+    SELECT COUNT(*) AS total FROM slitting_product sp
+    WHERE sp.is_voided = 0 AND sp.status = 'IN' AND sp.stock_counted = 1
+      AND NOT " . CONSUMED_SQL . "
 ");
 $fg_stmt->execute();
 $counts['FINISH_GOOD'] = (int)$fg_stmt->get_result()->fetch_assoc()['total'];
