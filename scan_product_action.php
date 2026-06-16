@@ -17,31 +17,82 @@ $host      = $_SERVER['HTTP_HOST'];
 $scriptDir = rtrim(dirname($_SERVER['PHP_SELF']), '/');
 $BASE_URL  = $protocol . '://' . $host . $scriptDir;
 
-// ── Parse QR ──────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+//  QR SANITIZATION — handles ALL scan sources consistently
+//
+//  Hardware scanner guns transmit as HID keyboard input and may
+//  inject several kinds of junk around the real barcode data:
+//
+//  1. Control characters  (\r \n \t \x00 etc.)
+//     — appended as "Enter" at end-of-scan, or as null-byte
+//       padding from certain firmware.
+//
+//  2. GS1 / AIM prefix bytes  e.g. \x00\x00 26  or  ]C1
+//     — the \x00 bytes are stripped by step 1; the remaining
+//       printable residue (like "26") is stripped by step 3.
+//     — AIM identifiers (]C1, ]d2, ]Q3 …) appear on some guns
+//       when "AIM output" is enabled in firmware.
+//
+//  3. Short numeric/symbol prefix before the real payload
+//     — after control chars are gone, some guns still leave a
+//       1–6 char prefix BEFORE "LOT=" / "COIL=" / "ROLL=".
+//     — The lookahead (?=LOT=|COIL=|ROLL=) ensures we only
+//       strip a prefix when the real payload immediately follows.
+// ═══════════════════════════════════════════════════════════════
+
 $qr = trim($_POST['qr'] ?? '');
-$qr = str_replace(["\r\n", "\r"], "\n", $qr);
+
+// Step 1 — strip ALL control characters (\r \n \t \x00 …)
+$qr = preg_replace('/[[:cntrl:]]/', '', $qr);
+
+// Step 2 — strip AIM symbology identifiers  e.g. ]C1  ]d2  ]Q3
+$qr = preg_replace('/^\][A-Za-z][0-9]/', '', $qr);
+
+// Step 3 — strip short junk prefix (≤6 chars) before real data
+//   Matches:  "26LOT=…"  "001LOT=…"  "&LOT=…"
+$qr = preg_replace('/^[^\w]{0,6}(?=LOT=|COIL=|ROLL=)/i', '', $qr);
+$qr = preg_replace('/^[\w]{1,6}(?=LOT=|COIL=|ROLL=)/i',  '', $qr);
+
+$qr = trim($qr);
 
 if ($qr === '') {
     header("Location: {$BASE_URL}/finish_product.php?scan=empty"); exit;
 }
 
-$firstLine = strtok($qr, "\n");
-$firstLine = trim(preg_replace('/[[:cntrl:]]+/', '', preg_replace('/^\][A-Za-z0-9]{2,3}/', '', trim($firstLine))));
+// ═══════════════════════════════════════════════════════════════
+//  QR PARSING — supports two formats
+//
+//  Format A  (KEY=value, all scan sources):
+//    LOT=826277;COIL=FK-1;ROLL=R1
+//    Keys matched case-insensitively; segments without "=" skipped.
+//
+//  Format B  (space-separated, manual overlay entry):
+//    826277 FK-1 R1
+// ═══════════════════════════════════════════════════════════════
 
-$data = [];
-parse_str(str_replace(';', '&', $firstLine), $data);
-$upper = [];
-foreach ($data as $k => $v) { $upper[strtoupper($k)] = $v; }
+$lot  = '';
+$coil = '';
+$roll = '';
 
-$lot  = trim($upper['LOT']  ?? '');
-$coil = trim($upper['COIL'] ?? '');
-$roll = trim($upper['ROLL'] ?? '');
+if (strpos($qr, '=') !== false) {
+    // Format A — KEY=value pairs
+    $pairs = [];
+    foreach (explode(';', $qr) as $segment) {
+        $segment = trim($segment);
+        if (strpos($segment, '=') === false) continue;  // skip junk prefix segments
+        [$k, $v] = explode('=', $segment, 2);
+        $pairs[strtoupper(trim($k))] = trim($v);
+    }
+    $lot  = $pairs['LOT']  ?? '';
+    $coil = $pairs['COIL'] ?? '';
+    $roll = $pairs['ROLL'] ?? '';
 
-if ($lot === '' || $coil === '' || $roll === '') {
-    $parts = array_values(array_filter(array_map('trim', explode(';', $firstLine)), 'strlen'));
-    $lot   = $lot  ?: ($parts[0] ?? '');
-    $coil  = $coil ?: ($parts[1] ?? '');
-    $roll  = $roll ?: ($parts[2] ?? '');
+} else {
+    // Format B — space-separated "826277 FK-1 R1"
+    $tokens = preg_split('/\s+/', $qr, 3);
+    $lot    = trim($tokens[0] ?? '');
+    $coil   = trim($tokens[1] ?? '');
+    $roll   = trim($tokens[2] ?? '');
 }
 
 if ($lot === '' || $coil === '') {
@@ -118,7 +169,6 @@ if ($status === 'APPROVED' && $palletId && $palletStatus === 'approved') {
                 . "&pallet_no="   . urlencode($result['pallet_no'])
                 . "&roll_count="  . $result['rolls_delivered']);
         } else {
-            // ALREADY_DELIVERED — idempotent
             header("Location: {$back}&scan=already_delivered_pallet&pallet_no=".urlencode($result['pallet_no'] ?? ''));
         }
     } else {
@@ -160,7 +210,6 @@ if ($status === 'IN') {
         header("Location: {$back}&scan=no_pallet&pid={$id}"); exit;
     }
 
-    // On a pallet — show its state to the operator
     header("Location: {$back}"
         . "&scan=on_pallet"
         . "&pid={$id}"

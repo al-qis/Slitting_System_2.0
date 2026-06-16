@@ -12,7 +12,48 @@ if ($_SESSION['role'] !== 'supervisor' && $_SESSION['role'] !== 'slitting') {
 
 include 'config.php';
 
-$qr = isset($_POST['qr']) ? trim($_POST['qr']) : '';
+// ═══════════════════════════════════════════════════════════════
+//  QR SANITIZATION — handles ALL scan sources consistently
+//
+//  Hardware scanner guns transmit as HID keyboard input and may
+//  inject several kinds of junk around the real barcode data:
+//
+//  1. Control characters  (\r \n \t \x00 etc.)
+//     — appended as "Enter" at end-of-scan, or as null-byte
+//       padding from certain firmware.
+//
+//  2. GS1 / AIM prefix bytes  e.g. \x00\x00 26  or  ]C1
+//     — the \x00 bytes are stripped by step 1; the remaining
+//       printable residue (like "26") is stripped by step 3.
+//     — AIM identifiers (]C1, ]d2, ]Q3 …) appear on some guns
+//       when "AIM output" is enabled in firmware.
+//
+//  3. Short numeric prefix before the real payload
+//     — after control chars are gone, some guns still leave a
+//       1–6 digit or alphanumeric prefix BEFORE the "LOT=" key.
+//     — The lookahead (?=LOT=|COIL=|\d{4,}) ensures we only
+//       strip a prefix when the real payload immediately follows,
+//       so genuine 4+ digit lot numbers are never eaten.
+//
+//  The result is identical input regardless of scan source
+//  (camera widget, hardware gun, or manual keyboard entry).
+// ═══════════════════════════════════════════════════════════════
+
+$qr = isset($_POST['qr']) ? $_POST['qr'] : '';
+
+// Step 1 — strip ALL control characters (\r \n \t \x00 …)
+$qr = preg_replace('/[[:cntrl:]]/', '', $qr);
+
+// Step 2 — strip AIM symbology identifiers  e.g. ]C1  ]d2  ]Q3
+$qr = preg_replace('/^\][A-Za-z][0-9]/', '', $qr);
+
+// Step 3 — strip short junk prefix (≤6 chars) before real data
+//   Matches:  "26LOT=…"  "001LOT=…"  "&LOT=…"
+//   Safe:     stops at lookahead so "826601 QM-4" is untouched
+$qr = preg_replace('/^[^\w]{0,6}(?=LOT=|COIL=)/i', '', $qr);
+$qr = preg_replace('/^[\w]{1,6}(?=LOT=|COIL=)/i',  '', $qr);
+
+$qr = trim($qr);
 
 if (empty($qr)) {
     $_SESSION['scan_warning'] = null;
@@ -20,33 +61,56 @@ if (empty($qr)) {
     exit;
 }
 
-// ── Parse QR: LOT=xxx;COIL=xxx ───────────────────────────────
-$parts = [];
-if (strpos($qr, ';') !== false) {
-    foreach (explode(';', $qr) as $pair) {
-        if (strpos($pair, '=') !== false) {
-            [$key, $value] = explode('=', $pair, 2);
-            $parts[trim($key)] = trim($value);
-        }
+// ═══════════════════════════════════════════════════════════════
+//  QR PARSING — supports two formats
+//
+//  Format A  (KEY=value, all scan sources):
+//    LOT=826277;COIL=FK-1
+//    Keys matched case-insensitively; segments without "=" skipped.
+//
+//  Format B  (space-separated, manual overlay entry):
+//    826277 FK-1
+// ═══════════════════════════════════════════════════════════════
+
+$lot_no  = '';
+$coil_no = '';
+
+if (strpos($qr, '=') !== false) {
+    // Format A — KEY=value pairs
+    $pairs = [];
+    foreach (explode(';', $qr) as $segment) {
+        $segment = trim($segment);
+        if (strpos($segment, '=') === false) continue;  // skip junk prefix segments
+        [$k, $v] = explode('=', $segment, 2);
+        $pairs[strtoupper(trim($k))] = trim($v);
     }
+    $lot_no  = $pairs['LOT']  ?? '';
+    $coil_no = $pairs['COIL'] ?? '';
+
+} else {
+    // Format B — space-separated "826277 FK-1"
+    $tokens  = preg_split('/\s+/', $qr, 2);
+    $lot_no  = trim($tokens[0] ?? '');
+    $coil_no = trim($tokens[1] ?? '');
 }
 
-$lot_no  = isset($parts['LOT'])  ? $conn->real_escape_string($parts['LOT'])  : '';
-$coil_no = isset($parts['COIL']) ? $conn->real_escape_string($parts['COIL']) : '';
-
 if (empty($lot_no) || empty($coil_no)) {
-    $_SESSION['error'] = "Invalid QR format. Expected: LOT=xxx;COIL=xxx";
+    $_SESSION['error'] = "Invalid QR format. Expected: LOT=xxx;COIL=xxx  or  'LotNo CoilNo'";
     header("Location: raw_material.php");
     exit;
 }
 
+// Escape for inline queries (prepared statements used below)
+$lot_no  = $conn->real_escape_string($lot_no);
+$coil_no = $conn->real_escape_string($coil_no);
+
 // ── PRIORITY: leftover / Cut-Into-2 balance ───────────────────
 $leftover_check = $conn->query(
-    "SELECT id FROM stock_raw_material 
-     WHERE lot_no='$lot_no' 
-       AND coil_no='$coil_no' 
-       AND source_type='slitting_cut_into_2' 
-       AND status='IN' 
+    "SELECT id FROM stock_raw_material
+     WHERE lot_no='$lot_no'
+       AND coil_no='$coil_no'
+       AND source_type='slitting_cut_into_2'
+       AND status='IN'
      ORDER BY id DESC LIMIT 1"
 );
 if ($leftover_check && $leftover_check->num_rows > 0) {
@@ -70,8 +134,6 @@ $mother    = $result->fetch_assoc();
 $mother_id = $mother['id'];
 
 // ── Check if this coil has ALREADY been slitted ───────────────
-// If slitting_product rows exist for this mother_id, the coil
-// has been consumed. Block re-entry completely.
 $slit_check = $conn->prepare(
     "SELECT COUNT(*) AS cnt FROM slitting_product WHERE mother_id = ?"
 );
@@ -81,9 +143,6 @@ $slit_count = (int)$slit_check->get_result()->fetch_assoc()['cnt'];
 $slit_check->close();
 
 if ($slit_count > 0) {
-    // ── Build a rich warning payload for the session ──────────
-    // Collect what was produced from this coil so the UI can
-    // show the operator exactly why it is blocked.
     $slit_rows = $conn->prepare(
         "SELECT lot_no, coil_no, roll_no, width, actual_length, length, status
          FROM slitting_product
@@ -97,7 +156,6 @@ if ($slit_count > 0) {
     $produced = $slit_rows->get_result()->fetch_all(MYSQLI_ASSOC);
     $slit_rows->close();
 
-    // Date of first slitting event
     $first_slit = $conn->prepare(
         "SELECT MIN(date_in) AS first_date FROM slitting_product WHERE mother_id = ?"
     );
@@ -125,7 +183,7 @@ if ($slit_count > 0) {
 $conn->begin_transaction();
 try {
     $stock_check_result = $conn->query(
-        "SELECT id, status FROM stock_raw_material 
+        "SELECT id, status FROM stock_raw_material
          WHERE lot_no='$lot_no' AND coil_no='$coil_no' AND source_type='mother_coil'
          ORDER BY id DESC LIMIT 1"
     );
@@ -135,13 +193,11 @@ try {
         $stock_id       = $existing_stock['id'];
 
         if ($existing_stock['status'] === 'IN') {
-            // Already in stock → go straight to slitting form
             $conn->commit();
             $_SESSION['success'] = "Mother coil $lot_no-$coil_no ready for slitting. Fill the form.";
             header("Location: add_slitting.php?stock_id=$stock_id");
             exit;
         } else {
-            // Was OUT (but NOT yet slitted) → toggle back IN
             $conn->query("UPDATE stock_raw_material SET status='IN', updated_at=NOW() WHERE id=$stock_id");
             $conn->query("UPDATE mother_coil SET status='IN', stock=1 WHERE id=$mother_id");
             $conn->query("INSERT INTO mother_coil_audit_log (mother_id, action_type, performed_at, remark)
@@ -153,7 +209,6 @@ try {
         }
 
     } else {
-        // First scan ever → create stock entry
         $grade  = $conn->real_escape_string($mother['grade']  ?? '');
         $width  = (float)$mother['width'];
         $length = (float)$mother['length'];
