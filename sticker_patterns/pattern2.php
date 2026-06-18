@@ -1,8 +1,6 @@
 <?php
 // sticker_patterns/pattern2.php
-// Used by: NAX, TAIHO, ASHUKA, NTC, STOCK, , NIP, SFC, MTX, YTEC.
-
-// No Est.Wgt | No Sticker B
+// Used by: NAX, TAIHO, ASHUKA, NTC, STOCK, NCI MFG, NIP, SFC, MTX, NVC, NCS, SNP
 
 $colourLabel = ucfirst(strtolower($colorName ?? 'WHITE'));
 
@@ -108,7 +106,7 @@ $patternCSS = '
 }
 
 .p2-val-cust {
-    font-size: 14px;
+    font-size: 16px;
     font-weight: 400;
     font-family: "Arial Narrow", Arial, sans-serif;
     color: #000;
@@ -125,7 +123,7 @@ $patternCSS = '
     width: 100%;
 }
 .p2-size-num {
-    font-size: 20px;
+    font-size: 25px;
     font-weight: 300;
     font-family: "Arial Narrow", Arial, sans-serif;
     color: #000;
@@ -134,14 +132,14 @@ $patternCSS = '
     text-align: right;
 }
 .p2-size-unit {
-    font-size: 14px;
+    font-size: 25px;
     font-weight: 300;
     font-family: "Arial Narrow", Arial, sans-serif;
     color: #000;
     line-height: 1;
 }
 .p2-size-x {
-    font-size: 14px;
+    font-size: 23px;
     font-weight: 500;
     font-family: "Arial Narrow", Arial, sans-serif;
     color: #000;
@@ -183,6 +181,14 @@ $patternCSS = '
     margin-top: 2mm;
 }
 
+.p2-sticker-b {
+    font-size: 11px;
+    font-weight: 700;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    white-space: nowrap;
+}
+
 .p2-qr img {
     width: 19mm;
     height: 19mm;
@@ -217,6 +223,10 @@ $patternCSS = '
 }
 ';
 
+// ── Canonical customer code => full name map ──────────────────
+// Kept identical (same keys) across pattern1–pattern4 on purpose,
+// so renaming/adding a customer only ever needs editing in one
+// place style, not four different key spellings.
 function getCustomerFullName($code) {
     $customers = [
         'NAE'     => 'NICHIAS AUTOPARTS EUROPE (NAE)',
@@ -224,11 +234,11 @@ function getCustomerFullName($code) {
         'NCI MFG' => 'NCI MFG., INC.',
         'TAIHO'   => 'TAIHO MFG OF TN. INC',
         'NRI'     => 'PT NICHIAS ROCKWOOL IND.',
-        'NSA'  => 'ASHUKA TECHNOLOGIES SDN. BHD.',
+        'ASHUKA'  => 'ASHUKA TECHNOLOGIES SDN. BHD.',
         'NIPPON'  => 'NTC(NIPPON GASKET)',
         'NTC'     => 'NICHIAS THAILAND',
         'SGC'     => 'SHANGHAI XINGSHENG',
-        'STPG'    => 'MK STAMPING',
+        'STAMPING'=> 'MK STAMPING',
         'YANTAI'  => 'NICHIAS (SHANGHAI) AUTOPARTS TRADING',
         'NIP'     => 'NICHIAS IND. PRODUCTS PVT. LTD.',
         'STOCK'   => 'STOCK',
@@ -237,7 +247,8 @@ function getCustomerFullName($code) {
         'MTX'     => 'NC-PT NRI(FORWARD MATRIX)',
         'YTEC'    => 'YTEC CO., LTD.',
         'NVC'     => 'NICHIAS VIETNAM CO., LTD',
-
+        'NCS'     => 'NC-PT NICHIAS SUNIJAYA',
+        'SNP'     => 'SUZHOU NICHIAS IND. PRODUCTS',
     ];
     return $customers[$code] ?? $code;
 }
@@ -320,6 +331,7 @@ function render_sticker(
         <div class="p2-top-block">
             <div class="p2-colour-block">
                 <span class="p2-colour-name">' . $h($colourLabel) . '</span>
+                <span class="p2-sticker-b">Sticker B</span>
             </div>
             <div class="p2-qr">
                 <img src="' . $h($qrImageUrl) . '" alt="QR Code">

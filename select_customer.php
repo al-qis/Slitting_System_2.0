@@ -336,10 +336,13 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
                         <option value="STAMPING"<?= $savedCustomer==='STAMPING'?'selected':'' ?>>MK STAMPING</option>
                         <option value="YANTAI"  <?= $savedCustomer==='YANTAI'  ?'selected':'' ?>>NICHIAS (SHANGHAI) AUTOPARTS TRADING</option>
                         <option value="NIP"     <?= $savedCustomer==='NIP'     ?'selected':'' ?>>NICHIAS IND.PRODUCTS PVT. LTD.</option>
+                        <option value="NVC"     <?= $savedCustomer==='NVC'     ?'selected':'' ?>>NICHIAS VIETNAM CO., LTD</option>
+                        <option value="NCS"     <?= $savedCustomer==='NCS'     ?'selected':'' ?>>NC-PT NICHIAS SUNIJAYA</option>
+                        <option value="SNP"     <?= $savedCustomer==='SNP'     ?'selected':'' ?>>SUZHOU NICHIAS IND. PRODUCTS</option>
                         <option value="NCI 2"   <?= $savedCustomer==='NCI 2'   ?'selected':'' ?>>NCI 2</option>
                         <option value="STOCK"   <?= ($savedCustomer==='' || $savedCustomer==='STOCK') ?'selected':'' ?>>STOCK</option>
                         <option value="TRIAL"   <?= $savedCustomer==='TRIAL'   ?'selected':'' ?>>TRIAL</option>
-                        <option value="OTHER"   <?= ($savedCustomer!=='' && !in_array($savedCustomer,['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA','NIPPON','NTC','SGC','STAMPING','YANTAI','NIP','NCI 2','STOCK','TRIAL'])) ?'selected':'' ?>>OTHER (type below)</option>
+                        <option value="OTHER"   <?= ($savedCustomer!=='' && !in_array($savedCustomer,['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA','NIPPON','NTC','SGC','STAMPING','YANTAI','NIP','NVC','NCS','SNP','NCI 2','STOCK','TRIAL'])) ?'selected':'' ?>>OTHER (type below)</option>
                     </select>
                     <!-- Hidden custom customer field — shown when OTHER selected -->
                     <input type="text" name="custom_customer" id="custom_customer"
@@ -460,7 +463,7 @@ function escHtml(s) {
 (function () {
     const knownOptions = ['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA',
                           'NIPPON','NTC','SGC','STAMPING','YANTAI','NIP',
-                          'NCI 2','STOCK','TRIAL',''];
+                          'NVC','NCS','SNP','NCI 2','STOCK','TRIAL',''];
     const saved = <?= json_encode($savedCustomer) ?>;
     if (saved !== '' && !knownOptions.includes(saved)) {
         // Custom customer was saved — show the text input pre-filled

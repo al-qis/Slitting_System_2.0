@@ -107,7 +107,7 @@ $patternCSS = '
 }
 
 .p1-val-cust {
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 400;
     font-family: "Arial Narrow", Arial, sans-serif;
     color: #000;
@@ -124,7 +124,7 @@ $patternCSS = '
     width: 100%;
 }
 .p1-size-num {
-    font-size: 20px;
+    font-size: 25px;
     font-weight: 300;
     font-family: "Arial Narrow", Arial, sans-serif;
     color: #000;
@@ -133,14 +133,14 @@ $patternCSS = '
     text-align: right;
 }
 .p1-size-unit {
-    font-size: 14px;
+    font-size: 25px;
     font-weight: 300;
     font-family: "Arial Narrow", Arial, sans-serif;
     color: #000;
     line-height: 1;
 }
 .p1-size-x {
-    font-size: 14px;
+    font-size: 23px;
     font-weight: 500;
     font-family: "Arial Narrow", Arial, sans-serif;
     color: #000;
@@ -165,7 +165,7 @@ $patternCSS = '
     line-height: 1.2;
 }
 .p1-estwgt-val {
-    font-size: 14px;
+    font-size: 20px;
     font-weight: 300;
     font-family: "Arial Narrow", Arial, sans-serif;
     color: #000;
@@ -272,6 +272,10 @@ $patternCSS = '
 }
 ';
 
+// ── Canonical customer code => full name map ──────────────────
+// Kept identical (same keys) across pattern1–pattern4 on purpose,
+// so renaming/adding a customer only ever needs editing in one
+// place style, not four different key spellings.
 function getCustomerFullName($code) {
     $customers = [
         'NAE'     => 'NICHIAS AUTOPARTS EUROPE (NAE)',
@@ -289,8 +293,11 @@ function getCustomerFullName($code) {
         'STOCK'   => 'STOCK',
         'TRIAL'   => 'TRIAL',
         'SFC'     => 'SFC',
-        'NC-PT NRI(FORWARD MATRIX)' => 'NC-PT NRI(FORWARD MATRIX)',
-        'YTEC CO., LTD.'            => 'YTEC CO., LTD.',
+        'MTX'     => 'NC-PT NRI(FORWARD MATRIX)',
+        'YTEC'    => 'YTEC CO., LTD.',
+        'NVC'     => 'NICHIAS VIETNAM CO., LTD',
+        'NCS'     => 'NC-PT NICHIAS SUNIJAYA',
+        'SNP'     => 'SUZHOU NICHIAS IND. PRODUCTS',
     ];
     return $customers[$code] ?? $code;
 }

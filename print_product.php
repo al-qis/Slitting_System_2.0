@@ -151,7 +151,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $pattern1_customers = ['NAE', 'NRI', 'STAMPING'];
-$pattern2_customers = ['NAX', 'TAIHO', 'ASHUKA', 'NTC', 'STOCK', 'NCI MFG', 'NIP', 'SGC', 'MTX'];
+$pattern2_customers = ['NAX', 'TAIHO', 'ASHUKA', 'NTC', 'STOCK', 'NCI MFG', 'NIP', 'SGC', 'MTX', 'NVC', 'NCS', 'SNP'];
 $pattern3_customers = ['YANTAI'];
 $pattern4_customers = ['NCI 2'];
 

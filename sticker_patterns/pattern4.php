@@ -1,7 +1,6 @@
 <?php
 // sticker_patterns/pattern4.php
 // Used by: NCI 2
-// Style: matches pattern2 latest version
 
 $colourLabel = ucfirst(strtolower($colorName ?? 'WHITE'));
 
@@ -107,7 +106,7 @@ $patternCSS = '
 }
 
 .p4-val-cust {
-    font-size: 14px;
+    font-size: 20px;
     font-weight: 400;
     font-family: "Arial Narrow", Arial, sans-serif;
     color: #000;
@@ -124,7 +123,7 @@ $patternCSS = '
     width: 100%;
 }
 .p4-size-num {
-    font-size: 20px;
+    font-size: 25px;
     font-weight: 300;
     font-family: "Arial Narrow", Arial, sans-serif;
     color: #000;
@@ -133,14 +132,14 @@ $patternCSS = '
     text-align: right;
 }
 .p4-size-unit {
-    font-size: 14px;
+    font-size: 25px;
     font-weight: 300;
     font-family: "Arial Narrow", Arial, sans-serif;
     color: #000;
     line-height: 1;
 }
 .p4-size-x {
-    font-size: 14px;
+    font-size: 23px;
     font-weight: 500;
     font-family: "Arial Narrow", Arial, sans-serif;
     color: #000;
@@ -180,6 +179,14 @@ $patternCSS = '
     color: #000;
     white-space: nowrap;
     margin-top: 2mm;
+}
+
+.p4-sticker-b {
+    font-size: 11px;
+    font-weight: 700;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    white-space: nowrap;
 }
 
 .p4-qr img {
@@ -239,6 +246,10 @@ $patternCSS = '
 }
 ';
 
+// ── Canonical customer code => full name map ──────────────────
+// Kept identical (same keys) across pattern1–pattern4 on purpose,
+// so renaming/adding a customer only ever needs editing in one
+// place style, not four different key spellings.
 function getCustomerFullName($code) {
     $customers = [
         'NAE'     => 'NICHIAS AUTOPARTS EUROPE (NAE)',
@@ -246,11 +257,11 @@ function getCustomerFullName($code) {
         'NCI MFG' => 'NCI MFG., INC.',
         'TAIHO'   => 'TAIHO MFG OF TN. INC',
         'NRI'     => 'PT NICHIAS ROCKWOOL IND.',
-        'NSA'     => 'ASHUKA TECHNOLOGIES SDN. BHD.',
+        'ASHUKA'  => 'ASHUKA TECHNOLOGIES SDN. BHD.',
         'NIPPON'  => 'NTC(NIPPON GASKET)',
         'NTC'     => 'NICHIAS THAILAND',
         'SGC'     => 'SHANGHAI XINGSHENG',
-        'STPG'    => 'MK STAMPING',
+        'STAMPING'=> 'MK STAMPING',
         'YANTAI'  => 'NICHIAS (SHANGHAI) AUTOPARTS TRADING',
         'NIP'     => 'NICHIAS IND. PRODUCTS PVT. LTD.',
         'STOCK'   => 'STOCK',
@@ -259,7 +270,8 @@ function getCustomerFullName($code) {
         'MTX'     => 'NC-PT NRI(FORWARD MATRIX)',
         'YTEC'    => 'YTEC CO., LTD.',
         'NVC'     => 'NICHIAS VIETNAM CO., LTD',
-
+        'NCS'     => 'NC-PT NICHIAS SUNIJAYA',
+        'SNP'     => 'SUZHOU NICHIAS IND. PRODUCTS',
     ];
     return $customers[$code] ?? $code;
 }
@@ -338,7 +350,7 @@ function render_sticker(
             <div class="p4-lbl">Customer</div>
             <div class="p4-colon">:</div>
             <div class="p4-val-area has-line">
-                <span class="p4-val-cust" style="font-size:12px;">' . $h($customerDisplay) . '</span>
+                <span class="p4-val-cust" style="font-size:23px;">' . $h($customerDisplay) . '</span>
             </div>
         </div>
 
@@ -357,6 +369,7 @@ function render_sticker(
         <div class="p4-top-block">
             <div class="p4-colour-block">
                 <span class="p4-colour-name">' . $h($colourLabel) . '</span>
+                <span class="p4-sticker-b">Sticker B</span>
             </div>
             <div class="p4-qr">
                 <img src="' . $h($qrImageUrl) . '" alt="QR Code">
