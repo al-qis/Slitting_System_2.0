@@ -115,14 +115,14 @@ $patternCSS = '
 }
 
 .p2-val-ref {
-    font-size: 18px;   /* bump from the 14px val-cust uses */
+    font-size: 18px;
     font-weight: 400;
     font-family: "Arial Narrow", Arial, sans-serif;
     color: #000;
     text-align: center;
     line-height: 1;
 }
-    
+
 .p2-size-inner {
     display: flex;
     flex-direction: row;
@@ -233,9 +233,6 @@ $patternCSS = '
 ';
 
 // ── Canonical customer code => full name map ──────────────────
-// Kept identical (same keys) across pattern1–pattern4 on purpose,
-// so renaming/adding a customer only ever needs editing in one
-// place style, not four different key spellings.
 function getCustomerFullName($code) {
     $customers = [
         'NAE'     => 'NICHIAS AUTOPARTS EUROPE (NAE)',
@@ -279,6 +276,11 @@ function render_sticker(
     $l_disp          = number_format((float)($product['actual_length'] ?? $product['length'] ?? 0));
     $customerDisplay = getCustomerFullName($customer);
     $colourLabel     = ucfirst(strtolower($GLOBALS['colorName'] ?? 'White'));
+
+    // "Sticker B" is shown by default (Line B). Hidden when Line A is selected.
+    $stickerBLabel = ($GLOBALS['showStickerB'] ?? true)
+        ? '<span class="p2-sticker-b">Sticker B</span>'
+        : '';
 
     $h = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES, 'UTF-8');
 
@@ -340,7 +342,7 @@ function render_sticker(
         <div class="p2-top-block">
             <div class="p2-colour-block">
                 <span class="p2-colour-name">' . $h($colourLabel) . '</span>
-                <span class="p2-sticker-b">Sticker B</span>
+                ' . $stickerBLabel . '
             </div>
             <div class="p2-qr">
                 <img src="' . $h($qrImageUrl) . '" alt="QR Code">

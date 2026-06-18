@@ -258,9 +258,6 @@ $patternCSS = '
 ';
 
 // ── Canonical customer code => full name map ──────────────────
-// Kept identical (same keys) across pattern1–pattern4 on purpose,
-// so renaming/adding a customer only ever needs editing in one
-// place style, not four different key spellings.
 function getCustomerFullName($code) {
     $customers = [
         'NAE'     => 'NICHIAS AUTOPARTS EUROPE (NAE)',
@@ -311,6 +308,11 @@ function render_sticker(
     $l_disp          = number_format((float)$actual_m);
     $customerDisplay = getCustomerFullName($customer);
     $colourLabel     = ucfirst(strtolower($GLOBALS['colorName'] ?? 'White'));
+
+    // "Sticker B" is shown by default (Line B). Hidden when Line A is selected.
+    $stickerBLabel = ($GLOBALS['showStickerB'] ?? true)
+        ? '<span class="p3-sticker-b">Sticker B</span>'
+        : '';
 
     $h = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES, 'UTF-8');
 
@@ -383,7 +385,7 @@ function render_sticker(
         <div class="p3-top-block">
             <div class="p3-colour-block">
                 <span class="p3-colour-name">' . $h($colourLabel) . '</span>
-                <span class="p3-sticker-b">Sticker B</span>
+                ' . $stickerBLabel . '
             </div>
             <div class="p3-qr">
                 <img src="' . $h($qrImageUrl) . '" alt="QR Code">

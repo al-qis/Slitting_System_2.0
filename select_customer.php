@@ -196,6 +196,40 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
         .btn-save { background: #1976D2; color: white; display: inline-flex; align-items: center; gap: 6px; }
         .btn-save:hover { background: #1565c0; }
         .btn-save:disabled { background: #90a4ae; cursor: not-allowed; }
+
+        /* ── Line A toggle button ── */
+        .btn-line-toggle {
+            background: #546e7a;
+            color: white;
+            border: 2px solid transparent;
+            transition: background .2s, border-color .2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .btn-line-toggle:hover { background: #455a64; }
+        .btn-line-toggle.active {
+            background: #bf360c;
+            border-color: #7f0000;
+        }
+        .btn-line-toggle.active:hover { background: #a52c0a; }
+
+        /* ── Line A indicator badge (shown below buttons when active) ── */
+        #lineABadge {
+            display: none;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 14px;
+            border-radius: 4px;
+            font-size: 13px;
+            font-weight: 600;
+            background: #fbe9e7;
+            color: #bf360c;
+            border: 1px solid #ffab91;
+            margin-top: 10px;
+        }
+        #lineABadge.show { display: flex; justify-content: center; }
+
         #saveFeedback { display: none; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 4px; font-size: 13px; font-weight: 600; margin-top: 10px; }
         #saveFeedback.show { display: flex; justify-content: center; }
         #saveFeedback.state-ok { background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; }
@@ -223,7 +257,10 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
 
     <form method="POST" action="print_product.php" id="mainForm">
         <input type="hidden" name="id" value="<?= $id ?>">
-        
+
+        <!-- Line A/B flag — toggled by the Line A button below -->
+        <input type="hidden" name="line" id="lineInput" value="B">
+
         <table class="preview-table">
             <tr>
                 <td>TOMBO No.</td><td>:</td>
@@ -241,7 +278,7 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
                 <td>Lot No.</td><td>:</td>
                 <td><strong><?= htmlspecialchars($lotCoil) ?></strong></td>
             </tr>
-            
+
             <!-- Customer - Editable -->
             <tr class="editable-row">
                 <td>Customer</td><td>:</td>
@@ -280,7 +317,7 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
                     <input type="hidden" name="nci_resolved_customer" id="nci_resolved_customer" value="">
                 </td>
             </tr>
-            
+
             <!-- Ref No - Editable -->
             <tr class="editable-row">
                 <td>Ref. No.</td><td>:</td>
@@ -292,6 +329,14 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
         </table>
 
         <div class="action-buttons">
+
+            <!-- Line A toggle — when active, "Sticker B" label is hidden on the printed sticker -->
+            <button type="button" class="btn-action btn-line-toggle" id="lineToggleBtn"
+                    onclick="toggleLine()">
+                <i class="bi bi-layers" id="lineToggleIcon"></i>
+                <span id="lineToggleLabel">Line A</span>
+            </button>
+
             <button type="button" class="btn-action btn-save" id="saveBtn" onclick="saveOnly()">
                 <i class="bi bi-floppy-fill"></i> Save
             </button>
@@ -301,6 +346,12 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
             <a href="finish_product.php" class="btn-action btn-back">
                 <i class="bi bi-arrow-left"></i> Back to List
             </a>
+        </div>
+
+        <!-- Line A active indicator -->
+        <div id="lineABadge">
+            <i class="bi bi-exclamation-circle-fill"></i>
+            Line A selected — <strong>"Sticker B"</strong> label will be hidden on the printed sticker.
         </div>
 
         <div id="saveFeedback"></div>
@@ -314,6 +365,32 @@ const nciPanel     = document.getElementById('nciMatchPanel');
 const nciContent   = document.getElementById('nciMatchContent');
 const refNoInput   = document.getElementById('ref_no');
 
+// ── Line A / B toggle ──────────────────────────────────────────
+// Default: Line B (Sticker B shown).
+// When user clicks the button it turns red (active) = Line A,
+// which will suppress the "Sticker B" label on the printed sticker.
+let lineA = false;
+
+function toggleLine() {
+    lineA = !lineA;
+    const btn    = document.getElementById('lineToggleBtn');
+    const label  = document.getElementById('lineToggleLabel');
+    const input  = document.getElementById('lineInput');
+    const badge  = document.getElementById('lineABadge');
+
+    if (lineA) {
+        btn.classList.add('active');
+        label.textContent = 'Line A (active)';
+        input.value = 'A';
+        badge.classList.add('show');
+    } else {
+        btn.classList.remove('active');
+        label.textContent = 'Line A';
+        input.value = 'B';
+        badge.classList.remove('show');
+    }
+}
+
 function handleCustomerChange(val) {
     document.getElementById('custom_customer').style.display =
         val === 'OTHER' ? 'block' : 'none';
@@ -321,10 +398,6 @@ function handleCustomerChange(val) {
 }
 
 // ── NCI MFG / NCI 2 auto-fill ──────────────────────────────────
-// When either is selected, looks up nci_product_mapping for this
-// roll and automatically fills the Ref No field with the part
-// number from the table. No choices required — all part numbers
-// are filled in as returned by the database.
 async function checkNciMatch(val) {
     if (val !== 'NCI MFG' && val !== 'NCI 2') {
         nciPanel.style.display = 'none';

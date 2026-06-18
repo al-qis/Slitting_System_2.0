@@ -92,12 +92,6 @@ if ($result->num_rows == 0) die("Product not found");
 $product = $result->fetch_assoc();
 
 // ── NCI MFG / NCI 2 resolution ──────────────────────────────────
-// When NCI MFG or NCI 2 is selected, look up nci_product_mapping
-// by Internal Code (<coil prefix>-<width mm>) and auto-fill the
-// Ref No with the full part_no from the table (all values as-is).
-// The customer name on the sticker stays as "NCI MFG., INC." or
-// "NCI 2" — no override. select_customer.php already pre-fills
-// the Ref No field; this block handles direct access / POST paths.
 if (in_array($customer, ['NCI MFG', 'NCI 2'], true)) {
     $coil_no = $product['coil_no'] ?? '';
     $width   = (int)($product['width'] ?? 0);
@@ -117,7 +111,7 @@ if (in_array($customer, ['NCI MFG', 'NCI 2'], true)) {
         $stmt_nci->close();
 
         if ($row) {
-            $customer = $row['customer'];   // resolved end-customer name from mapping table
+            $customer = $row['customer'];
             $ref_no   = $row['part_no'];
         }
     }
@@ -147,6 +141,17 @@ if      (in_array($original_customer_request, $pattern1_customers)) $pattern = '
 elseif  (in_array($original_customer_request, $pattern2_customers)) $pattern = 'pattern2';
 elseif  (in_array($original_customer_request, $pattern3_customers)) $pattern = 'pattern3';
 elseif  (in_array($original_customer_request, $pattern4_customers)) $pattern = 'pattern4';
+
+// ── Line A / B — controls "Sticker B" label visibility ───────────
+// Line B (default): "Sticker B" is shown on the printed sticker.
+// Line A (user toggled): "Sticker B" is hidden on the printed sticker.
+$line = 'B';
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $line = (($_POST['line'] ?? 'B') === 'A') ? 'A' : 'B';
+} elseif (isset($_GET['line'])) {
+    $line = ($_GET['line'] === 'A') ? 'A' : 'B';
+}
+$GLOBALS['showStickerB'] = ($line !== 'A');   // false = hide "Sticker B"
 
 // ── Sticker data ──────────────────────────────────────────────────
 $tomboNo = "1600 (METAKOTE)";
@@ -183,9 +188,6 @@ $gradeKey  = strtoupper(trim($product['product'] ?? ''));
 $colorName = $PRODUCT_COLOR[$gradeKey] ?? 'WHITE';
 
 // ── NCI MFG / NCI 2 colour override ──────────────────────────────
-// Same 16-row table as the resolution block above — overrides the
-// generic product colour with the colour specified for that exact
-// grade + width combination (e.g. KB-6440 @ 101mm = Blue).
 if (in_array($original_customer_request, ['NCI MFG', 'NCI 2'], true)) {
     $NCI_COLOR = [
         'RS-3825|115' => 'GREEN', 'RS-3825|120' => 'GREEN',
@@ -217,7 +219,6 @@ $isPreview = isset($_GET['customer']) || isset($_POST['customer']);
 // ── Save on normal POST (print path) ──────────────────────────────
 $skip = ['STOCK', 'TRIAL', 'SFC', ''];
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $id > 0 && !in_array($customer, $skip, true)) {
-    // Only save when coming from the print form (not from the AJAX save above)
     if (!isset($_POST['action'])) {
         $stmt = $conn->prepare("UPDATE slitting_product SET customer_name=?, ref_no=? WHERE id=?");
         if ($stmt) {
@@ -229,7 +230,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $id > 0 && !in_array($customer, $sk
 }
 
 // ── Was this just saved (via normal POST)?  ────────────────────
-// Pass a flag so the JS can show the confirmation without AJAX
 $justSaved = (
     $_SERVER['REQUEST_METHOD'] === 'POST' &&
     !isset($_POST['action']) &&
@@ -351,7 +351,8 @@ $justSaved = (
     Pattern: <?= ucfirst($pattern) ?> &nbsp;·&nbsp;
     Customer: <?= htmlspecialchars($customer) ?> &nbsp;·&nbsp;
     Ref No: <?= htmlspecialchars($ref_no) ?> &nbsp;·&nbsp;
-    Colour: <?= htmlspecialchars($colorName) ?>
+    Colour: <?= htmlspecialchars($colorName) ?> &nbsp;·&nbsp;
+    Line: <strong><?= $line === 'A' ? 'A (Sticker B hidden)' : 'B (Sticker B shown)' ?></strong>
 </div>
 <?php endif; ?>
 
