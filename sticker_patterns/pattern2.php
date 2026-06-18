@@ -115,7 +115,7 @@ $patternCSS = '
 }
 
 .p2-val-ref {
-    font-size: 20px;   /* bump from the 14px val-cust uses */
+    font-size: 18px;   /* bump from the 14px val-cust uses */
     font-weight: 400;
     font-family: "Arial Narrow", Arial, sans-serif;
     color: #000;

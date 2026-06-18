@@ -1,22 +1,94 @@
 <?php
 include 'config.php';
 
+function getCoilPrefix($coil_no) {
+    $coil_no = trim((string)$coil_no);
+    if ($coil_no === '') return '';
+    if (strpos($coil_no, '-') !== false) {
+        return strtoupper(trim(explode('-', $coil_no)[0]));
+    }
+    preg_match('/^[A-Za-z]+/', $coil_no, $m);
+    return strtoupper($m[0] ?? '');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// AJAX: NCI MFG / NCI 2 lookup
+// Looks up nci_product_mapping by Internal Code (<coil prefix>-<width mm>).
+// Returns JSON { ok, internal_code, parts:[...] }
+// The front-end uses this to auto-fill the Ref No field.
+// ═══════════════════════════════════════════════════════════════
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'nci_lookup') {
+    header('Content-Type: application/json');
+
+    $pid = intval($_GET['id'] ?? 0);
+    if ($pid <= 0) {
+        echo json_encode(['ok' => false, 'msg' => 'Invalid product ID.']);
+        exit;
+    }
+
+    $stmt = $conn->prepare("SELECT coil_no, width FROM slitting_product WHERE id = ?");
+    $stmt->bind_param("i", $pid);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    if (!$row) {
+        echo json_encode(['ok' => false, 'msg' => 'Product not found.']);
+        exit;
+    }
+
+    $prefix = getCoilPrefix($row['coil_no'] ?? '');
+    $width  = (int)($row['width'] ?? 0);
+
+    if ($prefix === '' || $width <= 0) {
+        echo json_encode(['ok' => false, 'msg' => 'Cannot determine internal code from this roll (missing coil prefix or width).']);
+        exit;
+    }
+
+    $internal_code = $prefix . '-' . $width;
+
+    $stmt2 = $conn->prepare("SELECT customer, part_no FROM nci_product_mapping WHERE internal_code = ? LIMIT 1");
+    $stmt2->bind_param("s", $internal_code);
+    $stmt2->execute();
+    $nci = $stmt2->get_result()->fetch_assoc();
+    $stmt2->close();
+
+    if (!$nci) {
+        echo json_encode(['ok' => false, 'msg' => "No NCI mapping found for internal code {$internal_code}."]);
+        exit;
+    }
+
+    // Return parts as array (split on /) so JS can join them back as needed.
+    // Customer is returned for info display only — no override on the sticker.
+    $parts = array_values(array_filter(array_map('trim', explode('/', $nci['part_no'] ?? '')), fn($v) => $v !== ''));
+    if (empty($parts)) $parts = [''];
+
+    echo json_encode([
+        'ok'            => true,
+        'internal_code' => $internal_code,
+        'customer_info' => trim($nci['customer'] ?? ''),
+        'parts'         => $parts,
+        'part_no_full'  => $nci['part_no'],
+    ]);
+    exit;
+}
+
 if (!isset($_GET['id'])) {
     die("Product ID required");
 }
 
 $id = intval($_GET['id']);
 
-// ── Fetch product ─────────────────────────────────────────────
+// ── Fetch product ───────────────────────────────────────────────
 $result = $conn->query("SELECT * FROM slitting_product WHERE id=$id");
 $product = $result->fetch_assoc();
 
-// ── Read existing saved customer & ref_no ─────────────────────
+// ── Read existing saved customer & ref_no ───────────────────────
 $savedCustomer = trim($product['customer_name'] ?? '');
 $savedRefNo    = trim($product['ref_no']        ?? '');
 
 // ═══════════════════════════════════════════════════════════════
-// AJAX SAVE — only addition to the original file.
+// AJAX SAVE
 // Triggered by the Save button via fetch().
 // Returns JSON { ok, msg } — no page change, no print dialog.
 // ═══════════════════════════════════════════════════════════════
@@ -33,6 +105,16 @@ if (
 
     if ($customer === 'OTHER') {
         $customer = trim($_POST['custom_customer'] ?? '');
+    }
+
+    // For NCI MFG / NCI 2, save the resolved end-customer name from the mapping
+    // table rather than the raw dropdown code, so the DB reflects the actual
+    // customer that will print on the sticker.
+    if (in_array($customer, ['NCI MFG', 'NCI 2'], true)) {
+        $nci_resolved = trim($_POST['nci_resolved_customer'] ?? '');
+        if ($nci_resolved !== '') {
+            $customer = $nci_resolved;
+        }
     }
 
     if ($pid <= 0) { echo json_encode(['ok'=>false,'msg'=>'Invalid product ID.']); exit; }
@@ -59,7 +141,6 @@ $PRODUCT_COLOR = [
   'RS-3020'=>'BLUE','RS-3825'=>'BLUE','RS-3825-04'=>'BLUE','RS-4020'=>'BLUE','RS-4025'=>'BLUE',
   'RS-4525'=>'BLUE','RS-5030'=>'BLUE','RS-6040'=>'BLUE','RS-7050'=>'BLUE',
   'RU-5040-1'=>'BLUE','RU-5040-1-S101'=>'BLUE','RV-3825'=>'BLUE',
-
   'JV-3825'=>'WHITE','JZ-2520'=>'WHITE','JZ-2520-2C'=>'WHITE','JZ-2820'=>'WHITE','JZ-3020'=>'WHITE','JZ-4020'=>'WHITE',
   'L1N2-2520-02'=>'WHITE','LN-1715-1'=>'WHITE','LN-2520'=>'WHITE','LN-2520-04'=>'WHITE',
   'LZ-2420'=>'WHITE','LZ-2520'=>'WHITE','MV-4020'=>'WHITE',
@@ -81,11 +162,8 @@ function stickerBgColor(string $productCode, array $map): string {
 
 $stickerBg = stickerBgColor($product['product'] ?? '', $PRODUCT_COLOR);
 
-if (!$product) {
-    die("Product not found");
-}
+if (!$product) { die("Product not found"); }
 
-// Gabungkan Lot No + Coil No
 $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
 ?>
 <!DOCTYPE html>
@@ -95,196 +173,48 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
     <style>
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-
-        body {
-            font-family: Arial, sans-serif;
-            background: #f5f5f5;
-            padding: 40px 20px;
-        }
-
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 40px 20px; }
         .preview-container {
-            max-width: 650px;
-            margin: 0 auto;
-            padding: 40px;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            position: relative;
+            max-width: 650px; margin: 0 auto; padding: 40px;
+            border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); position: relative;
         }
-
-        .preview-table {
-            width: 100%;
-            margin-bottom: 30px;
-        }
-
-        .preview-table td {
-            padding: 12px 10px;
-            border-bottom: 1px solid #eee;
-        }
-
-        .preview-table td:first-child {
-            font-weight: bold;
-            width: 130px;
-            color: #333;
-        }
-
-        .preview-table td:nth-child(2) {
-            width: 20px;
-            text-align: center;
-        }
-
-        .preview-table td:last-child {
-            color: #000;
-            font-size: 18px;
-        }
-
-        .qr-preview {
-            position: absolute;
-            top: 40px;
-            right: 40px;
-            text-align: center;
-            background: transparent !important;
-        }
-
-        .badge-text {
-            display: inline-block;
-            background: #e3f2fd;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 11px;
-            margin-bottom: 10px;
-        }
-
-        .qr-preview img {
-            width: 120px;
-            height: 120px;
-            border: none;
-            background: transparent;
-            display: block;
-            margin: 0 auto;
-        }
-
-        .roll-number {
-            font-size: 48px;
-            font-weight: bold;
-            color: #333;
-            margin-top: -10px;
-        }
-
-        .editable-row {
-            background: #f8f9fa;
-        }
-
-        .form-control, .form-select {
-            font-size: 16px;
-            padding: 8px 12px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-        }
-
-        .action-buttons {
-            display: flex;
-            gap: 10px;
-            justify-content: center;
-            flex-wrap: wrap;
-        }
-
-        .btn-action {
-            padding: 12px 30px;
-            font-size: 16px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-        }
-
-        .btn-print {
-            background: #0aa80a;
-            color: white;
-        }
-
-        .btn-print:hover {
-            background: #0aa80a;
-        }
-
-        /* ── Save button — only new style added ── */
-        .btn-save {
-            background: #1976D2;
-            color: white;
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-        }
+        .preview-table { width: 100%; margin-bottom: 30px; }
+        .preview-table td { padding: 12px 10px; border-bottom: 1px solid #eee; }
+        .preview-table td:first-child { font-weight: bold; width: 130px; color: #333; }
+        .preview-table td:nth-child(2) { width: 20px; text-align: center; }
+        .preview-table td:last-child { color: #000; font-size: 18px; }
+        .qr-preview { position: absolute; top: 40px; right: 40px; text-align: center; background: transparent !important; }
+        .badge-text { display: inline-block; background: #e3f2fd; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-bottom: 10px; }
+        .qr-preview img { width: 120px; height: 120px; border: none; background: transparent; display: block; margin: 0 auto; }
+        .roll-number { font-size: 48px; font-weight: bold; color: #333; margin-top: -10px; }
+        .editable-row { background: #f8f9fa; }
+        .form-control, .form-select { font-size: 16px; padding: 8px 12px; border: 1px solid #ccc; border-radius: 4px; }
+        .action-buttons { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+        .btn-action { padding: 12px 30px; font-size: 16px; border: none; border-radius: 4px; cursor: pointer; }
+        .btn-print { background: #0aa80a; color: white; }
+        .btn-save { background: #1976D2; color: white; display: inline-flex; align-items: center; gap: 6px; }
         .btn-save:hover { background: #1565c0; }
         .btn-save:disabled { background: #90a4ae; cursor: not-allowed; }
-
-        /* ── Save feedback — only new style added ── */
-        #saveFeedback {
-            display: none;
-            align-items: center;
-            gap: 6px;
-            padding: 8px 14px;
-            border-radius: 4px;
-            font-size: 13px;
-            font-weight: 600;
-            margin-top: 10px;
-        }
-        #saveFeedback.show        { display: flex; justify-content: center; }
-        #saveFeedback.state-ok    { background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; }
+        #saveFeedback { display: none; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 4px; font-size: 13px; font-weight: 600; margin-top: 10px; }
+        #saveFeedback.show { display: flex; justify-content: center; }
+        #saveFeedback.state-ok { background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; }
         #saveFeedback.state-error { background: #fdecea; color: #c62828; border: 1px solid #ef9a9a; }
-
-        /* Spinner */
-        .spin {
-            display: inline-block;
-            width: 14px; height: 14px;
-            border: 2px solid rgba(255,255,255,.4);
-            border-top-color: #fff;
-            border-radius: 50%;
-            animation: spin .6s linear infinite;
-        }
+        .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.4); border-top-color: #fff; border-radius: 50%; animation: spin .6s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
-
-        .btn-back {
-            background: #757575;
-            color: white;
-            text-decoration: none;
-            display: inline-block;
+        .btn-back { background: #757575; color: white; text-decoration: none; display: inline-block; }
+        .btn-back:hover { background: #616161; color: white; }
+        #nciMatchPanel { font-size: 13px; }
+        @media print {
+            body { background: white !important; padding: 0 !important; }
+            .preview-container { background: <?= $stickerBg ?> !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+            .action-buttons, .btn, .badge-text { display: none !important; }
         }
-
-        .btn-back:hover {
-            background: #616161;
-            color: white;
-        }
-
-       @media print {
-    body {
-        background: white !important;
-        padding: 0 !important;
-    }
-
-    .preview-container {
-        background: <?= $stickerBg ?> !important;
-
-        -webkit-print-color-adjust: exact !important;
-        print-color-adjust: exact !important;
-    }
-
-    .action-buttons,
-    .btn,
-    .badge-text {
-        display: none !important;
-    }
-}
     </style>
 </head>
 <body>
 
-<!-- Preview Container -->
 <div class="preview-container" style="background: white;">
-<!-- QR Code -->
     <div class="qr-preview">
         <div class="badge-text">INTERNAL USE</div>
         <img src="generate_qr.php?id=<?= $id ?>&type=slitting" alt="QR Code">
@@ -296,30 +226,25 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
         
         <table class="preview-table">
             <tr>
-                <td>TOMBO No.</td>
-                <td>:</td>
+                <td>TOMBO No.</td><td>:</td>
                 <td><strong><?= htmlspecialchars($product['tombo_no'] ?? '1600 (METAKOTE)') ?></strong></td>
             </tr>
             <tr>
-                <td>Grade</td>
-                <td>:</td>
+                <td>Grade</td><td>:</td>
                 <td><strong><?= htmlspecialchars($product['product'] ?? '') ?></strong></td>
             </tr>
             <tr>
-                <td>Size</td>
-                <td>:</td>
+                <td>Size</td><td>:</td>
                 <td><strong><?= number_format($product['width'], 0) ?> mm x <?= number_format($product['actual_length'] ?? $product['length'], 0) ?> Mtr</strong></td>
             </tr>
             <tr>
-                <td>Lot No.</td>
-                <td>:</td>
+                <td>Lot No.</td><td>:</td>
                 <td><strong><?= htmlspecialchars($lotCoil) ?></strong></td>
             </tr>
             
             <!-- Customer - Editable -->
             <tr class="editable-row">
-                <td>Customer</td>
-                <td>:</td>
+                <td>Customer</td><td>:</td>
                 <td>
                     <select name="customer" id="customer" class="form-select" required
                             onchange="handleCustomerChange(this.value)">
@@ -344,17 +269,21 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
                         <option value="TRIAL"   <?= $savedCustomer==='TRIAL'   ?'selected':'' ?>>TRIAL</option>
                         <option value="OTHER"   <?= ($savedCustomer!=='' && !in_array($savedCustomer,['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA','NIPPON','NTC','SGC','STAMPING','YANTAI','NIP','NVC','NCS','SNP','NCI 2','STOCK','TRIAL'])) ?'selected':'' ?>>OTHER (type below)</option>
                     </select>
-                    <!-- Hidden custom customer field — shown when OTHER selected -->
                     <input type="text" name="custom_customer" id="custom_customer"
                            class="form-control mt-2" placeholder="Enter customer name"
                            style="display:none;">
+                    <!-- NCI match status panel — shown only for NCI MFG / NCI 2 -->
+                    <div id="nciMatchPanel" class="mt-2" style="display:none;">
+                        <div id="nciMatchContent"></div>
+                    </div>
+                    <!-- Carries the resolved end-customer name for save_only handler -->
+                    <input type="hidden" name="nci_resolved_customer" id="nci_resolved_customer" value="">
                 </td>
             </tr>
             
             <!-- Ref No - Editable -->
             <tr class="editable-row">
-                <td>Ref. No.</td>
-                <td>:</td>
+                <td>Ref. No.</td><td>:</td>
                 <td>
                     <input type="text" name="ref_no" id="ref_no"
                            class="form-control" value="<?= htmlspecialchars($savedRefNo ?: 'STOCK') ?>" required>
@@ -363,12 +292,9 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
         </table>
 
         <div class="action-buttons">
-            <!-- ★ NEW: Save button — saves without printing ★ -->
-            <button type="button" class="btn-action btn-save" id="saveBtn"
-                    onclick="saveOnly()">
+            <button type="button" class="btn-action btn-save" id="saveBtn" onclick="saveOnly()">
                 <i class="bi bi-floppy-fill"></i> Save
             </button>
-
             <button type="submit" class="btn-action btn-print">
                 <i class="bi bi-printer-fill"></i> Print Sticker
             </button>
@@ -377,32 +303,74 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
             </a>
         </div>
 
-        <!-- Save feedback — appears below buttons after AJAX save -->
         <div id="saveFeedback"></div>
-
     </form>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-const PRODUCT_ID = <?= (int)$id ?>;
+const PRODUCT_ID   = <?= (int)$id ?>;
+const nciPanel     = document.getElementById('nciMatchPanel');
+const nciContent   = document.getElementById('nciMatchContent');
+const refNoInput   = document.getElementById('ref_no');
 
-// Show / hide custom customer text input
 function handleCustomerChange(val) {
     document.getElementById('custom_customer').style.display =
         val === 'OTHER' ? 'block' : 'none';
+    checkNciMatch(val);
 }
 
-// ── AJAX Save ─────────────────────────────────────────────────
+// ── NCI MFG / NCI 2 auto-fill ──────────────────────────────────
+// When either is selected, looks up nci_product_mapping for this
+// roll and automatically fills the Ref No field with the part
+// number from the table. No choices required — all part numbers
+// are filled in as returned by the database.
+async function checkNciMatch(val) {
+    if (val !== 'NCI MFG' && val !== 'NCI 2') {
+        nciPanel.style.display = 'none';
+        nciContent.innerHTML   = '';
+        return;
+    }
+
+    nciPanel.style.display = 'block';
+    nciContent.innerHTML   = '<small class="text-muted"><i class="bi bi-hourglass-split me-1"></i>Looking up Ref No…</small>';
+
+    try {
+        const res  = await fetch(`select_customer.php?ajax=nci_lookup&id=${PRODUCT_ID}`);
+        const data = await res.json();
+
+        if (!data.ok) {
+            nciContent.innerHTML = `<div class="alert alert-warning py-2 mb-0">
+                <i class="bi bi-exclamation-triangle me-1"></i>${escHtml(data.msg)}
+                <div class="mt-1" style="font-size:12px;">Please fill in Ref No manually.</div>
+            </div>`;
+            return;
+        }
+
+        // Fill Ref No with the raw part_no from the table (all values included).
+        refNoInput.value = data.part_no_full;
+        document.getElementById('nci_resolved_customer').value = data.customer_info;
+
+        nciContent.innerHTML = `<div class="alert alert-info py-2 mb-0" style="font-size:12px;">
+            <i class="bi bi-check-circle me-1"></i>
+            Internal Code: <strong>${escHtml(data.internal_code)}</strong><br>
+            Customer on sticker: <strong>${escHtml(data.customer_info)}</strong><br>
+            Ref No: <strong>${escHtml(data.part_no_full)}</strong>
+        </div>`;
+
+    } catch (e) {
+        nciContent.innerHTML = '<div class="alert alert-danger py-2 mb-0">Network error during lookup.</div>';
+    }
+}
+
+// ── AJAX Save ──────────────────────────────────────────────────
 async function saveOnly() {
     const btn      = document.getElementById('saveBtn');
     const selEl    = document.getElementById('customer');
     const refEl    = document.getElementById('ref_no');
     const customEl = document.getElementById('custom_customer');
+    const ref_no   = refEl.value.trim();
 
-    const ref_no = refEl.value.trim();
-
-    // Basic client validation
     if (!selEl.value) {
         showFeedback(false, 'Please select a customer first.');
         selEl.focus();
@@ -414,8 +382,7 @@ async function saveOnly() {
         return;
     }
 
-    // Show spinner, disable button
-    btn.disabled = true;
+    btn.disabled  = true;
     btn.innerHTML = '<span class="spin"></span> Saving…';
 
     const fd = new FormData();
@@ -437,10 +404,8 @@ async function saveOnly() {
         result = { ok: false, msg: 'Network error: ' + err.message };
     }
 
-    // Restore button
-    btn.disabled = false;
+    btn.disabled  = false;
     btn.innerHTML = '<i class="bi bi-floppy-fill"></i> Save';
-
     showFeedback(result.ok, result.msg);
 }
 
@@ -459,18 +424,18 @@ function escHtml(s) {
         c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-// ── On page load: reveal custom field if OTHER was saved ──────
+// On load: restore state
 (function () {
     const knownOptions = ['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA',
                           'NIPPON','NTC','SGC','STAMPING','YANTAI','NIP',
                           'NVC','NCS','SNP','NCI 2','STOCK','TRIAL',''];
     const saved = <?= json_encode($savedCustomer) ?>;
     if (saved !== '' && !knownOptions.includes(saved)) {
-        // Custom customer was saved — show the text input pre-filled
         const customEl = document.getElementById('custom_customer');
         customEl.value = saved;
         customEl.style.display = 'block';
     }
+    checkNciMatch(document.getElementById('customer').value);
 })();
 </script>
 </body>

@@ -57,7 +57,7 @@ if (
     exit;
 }
 
-// ── Resolve ID, customer, ref_no ─────────────────────────────
+// ── Resolve ID, customer, ref_no ─────────────────────────────────
 $id       = null;
 $customer = 'STOCK';
 $ref_no   = 'STOCK';
@@ -77,7 +77,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     die("Product ID required");
 }
 
-// ── Fetch product ─────────────────────────────────────────────
+// ── Fetch product ─────────────────────────────────────────────────
 $stmt = $conn->prepare("
     SELECT sp.*, mc.product as mother_product, sw.std_weight
     FROM slitting_product sp
@@ -91,51 +91,39 @@ $result = $stmt->get_result();
 if ($result->num_rows == 0) die("Product not found");
 $product = $result->fetch_assoc();
 
-// ── NCI auto-lookup ───────────────────────────────────────────
-if ($customer === 'NCI') {
-    $product_width = intval($product['width']);
-    $stmt_nci = $conn->prepare("SELECT * FROM nci_product_mapping
-                WHERE grade = ?
-                AND CAST(REPLACE(size_width, ' mm', '') AS UNSIGNED) = ?
-                LIMIT 1");
-    $stmt_nci->bind_param("si", $product['product'], $product_width);
-    $stmt_nci->execute();
-    $result_nci = $stmt_nci->get_result();
-    if ($result_nci->num_rows > 0) {
-        $nci_data = $result_nci->fetch_assoc();
-        if ($nci_data['customer']) $customer = $nci_data['customer'];
-        if ($ref_no === 'STOCK' && $nci_data['part_no']) $ref_no = $nci_data['part_no'];
-    }
-    $stmt_nci->close();
-}
-
-// ── NCI 2 resolution ─────────────────────────────────────────
-if ($customer === 'NCI 2') {
+// ── NCI MFG / NCI 2 resolution ──────────────────────────────────
+// When NCI MFG or NCI 2 is selected, look up nci_product_mapping
+// by Internal Code (<coil prefix>-<width mm>) and auto-fill the
+// Ref No with the full part_no from the table (all values as-is).
+// The customer name on the sticker stays as "NCI MFG., INC." or
+// "NCI 2" — no override. select_customer.php already pre-fills
+// the Ref No field; this block handles direct access / POST paths.
+if (in_array($customer, ['NCI MFG', 'NCI 2'], true)) {
     $coil_no = $product['coil_no'] ?? '';
     $width   = (int)($product['width'] ?? 0);
     $prefix  = getCoilPrefix($coil_no);
 
     if ($prefix !== '' && $width > 0) {
         $internal_code = $prefix . '-' . $width;
-        $stmt_nci2 = $conn->prepare("
+        $stmt_nci = $conn->prepare("
             SELECT customer, part_no
             FROM nci_product_mapping
             WHERE internal_code = ?
             LIMIT 1
         ");
-        $stmt_nci2->bind_param("s", $internal_code);
-        $stmt_nci2->execute();
-        $row = $stmt_nci2->get_result()->fetch_assoc();
-        $stmt_nci2->close();
+        $stmt_nci->bind_param("s", $internal_code);
+        $stmt_nci->execute();
+        $row = $stmt_nci->get_result()->fetch_assoc();
+        $stmt_nci->close();
 
         if ($row) {
-            $customer = $row['customer'];
+            $customer = $row['customer'];   // resolved end-customer name from mapping table
             $ref_no   = $row['part_no'];
         }
     }
 }
 
-// ── Determine pattern ─────────────────────────────────────────
+// ── Determine pattern ────────────────────────────────────────────
 $pattern = 'pattern2';
 
 $original_customer_request = null;
@@ -160,7 +148,7 @@ elseif  (in_array($original_customer_request, $pattern2_customers)) $pattern = '
 elseif  (in_array($original_customer_request, $pattern3_customers)) $pattern = 'pattern3';
 elseif  (in_array($original_customer_request, $pattern4_customers)) $pattern = 'pattern4';
 
-// ── Sticker data ──────────────────────────────────────────────
+// ── Sticker data ──────────────────────────────────────────────────
 $tomboNo = "1600 (METAKOTE)";
 if (strpos($product['product'], 'MV') !== false) $tomboNo = "1608 (METAFOAM)";
 
@@ -171,7 +159,7 @@ $host       = $_SERVER['HTTP_HOST'];
 $basePath   = rtrim(dirname($_SERVER['PHP_SELF']), '/');
 $qrImageUrl = $protocol . "://" . $host . $basePath . "/generate_qr.php?id=" . $id . "&type=slitting";
 
-// ── Sticker colour ────────────────────────────────────────────
+// ── Sticker colour ────────────────────────────────────────────────
 $PRODUCT_COLOR = [
     "DS-3020"=>"GREEN","DS-3825"=>"GREEN","DS-4525"=>"GREEN",
     "DS-5030"=>"GREEN","DS-8460"=>"GREEN",
@@ -194,9 +182,12 @@ $BG        = ['BLUE'=>'#0099ff','GREEN'=>'#129e16','YELLOW'=>'#FFFF00','WHITE'=>
 $gradeKey  = strtoupper(trim($product['product'] ?? ''));
 $colorName = $PRODUCT_COLOR[$gradeKey] ?? 'WHITE';
 
-// ── NCI 2 colour override ─────────────────────────────────────
-if ($original_customer_request === 'NCI 2') {
-    $NCI2_COLOR = [
+// ── NCI MFG / NCI 2 colour override ──────────────────────────────
+// Same 16-row table as the resolution block above — overrides the
+// generic product colour with the colour specified for that exact
+// grade + width combination (e.g. KB-6440 @ 101mm = Blue).
+if (in_array($original_customer_request, ['NCI MFG', 'NCI 2'], true)) {
+    $NCI_COLOR = [
         'RS-3825|115' => 'GREEN', 'RS-3825|120' => 'GREEN',
         'RS-4020|125' => 'GREEN',
         'KB-6440|101' => 'BLUE',  'KB-6440|111' => 'BLUE',
@@ -208,22 +199,22 @@ if ($original_customer_request === 'NCI 2') {
         'TS-3525|154' => 'GREEN', 'TS-3525|89'  => 'GREEN',
         'TU-4020|313' => 'GREEN',
     ];
-    $nci2ColorKey = $gradeKey . '|' . (string)(int)($product['width'] ?? 0);
-    if (isset($NCI2_COLOR[$nci2ColorKey])) {
-        $colorName = $NCI2_COLOR[$nci2ColorKey];
+    $nciColorKey = $gradeKey . '|' . (string)(int)($product['width'] ?? 0);
+    if (isset($NCI_COLOR[$nciColorKey])) {
+        $colorName = $NCI_COLOR[$nciColorKey];
     }
 }
 
 $stickerBg = $BG[$colorName] ?? '#ffffff';
 
-// ── Load sticker pattern ──────────────────────────────────────
+// ── Load sticker pattern ──────────────────────────────────────────
 $patternFile = "sticker_patterns/{$pattern}.php";
 if (!file_exists($patternFile)) die("Error: Pattern file not found.");
 include $patternFile;
 
 $isPreview = isset($_GET['customer']) || isset($_POST['customer']);
 
-// ── Save on normal POST (print path) ─────────────────────────
+// ── Save on normal POST (print path) ──────────────────────────────
 $skip = ['STOCK', 'TRIAL', 'SFC', ''];
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $id > 0 && !in_array($customer, $skip, true)) {
     // Only save when coming from the print form (not from the AJAX save above)
@@ -237,7 +228,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $id > 0 && !in_array($customer, $sk
     }
 }
 
-// ── Was this just saved (via normal POST)?  ──────────────────
+// ── Was this just saved (via normal POST)?  ────────────────────
 // Pass a flag so the JS can show the confirmation without AJAX
 $justSaved = (
     $_SERVER['REQUEST_METHOD'] === 'POST' &&
@@ -408,7 +399,7 @@ if (function_exists('render_sticker')) {
 </div>
 
 <script>
-// ── Data to save ──────────────────────────────────────────────
+// ── Data to save ─────────────────────────────────────────────────
 const PRODUCT_ID = <?= (int)$id ?>;
 const CUSTOMER   = <?= json_encode($customer) ?>;
 const REF_NO     = <?= json_encode($ref_no) ?>;
@@ -421,7 +412,7 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 <?php endif; ?>
 
-// ── Save via AJAX ─────────────────────────────────────────────
+// ── Save via AJAX ───────────────────────────────────────────────
 async function saveCustomerData() {
     const btn = document.getElementById('saveBtn');
 
