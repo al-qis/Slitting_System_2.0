@@ -114,6 +114,15 @@ $patternCSS = '
     line-height: 1;
 }
 
+.p2-val-ref {
+    font-size: 20px;   /* bump from the 14px val-cust uses */
+    font-weight: 400;
+    font-family: "Arial Narrow", Arial, sans-serif;
+    color: #000;
+    text-align: center;
+    line-height: 1;
+}
+    
 .p2-size-inner {
     display: flex;
     flex-direction: row;
@@ -322,7 +331,7 @@ function render_sticker(
             <div class="p2-lbl">Ref. No.</div>
             <div class="p2-colon">:</div>
             <div class="p2-val-area">
-                <span class="p2-val-cust">' . $h($ref_no) . '</span>
+                <span class="p2-val-ref">' . $h($ref_no) . '</span>
             </div>
         </div>
     </div>
