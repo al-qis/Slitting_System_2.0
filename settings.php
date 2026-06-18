@@ -75,7 +75,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
         if (!$coil_code || !$product) { echo json_encode(['ok'=>false,'msg'=>'Coil code and product are required.']); exit; }
 
-        // Check if this exact coil_code + product combo already exists
         $chk = $conn->prepare("SELECT id FROM coil_product_map WHERE coil_code=? AND product=?");
         $chk->bind_param("ss", $coil_code, $product);
         $chk->execute();
@@ -118,14 +117,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     /* ── 4. Update Mapping ──────────────────────────── */
     if ($action === 'update_mapping') {
         $map_id     = intval($_POST['map_id']);
-        $new_coil   = strtoupper(trim($_POST['coil_code'] ?? ''));   // ← now editable
+        $new_coil   = strtoupper(trim($_POST['coil_code'] ?? ''));
         $product    = trim($_POST['product']    ?? '');
         $std_weight = floatval($_POST['std_weight'] ?? 0);
 
         if (!$new_coil)  { echo json_encode(['ok'=>false,'msg'=>'Coil code cannot be empty.']); exit; }
         if (!$product)   { echo json_encode(['ok'=>false,'msg'=>'Product name is required.']); exit; }
 
-        // Uniqueness check: make sure no OTHER row already has this coil_code + product combo
         $chk = $conn->prepare("SELECT id FROM coil_product_map WHERE coil_code=? AND product=? AND id!=?");
         $chk->bind_param("ssi", $new_coil, $product, $map_id);
         $chk->execute();
@@ -139,7 +137,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
         $conn->begin_transaction();
         try {
-            // Update both coil_code AND product
             $s1 = $conn->prepare("UPDATE coil_product_map SET coil_code=?, product=? WHERE id=?");
             $s1->bind_param("ssi", $new_coil, $product, $map_id);
             $s1->execute(); $s1->close();
@@ -155,7 +152,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             echo json_encode([
                 'ok'       => true,
                 'msg'      => 'Mapping updated successfully.',
-                'new_coil' => $new_coil,   // returned so JS can update the table cell live
+                'new_coil' => $new_coil,
             ]);
         } catch (Exception $e) {
             $conn->rollback();
@@ -185,6 +182,103 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $ok = $stmt->execute();
         $stmt->close();
         echo json_encode(['ok'=>$ok,'msg'=> $ok ? 'Standard weight updated.' : 'Update failed.']);
+        exit;
+    }
+
+    /* ── 7. Add NCI Mapping ─────────────────────────── */
+    if ($action === 'add_nci_mapping') {
+        $internal_code = strtoupper(trim($_POST['internal_code'] ?? ''));
+        $product       = trim($_POST['product']       ?? '');
+        $width         = trim($_POST['width']         ?? '');
+        $customer      = trim($_POST['customer']      ?? '');
+        $part_no       = trim($_POST['part_no']       ?? '');
+
+        if (!$internal_code || !$product) {
+            echo json_encode(['ok'=>false,'msg'=>'Internal code and product are required.']);
+            exit;
+        }
+
+        $chk = $conn->prepare("SELECT id FROM nci_product_mapping WHERE internal_code=?");
+        $chk->bind_param("s", $internal_code);
+        $chk->execute();
+        $chk->store_result();
+        if ($chk->num_rows > 0) {
+            $chk->close();
+            echo json_encode(['ok'=>false,'msg'=>"Internal code {$internal_code} already exists."]);
+            exit;
+        }
+        $chk->close();
+
+        $stmt = $conn->prepare("INSERT INTO nci_product_mapping (internal_code, product, width, customer, part_no) VALUES (?,?,?,?,?)");
+        $stmt->bind_param("sssss", $internal_code, $product, $width, $customer, $part_no);
+        $ok = $stmt->execute();
+        $new_id = $conn->insert_id;
+        $stmt->close();
+
+        echo json_encode([
+            'ok'  => $ok,
+            'msg' => $ok ? 'NCI mapping added.' : 'Insert failed: '.$conn->error,
+            'id'  => $new_id,
+            'internal_code' => $internal_code,
+            'product'  => $product,
+            'width'    => $width,
+            'customer' => $customer,
+            'part_no'  => $part_no,
+        ]);
+        exit;
+    }
+
+    /* ── 8. Update NCI Mapping ──────────────────────── */
+    if ($action === 'update_nci_mapping') {
+        $nci_id        = intval($_POST['nci_id']);
+        $internal_code = strtoupper(trim($_POST['internal_code'] ?? ''));
+        $product       = trim($_POST['product']       ?? '');
+        $width         = trim($_POST['width']         ?? '');
+        $customer      = trim($_POST['customer']      ?? '');
+        $part_no       = trim($_POST['part_no']       ?? '');
+
+        if (!$internal_code || !$product) {
+            echo json_encode(['ok'=>false,'msg'=>'Internal code and product are required.']);
+            exit;
+        }
+
+        // Uniqueness: no other row with the same internal_code
+        $chk = $conn->prepare("SELECT id FROM nci_product_mapping WHERE internal_code=? AND id!=?");
+        $chk->bind_param("si", $internal_code, $nci_id);
+        $chk->execute();
+        $chk->store_result();
+        if ($chk->num_rows > 0) {
+            $chk->close();
+            echo json_encode(['ok'=>false,'msg'=>"Another row already uses internal code {$internal_code}."]);
+            exit;
+        }
+        $chk->close();
+
+        $stmt = $conn->prepare("UPDATE nci_product_mapping SET internal_code=?, product=?, width=?, customer=?, part_no=? WHERE id=?");
+        $stmt->bind_param("sssssi", $internal_code, $product, $width, $customer, $part_no, $nci_id);
+        $ok = $stmt->execute();
+        $stmt->close();
+
+        echo json_encode([
+            'ok'  => $ok,
+            'msg' => $ok ? 'NCI mapping updated.' : 'Update failed: '.$conn->error,
+            'internal_code' => $internal_code,
+            'product'  => $product,
+            'width'    => $width,
+            'customer' => $customer,
+            'part_no'  => $part_no,
+        ]);
+        exit;
+    }
+
+    /* ── 9. Delete NCI Mapping ──────────────────────── */
+    if ($action === 'delete_nci_mapping') {
+        $nci_id = intval($_POST['nci_id']);
+        $stmt = $conn->prepare("DELETE FROM nci_product_mapping WHERE id=?");
+        $stmt->bind_param("i", $nci_id);
+        $ok = $stmt->execute();
+        $stmt->close();
+        echo json_encode(['ok'=>$ok,'msg'=> $ok ? 'NCI mapping deleted.' : 'Delete failed.']);
         exit;
     }
 
@@ -287,7 +381,6 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
 .f-ctrl:focus { border-color:#9ab5ff; background:#fff; box-shadow:0 0 0 3px rgba(59,130,246,.08); }
 .f-ctrl[readonly] { background:#F3F4F6; color:var(--muted); cursor:not-allowed; }
 
-/* ── Coil code editable hint ── */
 .coil-edit-hint {
   font-size:10px; color:#7C3AED; font-weight:600;
   margin-top:4px; display:flex; align-items:center; gap:4px;
@@ -338,12 +431,17 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
   font-family:'DM Mono',monospace; font-size:12px; font-weight:500; color:#059669;
 }
 
-/* ── Row flash on save ── */
 @keyframes rowFlash {
   0%   { background:#EDE9FE; }
   100% { background:transparent; }
 }
 .row-flash td { animation: rowFlash .8s ease-out forwards; }
+
+@keyframes rowFlashTeal {
+  0%   { background:#ECFEFF; }
+  100% { background:transparent; }
+}
+.row-flash-teal td { animation: rowFlashTeal .8s ease-out forwards; }
 
 /* ── Search box ── */
 .tbl-search {
@@ -418,6 +516,17 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
 .wgt-dirty td { background: #FFFBEB !important; }
 .wgt-dirty td:first-child { border-left: 3px solid #D97706; }
 .wgt-dirty .wgt-inline { border-color:#D97706 !important; background:#FFFBEB !important; }
+
+/* ── Part No cell — truncate long strings gracefully ── */
+.part-no-cell {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--muted);
+}
+.part-no-cell:hover { white-space: normal; word-break: break-all; color: var(--text); }
 </style>
 
 <!-- Page Header -->
@@ -654,12 +763,17 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
 ══════════════════════════════════════════════════════════ -->
 <div class="tab-panel" id="panel-nci">
   <div class="s-card">
-    <div class="s-card-head">
-      <div class="s-card-icon" style="background:#ECFEFF;color:#0891B2;"><i class="bi bi-table"></i></div>
-      <div>
-        <div class="s-card-title">NCI Product Mapping</div>
-        <div class="s-card-sub"><?= count($nci_rows) ?> entries · customer part number reference</div>
+    <div class="s-card-head" style="justify-content:space-between;">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <div class="s-card-icon" style="background:#ECFEFF;color:#0891B2;"><i class="bi bi-table"></i></div>
+        <div>
+          <div class="s-card-title">NCI Product Mapping</div>
+          <div class="s-card-sub" id="nci-count-sub"><?= count($nci_rows) ?> entries · customer part number reference</div>
+        </div>
       </div>
+      <button class="btn-prim" style="background:#0891B2;" onclick="openAddNci()">
+        <i class="bi bi-plus-lg"></i> Add NCI Mapping
+      </button>
     </div>
     <div class="s-card-body">
       <div class="tbl-search">
@@ -671,19 +785,44 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
         <table class="map-table" id="nci-table">
           <thead>
             <tr>
-              <th>#</th><th>Internal Code</th><th>Product</th>
-              <th>Width</th><th>Customer</th><th>Part No</th>
+              <th>#</th>
+              <th>Internal Code</th>
+              <th>Product</th>
+              <th>Width</th>
+              <th>Customer</th>
+              <th>Part No</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
           <?php foreach ($nci_rows as $ni => $n): ?>
-          <tr>
-            <td style="color:var(--muted);font-size:11px;"><?= $ni+1 ?></td>
-            <td><span class="code-tag"><?= htmlspecialchars($n['internal_code']) ?></span></td>
-            <td><strong><?= htmlspecialchars($n['product']) ?></strong></td>
-            <td><span style="font-family:'DM Mono',monospace;font-size:12px;"><?= htmlspecialchars($n['width']) ?></span></td>
-            <td><?= htmlspecialchars($n['customer']) ?></td>
-            <td style="font-size:11px;color:var(--muted);"><?= htmlspecialchars($n['part_no']) ?></td>
+          <tr data-nci-id="<?= $n['id'] ?>">
+            <td style="color:var(--muted);font-size:11px;" class="nci-num"><?= $ni+1 ?></td>
+            <td class="nci-code"><span class="code-tag"><?= htmlspecialchars($n['internal_code']) ?></span></td>
+            <td class="nci-product"><strong><?= htmlspecialchars($n['product']) ?></strong></td>
+            <td class="nci-width"><span style="font-family:'DM Mono',monospace;font-size:12px;"><?= htmlspecialchars($n['width']) ?></span></td>
+            <td class="nci-customer"><?= htmlspecialchars($n['customer']) ?></td>
+            <td class="nci-partno part-no-cell" title="<?= htmlspecialchars($n['part_no']) ?>"><?= htmlspecialchars($n['part_no']) ?></td>
+            <td style="white-space:nowrap;">
+              <button class="btn-edit btn-sm"
+                      onclick="openEditNci(
+                        <?= $n['id'] ?>,
+                        '<?= htmlspecialchars(addslashes($n['internal_code'])) ?>',
+                        '<?= htmlspecialchars(addslashes($n['product'])) ?>',
+                        '<?= htmlspecialchars(addslashes($n['width'])) ?>',
+                        '<?= htmlspecialchars(addslashes($n['customer'])) ?>',
+                        '<?= htmlspecialchars(addslashes($n['part_no'])) ?>'
+                      )">
+                <i class="bi bi-pencil"></i> Edit
+              </button>
+              <button class="btn-danger btn-sm" style="margin-left:4px;"
+                      onclick="confirmDeleteNci(
+                        <?= $n['id'] ?>,
+                        '<?= htmlspecialchars(addslashes($n['internal_code'])) ?>'
+                      )">
+                <i class="bi bi-trash3"></i> Delete
+              </button>
+            </td>
           </tr>
           <?php endforeach; ?>
           </tbody>
@@ -743,7 +882,7 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
   </div>
 </div>
 
-<!-- Edit Mapping Modal — coil code is NOW editable -->
+<!-- Edit Mapping Modal -->
 <div class="modal-overlay" id="modal-edit">
   <div class="modal-box sm">
     <div class="modal-title">
@@ -759,7 +898,6 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
         </span>
       </label>
       <input class="f-ctrl" type="text" id="edit-coil"
-             placeholder="e.g. A"
              style="font-family:'DM Mono',monospace;letter-spacing:.5px;text-transform:uppercase;"
              oninput="this.value=this.value.toUpperCase()">
       <div class="coil-edit-hint">
@@ -770,12 +908,12 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
 
     <div class="mb-3">
       <label class="f-label">Product <span style="color:#dc2626;">*</span></label>
-      <input class="f-ctrl" type="text" id="edit-product" placeholder="Product code">
+      <input class="f-ctrl" type="text" id="edit-product">
     </div>
 
     <div class="mb-4">
       <label class="f-label">Std Weight (g/m)</label>
-      <input class="f-ctrl" type="number" step="0.0001" id="edit-weight" placeholder="e.g. 2.1690">
+      <input class="f-ctrl" type="number" step="0.0001" id="edit-weight">
     </div>
 
     <div style="display:flex;gap:10px;justify-content:flex-end;">
@@ -787,16 +925,107 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
   </div>
 </div>
 
-<!-- Confirm Delete Modal -->
+<!-- Add NCI Mapping Modal -->
+<div class="modal-overlay" id="modal-nci-add">
+  <div class="modal-box">
+    <div class="modal-title">
+      <i class="bi bi-plus-circle" style="color:#0891B2;"></i> Add NCI Mapping
+    </div>
+    <div class="row g-3">
+      <div class="col-6">
+        <label class="f-label">Internal Code <span style="color:#dc2626;">*</span></label>
+        <input class="f-ctrl" type="text" id="nci-add-code"
+               placeholder="e.g. KB-167" style="text-transform:uppercase;"
+               oninput="this.value=this.value.toUpperCase()">
+      </div>
+      <div class="col-6">
+        <label class="f-label">Product <span style="color:#dc2626;">*</span></label>
+        <input class="f-ctrl" type="text" id="nci-add-product" placeholder="e.g. KB-6440">
+      </div>
+      <div class="col-6">
+        <label class="f-label">Width</label>
+        <input class="f-ctrl" type="text" id="nci-add-width" placeholder="e.g. 167 mm">
+      </div>
+      <div class="col-6">
+        <label class="f-label">Customer</label>
+        <input class="f-ctrl" type="text" id="nci-add-customer" placeholder="e.g. AMAK / AMBRAKE">
+      </div>
+      <div class="col-12">
+        <label class="f-label">Part No</label>
+        <input class="f-ctrl" type="text" id="nci-add-partno"
+               placeholder="e.g. 51-E5112-57431 / AB-E5111-57431">
+        <div style="font-size:11px;color:var(--muted);margin-top:4px;">
+          <i class="bi bi-info-circle"></i>
+          Separate multiple values with <code>/</code> (e.g. <em>PartA / PartB</em>)
+        </div>
+      </div>
+    </div>
+    <div class="divider"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button class="btn-cancel" onclick="closeModal('modal-nci-add')">Cancel</button>
+      <button class="btn-prim" style="background:#0891B2;" onclick="doAddNci()">
+        <i class="bi bi-plus-lg"></i> Add
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit NCI Mapping Modal -->
+<div class="modal-overlay" id="modal-nci-edit">
+  <div class="modal-box">
+    <div class="modal-title">
+      <i class="bi bi-pencil-square" style="color:#0891B2;"></i> Edit NCI Mapping
+    </div>
+    <input type="hidden" id="nci-edit-id">
+    <div class="row g-3">
+      <div class="col-6">
+        <label class="f-label">Internal Code <span style="color:#dc2626;">*</span></label>
+        <input class="f-ctrl" type="text" id="nci-edit-code"
+               style="text-transform:uppercase;"
+               oninput="this.value=this.value.toUpperCase()">
+      </div>
+      <div class="col-6">
+        <label class="f-label">Product <span style="color:#dc2626;">*</span></label>
+        <input class="f-ctrl" type="text" id="nci-edit-product">
+      </div>
+      <div class="col-6">
+        <label class="f-label">Width</label>
+        <input class="f-ctrl" type="text" id="nci-edit-width">
+      </div>
+      <div class="col-6">
+        <label class="f-label">Customer</label>
+        <input class="f-ctrl" type="text" id="nci-edit-customer">
+      </div>
+      <div class="col-12">
+        <label class="f-label">Part No</label>
+        <input class="f-ctrl" type="text" id="nci-edit-partno">
+        <div style="font-size:11px;color:var(--muted);margin-top:4px;">
+          <i class="bi bi-info-circle"></i>
+          Separate multiple values with <code>/</code> (e.g. <em>PartA / PartB</em>)
+        </div>
+      </div>
+    </div>
+    <div class="divider"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button class="btn-cancel" onclick="closeModal('modal-nci-edit')">Cancel</button>
+      <button class="btn-prim" style="background:#0891B2;" onclick="doEditNci()">
+        <i class="bi bi-check-lg"></i> Save Changes
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm Delete Modal (shared) -->
 <div class="modal-overlay" id="modal-confirm">
   <div class="modal-box sm">
     <div class="confirm-icon">🗑️</div>
     <div class="modal-title" style="justify-content:center;">Confirm Delete</div>
     <div class="confirm-msg" id="confirm-msg-text"></div>
     <input type="hidden" id="confirm-del-id">
+    <input type="hidden" id="confirm-del-type"> <!-- 'mapping' or 'nci' -->
     <div class="confirm-btns">
       <button class="btn-cancel" onclick="closeModal('modal-confirm')">Cancel</button>
-      <button class="btn-confirm-del" onclick="doDeleteMapping()">
+      <button class="btn-confirm-del" onclick="doConfirmedDelete()">
         <i class="bi bi-trash3"></i> Yes, Delete
       </button>
     </div>
@@ -911,22 +1140,42 @@ function openAddMapping() {
 }
 
 /* ── Open Edit Mapping ──────────────────────────────────────── */
-// Signature now includes coil so JS can pre-populate the editable field
 function openEditMapping(id, coil, product, weight) {
   document.getElementById('edit-id').value      = id;
-  document.getElementById('edit-coil').value    = coil;     // pre-fill (editable)
+  document.getElementById('edit-coil').value    = coil;
   document.getElementById('edit-product').value = product;
   document.getElementById('edit-weight').value  = weight;
   openModal('modal-edit');
   setTimeout(() => document.getElementById('edit-coil').focus(), 200);
 }
 
-/* ── Confirm Delete ─────────────────────────────────────────── */
+/* ── Confirm Delete (shared modal) ─────────────────────────── */
 function confirmDelete(id, label) {
-  document.getElementById('confirm-del-id').value = id;
+  document.getElementById('confirm-del-id').value   = id;
+  document.getElementById('confirm-del-type').value = 'mapping';
   document.getElementById('confirm-msg-text').innerHTML =
     `This will permanently remove <strong>${label}</strong> from the mapping table.`;
   openModal('modal-confirm');
+}
+
+function confirmDeleteNci(id, code) {
+  document.getElementById('confirm-del-id').value   = id;
+  document.getElementById('confirm-del-type').value = 'nci';
+  document.getElementById('confirm-msg-text').innerHTML =
+    `This will permanently remove NCI mapping <strong>${escHtml(code)}</strong>.`;
+  openModal('modal-confirm');
+}
+
+async function doConfirmedDelete() {
+  const id   = document.getElementById('confirm-del-id').value;
+  const type = document.getElementById('confirm-del-type').value;
+  closeModal('modal-confirm');
+
+  if (type === 'nci') {
+    await doDeleteNci(id);
+  } else {
+    await doDeleteMapping(id);
+  }
 }
 
 /* ── Add Mapping (CRUD) ─────────────────────────────────────── */
@@ -959,60 +1208,166 @@ async function doEditMapping() {
   if (!coil)    { toast('Coil code cannot be empty.', false); return; }
   if (!product) { toast('Product name is required.', false); return; }
 
-  const r = await post({
-    action:     'update_mapping',
-    map_id:     id,
-    coil_code:  coil,       // ← new field sent to backend
-    product:    product,
-    std_weight: weight,
-  });
-
+  const r = await post({ action:'update_mapping', map_id:id, coil_code:coil, product, std_weight:weight });
   toast(r.msg, r.ok);
 
   if (r.ok) {
     closeModal('modal-edit');
-
-    // ── Live-update the table row without a page reload ──────
     const row = document.querySelector(`#map-table tr[data-id="${id}"]`);
     if (row) {
-      // Update data attributes so future opens get correct values
       row.dataset.coil    = r.new_coil ?? coil;
       row.dataset.product = product;
-
-      // Update visible cells
-      const coilCell    = row.querySelector('.cell-coil');
-      const productCell = row.querySelector('.cell-product');
-      if (coilCell)    coilCell.innerHTML    = `<span class="code-tag">${escHtml(r.new_coil ?? coil)}</span>`;
-      if (productCell) productCell.innerHTML = `<strong>${escHtml(product)}</strong>`;
-
-      // Update the onclick of the Edit button to reflect new values
+      row.querySelector('.cell-coil').innerHTML    = `<span class="code-tag">${escHtml(r.new_coil ?? coil)}</span>`;
+      row.querySelector('.cell-product').innerHTML = `<strong>${escHtml(product)}</strong>`;
       const editBtn = row.querySelector('.btn-edit');
-      if (editBtn) {
-        editBtn.setAttribute('onclick',
-          `openEditMapping(${id},'${(r.new_coil ?? coil).replace(/'/g,"\\'")}','${product.replace(/'/g,"\\'")}',${weight || 0})`
-        );
-      }
-
-      // Brief purple flash to confirm the save
+      if (editBtn) editBtn.setAttribute('onclick',
+        `openEditMapping(${id},'${(r.new_coil??coil).replace(/'/g,"\\'")}','${product.replace(/'/g,"\\'")}',${weight||0})`);
       row.classList.add('row-flash');
-      row.addEventListener('animationend', () => row.classList.remove('row-flash'), { once: true });
+      row.addEventListener('animationend', () => row.classList.remove('row-flash'), { once:true });
     }
   }
 }
 
-/* ── Delete Mapping (CRUD) ──────────────────────────────────── */
-async function doDeleteMapping() {
-  const id = document.getElementById('confirm-del-id').value;
-  const r  = await post({ action: 'delete_mapping', map_id: id });
+/* ── Delete Mapping ─────────────────────────────────────────── */
+async function doDeleteMapping(id) {
+  const r = await post({ action:'delete_mapping', map_id:id });
   toast(r.msg, r.ok);
-  closeModal('modal-confirm');
   if (r.ok) {
     const row = document.querySelector(`#map-table tr[data-id="${id}"]`);
+    if (row) { row.style.opacity='0'; row.style.transition='.3s'; setTimeout(()=>row.remove(),300); }
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   NCI MAPPING CRUD
+═══════════════════════════════════════════════════════════════ */
+
+/* ── Open Add NCI Modal ─────────────────────────────────────── */
+function openAddNci() {
+  ['nci-add-code','nci-add-product','nci-add-width','nci-add-customer','nci-add-partno']
+    .forEach(id => document.getElementById(id).value = '');
+  openModal('modal-nci-add');
+  setTimeout(() => document.getElementById('nci-add-code').focus(), 200);
+}
+
+/* ── Open Edit NCI Modal ────────────────────────────────────── */
+function openEditNci(id, code, product, width, customer, part_no) {
+  document.getElementById('nci-edit-id').value       = id;
+  document.getElementById('nci-edit-code').value     = code;
+  document.getElementById('nci-edit-product').value  = product;
+  document.getElementById('nci-edit-width').value    = width;
+  document.getElementById('nci-edit-customer').value = customer;
+  document.getElementById('nci-edit-partno').value   = part_no;
+  openModal('modal-nci-edit');
+  setTimeout(() => document.getElementById('nci-edit-code').focus(), 200);
+}
+
+/* ── Add NCI Mapping ────────────────────────────────────────── */
+async function doAddNci() {
+  const code     = document.getElementById('nci-add-code').value.trim().toUpperCase();
+  const product  = document.getElementById('nci-add-product').value.trim();
+  const width    = document.getElementById('nci-add-width').value.trim();
+  const customer = document.getElementById('nci-add-customer').value.trim();
+  const part_no  = document.getElementById('nci-add-partno').value.trim();
+
+  if (!code || !product) { toast('Internal code and product are required.', false); return; }
+
+  const r = await post({ action:'add_nci_mapping', internal_code:code, product, width, customer, part_no });
+  toast(r.msg, r.ok);
+
+  if (r.ok) {
+    closeModal('modal-nci-add');
+
+    // Append new row to the table without a full page reload
+    const tbody = document.querySelector('#nci-table tbody');
+    const rowCount = tbody.querySelectorAll('tr').length + 1;
+    const tr = document.createElement('tr');
+    tr.dataset.nciId = r.id;
+    tr.innerHTML = `
+      <td style="color:var(--muted);font-size:11px;" class="nci-num">${rowCount}</td>
+      <td class="nci-code"><span class="code-tag">${escHtml(r.internal_code)}</span></td>
+      <td class="nci-product"><strong>${escHtml(r.product)}</strong></td>
+      <td class="nci-width"><span style="font-family:'DM Mono',monospace;font-size:12px;">${escHtml(r.width)}</span></td>
+      <td class="nci-customer">${escHtml(r.customer)}</td>
+      <td class="nci-partno part-no-cell" title="${escHtml(r.part_no)}">${escHtml(r.part_no)}</td>
+      <td style="white-space:nowrap;">
+        <button class="btn-edit btn-sm" onclick="openEditNci(${r.id},'${esc(r.internal_code)}','${esc(r.product)}','${esc(r.width)}','${esc(r.customer)}','${esc(r.part_no)}')">
+          <i class="bi bi-pencil"></i> Edit
+        </button>
+        <button class="btn-danger btn-sm" style="margin-left:4px;" onclick="confirmDeleteNci(${r.id},'${esc(r.internal_code)}')">
+          <i class="bi bi-trash3"></i> Delete
+        </button>
+      </td>`;
+    tbody.appendChild(tr);
+    tr.classList.add('row-flash-teal');
+    tr.addEventListener('animationend', () => tr.classList.remove('row-flash-teal'), { once:true });
+
+    // Update count in subtitle
+    const sub = document.getElementById('nci-count-sub');
+    if (sub) sub.textContent = `${rowCount} entries · customer part number reference`;
+  }
+}
+
+/* ── Edit NCI Mapping ───────────────────────────────────────── */
+async function doEditNci() {
+  const id       = document.getElementById('nci-edit-id').value;
+  const code     = document.getElementById('nci-edit-code').value.trim().toUpperCase();
+  const product  = document.getElementById('nci-edit-product').value.trim();
+  const width    = document.getElementById('nci-edit-width').value.trim();
+  const customer = document.getElementById('nci-edit-customer').value.trim();
+  const part_no  = document.getElementById('nci-edit-partno').value.trim();
+
+  if (!code || !product) { toast('Internal code and product are required.', false); return; }
+
+  const r = await post({ action:'update_nci_mapping', nci_id:id, internal_code:code, product, width, customer, part_no });
+  toast(r.msg, r.ok);
+
+  if (r.ok) {
+    closeModal('modal-nci-edit');
+
+    const row = document.querySelector(`#nci-table tr[data-nci-id="${id}"]`);
     if (row) {
-      row.style.opacity    = '0';
-      row.style.transition = '.3s';
-      setTimeout(() => row.remove(), 300);
+      row.querySelector('.nci-code').innerHTML    = `<span class="code-tag">${escHtml(r.internal_code)}</span>`;
+      row.querySelector('.nci-product').innerHTML = `<strong>${escHtml(r.product)}</strong>`;
+      row.querySelector('.nci-width').innerHTML   = `<span style="font-family:'DM Mono',monospace;font-size:12px;">${escHtml(r.width)}</span>`;
+      row.querySelector('.nci-customer').textContent = r.customer;
+      const partCell = row.querySelector('.nci-partno');
+      partCell.textContent = r.part_no;
+      partCell.title       = r.part_no;
+
+      // Refresh the Edit button's onclick with updated values
+      const editBtn = row.querySelector('.btn-edit');
+      if (editBtn) editBtn.setAttribute('onclick',
+        `openEditNci(${id},'${esc(r.internal_code)}','${esc(r.product)}','${esc(r.width)}','${esc(r.customer)}','${esc(r.part_no)}')`);
+      const delBtn = row.querySelector('.btn-danger');
+      if (delBtn) delBtn.setAttribute('onclick', `confirmDeleteNci(${id},'${esc(r.internal_code)}')`);
+
+      row.classList.add('row-flash-teal');
+      row.addEventListener('animationend', () => row.classList.remove('row-flash-teal'), { once:true });
     }
+  }
+}
+
+/* ── Delete NCI Mapping ─────────────────────────────────────── */
+async function doDeleteNci(id) {
+  const r = await post({ action:'delete_nci_mapping', nci_id:id });
+  toast(r.msg, r.ok);
+  if (r.ok) {
+    const row = document.querySelector(`#nci-table tr[data-nci-id="${id}"]`);
+    if (row) { row.style.opacity='0'; row.style.transition='.3s'; setTimeout(()=>{ row.remove(); renumberNci(); },300); }
+  }
+}
+
+/* Renumber the # column after a delete */
+function renumberNci() {
+  document.querySelectorAll('#nci-table tbody tr').forEach((tr, i) => {
+    const numCell = tr.querySelector('.nci-num');
+    if (numCell) numCell.textContent = i + 1;
+  });
+  const sub = document.getElementById('nci-count-sub');
+  if (sub) {
+    const n = document.querySelectorAll('#nci-table tbody tr').length;
+    sub.textContent = `${n} entries · customer part number reference`;
   }
 }
 
@@ -1048,11 +1403,7 @@ async function saveInlineWeight(btn) {
   if (!inp.value || parseFloat(inp.value) <= 0) {
     toast('Weight must be a positive number.', false); return;
   }
-  const r = await post({
-    action:     'update_stdwgt',
-    product:    inp.dataset.code,
-    std_weight: inp.value,
-  });
+  const r = await post({ action:'update_stdwgt', product:inp.dataset.code, std_weight:inp.value });
   toast(r.msg, r.ok);
   if (r.ok) {
     inp.dataset.original = inp.value;
@@ -1094,17 +1445,20 @@ document.getElementById('unsaved-stay').addEventListener('click', () => {
   closeModal('modal-unsaved'); pendingTab = null;
 });
 
-/* ── Guard: browser/tab close ───────────────────────────────── */
 window.addEventListener('beforeunload', e => {
   if (hasDirtyWeights()) { e.preventDefault(); e.returnValue = ''; }
 });
 
-/* ── HTML escape helper ─────────────────────────────────────── */
+/* ── Helpers ─────────────────────────────────────────────────── */
 function escHtml(s) {
   return String(s ?? '').replace(
     /[&<>"']/g,
     c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])
   );
+}
+// JS-string-safe escape (for onclick attributes)
+function esc(s) {
+  return String(s ?? '').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
 }
 </script>
 
