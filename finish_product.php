@@ -98,18 +98,21 @@ $month  = isset($_GET['month']) ? (int)$_GET['month'] : (int)date('m');
 $year   = isset($_GET['year'])  ? (int)$_GET['year']  : (int)date('Y');
 $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 
-// ── Card filter (new) ─────────────────────────────────────────
+// ── Card filter (tab system) ───────────────────────────────────
 // Values: in_pending | stock | palletised | waiting | deliver
-$filter_card = $_GET['filter'] ?? '';
+// Defaults to "in_pending" (the IN tab) when the page first loads.
+$filter_card = $_GET['filter'] ?? 'in_pending';
+if (!in_array($filter_card, ['in_pending', 'stock', 'palletised', 'waiting', 'deliver'], true)) {
+    $filter_card = 'in_pending';
+}
 
 if ($month < 1 || $month > 12) { $month = (int)date('m'); }
 if ($year < 2000 || $year > 2100) { $year = (int)date('Y'); }
 
-// ── Helper: build card URL preserving all params ──────────────
+// ── Helper: build tab URL preserving all params ────────────────
 function cardUrl(string $filterVal, int $month, int $year, string $search): string {
-    $params = ['month' => $month, 'year' => $year];
+    $params = ['month' => $month, 'year' => $year, 'filter' => $filterVal];
     if ($search !== '') $params['search'] = $search;
-    if ($filterVal !== '') $params['filter'] = $filterVal;
     return '?' . http_build_query($params);
 }
 
@@ -166,6 +169,85 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     log_process($conn, 'slitting', $id, intval($product['mother_id'] ?? 0) ?: null,
         'IN', 'IN', 'actual_length_saved',
         "actual_length={$actual_length}m, stock_counted=1");
+
+    header("Location: finish_product.php?month=$month&year=$year&success=stock");
+    exit;
+}
+
+// ── Batch Update Actual Length (syncs all rolls of same Product + Lot No) ──
+if ($_SERVER['REQUEST_METHOD'] === 'POST'
+    && isset($_POST['action'])
+    && $_POST['action'] === 'batch_update_actual_length') {
+
+    $actual_length = trim($_POST['actual_length']);
+    $product       = trim($_POST['product']);
+    $lot_no        = trim($_POST['lot_no']);
+
+    // Find every not-yet-completed row sharing the same Product + Lot No
+    $stmt = $conn->prepare("
+        SELECT * FROM slitting_product
+        WHERE product=? AND lot_no=? AND status='IN' AND is_completed=0
+    ");
+    $stmt->bind_param("ss", $product, $lot_no);
+    $stmt->execute();
+    $group = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+
+    if (empty($group)) {
+        // Fallback: at least update the row the user actually clicked on
+        $id = intval($_POST['id']);
+        $row = $conn->query("SELECT * FROM slitting_product WHERE id=$id")->fetch_assoc();
+        if ($row) $group = [$row];
+    }
+
+    // Single efficient batch update for actual_length across the whole group
+    $stmt = $conn->prepare("
+        UPDATE slitting_product
+        SET actual_length=?, stock_counted=1, is_completed=1
+        WHERE product=? AND lot_no=? AND status='IN' AND is_completed=0
+    ");
+    $stmt->bind_param("sss", $actual_length, $product, $lot_no);
+    $stmt->execute();
+    $stmt->close();
+
+    // Replicate per-row side effects (leftover transfer + audit log) for each row in the group
+    foreach ($group as $item) {
+        $id = $item['id'];
+
+        if ($item['cut_type'] === 'cut_into_2'
+            && floatval($item['leftover_length'] ?? $item['stock'] ?? 0) > 0) {
+
+            $leftover = floatval($item['leftover_length'] ?? $item['stock'] ?? 0);
+            $mother   = $conn->query("SELECT * FROM mother_coil WHERE id={$item['mother_id']}")->fetch_assoc();
+            if ($mother) {
+                $stock_lot_no = $item['lot_no'] . 'a';
+                $check = $conn->query("
+                    SELECT id, length FROM stock_raw_material
+                    WHERE lot_no='$stock_lot_no' AND coil_no='{$item['coil_no']}'
+                ");
+                if ($check->num_rows > 0) {
+                    $existing   = $check->fetch_assoc();
+                    $new_length = $existing['length'] + $leftover;
+                    $conn->query("UPDATE stock_raw_material SET length=$new_length, updated_at=NOW() WHERE id={$existing['id']}");
+                } else {
+                    $ins = $conn->prepare("
+                        INSERT INTO stock_raw_material
+                            (lot_no, coil_no, width, length, status, source_type, source_id, date_in)
+                        VALUES (?, ?, ?, ?, 'IN', 'reslit', ?, NOW())
+                    ");
+                    $ins->bind_param("ssddi",
+                        $stock_lot_no, $item['coil_no'],
+                        $mother['width'], $leftover, $item['mother_id']);
+                    $ins->execute();
+                    $ins->close();
+                }
+            }
+        }
+
+        log_process($conn, 'slitting', $id, intval($item['mother_id'] ?? 0) ?: null,
+            'IN', 'IN', 'actual_length_saved',
+            "actual_length={$actual_length}m, stock_counted=1, batch_synced=" . (count($group) > 1 ? 'yes' : 'no'));
+    }
 
     header("Location: finish_product.php?month=$month&year=$year&success=stock");
     exit;
@@ -316,18 +398,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     }
 }
 
-// ── Card filter SQL condition ─────────────────────────────────
+// ── Card filter SQL condition + per-tab "latest first" sort column ──
 $cardCondition = '';
+$sortColumn    = 'sp.date_in';
 if ($filter_card === 'in_pending') {
     $cardCondition = " AND sp.status = 'IN' AND sp.is_completed = 0";
+    $sortColumn    = 'sp.date_in';
 } elseif ($filter_card === 'stock') {
     $cardCondition = " AND sp.status = 'IN' AND sp.stock_counted = 1 AND pi.pallet_id IS NULL";
+    $sortColumn    = 'sp.date_in';
 } elseif ($filter_card === 'palletised') {
     $cardCondition = " AND sp.status = 'IN' AND pi.pallet_id IS NOT NULL AND p.status = 'building'";
+    $sortColumn    = 'sp.date_in';
 } elseif ($filter_card === 'waiting') {
     $cardCondition = " AND sp.status = 'WAITING'";
+    $sortColumn    = 'sp.date_out';
 } elseif ($filter_card === 'deliver') {
     $cardCondition = " AND sp.status = 'DELIVERED'";
+    $sortColumn    = 'sp.delivered_at';
 }
 
 // ── Main query ────────────────────────────────────────────────
@@ -356,7 +444,7 @@ $baseSql = "
 if ($search !== '') {
     $baseSql .= " AND (sp.product LIKE ? OR sp.lot_no LIKE ? OR sp.coil_no LIKE ? OR sp.roll_no LIKE ? OR sp.id LIKE ? OR p.pallet_no LIKE ?)";
 }
-$baseSql .= " ORDER BY sp.id ASC";
+$baseSql .= " ORDER BY {$sortColumn} DESC, sp.id DESC";
 
 $stmt = $conn->prepare($baseSql);
 if (!$stmt) { die("Query prepare failed: " . htmlspecialchars($conn->error)); }
@@ -556,9 +644,9 @@ table th:nth-child(13) { width: 130px; }  /* Action */
 
     <!-- IN (Pending) -->
     <?php $isActiveIn = ($filter_card === 'in_pending'); ?>
-    <a href="<?= $isActiveIn ? cardUrl('', $month, $year, $search) : cardUrl('in_pending', $month, $year, $search) ?>"
+    <a href="<?= cardUrl('in_pending', $month, $year, $search) ?>"
        class="kpi-card-link flex-fill <?= $isActiveIn ? 'active-kpi' : '' ?>"
-       title="<?= $isActiveIn ? 'Clear filter' : 'Show IN (Pending) rolls only' ?>">
+       title="Show IN (Pending) rolls only">
         <div class="card text-center text-bg-info h-100">
             <div class="card-body p-2">
                 <h6 class="mb-1">IN</h6>
@@ -572,9 +660,9 @@ table th:nth-child(13) { width: 130px; }  /* Action */
 
     <!-- STOCK -->
     <?php $isActiveStock = ($filter_card === 'stock'); ?>
-    <a href="<?= $isActiveStock ? cardUrl('', $month, $year, $search) : cardUrl('stock', $month, $year, $search) ?>"
+    <a href="<?= cardUrl('stock', $month, $year, $search) ?>"
        class="kpi-card-link flex-fill <?= $isActiveStock ? 'active-kpi' : '' ?>"
-       title="<?= $isActiveStock ? 'Clear filter' : 'Show Finish Good stock only' ?>">
+       title="Show Finish Good stock only">
         <div class="card text-center text-bg-primary h-100">
             <div class="card-body p-2">
                 <h6 class="mb-1">STOCK</h6>
@@ -588,9 +676,9 @@ table th:nth-child(13) { width: 130px; }  /* Action */
 
     <!-- PALLETISED -->
     <?php $isActivePal = ($filter_card === 'palletised'); ?>
-    <a href="<?= $isActivePal ? cardUrl('', $month, $year, $search) : cardUrl('palletised', $month, $year, $search) ?>"
+    <a href="<?= cardUrl('palletised', $month, $year, $search) ?>"
        class="kpi-card-link flex-fill <?= $isActivePal ? 'active-kpi kpi-card-palletised-active' : '' ?>"
-       title="<?= $isActivePal ? 'Clear filter' : 'Show palletised rolls only' ?>"
+       title="Show palletised rolls only"
        style="color:#0369a1;">
         <div class="card text-center h-100" style="background:#e0f2fe;">
             <div class="card-body p-2">
@@ -605,9 +693,9 @@ table th:nth-child(13) { width: 130px; }  /* Action */
 
     <!-- WAITING QC -->
     <?php $isActiveWait = ($filter_card === 'waiting'); ?>
-    <a href="<?= $isActiveWait ? cardUrl('', $month, $year, $search) : cardUrl('waiting', $month, $year, $search) ?>"
+    <a href="<?= cardUrl('waiting', $month, $year, $search) ?>"
        class="kpi-card-link flex-fill <?= $isActiveWait ? 'active-kpi' : '' ?>"
-       title="<?= $isActiveWait ? 'Clear filter' : 'Show Waiting QC rolls only' ?>">
+       title="Show Waiting QC rolls only">
         <div class="card text-center text-bg-warning h-100">
             <div class="card-body p-2">
                 <h6 class="mb-1">WAITING QC</h6>
@@ -621,9 +709,9 @@ table th:nth-child(13) { width: 130px; }  /* Action */
 
     <!-- DELIVER -->
     <?php $isActiveDel = ($filter_card === 'deliver'); ?>
-    <a href="<?= $isActiveDel ? cardUrl('', $month, $year, $search) : cardUrl('deliver', $month, $year, $search) ?>"
+    <a href="<?= cardUrl('deliver', $month, $year, $search) ?>"
        class="kpi-card-link flex-fill <?= $isActiveDel ? 'active-kpi' : '' ?>"
-       title="<?= $isActiveDel ? 'Clear filter' : 'Show Delivered rolls only' ?>">
+       title="Show Delivered rolls only">
         <div class="card text-center text-bg-success h-100">
             <div class="card-body p-2">
                 <h6 class="mb-1">DELIVER</h6>
@@ -637,28 +725,21 @@ table th:nth-child(13) { width: 130px; }  /* Action */
 
 </div>
 
-<!-- Active filter banner -->
-<?php if ($filter_card !== ''): ?>
-<div class="alert alert-info py-2 mb-3 d-flex align-items-center justify-content-between">
-    <span>
-        <i class="bi bi-funnel-fill me-2"></i>
-        Showing: <strong>
-        <?= match($filter_card) {
-            'in_pending'  => 'IN (Pending) only',
-            'stock'       => 'Finish Good Stock only',
-            'palletised'  => 'Palletised rolls only',
-            'waiting'     => 'Waiting QC only',
-            'deliver'     => 'Delivered only',
-            default       => ''
-        } ?>
-        </strong>
-        &nbsp;—&nbsp; click the highlighted card again or use the button to clear.
-    </span>
-    <a href="<?= cardUrl('', $month, $year, $search) ?>" class="btn btn-sm btn-outline-info ms-3 flex-shrink-0">
-        <i class="bi bi-x-lg me-1"></i>Clear filter
-    </a>
+<!-- Active tab banner -->
+<div class="alert alert-info py-2 mb-3">
+    <i class="bi bi-funnel-fill me-2"></i>
+    Showing: <strong>
+    <?= match($filter_card) {
+        'in_pending'  => 'IN (Pending) only',
+        'stock'       => 'Finish Good Stock only',
+        'palletised'  => 'Palletised rolls only',
+        'waiting'     => 'Waiting QC only',
+        'deliver'     => 'Delivered only',
+        default       => ''
+    } ?>
+    </strong>
+    &nbsp;—&nbsp; click another card above to switch tabs. Sorted newest first.
 </div>
-<?php endif; ?>
 
 <div class="table-responsive">
     <table class="table table-bordered table-striped align-middle text-center">
@@ -727,7 +808,10 @@ table th:nth-child(13) { width: 130px; }  /* Action */
                     . htmlspecialchars($row['pallet_no']) . '</a>';
             }
         ?>
-            <tr class="<?= $rowClass ?>">
+            <tr class="<?= $rowClass ?>"
+                data-id="<?= $row['id'] ?>"
+                data-product="<?= htmlspecialchars($row['product'] ?? '') ?>"
+                data-lot="<?= htmlspecialchars(trim($row['lot_no'] ?? '')) ?>">
                 <td class="row-counter"><?= $rowNum ?></td>
                 <td><?= $statusBadge ?></td>
                 <td>
@@ -740,7 +824,7 @@ table th:nth-child(13) { width: 130px; }  /* Action */
                 <td><?= str_replace('R', 'R-', htmlspecialchars($row['roll_no'] ?? '')) ?></td>
                 <td><?= $row['width'] ?></td>
                 <td><?= $row['length'] ?></td>
-                <td><?= $row['actual_length'] ?></td>
+                <td id="actual-display-<?= $row['id'] ?>"><?= $row['actual_length'] ?></td>
                 <td><?= $palletDisplay ?></td>
                 <td><?= $row['date_in'] ?></td>
                 <td><?= $row['date_out'] ?></td>
@@ -825,8 +909,10 @@ table th:nth-child(13) { width: 130px; }  /* Action */
      style="display:block; background: rgba(0,0,0,0.5);" tabindex="-1">
     <div class="modal-dialog">
         <form class="modal-content" method="post">
-            <input type="hidden" name="action" value="update_ok">
-            <input type="hidden" name="id"     value="<?= $editData['id'] ?>">
+            <input type="hidden" name="action" value="batch_update_actual_length">
+            <input type="hidden" name="id"      value="<?= $editData['id'] ?>">
+            <input type="hidden" name="product" value="<?= htmlspecialchars($editData['product'] ?? '') ?>">
+            <input type="hidden" name="lot_no"  value="<?= htmlspecialchars(trim($editData['lot_no'] ?? '')) ?>">
             <div class="modal-header bg-primary text-white">
                 <h5>Update Product</h5>
                 <a href="finish_product.php?month=<?= $month ?>&year=<?= $year ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>"
@@ -842,7 +928,13 @@ table th:nth-child(13) { width: 130px; }  /* Action */
                     <label class="form-label">Actual Length (meter)</label>
                     <input type="number" step="0.01" name="actual_length"
                            id="actualLengthInput" class="form-control"
-                           value="<?= $editData['actual_length'] ?>" required autofocus>
+                           value="<?= $editData['actual_length'] ?>" required autofocus
+                           data-self-id="<?= $editData['id'] ?>"
+                           data-product="<?= htmlspecialchars($editData['product'] ?? '') ?>"
+                           data-lot="<?= htmlspecialchars(trim($editData['lot_no'] ?? '')) ?>">
+                    <small class="text-muted" id="syncNote" style="display:none;">
+                        This will also update other rolls sharing the same Product &amp; Lot No.
+                    </small>
                 </div>
                 <div class="d-grid">
                     <button type="submit" class="btn btn-success" id="saveStockBtn" disabled>
@@ -856,8 +948,30 @@ table th:nth-child(13) { width: 130px; }  /* Action */
 <script>
     const inputLength = document.getElementById('actualLengthInput');
     const btnSave     = document.getElementById('saveStockBtn');
+    const syncNote    = document.getElementById('syncNote');
+
+    function findMatchingRows() {
+        const product = inputLength.dataset.product;
+        const lot      = inputLength.dataset.lot;
+        const selfId   = inputLength.dataset.selfId;
+        return Array.from(document.querySelectorAll('tr[data-id]')).filter(tr =>
+            tr.dataset.id !== selfId &&
+            tr.dataset.product === product &&
+            tr.dataset.lot === lot
+        );
+    }
+
     inputLength.addEventListener('input', () => {
         btnSave.disabled = (inputLength.value === "" || parseFloat(inputLength.value) <= 0);
+
+        const matches = findMatchingRows();
+        syncNote.style.display = matches.length > 0 ? 'inline' : 'none';
+
+        // Live preview: instantly reflect the new value on matching visible rows
+        matches.forEach(tr => {
+            const cell = document.getElementById('actual-display-' + tr.dataset.id);
+            if (cell) cell.textContent = inputLength.value;
+        });
     });
 </script>
 <?php endif; ?>

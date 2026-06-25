@@ -89,6 +89,60 @@ $success_messages = [
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action  = $_POST['action'] ?? '';
 
+    /* ─────────────────────────────────────────────
+       BULK ADD (Excel multi-row paste)
+       Accepts rows_json = JSON array of
+       { lot_no, coil_no, grade, width, length, product }
+       Inserts each valid, non-duplicate row; reports
+       per-row results as JSON instead of redirecting.
+    ───────────────────────────────────────────── */
+    if ($action === 'bulk_add') {
+        header('Content-Type: application/json; charset=utf-8');
+
+        $rows = json_decode($_POST['rows_json'] ?? '[]', true);
+        if (!is_array($rows)) $rows = [];
+
+        $inserted = 0;
+        $skipped  = [];
+
+        foreach ($rows as $i => $r) {
+            $r_lot     = trim($r['lot_no']  ?? '');
+            $r_coil    = trim($r['coil_no'] ?? '');
+            $r_grade   = trim($r['grade']   ?? '');
+            $r_width   = trim($r['width']   ?? '');
+            $r_length  = trim($r['length']  ?? '');
+            $r_product = trim($r['product'] ?? '');
+
+            if ($r_lot === '' || $r_coil === '' || $r_grade === '' || $r_width === '' || $r_length === '' || $r_product === '') {
+                $skipped[] = ['row' => $i + 1, 'reason' => 'Missing required field'];
+                continue;
+            }
+
+            $dup_stmt = $conn->prepare("SELECT id FROM mother_coil WHERE coil_no = ? AND lot_no = ?");
+            $dup_stmt->bind_param("ss", $r_coil, $r_lot);
+            $dup_stmt->execute();
+            $dup_res = $dup_stmt->get_result();
+            if ($dup_res->num_rows > 0) {
+                $skipped[] = ['row' => $i + 1, 'reason' => "Duplicate Lot $r_lot / Coil $r_coil"];
+                $dup_stmt->close();
+                continue;
+            }
+            $dup_stmt->close();
+
+            $stmt = $conn->prepare("
+                INSERT INTO mother_coil (product, grade, lot_no, coil_no, width, length, date_created, status)
+                VALUES (?,?,?,?,?,?,NOW(),'NEW')
+            ");
+            $stmt->bind_param("ssssss", $r_product, $r_grade, $r_lot, $r_coil, $r_width, $r_length);
+            $stmt->execute();
+            $stmt->close();
+            $inserted++;
+        }
+
+        echo json_encode(['ok' => true, 'inserted' => $inserted, 'skipped' => $skipped]);
+        exit;
+    }
+
     $id      = intval($_POST['id'] ?? 0);
     $lot_no  = trim($_POST['lot_no']  ?? '');
     $coil_no = trim($_POST['coil_no'] ?? '');
@@ -214,6 +268,9 @@ include 'header.php';
             <button class="btn btn-success btn-sm" data-bs-toggle="modal" data-bs-target="#addMotherModal">
                 <i class="bi bi-plus"></i> Add Mother Coil
             </button>
+            <button class="btn btn-outline-success btn-sm ms-2" data-bs-toggle="modal" data-bs-target="#bulkAddMotherModal">
+                <i class="bi bi-table"></i> Bulk Add from Excel
+            </button>
         <?php endif; ?>
     </div>
     <div class="col-md-6">
@@ -301,6 +358,17 @@ include 'header.php';
         </div>
 
         <div class="modal-body">
+
+          <!-- Excel paste shortcut (add-on; manual fields below remain fully usable) -->
+          <div class="mb-3">
+            <label class="form-label fw-semibold">Shortcut: Paste Excel Row Here to Auto-Fill</label>
+            <textarea id="add_paste_zone" class="form-control" rows="2"
+                      placeholder="Copy a row from Excel (without headers) and paste it here…"></textarea>
+            <div class="form-text">Tab-separated row from Excel — auto-fills Lot No, Coil No, Grade, Width and Length below.</div>
+            <div class="alert alert-warning mt-2 mb-0 d-none" id="add_paste_warning">
+              Format mismatch. Please ensure you copied a valid row from the spreadsheet.
+            </div>
+          </div>
 
           <!-- Lot No (first — unlocks Coil No) -->
           <div class="mb-3">
@@ -438,6 +506,58 @@ include 'header.php';
   </div>
 </div>
 
+<!-- ══════════════════════════════════════════
+     BULK ADD MODAL (multi-row Excel paste)
+══════════════════════════════════════════ -->
+<div class="modal fade" id="bulkAddMotherModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-xl">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-table me-2"></i>Bulk Add Mother Coils from Excel</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+
+      <div class="modal-body">
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Paste Multiple Excel Rows Here (one coil per line, no headers)</label>
+          <textarea id="bulk_paste_zone" class="form-control" rows="6"
+                    placeholder="Paste several rows copied from Excel — each line becomes one mother coil."></textarea>
+          <div class="form-text">Each line must be tab-separated, same column layout as the single-row paste shortcut.</div>
+        </div>
+
+        <div class="d-flex gap-2 mb-3">
+          <button type="button" class="btn btn-primary btn-sm" id="bulk_parse_btn">
+            <i class="bi bi-list-check"></i> Parse Rows
+          </button>
+          <button type="button" class="btn btn-secondary btn-sm" id="bulk_clear_btn">Clear</button>
+        </div>
+
+        <div class="alert alert-warning d-none" id="bulk_parse_warning"></div>
+        <div class="alert alert-success d-none" id="bulk_result_msg"></div>
+
+        <div class="table-responsive">
+          <table class="table table-sm table-bordered align-middle" id="bulk_preview_table">
+            <thead class="table-light">
+              <tr>
+                <th>#</th><th>Lot No</th><th>Coil No</th><th>Product</th>
+                <th>Grade</th><th>Width (mm)</th><th>Length (mtr)</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="bulk_preview_tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-success" id="bulk_save_btn" disabled>
+          <i class="bi bi-save me-1"></i> Save All
+        </button>
+        <button type="button" class="btn btn-danger" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 /* ════════════════════════════════════════════════════════════
    ADD MODAL — Product lookup logic
@@ -456,6 +576,104 @@ const elDisplay    = document.getElementById('add_product_display');
 const elSelect     = document.getElementById('add_product_select');
 const elHidden     = document.getElementById('add_product_hidden');
 const elCoilHint   = document.getElementById('add_coil_hint');
+
+const elPaste        = document.getElementById('add_paste_zone');
+const elPasteWarning = document.getElementById('add_paste_warning');
+
+function showPasteWarning(show) {
+    elPasteWarning.classList.toggle('d-none', !show);
+}
+
+/* ════════════════════════════════════════════════════════════
+   Excel paste shortcut — parses a tab-separated Excel row and
+   auto-fills Lot No, Coil No, Grade, Width and Length.
+   Manual editing of every field remains available afterwards.
+════════════════════════════════════════════════════════════ */
+elPaste.addEventListener('input', function () {
+    handlePasteAutofill(this.value);
+});
+
+async function handlePasteAutofill(raw) {
+    const text = raw.trim();
+    if (!text) { showPasteWarning(false); return; }
+
+    const cols = text.split('\t');
+    if (cols.length < 6) { showPasteWarning(true); return; }
+
+    const widthVal    = (cols[2] || '').trim();
+    const lotCoilCell  = (cols[3] || '').trim();
+    const lengthVal   = (cols[4] || '').trim();
+    const gradeVal    = (cols[5] || '').trim();
+
+    const lotCoilParts = lotCoilCell.split(' ').filter(Boolean);
+    const widthNum  = parseFloat(widthVal);
+    const lengthNum = parseFloat(lengthVal);
+
+    if (lotCoilParts.length < 2 || isNaN(widthNum) || isNaN(lengthNum) || !gradeVal) {
+        showPasteWarning(true);
+        return;
+    }
+
+    showPasteWarning(false);
+
+    const lotVal  = lotCoilParts[0];
+    const coilVal = lotCoilParts.slice(1).join(' ');
+
+    /* Fill Lot No (re-validate + unlock Coil No) */
+    elLot.value = lotVal;
+    elLot.dispatchEvent(new Event('input'));
+
+    /* Fill Coil No */
+    elCoil.disabled = false;
+    elCoil.value = coilVal;
+
+    /* Instantly fill + unlock Grade, Width, Length — still editable by hand */
+    elGrade.disabled  = false; elGrade.value  = gradeVal;
+    elWidth.disabled  = false; elWidth.value  = widthVal;
+    elLength.disabled = false; elLength.value = lengthVal;
+    elSubmit.disabled = false;
+
+    /* Best-effort background product lookup; pasted values are preserved either way */
+    try {
+        elCoilHint.textContent = '🔍 Looking up product…';
+        const res  = await fetch('mother_coil.php?ajax=get_product&coil=' + encodeURIComponent(coilVal));
+        const data = await res.json();
+
+        if (data.ok && data.products.length === 1) {
+            elDisplay.value      = data.products[0];
+            elDisplay.className  = 'form-control state-auto';
+            elHidden.value       = data.products[0];
+            elHidden.disabled    = false;
+            elAutoWrap.style.display = 'block';
+            elSelectWrap.classList.remove('visible');
+            elSelect.required = false;
+            elCoilHint.textContent = '';
+        } else if (data.ok && data.products.length > 1) {
+            elAutoWrap.style.display = 'none';
+            elSelectWrap.classList.add('visible');
+            elHidden.disabled = true;
+            elHidden.value    = '';
+            elSelect.innerHTML = '<option value="">-- Select Product --</option>';
+            data.products.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = opt.textContent = p;
+                elSelect.appendChild(opt);
+            });
+            elSelect.required = true;
+            elCoilHint.textContent = '';
+        } else {
+            elCoilHint.textContent = '⚠️ Coil code not found in mapping table. Please select product manually if required.';
+        }
+    } catch (err) {
+        elCoilHint.textContent = '⚠️ Network error during lookup.';
+    }
+
+    /* Re-assert pasted values in case the lookup branches above touched shared state */
+    elGrade.disabled  = false; elGrade.value  = gradeVal;
+    elWidth.disabled  = false; elWidth.value  = widthVal;
+    elLength.disabled = false; elLength.value = lengthVal;
+    elSubmit.disabled = false;
+}
 
 /* Reset the whole product area */
 function resetProduct() {
@@ -594,6 +812,8 @@ document.getElementById('addMotherModal').addEventListener('show.bs.modal', func
     elSubmit.disabled= true;
     elCoilHint.textContent = 'Enter coil number then click elsewhere to look up product.';
     elDisplay.style.borderColor = '';
+    elPaste.value = '';
+    showPasteWarning(false);
 });
 
 document.getElementById('addMotherModal').addEventListener('shown.bs.modal', function () {
@@ -628,6 +848,250 @@ document.querySelectorAll('.editBtn').forEach(btn => {
 /* ── Edit Lot No validation ── */
 document.getElementById('edit_lot_no').addEventListener('input', function () {
     validateLotNo(this);
+});
+
+/* ════════════════════════════════════════════════════════════
+   BULK ADD MODAL — paste many Excel rows, preview, edit, save all
+════════════════════════════════════════════════════════════ */
+const bulkPaste     = document.getElementById('bulk_paste_zone');
+const bulkParseBtn  = document.getElementById('bulk_parse_btn');
+const bulkClearBtn  = document.getElementById('bulk_clear_btn');
+const bulkWarning   = document.getElementById('bulk_parse_warning');
+const bulkResultMsg = document.getElementById('bulk_result_msg');
+const bulkTbody     = document.getElementById('bulk_preview_tbody');
+const bulkSaveBtn   = document.getElementById('bulk_save_btn');
+
+let bulkRows = []; // { lot_no, coil_no, grade, width, length, product, productOptions, productStatus }
+
+function showBulkWarning(msg) {
+    if (!msg) {
+        bulkWarning.classList.add('d-none');
+        bulkWarning.textContent = '';
+        return;
+    }
+    bulkWarning.textContent = msg;
+    bulkWarning.classList.remove('d-none');
+}
+
+function escapeHtml(str) {
+    return String(str ?? '').replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+}
+
+bulkClearBtn.addEventListener('click', () => {
+    bulkPaste.value = '';
+    bulkRows = [];
+    renderBulkTable();
+    showBulkWarning('');
+    bulkResultMsg.classList.add('d-none');
+});
+
+bulkParseBtn.addEventListener('click', () => {
+    parseBulkRows(bulkPaste.value);
+});
+
+function parseBulkRows(raw) {
+    const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(l => l !== '');
+    if (lines.length === 0) {
+        showBulkWarning('Please paste at least one row before parsing.');
+        return;
+    }
+
+    const parsed   = [];
+    const badLines = [];
+
+    lines.forEach((line, idx) => {
+        const cols = line.split('\t');
+        if (cols.length < 6) { badLines.push(idx + 1); return; }
+
+        const widthVal     = (cols[2] || '').trim();
+        const lotCoilCell  = (cols[3] || '').trim();
+        const lengthVal    = (cols[4] || '').trim();
+        const gradeVal     = (cols[5] || '').trim();
+
+        const lotCoilParts = lotCoilCell.split(' ').filter(Boolean);
+
+        if (lotCoilParts.length < 2 || isNaN(parseFloat(widthVal)) || isNaN(parseFloat(lengthVal)) || !gradeVal) {
+            badLines.push(idx + 1);
+            return;
+        }
+
+        parsed.push({
+            lot_no:  lotCoilParts[0],
+            coil_no: lotCoilParts.slice(1).join(' '),
+            grade:   gradeVal,
+            width:   widthVal,
+            length:  lengthVal,
+            product: '',
+            productOptions: [],
+            productStatus: 'pending'   // pending | single | multiple | none
+        });
+    });
+
+    if (badLines.length > 0) {
+        showBulkWarning(
+            `Format mismatch on line(s) ${badLines.join(', ')}. Please ensure every row was copied correctly from the spreadsheet. Valid rows were still parsed below.`
+        );
+    } else {
+        showBulkWarning('');
+    }
+
+    bulkRows = parsed;
+    renderBulkTable();
+    bulkRows.forEach((row, i) => lookupBulkProduct(i));
+}
+
+function renderProductCell(row) {
+    if (row.productStatus === 'pending') {
+        return `<span class="text-muted small">🔍 Looking up…</span>`;
+    }
+    if (row.productStatus === 'none') {
+        return `<span class="text-danger small">⚠ Not found</span>`;
+    }
+    if (row.productStatus === 'single') {
+        return `<span class="text-success small">${escapeHtml(row.product)}</span>`;
+    }
+    if (row.productStatus === 'multiple') {
+        const options = row.productOptions.map(p =>
+            `<option value="${escapeHtml(p)}" ${p === row.product ? 'selected' : ''}>${escapeHtml(p)}</option>`
+        ).join('');
+        return `<select class="form-select form-select-sm bulk-product-select">
+                    <option value="">-- Select --</option>${options}
+                </select>`;
+    }
+    return '';
+}
+
+function renderBulkTable() {
+    bulkTbody.innerHTML = '';
+    bulkSaveBtn.disabled = bulkRows.length === 0;
+
+    bulkRows.forEach((row, i) => {
+        const tr = document.createElement('tr');
+        tr.dataset.index = i;
+        tr.innerHTML = `
+            <td>${i + 1}</td>
+            <td><input type="text" class="form-control form-control-sm bulk-lot" value="${escapeHtml(row.lot_no)}"></td>
+            <td><input type="text" class="form-control form-control-sm bulk-coil" value="${escapeHtml(row.coil_no)}"></td>
+            <td class="bulk-product-cell">${renderProductCell(row)}</td>
+            <td><input type="text" class="form-control form-control-sm bulk-grade" value="${escapeHtml(row.grade)}"></td>
+            <td><input type="number" step="0.01" class="form-control form-control-sm bulk-width" value="${escapeHtml(row.width)}"></td>
+            <td><input type="number" step="0.01" class="form-control form-control-sm bulk-length" value="${escapeHtml(row.length)}"></td>
+            <td><button type="button" class="btn btn-outline-danger btn-sm bulk-remove">&times;</button></td>
+        `;
+        bulkTbody.appendChild(tr);
+    });
+
+    bulkTbody.querySelectorAll('tr').forEach(tr => {
+        const i = parseInt(tr.dataset.index, 10);
+
+        tr.querySelector('.bulk-lot').addEventListener('input', e => bulkRows[i].lot_no = e.target.value);
+        tr.querySelector('.bulk-coil').addEventListener('change', e => {
+            bulkRows[i].coil_no       = e.target.value;
+            bulkRows[i].product       = '';
+            bulkRows[i].productStatus = 'pending';
+            lookupBulkProduct(i);
+        });
+        tr.querySelector('.bulk-grade').addEventListener('input', e => bulkRows[i].grade = e.target.value);
+        tr.querySelector('.bulk-width').addEventListener('input', e => bulkRows[i].width = e.target.value);
+        tr.querySelector('.bulk-length').addEventListener('input', e => bulkRows[i].length = e.target.value);
+
+        tr.querySelector('.bulk-remove').addEventListener('click', () => {
+            bulkRows.splice(i, 1);
+            renderBulkTable();
+        });
+
+        const sel = tr.querySelector('.bulk-product-select');
+        if (sel) sel.addEventListener('change', e => { bulkRows[i].product = e.target.value; });
+    });
+}
+
+async function lookupBulkProduct(i) {
+    const row = bulkRows[i];
+    if (!row || !row.coil_no) return;
+
+    try {
+        const res  = await fetch('mother_coil.php?ajax=get_product&coil=' + encodeURIComponent(row.coil_no));
+        const data = await res.json();
+
+        if (!data.ok || data.products.length === 0) {
+            row.productStatus = 'none';
+            row.product = '';
+        } else if (data.products.length === 1) {
+            row.productStatus = 'single';
+            row.product = data.products[0];
+        } else {
+            row.productStatus  = 'multiple';
+            row.productOptions = data.products;
+            row.product = '';
+        }
+    } catch (e) {
+        row.productStatus = 'none';
+        row.product = '';
+    }
+
+    // Re-render only this row's product cell so other in-progress edits aren't disturbed
+    const tr = bulkTbody.querySelector(`tr[data-index="${i}"]`);
+    if (tr) {
+        const cell = tr.querySelector('.bulk-product-cell');
+        cell.innerHTML = renderProductCell(row);
+        const sel = cell.querySelector('.bulk-product-select');
+        if (sel) sel.addEventListener('change', e => { row.product = e.target.value; });
+    }
+}
+
+bulkSaveBtn.addEventListener('click', async () => {
+    const validRows = bulkRows.filter(r =>
+        r.lot_no && r.coil_no && r.grade && r.width && r.length && r.product
+    );
+
+    if (validRows.length === 0) {
+        showBulkWarning('No complete rows to save. Make sure every row has a resolved Product before saving.');
+        return;
+    }
+
+    bulkSaveBtn.disabled = true;
+    bulkSaveBtn.textContent = 'Saving…';
+
+    try {
+        const formData = new FormData();
+        formData.append('action', 'bulk_add');
+        formData.append('rows_json', JSON.stringify(validRows));
+
+        const res  = await fetch('mother_coil.php', { method: 'POST', body: formData });
+        const data = await res.json();
+
+        if (data.ok) {
+            let msg = `✅ ${data.inserted} mother coil(s) saved successfully.`;
+            if (data.skipped && data.skipped.length > 0) {
+                msg += ` ${data.skipped.length} row(s) skipped: ` +
+                    data.skipped.map(s => `Row ${s.row} (${s.reason})`).join('; ');
+            }
+            bulkResultMsg.textContent = msg;
+            bulkResultMsg.classList.remove('d-none');
+
+            if (data.inserted > 0) {
+                setTimeout(() => window.location.reload(), 1200);
+            }
+        } else {
+            showBulkWarning('Save failed. Please try again.');
+        }
+    } catch (e) {
+        showBulkWarning('Network error while saving.');
+    } finally {
+        bulkSaveBtn.disabled = false;
+        bulkSaveBtn.textContent = 'Save All';
+    }
+});
+
+/* Reset bulk modal on open */
+document.getElementById('bulkAddMotherModal').addEventListener('show.bs.modal', function () {
+    bulkPaste.value = '';
+    bulkRows = [];
+    renderBulkTable();
+    showBulkWarning('');
+    bulkResultMsg.classList.add('d-none');
 });
 </script>
 

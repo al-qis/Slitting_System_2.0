@@ -1,4 +1,4 @@
-CREATE DATABASE  IF NOT EXISTS `slitting_db_test` /*!40100 DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci */ /*!80016 DEFAULT ENCRYPTION='N' */;
+/*CREATE DATABASE  IF NOT EXISTS `slitting_db_test` /*!40100 DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci */ /*!80016 DEFAULT ENCRYPTION='N' */;
 USE `slitting_db_test`;
 -- MySQL dump 10.13  Distrib 8.0.41, for Win64 (x86_64)
 --
@@ -39,7 +39,7 @@ CREATE TABLE `coil_product_map` (
 
 LOCK TABLES `coil_product_map` WRITE;
 /*!40000 ALTER TABLE `coil_product_map` DISABLE KEYS */;
-INSERT INTO `coil_product_map` VALUES (1,'A','RS-3825'),(2,'B','RS-4525'),(3,'B','TS-4525'),(4,'BP','RS-3825-04'),(5,'CG','DS-3020'),(6,'CH','DS-3825'),(7,'CI','DS-4525'),(8,'CJ','DS-5030'),(9,'CM','DS-8460'),(10,'EC','LN-2520-04'),(11,'ED','L1N2-2520-02'),(12,'FJ','LZ-2420'),(13,'FK','LN-2520'),(14,'FK','LN-2520-788'),(15,'FK','LN-2520-936'),(16,'FK','LN-2520-1025'),(17,'FN','YW-2520-SG'),(18,'FR','LN-1715-1'),(19,'FR','LN-1715-838'),(20,'FR','LN-2520-838'),(21,'FV','LZ-2520'),(22,'FV','LZ-2520-788'),(23,'G','RS-4020'),(24,'H','RS-5030'),(25,'HPM','HBV-4020'),(26,'HPM','MV-4020'),(27,'J','RS-6040'),(28,'JCM','DS-8460'),(29,'JPM','MV-4020'),(30,'JQA','JZ-2520'),(31,'JQE','JZ-3020'),(32,'K','RS-7050'),(33,'LA','TS-5030'),(34,'LG','RS-4025'),(35,'LG','RS-4525'),(36,'LG','TS-4025'),(37,'LI','TS-9080-SG'),(38,'LJ','TS-9080'),(39,'LM','TS-2620'),(40,'LQ','TS-3525-SG'),(41,'N','TU-3020'),(42,'O','JV-3825'),(43,'O','RV-3825'),(44,'P','TS-3525'),(45,'P6','PS-6020'),(46,'PS','PS-8525'),(47,'QA','JZ-2520'),(48,'QA','JZ-2520-2C'),(49,'QA','JZ-2520-2C-788'),(50,'QB','JZ-4020'),(51,'QE','JZ-3020'),(52,'QM','JZ-2820'),(53,'QM','JZ-2820-788'),(54,'RA','RU-5040-1'),(55,'RG','RB-6440'),(56,'RH','GB-6440-S101'),(57,'RK','KB-6440'),(58,'RL','GB-7640'),(59,'RN','RB-5040-2'),(60,'RR','GB-6440'),(61,'RU','RU-5040-1-S101'),(62,'TG','TU-4020'),(63,'V','RS-3020'),(64,'V','TS-3020'),(65,'Z','TU-2620'),(66,'ZC','TU-2620-C');
+INSERT INTO `coil_product_map` VALUES (1,'A','RS-3825'),(2,'B','RS-4525'),(3,'B','TS-4525'),(4,'BP','RS-3825-04'),(5,'CG','DS-3020'),(6,'CH','DS-3825'),(7,'CI','DS-4525'),(8,'CJ','DS-5030'),(9,'CM','DS-8460'),(10,'EC','LN-2520-04'),(11,'ED','L1N2-2520-02'),(12,'FJ','LZ-2420'),(13,'FK','LN-2520'),(14,'FK','LN-2520-788'),(15,'FK','LN-2520-936'),(16,'FK','LN-2520-1025'),(17,'FN','YW-2520-SG'),(18,'FR','LN-1715-1'),(19,'FR','LN-1715-838'),(20,'FR','LN-2520-838'),(21,'FV','LZ-2520'),(22,'FV','LZ-2520-788'),(23,'G','RS-4020'),(24,'H','RS-5030'),(25,'HPM','HBV-4020'),(26,'HPM','MV-4020'),(27,'J','RS-6040'),(28,'HCM','DS-8460'),(29,'JPM','MV-4020'),(30,'JQA','JZ-2520'),(31,'JQE','JZ-3020'),(32,'K','RS-7050'),(33,'LA','TS-5030'),(34,'LG','RS-4025'),(35,'LG','RS-4525'),(36,'LG','TS-4025'),(37,'LI','TS-9080-SG'),(38,'LJ','TS-9080'),(39,'LM','TS-2620'),(40,'LQ','TS-3525-SG'),(41,'N','TU-3020'),(42,'O','JV-3825'),(43,'O','RV-3825'),(44,'P','TS-3525'),(45,'P6','PS-6020'),(46,'PS','PS-8525'),(47,'QA','JZ-2520'),(48,'QA','JZ-2520-2C'),(49,'QA','JZ-2520-2C-788'),(50,'QB','JZ-4020'),(51,'QE','JZ-3020'),(52,'QM','JZ-2820'),(53,'QM','JZ-2820-788'),(54,'RA','RU-5040-1'),(55,'RG','RB-6440'),(56,'RH','GB-6440-S101'),(57,'RK','KB-6440'),(58,'RL','GB-7640'),(59,'RN','RB-5040-2'),(60,'RR','GB-6440'),(61,'RU','RU-5040-1-S101'),(62,'TG','TU-4020'),(63,'V','RS-3020'),(64,'V','TS-3020'),(65,'Z','TU-2620'),(66,'ZC','TU-2620-C');
 /*!40000 ALTER TABLE `coil_product_map` ENABLE KEYS */;
 UNLOCK TABLES;
 
@@ -136,8 +136,146 @@ CREATE TABLE `nci_product_mapping` (
 
 LOCK TABLES `nci_product_mapping` WRITE;
 /*!40000 ALTER TABLE `nci_product_mapping` DISABLE KEYS */;
-INSERT INTO `nci_product_mapping` VALUES (1,'A-115','RS-3825','115 mm','DELPHI (Mexico)','6572050/6572051','2026-01-22 07:20:23'),(2,'A-120','RS-3825','120 mm','DELPHI (Brazil)','06571928 / 06571927 / 06572176','2026-01-22 07:20:23'),(3,'G-125','RS-4020','125 mm','DELPHI (Mexico)','06571982','2026-01-22 07:20:23'),(4,'KB-101','KB-6440','101 mm','AMBRAKE','51-A3826-67434','2026-01-22 07:20:23'),(5,'KB-111','KB-6440','111 mm','AMBRAKE','AB-A4315-67430','2026-01-22 07:20:23'),(6,'KB-113','KB-6440','113 mm','ADVICS','115-5314','2026-01-22 07:20:23'),(7,'KB-136','KB-6440','136 mm','ADVICS','115-5704','2026-01-22 07:20:23'),(8,'KB-137','KB-6440','137 mm','ADVICS','115-5704','2026-01-22 07:20:23'),(9,'KB-141','KB-6440','141 mm','ADVICS','115-5315','2026-01-22 07:20:23'),(10,'KB-155','KB-6440','155 mm','AMBRAKE','51-E4532-57431','2026-01-22 07:20:23'),(11,'KB-167','KB-6440','167 mm','AMAK / AMBRAKE','51-E5112-57431 / AB-E5111-57431','2026-01-22 07:20:23'),(12,'KB-210','KB-6440','210 mm','AMAK','51-A5739-57430','2026-01-22 07:20:23'),(13,'N-313','TU-3020','313 mm','TOYOTA','17177/17178-0P020','2026-01-22 07:20:23'),(14,'P-154','TS-3525','154 mm','AAC','213231-12090 (Plate Gasket)','2026-01-22 07:20:23'),(15,'P-89','TS-3525','89 mm','TOYOTA','15147-0P020','2026-01-22 07:20:23'),(16,'TG-313','TU-4020','313 mm','AAC','213231-12080 (WPG MK)','2026-01-22 07:20:23');
+INSERT INTO `nci_product_mapping` VALUES (1,'A-115','RS-3825','115 mm','DELPHI (Mexico)','6572050/6572051','2026-01-22 07:20:23'),(2,'A-120','RS-3825','120 mm','DELPHI (Brazil)','06571926 / 06571927 / 06572176','2026-01-22 07:20:23'),(3,'G-125','RS-4020','125 mm','DELPHI (Mexico)','06571982','2026-01-22 07:20:23'),(4,'KB-101','KB-6440','101 mm','AMBRAKE','51-A3826-67434','2026-01-22 07:20:23'),(5,'KB-111','KB-6440','111 mm','AMBRAKE','AB-A4315-67430','2026-01-22 07:20:23'),(6,'KB-113','KB-6440','113 mm','ADVICS','115-5314','2026-01-22 07:20:23'),(7,'KB-136','KB-6440','136 mm','ADVICS','115-5704','2026-01-22 07:20:23'),(8,'KB-137','KB-6440','137 mm','ADVICS','115-5704','2026-01-22 07:20:23'),(9,'KB-141','KB-6440','141 mm','ADVICS','115-5315','2026-01-22 07:20:23'),(10,'KB-155','KB-6440','155 mm','AMBRAKE','51-E4532-57431','2026-01-22 07:20:23'),(11,'KB-167','KB-6440','167 mm','AMAK / AMBRAKE','51-E5112-57431 / AB-E5111-57431','2026-01-22 07:20:23'),(12,'KB-210','KB-6440','210 mm','AMAK','51-A5739-57430','2026-01-22 07:20:23'),(13,'N-313','TU-3020','313 mm','TOYOTA','17177/17178-0P020','2026-01-22 07:20:23'),(14,'P-154','TS-3525','154 mm','AAC','213231-12090 (Plate Gasket)','2026-01-22 07:20:23'),(15,'P-89','TS-3525','89 mm','TOYOTA','15147-0P020','2026-01-22 07:20:23'),(16,'TG-313','TU-4020','313 mm','AAC','213231-12080 (WPG MK)','2026-01-22 07:20:23');
 /*!40000 ALTER TABLE `nci_product_mapping` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `pallet_delivery_log`
+--
+
+DROP TABLE IF EXISTS `pallet_delivery_log`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `pallet_delivery_log` (
+  `id` int unsigned NOT NULL AUTO_INCREMENT,
+  `pallet_id` int unsigned NOT NULL,
+  `pallet_no` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `rolls_delivered` tinyint unsigned NOT NULL,
+  `triggered_by_product_id` int unsigned DEFAULT NULL,
+  `performed_by` varchar(60) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'slitting',
+  `delivered_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_pdl_pallet` (`pallet_id`),
+  KEY `idx_pdl_date` (`delivered_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `pallet_delivery_log`
+--
+
+LOCK TABLES `pallet_delivery_log` WRITE;
+/*!40000 ALTER TABLE `pallet_delivery_log` DISABLE KEYS */;
+/*!40000 ALTER TABLE `pallet_delivery_log` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `pallet_edit_log`
+--
+
+DROP TABLE IF EXISTS `pallet_edit_log`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `pallet_edit_log` (
+  `id` int unsigned NOT NULL AUTO_INCREMENT,
+  `pallet_id` int unsigned NOT NULL,
+  `pallet_no` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `action` enum('remove_roll','add_roll','reopen','resubmit_to_qc','delete_pallet') COLLATE utf8mb4_unicode_ci NOT NULL,
+  `product_id` int unsigned DEFAULT NULL COMMENT 'The slitting_product row affected (NULL for pallet-level actions)',
+  `product_ref` varchar(120) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Snapshot of lot+coil+roll at time of edit',
+  `performed_by` varchar(60) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'slitting',
+  `performed_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `note` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_pel_pallet` (`pallet_id`),
+  KEY `idx_pel_date` (`performed_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `pallet_edit_log`
+--
+
+LOCK TABLES `pallet_edit_log` WRITE;
+/*!40000 ALTER TABLE `pallet_edit_log` DISABLE KEYS */;
+/*!40000 ALTER TABLE `pallet_edit_log` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `pallet_items`
+--
+
+DROP TABLE IF EXISTS `pallet_items`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `pallet_items` (
+  `id` int unsigned NOT NULL AUTO_INCREMENT,
+  `pallet_id` int unsigned NOT NULL,
+  `slitting_product_id` int unsigned NOT NULL,
+  `seq` tinyint unsigned NOT NULL,
+  `added_by` varchar(60) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'slitting',
+  `winding_condition` tinyint(1) NOT NULL DEFAULT '0' COMMENT '1 = Winding Condition checkbox was ticked by QC inspector',
+  `hairy_rubber` tinyint(1) NOT NULL DEFAULT '0' COMMENT '1 = Hairy Rubber checkbox was ticked by QC inspector',
+  `qc_checked_at` datetime DEFAULT NULL COMMENT 'Timestamp when this row was marked as the top inspected roll',
+  `added_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_product_on_pallet` (`slitting_product_id`),
+  KEY `idx_pallet_items_pallet` (`pallet_id`),
+  KEY `idx_checklist` (`pallet_id`,`winding_condition`,`hairy_rubber`),
+  CONSTRAINT `fk_pi_pallet` FOREIGN KEY (`pallet_id`) REFERENCES `pallets` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `pallet_items`
+--
+
+LOCK TABLES `pallet_items` WRITE;
+/*!40000 ALTER TABLE `pallet_items` DISABLE KEYS */;
+/*!40000 ALTER TABLE `pallet_items` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `pallets`
+--
+
+DROP TABLE IF EXISTS `pallets`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `pallets` (
+  `id` int unsigned NOT NULL AUTO_INCREMENT,
+  `pallet_no` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `customer_name` varchar(120) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `ref_no` varchar(80) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `product_type` varchar(120) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `width` decimal(8,2) NOT NULL,
+  `status` enum('building','pending_qc','approved','rejected','delivered') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'building',
+  `qc_comment` text COLLATE utf8mb4_unicode_ci,
+  `checked_by` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Inspector name selected from qc_inspectors during QC action',
+  `rejected_at` datetime DEFAULT NULL COMMENT 'Timestamp of the most recent QC rejection',
+  `edit_count` smallint unsigned NOT NULL DEFAULT '0' COMMENT 'Number of times this pallet was edited after QC rejection',
+  `created_by` varchar(60) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'slitting',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `delivered_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_pallet_no` (`pallet_no`),
+  KEY `idx_pallets_status` (`status`),
+  KEY `idx_pallets_customer` (`customer_name`),
+  KEY `idx_pallets_delivered` (`delivered_at`),
+  KEY `idx_pallets_rejected_at` (`rejected_at`),
+  KEY `idx_checked_by` (`checked_by`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `pallets`
+--
+
+LOCK TABLES `pallets` WRITE;
+/*!40000 ALTER TABLE `pallets` DISABLE KEYS */;
+/*!40000 ALTER TABLE `pallets` ENABLE KEYS */;
 UNLOCK TABLES;
 
 --
@@ -194,6 +332,33 @@ SET @saved_cs_client     = @@character_set_client;
  1 AS `yield_percentage`,
  1 AS `date_created`*/;
 SET character_set_client = @saved_cs_client;
+
+--
+-- Table structure for table `qc_inspectors`
+--
+
+DROP TABLE IF EXISTS `qc_inspectors`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `qc_inspectors` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `name` varchar(100) NOT NULL,
+  `is_active` tinyint(1) NOT NULL DEFAULT '1' COMMENT '1 = visible in dropdown, 0 = soft-deleted',
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_inspector_name` (`name`)
+) ENGINE=InnoDB AUTO_INCREMENT=4 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Predefined list of QC inspectors for the Checked By dropdown';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `qc_inspectors`
+--
+
+LOCK TABLES `qc_inspectors` WRITE;
+/*!40000 ALTER TABLE `qc_inspectors` DISABLE KEYS */;
+INSERT INTO `qc_inspectors` VALUES (1,'Hazim',1,'2026-06-11 07:12:09'),(2,'Bukhari',1,'2026-06-11 07:12:09'),(3,'Amin',1,'2026-06-11 07:12:09');
+/*!40000 ALTER TABLE `qc_inspectors` ENABLE KEYS */;
+UNLOCK TABLES;
 
 --
 -- Table structure for table `raw_material_log`
@@ -560,7 +725,7 @@ CREATE TABLE `std_wgt` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `unique_product` (`product_code`),
   KEY `idx_product` (`product_code`)
-) ENGINE=InnoDB AUTO_INCREMENT=64 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Standard weight lookup table';
+) ENGINE=InnoDB AUTO_INCREMENT=67 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Standard weight lookup table';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -717,4 +882,4 @@ UNLOCK TABLES;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2026-05-18 14:42:23
+-- Dump completed on 2026-06-23 14:01:42

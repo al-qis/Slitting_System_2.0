@@ -322,6 +322,10 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
             <tr class="editable-row">
                 <td>Ref. No.</td><td>:</td>
                 <td>
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="checkbox" id="stockOverride">
+                        <label class="form-check-label" for="stockOverride">Set to STOCK</label>
+                    </div>
                     <input type="text" name="ref_no" id="ref_no"
                            class="form-control" value="<?= htmlspecialchars($savedRefNo ?: 'STOCK') ?>" required>
                 </td>
@@ -359,11 +363,76 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://unpkg.com/imask"></script>
 <script>
 const PRODUCT_ID   = <?= (int)$id ?>;
 const nciPanel     = document.getElementById('nciMatchPanel');
 const nciContent   = document.getElementById('nciMatchContent');
 const refNoInput   = document.getElementById('ref_no');
+const stockOverride = document.getElementById('stockOverride');
+
+// ── Ref No dynamic masking ───────────────────────────────────────
+// NCI MFG / NCI 2 already have their own dedicated mapping logic
+// (see checkNciMatch below) — never touch the Ref No field for them.
+const NCI_CUSTOMERS = ['NCI MFG', 'NCI 2'];
+let refNoMask = null;
+
+function destroyRefMask() {
+    if (refNoMask) { refNoMask.destroy(); refNoMask = null; }
+}
+
+function applyMaskForCustomer(val) {
+    destroyRefMask();
+
+    if (stockOverride.checked || NCI_CUSTOMERS.includes(val)) {
+        return; // STOCK override or NCI dedicated logic — no masking
+    }
+
+    if (val === 'STAMPING') {
+        // MS - 6 digits, optional trailing space + uppercase letter
+        refNoMask = IMask(refNoInput, {
+            mask: 'MS - 000000[ a]',
+            blocks: {
+                a: { mask: /[A-Z]/ }
+            },
+            prepareChar: (str) => str.toUpperCase()
+        });
+        if (!refNoInput.value || refNoInput.value === 'STOCK') {
+            refNoMask.value = 'MS - ';
+        }
+    } else {
+        // Default rule: SO - XX - XXXX
+        refNoMask = IMask(refNoInput, {
+            mask: 'SO - 00 - 0000'
+        });
+        if (!refNoInput.value || refNoInput.value === 'STOCK') {
+            refNoMask.value = 'SO - ';
+        }
+    }
+}
+
+function refNoMatchesActiveRule() {
+    const val = refNoInput.value.trim();
+    const cust = document.getElementById('customer').value;
+
+    if (stockOverride.checked) return val === 'STOCK';
+    if (NCI_CUSTOMERS.includes(cust)) return val !== ''; // dedicated logic, just require non-empty
+
+    if (cust === 'STAMPING') return /^MS - \d{6}( [A-Z])?$/.test(val);
+    return /^SO - \d{2} - \d{4}$/.test(val);
+}
+
+stockOverride.addEventListener('change', () => {
+    if (stockOverride.checked) {
+        destroyRefMask();
+        refNoInput.value = 'STOCK';
+        refNoInput.readOnly = true;
+    } else {
+        refNoInput.readOnly = false;
+        refNoInput.value = '';
+        applyMaskForCustomer(document.getElementById('customer').value);
+    }
+});
 
 // ── Line A / B toggle ──────────────────────────────────────────
 // Default: Line B (Sticker B shown).
@@ -395,6 +464,7 @@ function handleCustomerChange(val) {
     document.getElementById('custom_customer').style.display =
         val === 'OTHER' ? 'block' : 'none';
     checkNciMatch(val);
+    applyMaskForCustomer(val);
 }
 
 // ── NCI MFG / NCI 2 auto-fill ──────────────────────────────────
@@ -454,6 +524,11 @@ async function saveOnly() {
         refEl.focus();
         return;
     }
+    if (!refNoMatchesActiveRule()) {
+        showFeedback(false, 'Ref No format is invalid for the selected customer.');
+        refEl.focus();
+        return;
+    }
 
     btn.disabled  = true;
     btn.innerHTML = '<span class="spin"></span> Saving…';
@@ -497,6 +572,14 @@ function escHtml(s) {
         c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+document.getElementById('mainForm').addEventListener('submit', (e) => {
+    if (!refNoMatchesActiveRule()) {
+        e.preventDefault();
+        showFeedback(false, 'Ref No format is invalid for the selected customer.');
+        refNoInput.focus();
+    }
+});
+
 // On load: restore state
 (function () {
     const knownOptions = ['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA',
@@ -508,7 +591,16 @@ function escHtml(s) {
         customEl.value = saved;
         customEl.style.display = 'block';
     }
-    checkNciMatch(document.getElementById('customer').value);
+
+    const custVal = document.getElementById('customer').value;
+    if (custVal === 'STOCK' || refNoInput.value.trim() === 'STOCK') {
+        stockOverride.checked = true;
+        refNoInput.readOnly = true;
+    } else {
+        applyMaskForCustomer(custVal);
+    }
+
+    checkNciMatch(custVal);
 })();
 </script>
 </body>
