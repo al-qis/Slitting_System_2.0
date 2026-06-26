@@ -389,9 +389,9 @@ function applyMaskForCustomer(val) {
     }
 
     if (val === 'STAMPING') {
-        // MS - 6 digits, optional trailing space + uppercase letter
+        // MS - 7 digits, optional trailing space + uppercase letter
         refNoMask = IMask(refNoInput, {
-            mask: 'MS - 000000[ a]',
+            mask: 'MS - 0000000[ a]',
             blocks: {
                 a: { mask: /[A-Z]/ }
             },
@@ -418,7 +418,7 @@ function refNoMatchesActiveRule() {
     if (stockOverride.checked) return val === 'STOCK';
     if (NCI_CUSTOMERS.includes(cust)) return val !== ''; // dedicated logic, just require non-empty
 
-    if (cust === 'STAMPING') return /^MS - \d{6}( [A-Z])?$/.test(val);
+    if (cust === 'STAMPING') return /^MS - \d{7}( [A-Z])?$/.test(val);
     return /^SO - \d{2} - \d{4}$/.test(val);
 }
 
