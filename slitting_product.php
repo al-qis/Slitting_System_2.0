@@ -49,6 +49,18 @@ if (isset($_GET['delete'])) {
 // === Search Logic ===
 $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 
+// Tokenize search: split on whitespace so users can type e.g.
+// "826403a N-4 R7" (Lot + Coil + Roll together) and get an exact
+// match across all three, instead of one literal string matched
+// against a single column (which would find nothing).
+//
+//   1 word   -> broad OR across product, coil_no, lot_no, roll_no
+//               (existing behavior — unchanged)
+//   2 words  -> token1 -> lot_no, token2 -> coil_no
+//   3+ words -> token1 -> lot_no, token2 -> coil_no, token3 -> roll_no
+//               (tokens beyond the 3rd are ignored)
+$tokens = $search !== '' ? preg_split('/\s+/', $search, -1, PREG_SPLIT_NO_EMPTY) : [];
+
 // BASE condition: never show voided, recoiled, or reslitted rows
 // These rows have already been sent to recoiling/reslit — they are
 // replaced by a new row once that process completes.
@@ -58,7 +70,8 @@ $base_where = "
     AND (is_reslitted = 0 OR is_reslitted IS NULL)
 ";
 
-if ($search !== '') {
+if (count($tokens) === 1) {
+    // Single keyword — original broad OR search across all columns
     $stmt = $conn->prepare("
         SELECT * FROM slitting_product
         WHERE ($base_where)
@@ -67,11 +80,48 @@ if ($search !== '') {
     ");
     if (!$stmt) { die("Query preparation failed: " . htmlspecialchars($conn->error)); }
 
-    $like = '%' . $search . '%';
+    $like = '%' . $tokens[0] . '%';
     $stmt->bind_param("ssss", $like, $like, $like, $like);
     $stmt->execute();
     $slitting = $stmt->get_result();
     $stmt->close();
+
+} elseif (count($tokens) === 2) {
+    // Two tokens — Lot No + Coil No
+    $stmt = $conn->prepare("
+        SELECT * FROM slitting_product
+        WHERE ($base_where)
+          AND lot_no LIKE ? AND coil_no LIKE ?
+        ORDER BY id DESC
+    ");
+    if (!$stmt) { die("Query preparation failed: " . htmlspecialchars($conn->error)); }
+
+    $likeLot  = '%' . $tokens[0] . '%';
+    $likeCoil = '%' . $tokens[1] . '%';
+    $stmt->bind_param("ss", $likeLot, $likeCoil);
+    $stmt->execute();
+    $slitting = $stmt->get_result();
+    $stmt->close();
+
+} elseif (count($tokens) >= 3) {
+    // Three or more tokens — Lot No + Coil No + Roll No
+    // (tokens beyond the 3rd are ignored)
+    $stmt = $conn->prepare("
+        SELECT * FROM slitting_product
+        WHERE ($base_where)
+          AND lot_no LIKE ? AND coil_no LIKE ? AND roll_no LIKE ?
+        ORDER BY id DESC
+    ");
+    if (!$stmt) { die("Query preparation failed: " . htmlspecialchars($conn->error)); }
+
+    $likeLot  = '%' . $tokens[0] . '%';
+    $likeCoil = '%' . $tokens[1] . '%';
+    $likeRoll = '%' . $tokens[2] . '%';
+    $stmt->bind_param("sss", $likeLot, $likeCoil, $likeRoll);
+    $stmt->execute();
+    $slitting = $stmt->get_result();
+    $stmt->close();
+
 } else {
     $slitting = $conn->query("
         SELECT * FROM slitting_product
@@ -112,7 +162,7 @@ include 'header.php';
     <div class="col-md-5">
         <form method="GET" action="slitting_product.php" class="input-group shadow-sm">
             <input type="text" name="search" class="form-control"
-                   placeholder="Search Coil, Product, Lot..."
+                   placeholder="Search Coil, Product, Lot, Roll... (e.g. 826403a N-4 R7)"
                    value="<?= htmlspecialchars($search) ?>">
             <button class="btn btn-primary" type="submit">
                 <i class="bi bi-search me-1"></i> Search

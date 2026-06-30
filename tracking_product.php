@@ -63,19 +63,46 @@ $sql = "
 $params = [];
 $types  = '';
 
-if ($search !== '') {
+// Tokenize search: split on whitespace so users can type e.g.
+// "826403a N-4 R7" (Lot + Coil + Roll together) and get an exact
+// match across all three, instead of relying on a fragile CONCAT
+// guess at field order/spacing (the previous approach here, which
+// only covered Lot+Coil combined and never handled Roll at all).
+//
+//   1 word   -> broad OR across lot_no, coil_no, roll_no, product,
+//                customer_name (existing behavior — unchanged)
+//   2 words  -> token1 -> lot_no, token2 -> coil_no
+//   3+ words -> token1 -> lot_no, token2 -> coil_no, token3 -> roll_no
+//                (tokens beyond the 3rd are ignored)
+$tokens = $search !== '' ? preg_split('/\s+/', $search, -1, PREG_SPLIT_NO_EMPTY) : [];
+
+if (count($tokens) === 1) {
     $sql   .= " AND (
-                    sp.lot_no                           LIKE ? OR
-                    sp.coil_no                          LIKE ? OR
-                    sp.roll_no                          LIKE ? OR
-                    sp.product                          LIKE ? OR
-                    sp.customer_name                    LIKE ? OR
-                    CONCAT(sp.lot_no, ' ', sp.coil_no) LIKE ? OR
-                    CONCAT(sp.coil_no, ' ', sp.lot_no) LIKE ?
+                    sp.lot_no        LIKE ? OR
+                    sp.coil_no       LIKE ? OR
+                    sp.roll_no       LIKE ? OR
+                    sp.product       LIKE ? OR
+                    sp.customer_name LIKE ?
                 )";
-    $like   = '%' . $search . '%';
-    $params = array_merge($params, [$like, $like, $like, $like, $like, $like, $like]);
-    $types .= 'sssssss';
+    $like   = '%' . $tokens[0] . '%';
+    $params = array_merge($params, [$like, $like, $like, $like, $like]);
+    $types .= 'sssss';
+
+} elseif (count($tokens) === 2) {
+    $sql      .= " AND sp.lot_no LIKE ? AND sp.coil_no LIKE ?";
+    $likeLot   = '%' . $tokens[0] . '%';
+    $likeCoil  = '%' . $tokens[1] . '%';
+    $params    = array_merge($params, [$likeLot, $likeCoil]);
+    $types    .= 'ss';
+
+} elseif (count($tokens) >= 3) {
+    // tokens beyond the 3rd are ignored
+    $sql      .= " AND sp.lot_no LIKE ? AND sp.coil_no LIKE ? AND sp.roll_no LIKE ?";
+    $likeLot   = '%' . $tokens[0] . '%';
+    $likeCoil  = '%' . $tokens[1] . '%';
+    $likeRoll  = '%' . $tokens[2] . '%';
+    $params    = array_merge($params, [$likeLot, $likeCoil, $likeRoll]);
+    $types    .= 'sss';
 }
 
 if ($filter_status !== '') {
@@ -393,7 +420,7 @@ include 'header.php';
         <i class="bi bi-search srch-icon"></i>
         <input type="text" name="search"
                value="<?= htmlspecialchars($search) ?>"
-               placeholder="Lot No, Coil No, Product, Customer…">
+               placeholder="Lot No, Coil No, Roll No, Product, Customer… (e.g. 826403a N-4 R7)">
     </div>
 
     <div>

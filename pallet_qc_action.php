@@ -111,8 +111,14 @@ function rejectPallet(
 ): array {
     $conn->begin_transaction();
     try {
-        // 1. Save checklist state
-        saveChecklistState($conn, $pallet_id, $top_product_id);
+        // 1. Save checklist state — but ONLY if the inspector actually
+        //    ticked a row before rejecting. top_product_id is optional
+        //    for reject, so a value of 0 means "nothing was ticked" —
+        //    in that case, skip this step entirely rather than running
+        //    saveChecklistState()'s unconditional wipe for no reason.
+        if ($top_product_id > 0) {
+            saveChecklistState($conn, $pallet_id, $top_product_id);
+        }
 
         // 2. Reject the pallet
         $stmt = $conn->prepare("
@@ -167,21 +173,27 @@ if ($pallet_id <= 0) {
     exit;
 }
 
-// Server-side guard: inspector must be set
+// Server-side guard: inspector must be set (required for BOTH actions)
 if ($checked_by === '') {
     header("Location: qc_dashboard.php?error=" .
         urlencode('Please select an inspector name before proceeding.'));
     exit;
 }
 
-// Server-side guard: a top roll must have been identified
-if ($top_product_id <= 0) {
-    header("Location: qc_dashboard.php?error=" .
-        urlencode('Please tick both checklist items on a product row before proceeding.'));
-    exit;
-}
+// NOTE: the "top roll must have been identified" guard used to sit here,
+// unconditionally, before the $action branch -- which meant Reject was
+// being blocked by the same checklist requirement as Approve. That was
+// the bug: per spec, Reject should NEVER require the checklist to be
+// ticked. The guard now lives INSIDE the approve branch only, below.
 
 if ($action === 'approve') {
+    // Server-side guard: a top roll must have been identified — APPROVE ONLY.
+    if ($top_product_id <= 0) {
+        header("Location: qc_dashboard.php?error=" .
+            urlencode('Please tick both checklist items on a product row before proceeding.'));
+        exit;
+    }
+
     $result = approvePallet($conn, $pallet_id, $checked_by, $top_product_id);
     header($result['ok']
         ? "Location: qc_dashboard.php?approved=1"
@@ -196,6 +208,11 @@ if ($action === 'reject') {
         header("Location: qc_dashboard.php?error=comment_required");
         exit;
     }
+    // top_product_id is OPTIONAL for reject — the inspector did not need
+    // to tick the checklist. If they happened to tick it anyway before
+    // rejecting, $top_product_id will be > 0 and that row is still
+    // recorded; if not, it stays 0 and rejectPallet() below skips the
+    // "mark a row" step entirely (see the int>0 guard added there).
     $result = rejectPallet($conn, $pallet_id, $comment, $checked_by, $top_product_id);
     header($result['ok']
         ? "Location: qc_dashboard.php?rejected=1"

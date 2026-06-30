@@ -209,16 +209,55 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 /* ──────────────────────────────────────────────────────────────
    SEARCH / LIST
+
+   Tokenize search: split on whitespace so users can type e.g.
+   "826403a N-4 DS-3020" (Lot + Coil + Product together) and get
+   an exact match across all three, instead of one literal string
+   matched against a single column (which would find nothing).
+
+     1 word   -> broad OR across coil_no, lot_no, product
+                 (existing behavior — unchanged)
+     2 words  -> token1 -> lot_no, token2 -> coil_no
+     3+ words -> token1 -> lot_no, token2 -> coil_no, token3 -> product
+                 (tokens beyond the 3rd are ignored)
 ────────────────────────────────────────────────────────────── */
 $search = trim($_GET['search'] ?? '');
-if ($search !== '') {
-    $searchTerm = "%$search%";
+$tokens = $search !== '' ? preg_split('/\s+/', $search, -1, PREG_SPLIT_NO_EMPTY) : [];
+
+if (count($tokens) === 1) {
+    // Single keyword — original broad OR search across all columns
+    $searchTerm = '%' . $tokens[0] . '%';
     $stmt = $conn->prepare("SELECT * FROM mother_coil
                             WHERE coil_no LIKE ? OR lot_no LIKE ? OR product LIKE ?
                             ORDER BY id ASC");
     $stmt->bind_param("sss", $searchTerm, $searchTerm, $searchTerm);
     $stmt->execute();
     $result = $stmt->get_result();
+
+} elseif (count($tokens) === 2) {
+    // Two tokens — Lot No + Coil No
+    $likeLot  = '%' . $tokens[0] . '%';
+    $likeCoil = '%' . $tokens[1] . '%';
+    $stmt = $conn->prepare("SELECT * FROM mother_coil
+                            WHERE lot_no LIKE ? AND coil_no LIKE ?
+                            ORDER BY id ASC");
+    $stmt->bind_param("ss", $likeLot, $likeCoil);
+    $stmt->execute();
+    $result = $stmt->get_result();
+
+} elseif (count($tokens) >= 3) {
+    // Three or more tokens — Lot No + Coil No + Product
+    // (tokens beyond the 3rd are ignored)
+    $likeLot     = '%' . $tokens[0] . '%';
+    $likeCoil    = '%' . $tokens[1] . '%';
+    $likeProduct = '%' . $tokens[2] . '%';
+    $stmt = $conn->prepare("SELECT * FROM mother_coil
+                            WHERE lot_no LIKE ? AND coil_no LIKE ? AND product LIKE ?
+                            ORDER BY id ASC");
+    $stmt->bind_param("sss", $likeLot, $likeCoil, $likeProduct);
+    $stmt->execute();
+    $result = $stmt->get_result();
+
 } else {
     $result = $conn->query("SELECT * FROM mother_coil ORDER BY id ASC");
 }
@@ -276,7 +315,7 @@ include 'header.php';
     <div class="col-md-6">
         <form method="GET" action="mother_coil.php" class="input-group input-group-sm">
             <input type="text" name="search" class="form-control"
-                   placeholder="Search Coil No, Lot, or Product..."
+                   placeholder="Search Coil No, Lot, or Product... (e.g. 826403a N-4 DS-3020)"
                    value="<?= htmlspecialchars($search) ?>">
             <button class="btn btn-primary" type="submit"><i class="bi bi-search"></i> Search</button>
             <?php if ($search !== ''): ?>

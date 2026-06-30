@@ -628,6 +628,12 @@ table th:nth-child(13) { width: 130px; }  /* Action */
 <div class="mb-3 d-flex gap-2 flex-wrap">
     <a href="?month=<?= $month ?>&year=<?= $year ?>&download=excel" class="btn btn-success btn-sm">Download Excel</a>
     <button type="button" class="btn btn-warning btn-sm" data-bs-toggle="modal" data-bs-target="#manualEntryModal">Manual Entry</button>
+    <button type="button" class="btn btn-outline-dark btn-sm" data-bs-toggle="modal" data-bs-target="#initialStockSetupModal">
+        <i class="bi bi-box-seam me-1"></i> Initial Stock Setup
+    </button>
+    <button type="button" class="btn btn-outline-success btn-sm" data-bs-toggle="modal" data-bs-target="#isuBulkImportModal">
+        <i class="bi bi-file-earmark-spreadsheet me-1"></i> Bulk Import (Excel)
+    </button>
     <a href="sfc_tracking.php"       class="btn btn-info btn-sm">SFC Tracking Report</a>
     <a href="process_log_viewer.php" class="btn btn-secondary btn-sm">
         <i class="bi bi-clock-history me-1"></i> Process Log
@@ -995,7 +1001,347 @@ table th:nth-child(13) { width: 130px; }  /* Action */
     </div></div>
 </div>
 
-<script src="camera_scanner.js"></script>
+<!-- =============================================================
+     Initial Stock Setup Modal — one-time legacy migration tool.
+     Submits to initial_stock_setup_add.php (separate file).
+
+     Field-unlock behavior now mirrors Add Mother Coil (#addMotherModal):
+       Lot No (4–8 alphanumeric, validated live)
+         -> unlocks Coil No
+       Coil No entered + blurred
+         -> AJAX lookup against mother_coil.php?ajax=get_product
+            -> single match  : Product auto-filled (readonly), rest unlocks
+            -> multiple match: Product <select> shown, rest unlocks once chosen
+            -> no match      : BLOCKED — Coil No must match a known product,
+                                same strict behavior as Add Mother Coil.
+         -> unlocks Roll No, Width, Actual + enables Save button
+
+     Date In: not a visible field — always set to "now" server-side
+     in initial_stock_setup_add.php.
+
+     Length: not a visible field — backend sets it equal to Actual.
+   ============================================================= -->
+<div class="modal fade" id="initialStockSetupModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form action="initial_stock_setup_add.php" method="POST" id="initialStockSetupForm">
+
+        <div class="modal-header bg-warning-subtle">
+          <h5 class="modal-title">
+            <i class="bi bi-exclamation-triangle"></i>
+            Initial Stock Setup &mdash; Legacy Product Entry
+          </h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+
+        <div class="modal-body">
+
+          <div class="alert alert-warning small mb-3">
+            <strong>One-time migration tool.</strong> Use this only to register
+            physical stock that already exists in the warehouse from old mother
+            coils not in this system. This bypasses normal mother coil
+            traceability &mdash; do not use for new production.
+          </div>
+
+          <!-- Lot No (first — unlocks Coil No) -->
+          <div class="mb-3">
+            <label class="form-label fw-semibold">Lot No <span class="text-danger">*</span></label>
+            <input type="text" name="lot_no" id="isu_lot_no" class="form-control" required
+                   maxlength="8" pattern="^[a-zA-Z0-9]{4,8}$"
+                   title="4–8 alphanumeric characters"
+                   placeholder="e.g. 5001">
+            <div class="form-text">4–8 characters, letters and numbers only.</div>
+          </div>
+
+          <!-- Coil No (unlocks after Lot No) -->
+          <div class="mb-3">
+            <label class="form-label fw-semibold">Coil No <span class="text-danger">*</span></label>
+            <input type="text" name="coil_no" id="isu_coil_no" class="form-control" required
+                   disabled placeholder="Enter coil number">
+            <div class="form-text" id="isu_coil_hint">Enter coil number then click elsewhere to look up product.</div>
+          </div>
+
+          <!-- Product display (auto-filled or chosen) -->
+          <div class="mb-3" id="isu_product_wrap">
+            <label class="form-label fw-semibold">Product <span class="text-danger">*</span></label>
+
+            <!-- CASE 1: single match → readonly display, hidden input carries value -->
+            <div id="isu_product_auto_wrap">
+              <input type="text" id="isu_product_display" class="form-control"
+                     readonly placeholder="Will auto-fill after Coil No is entered">
+            </div>
+
+            <!-- CASE 2: multiple matches → dropdown -->
+            <div id="isu_product_select_wrap" class="d-none">
+              <div class="small text-info mb-1">
+                <i class="bi bi-info-circle"></i>
+                Multiple products found — please select one
+              </div>
+              <select id="isu_product_select" class="form-select" required>
+                <option value="">-- Select Product --</option>
+              </select>
+            </div>
+
+            <!-- Hidden input actually submitted to the backend -->
+            <input type="hidden" name="product" id="isu_product_hidden">
+          </div>
+
+          <div class="row g-3">
+
+            <div class="col-md-4">
+              <label class="form-label">Roll No <span class="text-danger">*</span></label>
+              <input type="text" name="roll_no" id="isu_roll_no" class="form-control" required disabled>
+            </div>
+
+            <div class="col-md-4">
+              <label class="form-label">Width (mm) <span class="text-danger">*</span></label>
+              <input type="number" step="0.01" name="width" id="isu_width" class="form-control" required disabled>
+            </div>
+
+            <div class="col-md-4">
+              <label class="form-label">Actual (Weight/Value) <span class="text-danger">*</span></label>
+              <input type="number" step="0.01" name="actual_length" id="isu_actual_length" class="form-control" required disabled>
+              <div class="form-text">This is also saved as the roll's Length automatically.</div>
+            </div>
+
+          </div>
+
+          <div class="mt-3 small text-muted">
+            <strong>Auto-applied on save (not editable here):</strong>
+            Date In = <code>now</code>,
+            Length = <code>same as Actual</code>,
+            Source = <code>stock</code>,
+            Original Source = <code>initial_stock</code>,
+            Mother Coil = <code>none (NULL)</code>,
+            Status = <code>IN</code>.
+            A QR code will be generated automatically using your Lot/Roll info.
+          </div>
+
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-warning" id="isu_submit_btn" disabled>
+            <i class="bi bi-save"></i> Register Legacy Stock
+          </button>
+        </div>
+
+      </form>
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+    const lotInput      = document.getElementById('isu_lot_no');
+    const coilInput     = document.getElementById('isu_coil_no');
+    const coilHint      = document.getElementById('isu_coil_hint');
+
+    const productAutoWrap   = document.getElementById('isu_product_auto_wrap');
+    const productSelectWrap = document.getElementById('isu_product_select_wrap');
+    const productDisplay    = document.getElementById('isu_product_display');
+    const productSelect     = document.getElementById('isu_product_select');
+    const productHidden     = document.getElementById('isu_product_hidden');
+
+    const rollInput   = document.getElementById('isu_roll_no');
+    const widthInput  = document.getElementById('isu_width');
+    const actualInput = document.getElementById('isu_actual_length');
+    const submitBtn    = document.getElementById('isu_submit_btn');
+
+    const lotPattern = /^[a-zA-Z0-9]{4,8}$/;
+
+    function lockDownstreamFields() {
+        [rollInput, widthInput, actualInput].forEach(el => { el.disabled = true; });
+        submitBtn.disabled = true;
+        productHidden.value = '';
+        productDisplay.value = '';
+        productDisplay.placeholder = 'Will auto-fill after Coil No is entered';
+        productSelectWrap.classList.add('d-none');
+        productAutoWrap.classList.remove('d-none');
+    }
+
+    // ── Step 1: Lot No format check unlocks Coil No ──────────
+    lotInput.addEventListener('input', function () {
+        const valid = lotPattern.test(this.value.trim());
+        coilInput.disabled = !valid;
+        if (!valid) {
+            coilInput.value = '';
+            lockDownstreamFields();
+        }
+    });
+
+    // ── Step 2: Coil No blur triggers product lookup ─────────
+    coilInput.addEventListener('blur', function () {
+        const coil = this.value.trim();
+        lockDownstreamFields();
+
+        if (coil === '') return;
+
+        coilHint.textContent = 'Looking up product...';
+
+        fetch('mother_coil.php?ajax=get_product&coil=' + encodeURIComponent(coil))
+            .then(res => res.json())
+            .then(data => {
+                if (!data.ok || !data.products || data.products.length === 0) {
+                    coilHint.textContent = 'No matching product found for this Coil No. Cannot proceed — please verify the Coil No.';
+                    if (typeof Swal !== 'undefined') {
+                        Swal.fire({
+                            icon: 'error',
+                            title: 'Coil No Not Recognized',
+                            text: 'This Coil No does not match any known product. Initial Stock Setup requires a valid Coil No.'
+                        });
+                    }
+                    return;
+                }
+
+                if (data.products.length === 1) {
+                    // Single match — auto-fill, readonly
+                    productAutoWrap.classList.remove('d-none');
+                    productSelectWrap.classList.add('d-none');
+                    productDisplay.value = data.products[0];
+                    productHidden.value  = data.products[0];
+                    coilHint.textContent = 'Product matched automatically.';
+                    unlockRemainingFields();
+                } else {
+                    // Multiple matches — show dropdown, wait for user choice
+                    productAutoWrap.classList.add('d-none');
+                    productSelectWrap.classList.remove('d-none');
+                    productSelect.innerHTML = '<option value="">-- Select Product --</option>' +
+                        data.products.map(p => `<option value="${p}">${p}</option>`).join('');
+                    coilHint.textContent = 'Multiple products found — please select one above.';
+                    // Remaining fields unlock only once a product is chosen below.
+                }
+            })
+            .catch(() => {
+                coilHint.textContent = 'Lookup failed — check your connection and try again.';
+            });
+    });
+
+    productSelect.addEventListener('change', function () {
+        if (this.value) {
+            productHidden.value = this.value;
+            unlockRemainingFields();
+        } else {
+            productHidden.value = '';
+            lockDownstreamFieldsKeepCoil();
+        }
+    });
+
+    function unlockRemainingFields() {
+        [rollInput, widthInput, actualInput].forEach(el => { el.disabled = false; });
+        submitBtn.disabled = false;
+    }
+
+    function lockDownstreamFieldsKeepCoil() {
+        [rollInput, widthInput, actualInput].forEach(el => { el.disabled = true; });
+        submitBtn.disabled = true;
+    }
+
+    document.getElementById('initialStockSetupForm').addEventListener('submit', function (e) {
+        const form = this;
+
+        if (!productHidden.value) {
+            e.preventDefault();
+            if (typeof Swal !== 'undefined') {
+                Swal.fire({ icon: 'warning', title: 'Product Not Resolved', text: 'Please enter a valid Coil No so the Product can be matched before saving.' });
+            }
+            return;
+        }
+
+        if (form.dataset.confirmed === 'true') {
+            return; // already confirmed -> let it submit normally
+        }
+
+        e.preventDefault();
+
+        if (typeof Swal === 'undefined') {
+            form.submit();
+            return;
+        }
+
+        Swal.fire({
+            title: 'Confirm Legacy Stock Entry',
+            text: 'This will bypass mother coil tracking and create the product directly. Continue?',
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonText: 'Yes, register it',
+            cancelButtonText: 'Cancel'
+        }).then((result) => {
+            if (result.isConfirmed) {
+                form.dataset.confirmed = 'true';
+                form.submit();
+            }
+        });
+    });
+
+    // Reset the whole modal state every time it's reopened
+    document.getElementById('initialStockSetupModal').addEventListener('hidden.bs.modal', function () {
+        lotInput.value = '';
+        coilInput.value = '';
+        coilInput.disabled = true;
+        coilHint.textContent = 'Enter coil number then click elsewhere to look up product.';
+        rollInput.value = '';
+        widthInput.value = '';
+        actualInput.value = '';
+        lockDownstreamFields();
+        document.getElementById('initialStockSetupForm').dataset.confirmed = 'false';
+    });
+})();
+</script>
+
+<!-- =============================================================
+     Initial Stock Setup — Excel Bulk Import Modal
+     Submits to initial_stock_setup_import.php.
+     Sits ALONGSIDE the manual single-entry form above (both
+     available), per request. Partial-import mode: rows that
+     pass validation are saved; rows that fail are skipped and
+     reported, they do not block the rows that succeeded.
+   ============================================================= -->
+<div class="modal fade" id="isuBulkImportModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form action="initial_stock_setup_import.php" method="POST" enctype="multipart/form-data">
+
+        <div class="modal-header bg-success-subtle">
+          <h5 class="modal-title">
+            <i class="bi bi-file-earmark-spreadsheet"></i>
+            Initial Stock Setup &mdash; Bulk Excel Import
+          </h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+
+        <div class="modal-body">
+
+          <div class="alert alert-info small mb-3">
+            Your Excel file must have these column headers (any order):
+            <code>Item number</code>, <code>Batch number</code>, <code>Available physical</code>.
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label fw-semibold">Excel File <span class="text-danger">*</span></label>
+            <input type="file" name="excel_file" class="form-control" accept=".xlsx,.xls,.csv" required>
+            <div class="form-text">.xlsx, .xls, or .csv</div>
+          </div>
+
+          <div class="small text-muted">
+            Rows that fail validation (bad format, unrecognized Coil No, duplicates)
+            will be <strong>skipped and listed in a report</strong> &mdash; valid rows
+            in the same file are still imported.
+          </div>
+
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-success">
+            <i class="bi bi-upload"></i> Upload &amp; Import
+          </button>
+        </div>
+
+      </form>
+    </div>
+  </div>
+</div>
+
 <script>
 initCameraScanner({
     onScan: function(decodedText) {
