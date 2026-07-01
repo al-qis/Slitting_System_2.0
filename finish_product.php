@@ -100,9 +100,10 @@ $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 
 // ── Card filter (tab system) ───────────────────────────────────
 // Values: in_pending | stock | palletised | waiting | deliver
+//         produced_month (production report) | stock_month_end (point-in-time snapshot)
 // Defaults to "in_pending" (the IN tab) when the page first loads.
 $filter_card = $_GET['filter'] ?? 'in_pending';
-if (!in_array($filter_card, ['in_pending', 'stock', 'palletised', 'waiting', 'deliver'], true)) {
+if (!in_array($filter_card, ['in_pending', 'stock', 'palletised', 'waiting', 'deliver', 'produced_month', 'stock_month_end'], true)) {
     $filter_card = 'in_pending';
 }
 
@@ -170,7 +171,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
         'IN', 'IN', 'actual_length_saved',
         "actual_length={$actual_length}m, stock_counted=1");
 
-    header("Location: finish_product.php?month=$month&year=$year&success=stock");
+    $redirectFilter = $_POST['filter'] ?? $filter_card;
+    $redirectSearch = $_POST['search'] ?? $search;
+    $redirectParams = ['month' => $month, 'year' => $year, 'success' => 'stock'];
+    if ($redirectSearch !== '') $redirectParams['search'] = $redirectSearch;
+    if ($redirectFilter !== '') $redirectParams['filter'] = $redirectFilter;
+    header("Location: finish_product.php?" . http_build_query($redirectParams));
     exit;
 }
 
@@ -182,33 +188,110 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     $actual_length = trim($_POST['actual_length']);
     $product       = trim($_POST['product']);
     $lot_no        = trim($_POST['lot_no']);
+    $id            = intval($_POST['id']);
+    $new_coil_no   = trim($_POST['coil_no'] ?? '');
+    $new_lot_no    = trim($_POST['new_lot_no'] ?? '');
 
-    // Find every not-yet-completed row sharing the same Product + Lot No
-    $stmt = $conn->prepare("
-        SELECT * FROM slitting_product
-        WHERE product=? AND lot_no=? AND status='IN' AND is_completed=0
-    ");
-    $stmt->bind_param("ss", $product, $lot_no);
-    $stmt->execute();
-    $group = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-    $stmt->close();
+    // Fetch the specific row being edited — used for the coil-no/lot-no fixes
+    // below, its mother_id for logging, and as the fallback group member.
+    $selfRow = $conn->query("SELECT * FROM slitting_product WHERE id=$id")->fetch_assoc();
 
-    if (empty($group)) {
-        // Fallback: at least update the row the user actually clicked on
-        $id = intval($_POST['id']);
-        $row = $conn->query("SELECT * FROM slitting_product WHERE id=$id")->fetch_assoc();
-        if ($row) $group = [$row];
+    // ── Lot No correction ──
+    // Fixes a typo on THIS roll only. Note this is independent of $lot_no
+    // above, which stays the ORIGINAL value and is what's used below to
+    // find sibling rows for batch auto-sync — editing the lot number here
+    // must not affect that grouping lookup.
+    if ($selfRow && $new_lot_no !== '' && $new_lot_no !== trim($selfRow['lot_no'] ?? '')) {
+        $oldLotNo = trim($selfRow['lot_no'] ?? '');
+        $stmtFixLot = $conn->prepare("UPDATE slitting_product SET lot_no=? WHERE id=?");
+        $stmtFixLot->bind_param("si", $new_lot_no, $id);
+        $stmtFixLot->execute();
+        $stmtFixLot->close();
+        $selfRow['lot_no'] = $new_lot_no; // keep in sync for the fallback branch below
+
+        log_process($conn, 'slitting', $id, intval($selfRow['mother_id'] ?? 0) ?: null,
+            'IN', 'IN', 'lot_no_corrected',
+            "Lot No corrected: '{$oldLotNo}' -> '{$new_lot_no}'");
     }
 
-    // Single efficient batch update for actual_length across the whole group
-    $stmt = $conn->prepare("
-        UPDATE slitting_product
-        SET actual_length=?, stock_counted=1, is_completed=1
-        WHERE product=? AND lot_no=? AND status='IN' AND is_completed=0
-    ");
-    $stmt->bind_param("sss", $actual_length, $product, $lot_no);
-    $stmt->execute();
-    $stmt->close();
+    // ── Coil No correction ──
+    // Fixes a typo on THIS roll only — deliberately not batch-applied to
+    // every row sharing the same Product + Lot No, since a typo on one
+    // roll shouldn't silently rename other rolls that happen to share
+    // that grouping. If several rolls need the same fix, edit each one.
+    if ($selfRow && $new_coil_no !== '' && $new_coil_no !== trim($selfRow['coil_no'] ?? '')) {
+        $oldCoilNo = trim($selfRow['coil_no'] ?? '');
+        $stmtFix = $conn->prepare("UPDATE slitting_product SET coil_no=? WHERE id=?");
+        $stmtFix->bind_param("si", $new_coil_no, $id);
+        $stmtFix->execute();
+        $stmtFix->close();
+        $selfRow['coil_no'] = $new_coil_no; // keep in sync for the fallback branch below
+
+        log_process($conn, 'slitting', $id, intval($selfRow['mother_id'] ?? 0) ?: null,
+            'IN', 'IN', 'coil_no_corrected',
+            "Coil No corrected: '{$oldCoilNo}' -> '{$new_coil_no}'");
+    }
+
+    // Refresh the grouping key from the row's CURRENT state (after any
+    // correction above) — not the stale value the form was rendered with.
+    // Otherwise, fixing a Lot No typo on a first-time-entry roll would
+    // search for siblings using the OLD (wrong) lot number, find nothing,
+    // and the Actual Length below would silently fail to save.
+    if ($selfRow) {
+        $lot_no = trim($selfRow['lot_no'] ?? $lot_no);
+    }
+
+    // ── Auto-sync vs. single-roll correction ──
+    // Batch auto-sync (apply this length to every sibling roll sharing the
+    // same Product + Lot No) only makes sense the FIRST time a roll's
+    // length is being recorded, while it's still "IN (Pending)". Once a
+    // roll has already been completed/stocked, re-opening Edit Length on
+    // it is a one-off correction (e.g. "1 or 2 rolls out of the whole lot
+    // need fixing") and must touch ONLY that roll — not resync the whole
+    // group again.
+    $isFirstTimeEntry = $selfRow && (int)$selfRow['is_completed'] === 0;
+
+    if ($isFirstTimeEntry) {
+        // Find every not-yet-completed row sharing the same Product + Lot No
+        $stmt = $conn->prepare("
+            SELECT * FROM slitting_product
+            WHERE product=? AND lot_no=? AND status='IN' AND is_completed=0
+        ");
+        $stmt->bind_param("ss", $product, $lot_no);
+        $stmt->execute();
+        $group = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+
+        if (empty($group)) {
+            // Fallback: at least update the row the user actually clicked on
+            if ($selfRow) $group = [$selfRow];
+        }
+
+        // Batch update for actual_length across the whole pending group
+        $stmt = $conn->prepare("
+            UPDATE slitting_product
+            SET actual_length=?, stock_counted=1, is_completed=1
+            WHERE product=? AND lot_no=? AND status='IN' AND is_completed=0
+        ");
+        $stmt->bind_param("sss", $actual_length, $product, $lot_no);
+        $stmt->execute();
+        $stmt->close();
+
+    } else {
+        // Single-roll correction — this roll was already completed
+        // earlier, so only fix this exact id, regardless of what its
+        // siblings look like.
+        $group = $selfRow ? [$selfRow] : [];
+
+        $stmt = $conn->prepare("
+            UPDATE slitting_product
+            SET actual_length=?, stock_counted=1, is_completed=1
+            WHERE id=?
+        ");
+        $stmt->bind_param("si", $actual_length, $id);
+        $stmt->execute();
+        $stmt->close();
+    }
 
     // Replicate per-row side effects (leftover transfer + audit log) for each row in the group
     foreach ($group as $item) {
@@ -246,10 +329,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
 
         log_process($conn, 'slitting', $id, intval($item['mother_id'] ?? 0) ?: null,
             'IN', 'IN', 'actual_length_saved',
-            "actual_length={$actual_length}m, stock_counted=1, batch_synced=" . (count($group) > 1 ? 'yes' : 'no'));
+            "actual_length={$actual_length}m, stock_counted=1, "
+            . ($isFirstTimeEntry
+                ? "batch_synced=" . (count($group) > 1 ? 'yes' : 'no')
+                : "correction=yes (single roll, already completed)"));
     }
 
-    header("Location: finish_product.php?month=$month&year=$year&success=stock");
+    // Preserve the active tab/card and search term across the redirect —
+    // otherwise the page always bounces back to the default "IN" tab
+    // after any row action.
+    $redirectFilter = $_POST['filter'] ?? $filter_card;
+    $redirectSearch = $_POST['search'] ?? $search;
+    $redirectParams = ['month' => $month, 'year' => $year, 'success' => 'stock'];
+    if ($redirectSearch !== '') $redirectParams['search'] = $redirectSearch;
+    if ($redirectFilter !== '') $redirectParams['filter'] = $redirectFilter;
+    header("Location: finish_product.php?" . http_build_query($redirectParams));
     exit;
 }
 
@@ -259,6 +353,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     && $_POST['action'] === 'send_to_recoiling') {
 
     $id = intval($_POST['product_id']);
+
+    // Preserve the active tab/card, search term, and Month/Year across the
+    // redirect — otherwise the page always bounces back to the default
+    // "IN" tab (and current month) after this action.
+    $redirectMonth  = isset($_POST['month'])  ? (int)$_POST['month']  : $month;
+    $redirectYear   = isset($_POST['year'])   ? (int)$_POST['year']   : $year;
+    $redirectFilter = $_POST['filter'] ?? $filter_card;
+    $redirectSearch = $_POST['search'] ?? $search;
+    $redirectParams = ['month' => $redirectMonth, 'year' => $redirectYear];
+    if ($redirectSearch !== '') $redirectParams['search'] = $redirectSearch;
+    if ($redirectFilter !== '') $redirectParams['filter'] = $redirectFilter;
 
     $conn->begin_transaction();
     try {
@@ -314,12 +419,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
         $stmt->close();
 
         $conn->commit();
-        header("Location: finish_product.php?success=recoiling");
+        header("Location: finish_product.php?" . http_build_query($redirectParams + ['success' => 'recoiling']));
         exit;
 
     } catch (Throwable $e) {
         $conn->rollback();
-        header("Location: finish_product.php?error=recoiling_failed&msg=" . urlencode($e->getMessage()));
+        header("Location: finish_product.php?" . http_build_query($redirectParams + ['error' => 'recoiling_failed', 'msg' => $e->getMessage()]));
         exit;
     }
 }
@@ -330,6 +435,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     && $_POST['action'] === 'send_to_reslit') {
 
     $id = intval($_POST['product_id']);
+
+    // Preserve the active tab/card, search term, and Month/Year across the
+    // redirect — otherwise the page always bounces back to the default
+    // "IN" tab (and current month) after this action.
+    $redirectMonth  = isset($_POST['month'])  ? (int)$_POST['month']  : $month;
+    $redirectYear   = isset($_POST['year'])   ? (int)$_POST['year']   : $year;
+    $redirectFilter = $_POST['filter'] ?? $filter_card;
+    $redirectSearch = $_POST['search'] ?? $search;
+    $redirectParams = ['month' => $redirectMonth, 'year' => $redirectYear];
+    if ($redirectSearch !== '') $redirectParams['search'] = $redirectSearch;
+    if ($redirectFilter !== '') $redirectParams['filter'] = $redirectFilter;
 
     $conn->begin_transaction();
     try {
@@ -388,12 +504,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
         $stmt->close();
 
         $conn->commit();
-        header("Location: finish_product.php?success=reslit");
+        header("Location: finish_product.php?" . http_build_query($redirectParams + ['success' => 'reslit']));
         exit;
 
     } catch (Throwable $e) {
         $conn->rollback();
-        header("Location: finish_product.php?error=reslit_failed&msg=" . urlencode($e->getMessage()));
+        header("Location: finish_product.php?" . http_build_query($redirectParams + ['error' => 'reslit_failed', 'msg' => $e->getMessage()]));
         exit;
     }
 }
@@ -419,64 +535,216 @@ if ($filter_card === 'in_pending') {
 }
 
 // ── Main query ────────────────────────────────────────────────
-// LEFT JOINs pallet_items and pallets so we can show
-// which pallet each roll is on.
-$baseSql = "
-    SELECT sp.*,
-           pi.pallet_id,
-           p.pallet_no,
-           p.status AS pallet_status
-    FROM slitting_product sp
-    LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
-    LEFT JOIN pallets p       ON p.id = pi.pallet_id
-    WHERE sp.is_voided = 0
-      AND (sp.is_recoiled = 0 OR sp.is_recoiled IS NULL)
-      AND (sp.is_reslitted = 0 OR sp.is_reslitted IS NULL)
-      AND (
-          (sp.status = 'IN' AND MONTH(sp.date_in) = ? AND YEAR(sp.date_in) = ?)
-          OR (sp.status IN ('WAITING','OUT','APPROVED','REJECTED')
-              AND MONTH(sp.date_out) = ? AND YEAR(sp.date_out) = ?)
-          OR (sp.status = 'DELIVERED'
-              AND MONTH(sp.delivered_at) = ? AND YEAR(sp.delivered_at) = ?)
-      )
-      {$cardCondition}";
+// Three distinct modes now share this section:
+//   1) produced_month   — monthly production report (date_in in range)
+//   2) stock_month_end  — reconstructed point-in-time stock balance
+//   3) everything else  — the live warehouse tabs (unchanged from before)
+$baseTypes  = '';
+$baseParams = [];
 
-if ($search !== '') {
-    $baseSql .= " AND (sp.product LIKE ? OR sp.lot_no LIKE ? OR sp.coil_no LIKE ? OR sp.roll_no LIKE ? OR sp.id LIKE ? OR p.pallet_no LIKE ?)";
+if ($filter_card === 'produced_month') {
+    // ── Monthly Production Report ──
+    // Every roll whose date_in falls inside the selected month, no matter
+    // what happened to it since (delivered, recoiled, reslitted, still in
+    // stock...). Answers "what did we produce in month X", not "what's
+    // currently in stock".
+    $baseSql = "
+        SELECT sp.*,
+               pi.pallet_id,
+               p.pallet_no,
+               p.status AS pallet_status
+        FROM slitting_product sp
+        LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+        LEFT JOIN pallets p       ON p.id = pi.pallet_id
+        WHERE sp.is_voided = 0
+          AND MONTH(sp.date_in) = ? AND YEAR(sp.date_in) = ?";
+    $sortColumn = 'sp.date_in';
+    $baseTypes  = 'ii';
+    $baseParams = [$month, $year];
+
+} elseif ($filter_card === 'stock_month_end') {
+    // ── Month-End Stock Balance (reconstructed snapshot) ──
+    // A roll counts as "in stock at end of month X" if it had already
+    // arrived by that month-end, and had NOT yet left — via QC (date_out),
+    // delivery (delivered_at), recoiling, or reslitting — as of that same
+    // month-end. Recoil/reslit transition dates are pulled from
+    // process_log (via the 'send_to_recoiling' / 'send_to_reslit'
+    // action_detail written by this file), since slitting_product itself
+    // only stores a yes/no flag for those, not a timestamp.
+    // NOTE: this assumes process_log has a `performed_at` timestamp column
+    // — adjust the column name below if your schema names it differently.
+    $eom = date('Y-m-t 23:59:59', strtotime("$year-$month-01"));
+    $baseSql = "
+        SELECT sp.*,
+               pi.pallet_id,
+               p.pallet_no,
+               p.status AS pallet_status
+        FROM slitting_product sp
+        LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+        LEFT JOIN pallets p       ON p.id = pi.pallet_id
+        LEFT JOIN (
+            SELECT entity_id, MIN(performed_at) AS recoil_date
+            FROM process_log
+            WHERE entity_type = 'slitting' AND action_detail = 'send_to_recoiling'
+            GROUP BY entity_id
+        ) rc ON rc.entity_id = sp.id
+        LEFT JOIN (
+            SELECT entity_id, MIN(performed_at) AS reslit_date
+            FROM process_log
+            WHERE entity_type = 'slitting' AND action_detail = 'send_to_reslit'
+            GROUP BY entity_id
+        ) rs ON rs.entity_id = sp.id
+        WHERE sp.is_voided = 0
+          AND sp.date_in <= ?
+          AND (sp.date_out     IS NULL OR sp.date_out     > ?)
+          AND (sp.delivered_at IS NULL OR sp.delivered_at > ?)
+          AND (rc.recoil_date  IS NULL OR rc.recoil_date  > ?)
+          AND (rs.reslit_date  IS NULL OR rs.reslit_date  > ?)";
+    $sortColumn = 'sp.date_in';
+    $baseTypes  = 'sssss';
+    $baseParams = [$eom, $eom, $eom, $eom, $eom];
+
+} else {
+    // ── Live warehouse tabs (IN / STOCK / PALLETISED / WAITING / DELIVER) ──
+    // LEFT JOINs pallet_items and pallets so we can show which pallet each
+    // roll is on.
+    $baseSql = "
+        SELECT sp.*,
+               pi.pallet_id,
+               p.pallet_no,
+               p.status AS pallet_status
+        FROM slitting_product sp
+        LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+        LEFT JOIN pallets p       ON p.id = pi.pallet_id
+        WHERE sp.is_voided = 0
+          AND (sp.is_recoiled = 0 OR sp.is_recoiled IS NULL)
+          AND (sp.is_reslitted = 0 OR sp.is_reslitted IS NULL)
+          AND (
+              sp.status = 'IN'
+              OR sp.status = 'WAITING'
+              OR (sp.status IN ('OUT','APPROVED','REJECTED')
+                  AND MONTH(sp.date_out) = ? AND YEAR(sp.date_out) = ?)
+              OR (sp.status = 'DELIVERED'
+                  AND MONTH(sp.delivered_at) = ? AND YEAR(sp.delivered_at) = ?)
+          )
+          {$cardCondition}";
+    // NOTE: 'IN' and 'WAITING' are live/active states — the roll is still
+    // physically on-site — so they are no longer scoped to the selected
+    // month. Only status changes that represent a completed, dated
+    // transaction (QC outcome via date_out, or DELIVERED via delivered_at)
+    // stay filtered by Month/Year. This makes the Month/Year dropdown
+    // behave as a "transaction history" filter for OUT/APPROVED/REJECTED/
+    // DELIVERED, while IN/STOCK/PALLETISED/WAITING always reflect current
+    // live warehouse stock, carried over automatically.
+    $sortColumn = $sortColumn ?: 'sp.date_in';
+    $baseTypes  = 'iiii';
+    $baseParams = [$month, $year, $month, $year];
+}
+
+// ── Tokenized search ─────────────────────────────────────────
+// Splits the search box on whitespace so a combined query like
+// "826613 QA-1 R-6" (Lot, Coil, Roll typed together — the same
+// format used by the manual scan entry) matches Lot No AGAINST
+// one token, Coil No against another, Roll No against a third,
+// all at once (AND across tokens, OR across fields per token).
+// A single-word search still behaves exactly as before.
+$searchTokens = ($search !== '')
+    ? preg_split('/\s+/', $search, -1, PREG_SPLIT_NO_EMPTY)
+    : [];
+
+if (!empty($searchTokens)) {
+    $tokenClauses = array_fill(
+        0,
+        count($searchTokens),
+        "(sp.product LIKE ? OR sp.lot_no LIKE ? OR sp.coil_no LIKE ? OR sp.roll_no LIKE ? OR sp.id LIKE ? OR p.pallet_no LIKE ?)"
+    );
+    $baseSql .= " AND (" . implode(" AND ", $tokenClauses) . ")";
 }
 $baseSql .= " ORDER BY {$sortColumn} DESC, sp.id DESC";
 
 $stmt = $conn->prepare($baseSql);
 if (!$stmt) { die("Query prepare failed: " . htmlspecialchars($conn->error)); }
 
-if ($search !== '') {
-    $like = '%' . $search . '%';
-    $stmt->bind_param("iiiiiissssss",
-        $month, $year, $month, $year, $month, $year,
-        $like, $like, $like, $like, $like, $like);
-} else {
-    $stmt->bind_param("iiiiii", $month, $year, $month, $year, $month, $year);
+// Build bind_param args dynamically: the mode-specific base params above,
+// then 6 string placeholders per search token (all sharing that token's
+// LIKE value).
+$types  = $baseTypes;
+$params = $baseParams;
+
+foreach ($searchTokens as $token) {
+    $like = '%' . $token . '%';
+    for ($i = 0; $i < 6; $i++) {
+        $types    .= "s";
+        $params[] = $like;
+    }
 }
+
+$bindArgs = [$types];
+foreach ($params as $key => $value) {
+    $bindArgs[] = &$params[$key];
+}
+call_user_func_array([$stmt, 'bind_param'], $bindArgs);
 
 $stmt->execute();
 $result = $stmt->get_result();
 $stmt->close();
 
-// Summary counts (always full month — not affected by card filter)
-$in      = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='IN' AND is_completed=0 AND (is_recoiled=0 OR is_recoiled IS NULL) AND (is_reslitted=0 OR is_reslitted IS NULL) AND MONTH(date_in)=$month AND YEAR(date_in)=$year")->fetch_assoc()['total'];
-$stock   = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='IN' AND stock_counted=1 AND (is_recoiled=0 OR is_recoiled IS NULL) AND (is_reslitted=0 OR is_reslitted IS NULL) AND MONTH(date_in)=$month AND YEAR(date_in)=$year")->fetch_assoc()['total'];
-$waiting = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='WAITING' AND MONTH(date_out)=$month AND YEAR(date_out)=$year")->fetch_assoc()['total'];
+// Summary counts
+// IN / STOCK / WAITING / PALLETISED reflect *live* current warehouse state,
+// so they are cumulative and intentionally ignore the Month/Year filter.
+// DELIVER is a completed, dated transaction, so it stays scoped to the
+// selected month.
+$in      = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='IN' AND is_completed=0 AND (is_recoiled=0 OR is_recoiled IS NULL) AND (is_reslitted=0 OR is_reslitted IS NULL)")->fetch_assoc()['total'];
+$stock   = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='IN' AND stock_counted=1 AND (is_recoiled=0 OR is_recoiled IS NULL) AND (is_reslitted=0 OR is_reslitted IS NULL)")->fetch_assoc()['total'];
+$waiting = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='WAITING'")->fetch_assoc()['total'];
 $deliver = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='DELIVERED' AND MONTH(delivered_at)=$month AND YEAR(delivered_at)=$year")->fetch_assoc()['total'];
 
-// How many rolls are currently assigned to a building pallet (palletised)
+// How many rolls are currently assigned to a building pallet (palletised) —
+// also a live state, cumulative regardless of month.
 $palletised = $conn->query("
     SELECT IFNULL(COUNT(*),0) AS total
     FROM pallet_items pi
     JOIN pallets p ON p.id = pi.pallet_id
     JOIN slitting_product sp ON sp.id = pi.slitting_product_id
     WHERE p.status = 'building'
-      AND MONTH(sp.date_in) = $month AND YEAR(sp.date_in) = $year
 ")->fetch_assoc()['total'];
+
+// ── Report card counts (Produced This Month / Stock as of Month-End) ──
+$producedMonthCount = 0;
+$stmtPM = $conn->prepare("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND MONTH(date_in)=? AND YEAR(date_in)=?");
+$stmtPM->bind_param("ii", $month, $year);
+$stmtPM->execute();
+$producedMonthCount = (int)$stmtPM->get_result()->fetch_assoc()['total'];
+$stmtPM->close();
+
+$stockMonthEndCount = 0;
+$eomForCount = date('Y-m-t 23:59:59', strtotime("$year-$month-01"));
+$stmtSME = $conn->prepare("
+    SELECT IFNULL(COUNT(*),0) AS total
+    FROM slitting_product sp
+    LEFT JOIN (
+        SELECT entity_id, MIN(performed_at) AS recoil_date
+        FROM process_log
+        WHERE entity_type = 'slitting' AND action_detail = 'send_to_recoiling'
+        GROUP BY entity_id
+    ) rc ON rc.entity_id = sp.id
+    LEFT JOIN (
+        SELECT entity_id, MIN(performed_at) AS reslit_date
+        FROM process_log
+        WHERE entity_type = 'slitting' AND action_detail = 'send_to_reslit'
+        GROUP BY entity_id
+    ) rs ON rs.entity_id = sp.id
+    WHERE sp.is_voided = 0
+      AND sp.date_in <= ?
+      AND (sp.date_out     IS NULL OR sp.date_out     > ?)
+      AND (sp.delivered_at IS NULL OR sp.delivered_at > ?)
+      AND (rc.recoil_date  IS NULL OR rc.recoil_date  > ?)
+      AND (rs.reslit_date  IS NULL OR rs.reslit_date  > ?)
+");
+$stmtSME->bind_param("sssss", $eomForCount, $eomForCount, $eomForCount, $eomForCount, $eomForCount);
+$stmtSME->execute();
+$stockMonthEndCount = (int)$stmtSME->get_result()->fetch_assoc()['total'];
+$stmtSME->close();
 
 $editData = null;
 if (isset($_GET['edit'])) {
@@ -646,13 +914,14 @@ table td.lot-coil-cell {
             <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_card) ?>">
             <?php endif; ?>
             <input type="text" name="search" class="form-control"
-                   placeholder="Search ID, Product, Lot, Coil, Pallet No..."
+                   placeholder="Search ID, Product, Lot, Coil, Roll, Pallet No..."
                    value="<?= htmlspecialchars($search) ?>">
             <button class="btn btn-primary" type="submit"><i class="bi bi-search"></i></button>
             <?php if ($search !== ''): ?>
                 <a href="?month=<?= $month ?>&year=<?= $year ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>" class="btn btn-outline-secondary">Clear</a>
             <?php endif; ?>
         </form>
+        <div class="form-text ps-1">Tip: type Lot, Coil, and Roll together separated by spaces (e.g. <code>826613 QA-1 R-6</code>) to find an exact roll.</div>
     </div>
 </div>
 
@@ -762,20 +1031,67 @@ table td.lot-coil-cell {
 
 </div>
 
+<!-- ================================================================
+     MONTHLY REPORTS — separate from the live tabs above. These use
+     the same Month/Year dropdown at the top, but answer historical
+     questions ("what happened in month X") instead of "what's true
+     right now".
+================================================================ -->
+<div class="d-flex mb-3 gap-2 flex-wrap">
+
+    <!-- Produced This Month -->
+    <?php $isActivePM = ($filter_card === 'produced_month'); ?>
+    <a href="<?= cardUrl('produced_month', $month, $year, $search) ?>"
+       class="kpi-card-link flex-fill <?= $isActivePM ? 'active-kpi' : '' ?>"
+       title="Show every roll produced (date in) during the selected month">
+        <div class="card text-center h-100" style="background:#fdf4ff; border-color:#d8b4fe;">
+            <div class="card-body p-2">
+                <h6 class="mb-1" style="color:#7e22ce;"><i class="bi bi-calendar-plus me-1"></i>PRODUCED (<?= date("M", mktime(0,0,0,$month,1)) ?>)</h6>
+                <h2 class="mb-0" style="color:#7e22ce;"><?= $producedMonthCount ?></h2>
+                <?php if ($isActivePM): ?>
+                    <span class="kpi-active-dot" style="color:#7e22ce;">▲ filtered</span>
+                <?php endif; ?>
+            </div>
+        </div>
+    </a>
+
+    <!-- Stock as of Month-End -->
+    <?php $isActiveSME = ($filter_card === 'stock_month_end'); ?>
+    <a href="<?= cardUrl('stock_month_end', $month, $year, $search) ?>"
+       class="kpi-card-link flex-fill <?= $isActiveSME ? 'active-kpi' : '' ?>"
+       title="Reconstructed stock balance as of the end of the selected month">
+        <div class="card text-center h-100" style="background:#fff7ed; border-color:#fdba74;">
+            <div class="card-body p-2">
+                <h6 class="mb-1" style="color:#c2410c;"><i class="bi bi-clock-history me-1"></i>STOCK @ END OF <?= strtoupper(date("M", mktime(0,0,0,$month,1))) ?></h6>
+                <h2 class="mb-0" style="color:#c2410c;"><?= $stockMonthEndCount ?></h2>
+                <?php if ($isActiveSME): ?>
+                    <span class="kpi-active-dot" style="color:#c2410c;">▲ filtered</span>
+                <?php endif; ?>
+            </div>
+        </div>
+    </a>
+
+</div>
+
 <!-- Active tab banner -->
 <div class="alert alert-info py-2 mb-3">
     <i class="bi bi-funnel-fill me-2"></i>
     Showing: <strong>
     <?= match($filter_card) {
-        'in_pending'  => 'IN (Pending) only',
-        'stock'       => 'Finish Good Stock only',
-        'palletised'  => 'Palletised rolls only',
-        'waiting'     => 'Waiting QC only',
-        'deliver'     => 'Delivered only',
-        default       => ''
+        'in_pending'       => 'IN (Pending) only',
+        'stock'            => 'Finish Good Stock only',
+        'palletised'       => 'Palletised rolls only',
+        'waiting'          => 'Waiting QC only',
+        'deliver'          => 'Delivered only',
+        'produced_month'   => 'Produced during ' . date("F Y", mktime(0,0,0,$month,1,$year)),
+        'stock_month_end'  => 'Reconstructed stock balance as of end of ' . date("F Y", mktime(0,0,0,$month,1,$year)),
+        default            => ''
     } ?>
     </strong>
     &nbsp;—&nbsp; click another card above to switch tabs. Sorted newest first.
+    <?php if ($filter_card === 'stock_month_end'): ?>
+        <br><small><i class="bi bi-info-circle me-1"></i>This is a historical reconstruction, not live data — actions (Add to Pallet, Reslit, etc.) are hidden here to avoid acting on a past snapshot by mistake.</small>
+    <?php endif; ?>
 </div>
 
 <div class="table-responsive">
@@ -868,7 +1184,10 @@ table td.lot-coil-cell {
                 <td><?= $row['date_in'] ?></td>
                 <td><?= $row['date_out'] ?></td>
                 <td>
-    <?php if ($row['status'] === 'WAITING'): ?>
+    <?php if ($filter_card === 'stock_month_end'): ?>
+        <span class="text-muted small"><i class="bi bi-eye me-1"></i>View only</span>
+
+    <?php elseif ($row['status'] === 'WAITING'): ?>
         <small><i>Waiting QC on pallet <?= htmlspecialchars($row['pallet_no'] ?? '...') ?></i></small>
 
     <?php elseif ($row['status'] === 'REJECTED'): ?>
@@ -876,11 +1195,19 @@ table td.lot-coil-cell {
             <form method="post" onsubmit="return confirm('Reslit this rejected product?')">
                 <input type="hidden" name="action"     value="send_to_reslit">
                 <input type="hidden" name="product_id" value="<?= $row['id'] ?>">
+                <input type="hidden" name="month"  value="<?= $month ?>">
+                <input type="hidden" name="year"   value="<?= $year ?>">
+                <input type="hidden" name="search" value="<?= htmlspecialchars($search) ?>">
+                <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_card) ?>">
                 <button type="submit" class="btn btn-warning btn-sm w-100">Reslit</button>
             </form>
             <form method="post" onsubmit="return confirm('Move rejected product to Recoiling?')">
                 <input type="hidden" name="action"     value="send_to_recoiling">
                 <input type="hidden" name="product_id" value="<?= $row['id'] ?>">
+                <input type="hidden" name="month"  value="<?= $month ?>">
+                <input type="hidden" name="year"   value="<?= $year ?>">
+                <input type="hidden" name="search" value="<?= htmlspecialchars($search) ?>">
+                <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_card) ?>">
                 <button type="submit" class="btn btn-info btn-sm w-100 text-white">Recoiling</button>
             </form>
         </div>
@@ -906,18 +1233,26 @@ table td.lot-coil-cell {
             <?php else: ?>
                 <!-- Stock counted, not yet on a pallet -->
                 <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>"
-                   class="btn btn-outline-primary btn-sm w-100">Edit Length</a>
+                   class="btn btn-outline-primary btn-sm w-100">Edit</a>
                 <a href="pallet.php" class="btn btn-primary btn-sm w-100">
                     <i class="bi bi-archive me-1"></i> Add to Pallet
                 </a>
                 <form method="post" onsubmit="return confirm('Send to reslit?')">
                     <input type="hidden" name="action"     value="send_to_reslit">
                     <input type="hidden" name="product_id" value="<?= $row['id'] ?>">
+                    <input type="hidden" name="month"  value="<?= $month ?>">
+                    <input type="hidden" name="year"   value="<?= $year ?>">
+                    <input type="hidden" name="search" value="<?= htmlspecialchars($search) ?>">
+                    <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_card) ?>">
                     <button type="submit" class="btn btn-warning btn-sm w-100">Reslit</button>
                 </form>
                 <form method="post" onsubmit="return confirm('Move to Recoiling?')">
                     <input type="hidden" name="action"     value="send_to_recoiling">
                     <input type="hidden" name="product_id" value="<?= $row['id'] ?>">
+                    <input type="hidden" name="month"  value="<?= $month ?>">
+                    <input type="hidden" name="year"   value="<?= $year ?>">
+                    <input type="hidden" name="search" value="<?= htmlspecialchars($search) ?>">
+                    <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_card) ?>">
                     <button type="submit" class="btn btn-info btn-sm w-100 text-white">Recoiling</button>
                 </form>
                 <a href="select_customer.php?id=<?= $row['id'] ?>" class="btn btn-secondary btn-sm w-100">Print Only</a>
@@ -952,8 +1287,12 @@ table td.lot-coil-cell {
             <input type="hidden" name="id"      value="<?= $editData['id'] ?>">
             <input type="hidden" name="product" value="<?= htmlspecialchars($editData['product'] ?? '') ?>">
             <input type="hidden" name="lot_no"  value="<?= htmlspecialchars(trim($editData['lot_no'] ?? '')) ?>">
+            <input type="hidden" name="month"   value="<?= $month ?>">
+            <input type="hidden" name="year"    value="<?= $year ?>">
+            <input type="hidden" name="search"  value="<?= htmlspecialchars($search) ?>">
+            <input type="hidden" name="filter"  value="<?= htmlspecialchars($filter_card) ?>">
             <div class="modal-header bg-primary text-white">
-                <h5>Update Product</h5>
+                <h5>Edit Product</h5>
                 <a href="finish_product.php?month=<?= $month ?>&year=<?= $year ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>"
                    class="btn-close"></a>
             </div>
@@ -964,15 +1303,35 @@ table td.lot-coil-cell {
                     (<?= $editData['roll_no'] ?>)
                 </p>
                 <div class="mb-3">
+                    <label class="form-label">Lot No</label>
+                    <input type="text" name="new_lot_no" id="lotNoInput" class="form-control"
+                           value="<?= htmlspecialchars(trim($editData['lot_no'] ?? '')) ?>">
+                    <small class="text-muted">
+                        <i class="bi bi-pencil-square me-1"></i>Fix a typo here if needed — this only corrects <strong>this roll</strong>, not other rolls sharing the same Product &amp; Lot No.
+                    </small>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Coil No</label>
+                    <input type="text" name="coil_no" id="coilNoInput" class="form-control"
+                           value="<?= htmlspecialchars(trim($editData['coil_no'] ?? '')) ?>">
+                    <small class="text-muted">
+                        <i class="bi bi-pencil-square me-1"></i>Fix a typo here if needed — this only corrects <strong>this roll</strong>, not other rolls sharing the same Product &amp; Lot No.
+                    </small>
+                </div>
+                <div class="mb-3">
                     <label class="form-label">Actual Length (meter)</label>
                     <input type="number" step="0.01" name="actual_length"
                            id="actualLengthInput" class="form-control"
                            value="<?= $editData['actual_length'] ?>" required autofocus
                            data-self-id="<?= $editData['id'] ?>"
                            data-product="<?= htmlspecialchars($editData['product'] ?? '') ?>"
-                           data-lot="<?= htmlspecialchars(trim($editData['lot_no'] ?? '')) ?>">
+                           data-lot="<?= htmlspecialchars(trim($editData['lot_no'] ?? '')) ?>"
+                           data-is-completed="<?= (int)($editData['is_completed'] ?? 0) ?>">
                     <small class="text-muted" id="syncNote" style="display:none;">
                         This will also update other rolls sharing the same Product &amp; Lot No.
+                    </small>
+                    <small class="text-muted" id="correctionNote" style="display:none;">
+                        <i class="bi bi-info-circle me-1"></i>This roll is already completed — saving will correct <strong>only this roll</strong>, not the rest of the group.
                     </small>
                 </div>
                 <div class="d-grid">
@@ -986,8 +1345,12 @@ table td.lot-coil-cell {
 </div>
 <script>
     const inputLength = document.getElementById('actualLengthInput');
+    const inputCoil   = document.getElementById('coilNoInput');
+    const inputLot    = document.getElementById('lotNoInput');
     const btnSave     = document.getElementById('saveStockBtn');
     const syncNote    = document.getElementById('syncNote');
+    const correctionNote = document.getElementById('correctionNote');
+    const isCompleted = inputLength.dataset.isCompleted === '1';
 
     function findMatchingRows() {
         const product = inputLength.dataset.product;
@@ -1000,18 +1363,41 @@ table td.lot-coil-cell {
         );
     }
 
-    inputLength.addEventListener('input', () => {
+    function refreshSaveButton() {
         btnSave.disabled = (inputLength.value === "" || parseFloat(inputLength.value) <= 0);
+    }
 
-        const matches = findMatchingRows();
-        syncNote.style.display = matches.length > 0 ? 'inline' : 'none';
+    if (isCompleted) {
+        // Already completed — Save now only corrects this one roll, so
+        // there's nothing to batch-sync or preview elsewhere.
+        correctionNote.style.display = 'block';
+    }
 
-        // Live preview: instantly reflect the new value on matching visible rows
-        matches.forEach(tr => {
-            const cell = document.getElementById('actual-display-' + tr.dataset.id);
-            if (cell) cell.textContent = inputLength.value;
-        });
+    inputLength.addEventListener('input', () => {
+        refreshSaveButton();
+
+        if (!isCompleted) {
+            const matches = findMatchingRows();
+            syncNote.style.display = matches.length > 0 ? 'inline' : 'none';
+
+            // Live preview: instantly reflect the new value on matching visible rows
+            matches.forEach(tr => {
+                const cell = document.getElementById('actual-display-' + tr.dataset.id);
+                if (cell) cell.textContent = inputLength.value;
+            });
+        }
     });
+
+    // Editing the Coil No / Lot No fields alone (without touching Actual
+    // Length) should still be able to save — they weren't wired to the
+    // button before.
+    inputCoil.addEventListener('input', refreshSaveButton);
+    inputLot.addEventListener('input', refreshSaveButton);
+
+    // Actual Length is pre-filled with a valid value when the modal opens,
+    // so the button shouldn't start disabled until the person actually
+    // clears it.
+    refreshSaveButton();
 </script>
 <?php endif; ?>
 
