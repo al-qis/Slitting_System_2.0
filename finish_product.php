@@ -495,9 +495,9 @@ table th, table td { word-wrap: break-word; vertical-align: middle; font-size: 1
 table td img { max-width: 60px; max-height: 60px; display: block; margin: 0 auto; }
 table th:nth-child(1)  { width: 40px; }   /* # counter */
 table th:nth-child(2)  { width: 100px; }  /* Status */
-table th:nth-child(3)  { width: 65px; }   /* Origin */
-table th:nth-child(4)  { width: 85px; }   /* Product */
-table th:nth-child(5)  { width: 100px; }  /* Lot No */
+table th:nth-child(3)  { width: 110px; }  /* Origin */
+table th:nth-child(4)  { width: 90px; }   /* Product */
+table th:nth-child(5)  { width: 110px; }  /* Lot No */
 table th:nth-child(6)  { width: 65px; }   /* Roll No */
 table th:nth-child(7)  { width: 55px; }   /* Width */
 table th:nth-child(8)  { width: 55px; }   /* Length */
@@ -509,6 +509,37 @@ table th:nth-child(13) { width: 130px; }  /* Action */
 
 .badge-pallet { background:#e0f2fe; color:#0369a1; font-size:10px; font-weight:700;
                 padding:3px 7px; border-radius:10px; white-space:nowrap; }
+
+/* ── Origin column: badge isolation & spacing ── */
+table td {
+    padding-left: 8px;
+    padding-right: 8px;
+}
+table td .origin-cell {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+table td .origin-cell .badge {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 4px 8px;
+    border-radius: 10px;
+    white-space: nowrap;
+    line-height: 1.4;
+    flex-shrink: 0;
+}
+/* Generic safeguard: stop any badge from touching neighbouring text */
+.badge {
+    margin-right: 6px;
+    white-space: nowrap;
+}
+.badge:last-child {
+    margin-right: 0;
+}
+table td.lot-coil-cell {
+    padding-left: 10px;
+}
 
 /* ── KPI card filter styles ── */
 .kpi-card-link {
@@ -821,12 +852,14 @@ table th:nth-child(13) { width: 130px; }  /* Action */
                 <td class="row-counter"><?= $rowNum ?></td>
                 <td><?= $statusBadge ?></td>
                 <td>
-                    <span class="badge <?= $originDisplay['class'] ?>">
-                        <?= $originDisplay['label'] ?>
-                    </span>
+                    <div class="origin-cell">
+                        <span class="badge <?= $originDisplay['class'] ?>">
+                            <?= $originDisplay['label'] ?>
+                        </span>
+                    </div>
                 </td>
                 <td><?= htmlspecialchars($row['product'] ?? '') ?></td>
-                <td><?= htmlspecialchars($lotCoil) ?></td>
+                <td class="lot-coil-cell"><?= htmlspecialchars($lotCoil) ?></td>
                 <td><?= str_replace('R', 'R-', htmlspecialchars($row['roll_no'] ?? '')) ?></td>
                 <td><?= $row['width'] ?></td>
                 <td><?= $row['length'] ?></td>
