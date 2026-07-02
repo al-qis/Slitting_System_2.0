@@ -1,6 +1,19 @@
 <?php
 include 'config.php';
 
+// Strips trailing zeros for display (109.50 -> "109.5", 375.00 -> "375"),
+// capped at 2 decimal places — same fix applied to the sticker pattern
+// files, so this preview matches exactly what actually prints.
+// function_exists guard in case this also ends up in config.php later.
+if (!function_exists('formatStickerDecimal')) {
+    function formatStickerDecimal($value): string {
+        $formatted = number_format((float)$value, 2, '.', '');
+        $formatted = rtrim($formatted, '0');
+        $formatted = rtrim($formatted, '.');
+        return $formatted;
+    }
+}
+
 function getCoilPrefix($coil_no) {
     $coil_no = trim((string)$coil_no);
     if ($coil_no === '') return '';
@@ -272,7 +285,7 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
             </tr>
             <tr>
                 <td>Size</td><td>:</td>
-                <td><strong><?= number_format($product['width'], 0) ?> mm x <?= number_format($product['actual_length'] ?? $product['length'], 0) ?> Mtr</strong></td>
+                <td><strong><?= formatStickerDecimal($product['width']) ?> mm x <?= formatStickerDecimal($product['actual_length'] ?? $product['length']) ?> Mtr</strong></td>
             </tr>
             <tr>
                 <td>Lot No.</td><td>:</td>

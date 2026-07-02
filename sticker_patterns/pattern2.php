@@ -259,6 +259,19 @@ function getCustomerFullName($code) {
     return $customers[$code] ?? $code;
 }
 
+// Strips trailing zeros for sticker display (109.50 -> "109.5",
+// 375.00 -> "375"), capped at 2 decimal places. function_exists guard
+// in case this also gets added to config.php later — avoids a fatal
+// "cannot redeclare" if this file and config.php both define it.
+if (!function_exists('formatStickerDecimal')) {
+    function formatStickerDecimal($value): string {
+        $formatted = number_format((float)$value, 2, '.', '');
+        $formatted = rtrim($formatted, '0');
+        $formatted = rtrim($formatted, '.');
+        return $formatted;
+    }
+}
+
 function render_sticker(
     array  $product,
     string $customer,
@@ -272,8 +285,8 @@ function render_sticker(
     $rollDisplay = preg_replace('/^R(\d+)$/i', 'R-$1', $rollRaw);
     if ($rollDisplay === '') $rollDisplay = '-';
 
-    $w_disp          = number_format((float)($product['width']  ?? 0));
-    $l_disp          = number_format((float)($product['actual_length'] ?? $product['length'] ?? 0));
+    $w_disp          = formatStickerDecimal($product['width'] ?? 0);
+    $l_disp          = formatStickerDecimal($product['actual_length'] ?? $product['length'] ?? 0);
     $customerDisplay = getCustomerFullName($customer);
     $colourLabel     = ucfirst(strtolower($GLOBALS['colorName'] ?? 'White'));
 
