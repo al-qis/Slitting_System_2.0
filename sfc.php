@@ -17,7 +17,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
     $sfcId  = (int)$_POST['sfc_id'];
     $action = $_POST['action'];
 
-    $stmt = $conn->prepare("SELECT * FROM sfc WHERE sfc_id = ? AND date_out IS NULL");
+    $stmt = $conn->prepare("SELECT * FROM sfc WHERE sfc_id = ? AND date_out IS NULL AND is_deleted = 0");
     $stmt->bind_param("i", $sfcId);
     $stmt->execute();
     $sfc = $stmt->get_result()->fetch_assoc();
@@ -27,6 +27,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
         $conn->begin_transaction();
         try {
             $original_source = 'sfc';
+
+            // ── DELETE — error-correction only, no downstream inserts ──
+            // Only reachable for entries that are still active (date_out
+            // IS NULL, checked above), i.e. nothing has been produced
+            // from this SFC item yet. Soft-deleted so the audit trail
+            // (and any accidental-delete recovery) is preserved; every
+            // stock count/listing query below already excludes
+            // is_deleted = 1 rows, so live SFC metrics stay accurate
+            // automatically — there's no separate stored balance to fix.
+            if ($action === 'DELETE') {
+                $deletedBy = $_SESSION['role'] ?? 'system';
+                $delStmt = $conn->prepare("
+                    UPDATE sfc SET is_deleted = 1, deleted_at = NOW(), deleted_by = ?
+                    WHERE sfc_id = ?
+                ");
+                $delStmt->bind_param("si", $deletedBy, $sfcId);
+                $delStmt->execute();
+                $delStmt->close();
+
+                log_source_tracking($conn, $sfcId, 'sfc', $original_source, 'sfc', 'DELETED_FROM_SFC');
+
+                $conn->commit();
+                header("Location: sfc.php?success=1&msg=deleted");
+                exit;
+            }
 
             if ($action === 'RECOIL') {
                 $stmt = $conn->prepare("INSERT INTO recoiling_product
@@ -81,7 +106,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
             die("An error occurred: " . $e->getMessage());
         }
     } else {
-        die("SFC not found or already used.");
+        die("SFC not found, already used, or already deleted.");
     }
 }
 
@@ -196,7 +221,7 @@ $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 $show_used = isset($_GET['show_used']) ? (int)$_GET['show_used'] : 0;
 
 if ($search !== '') {
-    $baseWhere = $show_used ? "" : "date_out IS NULL AND ";
+    $baseWhere = $show_used ? "is_deleted = 0 AND " : "date_out IS NULL AND is_deleted = 0 AND ";
     $query = "SELECT * FROM sfc WHERE {$baseWhere}(
                 sfc_id LIKE ? OR product LIKE ? OR lot_no LIKE ? OR coil_no LIKE ? OR roll_no LIKE ?
               ) ORDER BY date_created DESC";
@@ -206,13 +231,13 @@ if ($search !== '') {
     $stmt->execute();
     $result = $stmt->get_result();
 } else {
-    $where  = $show_used ? "" : "WHERE date_out IS NULL";
+    $where  = $show_used ? "WHERE is_deleted = 0" : "WHERE date_out IS NULL AND is_deleted = 0";
     $result = $conn->query("SELECT * FROM sfc $where ORDER BY date_created DESC");
 }
 
 // Counts
-$total_active = (int)$conn->query("SELECT COUNT(*) AS c FROM sfc WHERE date_out IS NULL")->fetch_assoc()['c'];
-$total_used   = (int)$conn->query("SELECT COUNT(*) AS c FROM sfc WHERE date_out IS NOT NULL")->fetch_assoc()['c'];
+$total_active = (int)$conn->query("SELECT COUNT(*) AS c FROM sfc WHERE date_out IS NULL AND is_deleted = 0")->fetch_assoc()['c'];
+$total_used   = (int)$conn->query("SELECT COUNT(*) AS c FROM sfc WHERE date_out IS NOT NULL AND is_deleted = 0")->fetch_assoc()['c'];
 
 $page_title = "SFC Inventory";
 include 'header.php';
@@ -245,7 +270,8 @@ include 'header.php';
     <h2><i class="bi bi-box-seam-fill me-2 text-primary"></i>SFC Inventory Management</h2>
     <?php if (isset($_GET['success'])): ?>
         <div class="alert alert-success py-2 mb-0 shadow-sm">
-            <i class="bi bi-check-circle me-2"></i>Action processed successfully!
+            <i class="bi bi-check-circle me-2"></i>
+            <?= ($_GET['msg'] ?? '') === 'deleted' ? 'Item deleted from SFC Inventory.' : 'Action processed successfully!' ?>
         </div>
     <?php endif; ?>
 </div>
@@ -458,14 +484,23 @@ include 'header.php';
 
                     <td class="no-print">
                         <?php if (!$isUsed): ?>
-                            <button type="button"
-                                    class="btn btn-primary btn-sm px-3 rounded-pill actionBtn shadow-sm"
-                                    data-sfc-id="<?= $row['sfc_id'] ?>"
-                                    data-sfc-lot="<?= htmlspecialchars($row['lot_no']) ?>"
-                                    data-sfc-coil="<?= htmlspecialchars($row['coil_no']) ?>"
-                                    data-sfc-details="<?= htmlspecialchars($row['product']) ?> | <?= htmlspecialchars($row['lot_no']) ?> <?= htmlspecialchars($row['coil_no']) ?> | <?= number_format($row['length'], 2) ?>m">
-                                <i class="bi bi-shield-lock-fill me-1"></i> Process
-                            </button>
+                            <div class="d-flex gap-1">
+                                <button type="button"
+                                        class="btn btn-primary btn-sm px-3 rounded-pill actionBtn shadow-sm"
+                                        data-sfc-id="<?= $row['sfc_id'] ?>"
+                                        data-sfc-lot="<?= htmlspecialchars($row['lot_no']) ?>"
+                                        data-sfc-coil="<?= htmlspecialchars($row['coil_no']) ?>"
+                                        data-sfc-details="<?= htmlspecialchars($row['product']) ?> | <?= htmlspecialchars($row['lot_no']) ?> <?= htmlspecialchars($row['coil_no']) ?> | <?= number_format($row['length'], 2) ?>m">
+                                    <i class="bi bi-shield-lock-fill me-1"></i> Process
+                                </button>
+                                <button type="button"
+                                        class="btn btn-outline-danger btn-sm rounded-pill deleteBtn shadow-sm"
+                                        title="Delete this SFC entry"
+                                        data-sfc-id="<?= $row['sfc_id'] ?>"
+                                        data-sfc-details="<?= htmlspecialchars($row['product']) ?> | <?= htmlspecialchars($row['lot_no']) ?> <?= htmlspecialchars($row['coil_no']) ?> | <?= number_format($row['length'], 2) ?>m">
+                                    <i class="bi bi-trash-fill"></i>
+                                </button>
+                            </div>
                         <?php else: ?>
                             <span class="text-muted small">Done</span>
                         <?php endif; ?>
@@ -548,17 +583,45 @@ include 'header.php';
   </div>
 </div>
 
+<!-- Delete Confirmation Modal -->
+<div class="modal fade" id="deleteModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content border-0 shadow">
+      <div class="modal-header bg-danger text-white">
+        <h5 class="modal-title"><i class="bi bi-exclamation-triangle-fill me-2"></i>Confirm Delete</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body text-center p-4">
+        <p class="text-muted small text-uppercase fw-bold mb-1">Deleting:</p>
+        <h5 id="deleteSfcDetails" class="fw-bold mb-3 text-danger"></h5>
+        <p class="mb-0">Are you sure you want to delete this product from SFC Inventory? This action cannot be undone.</p>
+        <form id="deleteForm" method="post" action="sfc.php">
+            <input type="hidden" name="sfc_id" id="delete_sfc_id_input">
+            <input type="hidden" name="action" value="DELETE">
+        </form>
+      </div>
+      <div class="modal-footer justify-content-center border-0 pt-0">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" id="deleteConfirmBtn" class="btn btn-danger fw-bold px-4">
+            <i class="bi bi-trash-fill me-1"></i> Delete
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 document.addEventListener('DOMContentLoaded', function () {
     const pinModal     = new bootstrap.Modal(document.getElementById('pinModal'));
     const actionModal  = new bootstrap.Modal(document.getElementById('actionModal'));
+    const deleteModal  = new bootstrap.Modal(document.getElementById('deleteModal'));
     const pinInput     = document.getElementById('pinInput');
     const pinError     = document.getElementById('pinError');
     const pinSubmitBtn = document.getElementById('pinSubmitBtn');
     const qrInput      = document.getElementById('qrScanInput');
     const qrAlert      = document.getElementById('qrAlert');
 
-    let pendingSfcId = null, pendingSfcDetails = null;
+    let pendingSfcId = null, pendingSfcDetails = null, pendingIntent = 'process';
 
     function openActionModal(sfcId, details) {
         document.getElementById('sfc_id_input').value      = sfcId;
@@ -567,8 +630,15 @@ document.addEventListener('DOMContentLoaded', function () {
         actionModal.show();
     }
 
+    function openDeleteModal(sfcId, details) {
+        document.getElementById('delete_sfc_id_input').value = sfcId;
+        document.getElementById('deleteSfcDetails').textContent = details;
+        deleteModal.show();
+    }
+
     document.querySelectorAll('.actionBtn').forEach(btn => {
         btn.addEventListener('click', function () {
+            pendingIntent     = 'process';
             pendingSfcId      = this.dataset.sfcId;
             pendingSfcDetails = this.dataset.sfcDetails;
             pinInput.value    = '';
@@ -579,6 +649,28 @@ document.addEventListener('DOMContentLoaded', function () {
                 this.removeEventListener('shown.bs.modal', h);
             });
         });
+    });
+
+    // Delete also goes through the same supervisor PIN gate as Process —
+    // it's at least as consequential, so it gets the same safeguard,
+    // followed by the dedicated confirmation dialog requested below.
+    document.querySelectorAll('.deleteBtn').forEach(btn => {
+        btn.addEventListener('click', function () {
+            pendingIntent     = 'delete';
+            pendingSfcId      = this.dataset.sfcId;
+            pendingSfcDetails = this.dataset.sfcDetails;
+            pinInput.value    = '';
+            pinError.classList.add('d-none');
+            pinModal.show();
+            document.getElementById('pinModal').addEventListener('shown.bs.modal', function h() {
+                pinInput.focus();
+                this.removeEventListener('shown.bs.modal', h);
+            });
+        });
+    });
+
+    document.getElementById('deleteConfirmBtn').addEventListener('click', function () {
+        document.getElementById('deleteForm').submit();
     });
 
     function submitPin() {
@@ -598,7 +690,11 @@ document.addEventListener('DOMContentLoaded', function () {
                 pinModal.hide();
                 document.getElementById('pinModal').addEventListener('hidden.bs.modal', function h() {
                     this.removeEventListener('hidden.bs.modal', h);
-                    openActionModal(pendingSfcId, pendingSfcDetails);
+                    if (pendingIntent === 'delete') {
+                        openDeleteModal(pendingSfcId, pendingSfcDetails);
+                    } else {
+                        openActionModal(pendingSfcId, pendingSfcDetails);
+                    }
                 });
             } else {
                 pinError.classList.remove('d-none');

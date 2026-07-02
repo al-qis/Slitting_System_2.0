@@ -90,13 +90,41 @@ function log_process(
 if (isset($_GET['download']) && $_GET['download'] === 'excel') {
     $m = isset($_GET['month']) ? (int)$_GET['month'] : (int)date('m');
     $y = isset($_GET['year'])  ? (int)$_GET['year']  : (int)date('Y');
-    header("Location: finish_product_export.php?month=$m&year=$y");
+    $d = isset($_GET['day'])   ? (int)$_GET['day']   : 0;
+    // NOTE: finish_product_export.php isn't part of this change set — if
+    // it should also respect the Day filter, it needs its own $_GET['day']
+    // handling added to match. Passed through here regardless so it's
+    // available whenever that update happens.
+    header("Location: finish_product_export.php?month=$m&year=$y" . ($d > 0 ? "&day=$d" : ""));
     exit;
 }
 
 $month  = isset($_GET['month']) ? (int)$_GET['month'] : (int)date('m');
 $year   = isset($_GET['year'])  ? (int)$_GET['year']  : (int)date('Y');
 $search = isset($_GET['search']) ? trim($_GET['search']) : '';
+
+// ── Day filter (0 = "All Days", the default) ─────────────────────
+// Narrows whichever date column(s) the current view already filters by
+// Month/Year down to one specific day. Validated against the selected
+// month/year further down (see $day clamp after $month/$year are final)
+// so e.g. day=31 on a 30-day month doesn't silently misbehave.
+$day = isset($_GET['day']) ? (int)$_GET['day'] : 0;
+if ($day < 0 || $day > 31) { $day = 0; }
+
+// ── Date In / Date Out column sorting ─────────────────────────────
+// Overrides the per-tab default $sortColumn (set further down) only
+// when the operator has explicitly clicked one of the two date column
+// headers; otherwise every tab keeps its existing default ordering.
+$sort_col = isset($_GET['sort_col']) ? $_GET['sort_col'] : '';
+if (!in_array($sort_col, ['date_in', 'date_out'], true)) { $sort_col = ''; }
+$sort_dir = (isset($_GET['sort_dir']) && strtoupper($_GET['sort_dir']) === 'ASC') ? 'ASC' : 'DESC';
+
+// ── Dedicated Lot No / Coil No filter (Batch Setup & Print entry point) ──
+// Separate from the free-text search box: this narrows the table to an
+// exact Lot + Coil combination — the same combination used to open the
+// Batch Setup & Print page for all rolls under that coil.
+$filter_lot  = isset($_GET['lot_no'])  ? trim($_GET['lot_no'])  : '';
+$filter_coil = isset($_GET['coil_no']) ? trim($_GET['coil_no']) : '';
 
 // ── Card filter (tab system) ───────────────────────────────────
 // Values: in_pending | stock | palletised | waiting | deliver
@@ -106,6 +134,13 @@ $filter_card = $_GET['filter'] ?? 'in_pending';
 if (!in_array($filter_card, ['in_pending', 'stock', 'palletised', 'waiting', 'deliver', 'produced_month', 'stock_month_end'], true)) {
     $filter_card = 'in_pending';
 }
+
+// Clamp $day to the number of days actually in the selected month/year
+// (e.g. day=31 selected, then Month changed to April → falls back to
+// "All Days" instead of silently returning nothing).
+$daysInSelectedMonth = (int)date('t', mktime(0, 0, 0, $month, 1, $year));
+if ($day > $daysInSelectedMonth) { $day = 0; }
+
 
 if ($month < 1 || $month > 12) { $month = (int)date('m'); }
 if ($year < 2000 || $year > 2100) { $year = (int)date('Y'); }
@@ -174,6 +209,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     $redirectFilter = $_POST['filter'] ?? $filter_card;
     $redirectSearch = $_POST['search'] ?? $search;
     $redirectParams = ['month' => $month, 'year' => $year, 'success' => 'stock'];
+    if ($day > 0) $redirectParams['day'] = $day;
     if ($redirectSearch !== '') $redirectParams['search'] = $redirectSearch;
     if ($redirectFilter !== '') $redirectParams['filter'] = $redirectFilter;
     header("Location: finish_product.php?" . http_build_query($redirectParams));
@@ -341,6 +377,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     $redirectFilter = $_POST['filter'] ?? $filter_card;
     $redirectSearch = $_POST['search'] ?? $search;
     $redirectParams = ['month' => $month, 'year' => $year, 'success' => 'stock'];
+    if ($day > 0) $redirectParams['day'] = $day;
     if ($redirectSearch !== '') $redirectParams['search'] = $redirectSearch;
     if ($redirectFilter !== '') $redirectParams['filter'] = $redirectFilter;
     header("Location: finish_product.php?" . http_build_query($redirectParams));
@@ -362,6 +399,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     $redirectFilter = $_POST['filter'] ?? $filter_card;
     $redirectSearch = $_POST['search'] ?? $search;
     $redirectParams = ['month' => $redirectMonth, 'year' => $redirectYear];
+    $redirectDay = isset($_POST['day']) ? (int)$_POST['day'] : $day;
+    if ($redirectDay > 0) $redirectParams['day'] = $redirectDay;
     if ($redirectSearch !== '') $redirectParams['search'] = $redirectSearch;
     if ($redirectFilter !== '') $redirectParams['filter'] = $redirectFilter;
 
@@ -444,6 +483,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     $redirectFilter = $_POST['filter'] ?? $filter_card;
     $redirectSearch = $_POST['search'] ?? $search;
     $redirectParams = ['month' => $redirectMonth, 'year' => $redirectYear];
+    $redirectDay = isset($_POST['day']) ? (int)$_POST['day'] : $day;
+    if ($redirectDay > 0) $redirectParams['day'] = $redirectDay;
     if ($redirectSearch !== '') $redirectParams['search'] = $redirectSearch;
     if ($redirectFilter !== '') $redirectParams['filter'] = $redirectFilter;
 
@@ -557,10 +598,11 @@ if ($filter_card === 'produced_month') {
         LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
         LEFT JOIN pallets p       ON p.id = pi.pallet_id
         WHERE sp.is_voided = 0
-          AND MONTH(sp.date_in) = ? AND YEAR(sp.date_in) = ?";
+          AND MONTH(sp.date_in) = ? AND YEAR(sp.date_in) = ?"
+          . ($day > 0 ? " AND DAY(sp.date_in) = ?" : "");
     $sortColumn = 'sp.date_in';
-    $baseTypes  = 'ii';
-    $baseParams = [$month, $year];
+    $baseTypes  = $day > 0 ? 'iii' : 'ii';
+    $baseParams = $day > 0 ? [$month, $year, $day] : [$month, $year];
 
 } elseif ($filter_card === 'stock_month_end') {
     // ── Month-End Stock Balance (reconstructed snapshot) ──
@@ -573,7 +615,14 @@ if ($filter_card === 'produced_month') {
     // only stores a yes/no flag for those, not a timestamp.
     // NOTE: this assumes process_log has a `performed_at` timestamp column
     // — adjust the column name below if your schema names it differently.
-    $eom = date('Y-m-t 23:59:59', strtotime("$year-$month-01"));
+    //
+    // Day filter: when a specific day is selected, the snapshot moves from
+    // "stock at end of month" to "stock at end of that specific day" —
+    // this is what actually answers "what did we have in stock on the
+    // 15th", rather than just narrowing an end-of-month total.
+    $eom = ($day > 0)
+        ? sprintf('%04d-%02d-%02d 23:59:59', $year, $month, $day)
+        : date('Y-m-t 23:59:59', strtotime("$year-$month-01"));
     $baseSql = "
         SELECT sp.*,
                pi.pallet_id,
@@ -608,6 +657,8 @@ if ($filter_card === 'produced_month') {
     // ── Live warehouse tabs (IN / STOCK / PALLETISED / WAITING / DELIVER) ──
     // LEFT JOINs pallet_items and pallets so we can show which pallet each
     // roll is on.
+    $dayCondOut       = $day > 0 ? " AND DAY(sp.date_out) = ?"     : "";
+    $dayCondDelivered = $day > 0 ? " AND DAY(sp.delivered_at) = ?" : "";
     $baseSql = "
         SELECT sp.*,
                pi.pallet_id,
@@ -623,22 +674,28 @@ if ($filter_card === 'produced_month') {
               sp.status = 'IN'
               OR sp.status = 'WAITING'
               OR (sp.status IN ('OUT','APPROVED','REJECTED')
-                  AND MONTH(sp.date_out) = ? AND YEAR(sp.date_out) = ?)
+                  AND MONTH(sp.date_out) = ? AND YEAR(sp.date_out) = ?{$dayCondOut})
               OR (sp.status = 'DELIVERED'
-                  AND MONTH(sp.delivered_at) = ? AND YEAR(sp.delivered_at) = ?)
+                  AND MONTH(sp.delivered_at) = ? AND YEAR(sp.delivered_at) = ?{$dayCondDelivered})
           )
           {$cardCondition}";
     // NOTE: 'IN' and 'WAITING' are live/active states — the roll is still
     // physically on-site — so they are no longer scoped to the selected
-    // month. Only status changes that represent a completed, dated
-    // transaction (QC outcome via date_out, or DELIVERED via delivered_at)
-    // stay filtered by Month/Year. This makes the Month/Year dropdown
-    // behave as a "transaction history" filter for OUT/APPROVED/REJECTED/
-    // DELIVERED, while IN/STOCK/PALLETISED/WAITING always reflect current
-    // live warehouse stock, carried over automatically.
+    // month (or day). Only status changes that represent a completed,
+    // dated transaction (QC outcome via date_out, or DELIVERED via
+    // delivered_at) stay filtered by Month/Year/Day. This makes the
+    // Month/Year/Day dropdowns behave as a "transaction history" filter
+    // for OUT/APPROVED/REJECTED/DELIVERED, while IN/STOCK/PALLETISED/
+    // WAITING always reflect current live warehouse stock, carried over
+    // automatically regardless of the date filters selected.
     $sortColumn = $sortColumn ?: 'sp.date_in';
-    $baseTypes  = 'iiii';
-    $baseParams = [$month, $year, $month, $year];
+    if ($day > 0) {
+        $baseTypes  = 'iiiiii';
+        $baseParams = [$month, $year, $day, $month, $year, $day];
+    } else {
+        $baseTypes  = 'iiii';
+        $baseParams = [$month, $year, $month, $year];
+    }
 }
 
 // ── Tokenized search ─────────────────────────────────────────
@@ -660,7 +717,20 @@ if (!empty($searchTokens)) {
     );
     $baseSql .= " AND (" . implode(" AND ", $tokenClauses) . ")";
 }
-$baseSql .= " ORDER BY {$sortColumn} DESC, sp.id DESC";
+
+// ── Dedicated Lot No / Coil No filter ────────────────────────────
+// Exact-match (not LIKE) so the Batch Setup entry point shows precisely
+// the rolls belonging to one coil, no partial-match noise.
+if ($filter_lot !== '')  { $baseSql .= " AND sp.lot_no = ?";  }
+if ($filter_coil !== '') { $baseSql .= " AND sp.coil_no = ?"; }
+
+// ── Explicit Date In / Date Out column sort overrides the tab default ──
+if ($sort_col !== '') {
+    $sortColumn = 'sp.' . $sort_col; // whitelisted to date_in|date_out above
+}
+$finalSortDir = ($sort_col !== '') ? $sort_dir : 'DESC';
+
+$baseSql .= " ORDER BY {$sortColumn} {$finalSortDir}, sp.id DESC";
 
 $stmt = $conn->prepare($baseSql);
 if (!$stmt) { die("Query prepare failed: " . htmlspecialchars($conn->error)); }
@@ -678,6 +748,9 @@ foreach ($searchTokens as $token) {
         $params[] = $like;
     }
 }
+
+if ($filter_lot !== '')  { $types .= "s"; $params[] = $filter_lot;  }
+if ($filter_coil !== '') { $types .= "s"; $params[] = $filter_coil; }
 
 $bindArgs = [$types];
 foreach ($params as $key => $value) {
@@ -904,12 +977,20 @@ table td.lot-coil-cell {
                     <option value="<?= $y ?>" <?= ($y == $year) ? 'selected' : '' ?>><?= $y ?></option>
                 <?php endfor; ?>
             </select>
+            <label class="small fw-bold">Day:</label>
+            <select name="day" onchange="this.form.submit()" class="form-select form-select-sm w-auto">
+                <option value="0" <?= ($day === 0) ? 'selected' : '' ?>>All Days</option>
+                <?php for ($d = 1; $d <= $daysInSelectedMonth; $d++): ?>
+                    <option value="<?= $d ?>" <?= ($d === $day) ? 'selected' : '' ?>><?= $d ?></option>
+                <?php endfor; ?>
+            </select>
         </form>
     </div>
     <div class="col-md-4">
         <form method="get" class="input-group input-group-sm">
             <input type="hidden" name="month" value="<?= $month ?>">
             <input type="hidden" name="year"  value="<?= $year ?>">
+            <input type="hidden" name="day" value="<?= $day ?>">
             <?php if ($filter_card !== ''): ?>
             <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_card) ?>">
             <?php endif; ?>
@@ -918,15 +999,46 @@ table td.lot-coil-cell {
                    value="<?= htmlspecialchars($search) ?>">
             <button class="btn btn-primary" type="submit"><i class="bi bi-search"></i></button>
             <?php if ($search !== ''): ?>
-                <a href="?month=<?= $month ?>&year=<?= $year ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>" class="btn btn-outline-secondary">Clear</a>
+                <a href="?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>" class="btn btn-outline-secondary">Clear</a>
             <?php endif; ?>
         </form>
         <div class="form-text ps-1">Tip: type Lot, Coil, and Roll together separated by spaces (e.g. <code>826613 QA-1 R-6</code>) to find an exact roll.</div>
     </div>
+    <div class="col-md-5">
+        <form method="get" class="input-group input-group-sm" id="lotCoilFilterForm">
+            <input type="hidden" name="month" value="<?= $month ?>">
+            <input type="hidden" name="year"  value="<?= $year ?>">
+            <input type="hidden" name="day" value="<?= $day ?>">
+            <input type="hidden" name="search" value="<?= htmlspecialchars($search) ?>">
+            <?php if ($filter_card !== ''): ?>
+            <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_card) ?>">
+            <?php endif; ?>
+            <span class="input-group-text">Lot No</span>
+            <input type="text" name="lot_no" class="form-control" placeholder="e.g. 826408a"
+                   value="<?= htmlspecialchars($filter_lot) ?>">
+            <span class="input-group-text">Coil No</span>
+            <input type="text" name="coil_no" class="form-control" placeholder="e.g. CI-2"
+                   value="<?= htmlspecialchars($filter_coil) ?>">
+            <button class="btn btn-primary" type="submit"><i class="bi bi-funnel"></i></button>
+            <?php if ($filter_lot !== '' || $filter_coil !== ''): ?>
+                <a href="?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>" class="btn btn-outline-secondary">Clear</a>
+            <?php endif; ?>
+        </form>
+        <?php if ($filter_lot !== '' && $filter_coil !== ''): ?>
+            <div class="mt-1">
+                <a href="batch_setup.php?lot_no=<?= urlencode($filter_lot) ?>&coil_no=<?= urlencode($filter_coil) ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>"
+                   class="btn btn-danger btn-sm">
+                    <i class="bi bi-printer-fill me-1"></i> Batch Setup &amp; Print — all rolls in this Lot + Coil
+                </a>
+            </div>
+        <?php else: ?>
+            <div class="form-text ps-1">Enter both Lot No and Coil No to open Batch Setup &amp; Print for every roll under that coil.</div>
+        <?php endif; ?>
+    </div>
 </div>
 
 <div class="mb-3 d-flex gap-2 flex-wrap">
-    <a href="?month=<?= $month ?>&year=<?= $year ?>&download=excel" class="btn btn-success btn-sm">Download Excel</a>
+    <a href="?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&download=excel" class="btn btn-success btn-sm">Download Excel</a>
     <button type="button" class="btn btn-warning btn-sm" data-bs-toggle="modal" data-bs-target="#manualEntryModal">Manual Entry</button>
     <button type="button" class="btn btn-outline-dark btn-sm" data-bs-toggle="modal" data-bs-target="#initialStockSetupModal">
         <i class="bi bi-box-seam me-1"></i> Initial Stock Setup
@@ -1094,13 +1206,44 @@ table td.lot-coil-cell {
     <?php endif; ?>
 </div>
 
+<?php
+// ── Sortable Date In / Date Out column header helper ──────────────
+// Builds a link that preserves every other active filter (month, year,
+// day, search, filter tab, lot/coil), sets sort_col to the clicked
+// column, and toggles sort_dir if that column is already the active
+// sort (otherwise defaults to DESC — newest first — on first click).
+function sortHeaderLink(string $col, string $label, string $currentSortCol, string $currentSortDir,
+                         int $month, int $year, int $day, string $search, string $filter_card,
+                         string $filter_lot, string $filter_coil): string {
+    $isActive = ($currentSortCol === $col);
+    $nextDir  = ($isActive && $currentSortDir === 'DESC') ? 'ASC' : 'DESC';
+    $qs = http_build_query(array_filter([
+        'month'    => $month,
+        'year'     => $year,
+        'day'      => $day > 0 ? $day : null,
+        'search'   => $search !== '' ? $search : null,
+        'filter'   => $filter_card !== '' ? $filter_card : null,
+        'lot_no'   => $filter_lot !== '' ? $filter_lot : null,
+        'coil_no'  => $filter_coil !== '' ? $filter_coil : null,
+        'sort_col' => $col,
+        'sort_dir' => $nextDir,
+    ], fn($v) => $v !== null && $v !== ''));
+    $icon = $isActive
+        ? ($currentSortDir === 'DESC' ? '<i class="bi bi-arrow-down"></i>' : '<i class="bi bi-arrow-up"></i>')
+        : '<i class="bi bi-arrow-down-up text-muted" style="opacity:.4"></i>';
+    $activeClass = $isActive ? 'text-warning' : 'text-white';
+    return "<a href=\"?{$qs}\" class=\"{$activeClass} text-decoration-none\">{$label} {$icon}</a>";
+}
+?>
 <div class="table-responsive">
     <table class="table table-bordered table-striped align-middle text-center">
         <thead class="table-dark">
             <tr>
                 <th>#</th><th>Status</th><th>Origin</th><th>Product</th>
                 <th>Lot No</th><th>Roll No.</th><th>Width</th><th>Length</th>
-                <th>Actual</th><th>Pallet</th><th>Date In</th><th>Date Out</th>
+                <th>Actual</th><th>Pallet</th>
+                <th><?= sortHeaderLink('date_in',  'Date In',  $sort_col, $sort_dir, $month, $year, $day, $search, $filter_card, $filter_lot, $filter_coil) ?></th>
+                <th><?= sortHeaderLink('date_out', 'Date Out', $sort_col, $sort_dir, $month, $year, $day, $search, $filter_card, $filter_lot, $filter_coil) ?></th>
                 <th>Action</th>
             </tr>
         </thead>
@@ -1197,6 +1340,7 @@ table td.lot-coil-cell {
                 <input type="hidden" name="product_id" value="<?= $row['id'] ?>">
                 <input type="hidden" name="month"  value="<?= $month ?>">
                 <input type="hidden" name="year"   value="<?= $year ?>">
+                <input type="hidden" name="day" value="<?= $day ?>">
                 <input type="hidden" name="search" value="<?= htmlspecialchars($search) ?>">
                 <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_card) ?>">
                 <button type="submit" class="btn btn-warning btn-sm w-100">Reslit</button>
@@ -1206,6 +1350,7 @@ table td.lot-coil-cell {
                 <input type="hidden" name="product_id" value="<?= $row['id'] ?>">
                 <input type="hidden" name="month"  value="<?= $month ?>">
                 <input type="hidden" name="year"   value="<?= $year ?>">
+                <input type="hidden" name="day" value="<?= $day ?>">
                 <input type="hidden" name="search" value="<?= htmlspecialchars($search) ?>">
                 <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_card) ?>">
                 <button type="submit" class="btn btn-info btn-sm w-100 text-white">Recoiling</button>
@@ -1217,7 +1362,7 @@ table td.lot-coil-cell {
 
             <?php if ($row['is_completed'] == 0): ?>
                 <!-- No actual length yet — must update first -->
-                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>"
+                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>"
                    class="btn btn-primary btn-sm w-100">Update</a>
 
             <?php elseif ($row['pallet_id']): ?>
@@ -1232,7 +1377,7 @@ table td.lot-coil-cell {
 
             <?php else: ?>
                 <!-- Stock counted, not yet on a pallet -->
-                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>"
+                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>"
                    class="btn btn-outline-primary btn-sm w-100">Edit</a>
                 <a href="pallet.php" class="btn btn-primary btn-sm w-100">
                     <i class="bi bi-archive me-1"></i> Add to Pallet
@@ -1242,6 +1387,7 @@ table td.lot-coil-cell {
                     <input type="hidden" name="product_id" value="<?= $row['id'] ?>">
                     <input type="hidden" name="month"  value="<?= $month ?>">
                     <input type="hidden" name="year"   value="<?= $year ?>">
+                    <input type="hidden" name="day" value="<?= $day ?>">
                     <input type="hidden" name="search" value="<?= htmlspecialchars($search) ?>">
                     <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_card) ?>">
                     <button type="submit" class="btn btn-warning btn-sm w-100">Reslit</button>
@@ -1251,6 +1397,7 @@ table td.lot-coil-cell {
                     <input type="hidden" name="product_id" value="<?= $row['id'] ?>">
                     <input type="hidden" name="month"  value="<?= $month ?>">
                     <input type="hidden" name="year"   value="<?= $year ?>">
+                    <input type="hidden" name="day" value="<?= $day ?>">
                     <input type="hidden" name="search" value="<?= htmlspecialchars($search) ?>">
                     <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_card) ?>">
                     <button type="submit" class="btn btn-info btn-sm w-100 text-white">Recoiling</button>
@@ -1289,11 +1436,12 @@ table td.lot-coil-cell {
             <input type="hidden" name="lot_no"  value="<?= htmlspecialchars(trim($editData['lot_no'] ?? '')) ?>">
             <input type="hidden" name="month"   value="<?= $month ?>">
             <input type="hidden" name="year"    value="<?= $year ?>">
+            <input type="hidden" name="day" value="<?= $day ?>">
             <input type="hidden" name="search"  value="<?= htmlspecialchars($search) ?>">
             <input type="hidden" name="filter"  value="<?= htmlspecialchars($filter_card) ?>">
             <div class="modal-header bg-primary text-white">
                 <h5>Edit Product</h5>
-                <a href="finish_product.php?month=<?= $month ?>&year=<?= $year ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>"
+                <a href="finish_product.php?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>"
                    class="btn-close"></a>
             </div>
             <div class="modal-body">

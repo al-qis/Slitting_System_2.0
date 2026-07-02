@@ -77,6 +77,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     die("Product ID required");
 }
 
+// ── Resolve copies (1–3, defaults to 1) ───────────────────────────
+// Only applies to the standalone print path (select_customer.php ->
+// here). Embed mode (used by batch_print_action.php) always renders
+// exactly one sticker per iframe — the batch page controls copy count
+// by generating multiple iframes per roll instead, so this value is
+// ignored whenever $embed ends up true (checked further below).
+$copiesRaw = $_POST['copies'] ?? $_GET['copies'] ?? 1;
+$copies    = max(1, min(3, intval($copiesRaw)));
+
 // ── Fetch product ─────────────────────────────────────────────────
 $stmt = $conn->prepare("
     SELECT sp.*, mc.product as mother_product, sw.std_weight
@@ -216,6 +225,13 @@ include $patternFile;
 
 $isPreview = isset($_GET['customer']) || isset($_POST['customer']);
 
+// ── Embed mode ──────────────────────────────────────────────────
+// Used by bulk_print_action.php, which stitches many single-roll
+// stickers together inside <iframe>s for one consolidated print job.
+// Hides the toolbar/info-bar so only the sticker itself is visible.
+$embed = (($_GET['embed'] ?? '') === '1');
+if ($embed) { $copies = 1; } // batch print controls copy count via iframe count, not this param
+
 // ── Save on normal POST (print path) ──────────────────────────────
 $skip = ['STOCK', 'TRIAL', 'SFC', ''];
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $id > 0 && !in_array($customer, $skip, true)) {
@@ -287,7 +303,12 @@ $justSaved = (
         }
         @media print {
             .sticker-bg-wrap { box-shadow:none!important; border-radius:0!important; }
+            .sticker-bg-wrap:not(:last-child) { page-break-after: always; }
         }
+        .copy-label {
+            text-align:center; font-size:11px; color:#999; margin:4px 0 10px;
+        }
+        @media print { .copy-label { display:none; } }
 
         /* ── Action toolbar ── */
         .action-toolbar {
@@ -345,14 +366,15 @@ $justSaved = (
 </head>
 <body>
 
-<?php if ($isPreview): ?>
+<?php if ($isPreview && !$embed): ?>
 <div class="no-print info-bar">
     <strong>Preview</strong> &nbsp;·&nbsp;
     Pattern: <?= ucfirst($pattern) ?> &nbsp;·&nbsp;
     Customer: <?= htmlspecialchars($customer) ?> &nbsp;·&nbsp;
     Ref No: <?= htmlspecialchars($ref_no) ?> &nbsp;·&nbsp;
     Colour: <?= htmlspecialchars($colorName) ?> &nbsp;·&nbsp;
-    Line: <strong><?= $line === 'A' ? 'A (Sticker B hidden)' : 'B (Sticker B shown)' ?></strong>
+    Line: <strong><?= $line === 'A' ? 'A (Sticker B hidden)' : 'B (Sticker B shown)' ?></strong> &nbsp;·&nbsp;
+    Copies: <strong><?= $copies ?></strong>
 </div>
 <?php endif; ?>
 
@@ -365,7 +387,18 @@ if (function_exists('render_sticker')) {
 }
 ?>
 </div>
+<?php for ($copyN = 2; $copyN <= $copies; $copyN++): ?>
+    <?php if (!$embed): ?><div class="copy-label no-print">Copy <?= $copyN ?> of <?= $copies ?></div><?php endif; ?>
+    <div class="sticker-bg-wrap">
+    <?php
+    if (function_exists('render_sticker')) {
+        echo render_sticker($product, $customer, $ref_no, $tomboNo, $lotNo, $qrImageUrl);
+    }
+    ?>
+    </div>
+<?php endfor; ?>
 
+<?php if (!$embed): ?>
 <div class="no-print action-toolbar">
 
     <!-- Print button — triggers browser print dialog -->
@@ -374,7 +407,7 @@ if (function_exists('render_sticker')) {
             <path d="M2.5 8a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1z"/>
             <path d="M5 1a2 2 0 0 0-2 2v2H2a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h1v1a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-1h1a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-1V3a2 2 0 0 0-2-2H5zM4 3a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2H4V3zm1 5a2 2 0 0 0-2 2v1H2a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1v-1a2 2 0 0 0-2-2H5zm7 2v3a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1z"/>
         </svg>
-        Print Sticker
+        Print Sticker (<?= $copies ?> <?= $copies === 1 ? 'copy' : 'copies' ?>)
     </button>
 
     <!-- Save button — AJAX, no reload, no print dialog -->
@@ -398,6 +431,7 @@ if (function_exists('render_sticker')) {
     </a>
 
 </div>
+<?php endif; ?>
 
 <script>
 // ── Data to save ─────────────────────────────────────────────────
