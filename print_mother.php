@@ -8,6 +8,15 @@ if (!$row) {
     die("Mother Coil not found");
 }
 
+// Embed mode — used when this page is loaded inside an <iframe> for a
+// consolidated print job (e.g. print_mother_batch_action.php). Hides the
+// Print/Back buttons so only the sticker itself renders, matching the
+// same embed=1 convention already used by print_product.php. Also skips
+// the "mark as printed" beacon here — the batch job marks all its items
+// printed itself, in one pass, rather than each iframe doing it
+// individually.
+$embed = (($_GET['embed'] ?? '') === '1');
+
 // Gabungkan Lot No + Coil No
 $lotCoil = trim($row['lot_no']) . ' ' . trim($row['coil_no']);
 ?>
@@ -179,21 +188,37 @@ $lotCoil = trim($row['lot_no']) . ' ' . trim($row['coil_no']);
 
             <div class="qr-section">
                 <img
-                    src="generate_qr.php?product=<?= urlencode($row['product']) ?>
-                    &lot=<?= urlencode($row['lot_no']) ?>
-                    &coil=<?= urlencode($row['coil_no']) ?>
-                    &grade=<?=urlencode($row['grade']) ?>
-                    &width=<?= urlencode($row['width']) ?>
-                    &length=<?= urlencode($row['length']) ?>
-                    &type=mother"
+                    src="generate_qr.php?product=<?= urlencode($row['product']) ?>&lot=<?= urlencode($row['lot_no']) ?>&coil=<?= urlencode($row['coil_no']) ?>&grade=<?= urlencode($row['grade']) ?>&width=<?= urlencode($row['width']) ?>&length=<?= urlencode($row['length']) ?>&type=mother"
                     alt="QR Code">
             </div>
         </div>
     </div>
 
+    <?php if (!$embed): ?>
     <div class="no-print" style="text-align: center;">
-        <button class="print-btn" onclick="window.print()">Print</button>
+        <button class="print-btn" onclick="markPrintedThenPrint()">Print</button>
         <button class="print-btn" style="background-color: #666;" onclick="window.close()">Back</button>
     </div>
+
+    <script>
+    // Fires the moment the operator clicks Print — marks this coil as
+    // printed (so the Mother Coil list shows its status), then opens the
+    // browser's print dialog. Uses sendBeacon so the request reliably
+    // fires even though window.print() blocks the JS thread right after.
+    function markPrintedThenPrint() {
+        const id = <?= (int)$row['id'] ?>;
+        try {
+            navigator.sendBeacon('mark_mother_printed.php', new URLSearchParams({ id }));
+        } catch (e) {
+            fetch('mark_mother_printed.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'id=' + id,
+            });
+        }
+        window.print();
+    }
+    </script>
+    <?php endif; ?>
 </body>
 </html>

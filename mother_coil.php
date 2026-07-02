@@ -34,6 +34,123 @@ function productsFromCoil(mysqli $conn, string $coil_no): array
 }
 
 /* ──────────────────────────────────────────────────────────────
+   AJAX endpoint: mother_coil.php?ajax=search_coil&q=...
+   "Quick Search & Add" (Option B) for Bulk Print for Slitting Plan —
+   returns matching mother_coil rows for the operator to pick from.
+   Deliberately returns candidates rather than guessing, since coil_no
+   alone is NOT globally unique (only the coil_no + lot_no combination
+   is enforced unique on add), so a bare coil number can legitimately
+   match more than one row across different lots.
+────────────────────────────────────────────────────────────── */
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'search_coil') {
+    header('Content-Type: application/json; charset=utf-8');
+
+    $q = trim($_GET['q'] ?? '');
+    if ($q === '') { echo json_encode(['ok' => false, 'results' => []]); exit; }
+
+    $like = '%' . $q . '%';
+    $stmt = $conn->prepare("
+        SELECT id, product, lot_no, coil_no, grade, width, length
+        FROM mother_coil
+        WHERE coil_no LIKE ? OR lot_no LIKE ? OR product LIKE ?
+        ORDER BY id DESC
+        LIMIT 15
+    ");
+    $stmt->bind_param("sss", $like, $like, $like);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+
+    echo json_encode(['ok' => true, 'results' => $rows]);
+    exit;
+}
+
+/* ──────────────────────────────────────────────────────────────
+   AJAX endpoint: mother_coil.php?ajax=resolve_bulk_paste (POST)
+   "Text Input / Copy-Paste" (Option A) for Bulk Print for Slitting Plan.
+   Body: { text: "raw pasted text" }
+   Splits on commas AND newlines. Each token can be either:
+     - "LOT COIL" (two words together, e.g. "826403a N-4") — matched
+       exactly against lot_no + coil_no, the unambiguous case.
+     - a single word — tried first as an exact coil_no match, then an
+       exact lot_no match. If that single word matches more than one
+       row (coil_no is not globally unique), it's reported as
+       ambiguous rather than guessed, with all candidates listed so
+       the operator can resolve it via Quick Search instead.
+   Returns { resolved: [...rows], ambiguous: [{token, candidates}],
+             not_found: [token, ...] }
+────────────────────────────────────────────────────────────── */
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'resolve_bulk_paste' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    header('Content-Type: application/json; charset=utf-8');
+
+    $body = json_decode(file_get_contents('php://input'), true);
+    $text = trim($body['text'] ?? '');
+
+    $lines = preg_split('/[\r\n,]+/', $text, -1, PREG_SPLIT_NO_EMPTY);
+
+    $resolved  = [];
+    $ambiguous = [];
+    $not_found = [];
+    $seenIds   = [];
+
+    $stmtExact2 = $conn->prepare("SELECT id, product, lot_no, coil_no, grade, width, length FROM mother_coil WHERE lot_no = ? AND coil_no = ?");
+    $stmtByCoil = $conn->prepare("SELECT id, product, lot_no, coil_no, grade, width, length FROM mother_coil WHERE coil_no = ?");
+    $stmtByLot  = $conn->prepare("SELECT id, product, lot_no, coil_no, grade, width, length FROM mother_coil WHERE lot_no = ?");
+
+    foreach ($lines as $rawLine) {
+        $line = trim($rawLine);
+        if ($line === '') continue;
+
+        $parts = preg_split('/\s+/', $line, -1, PREG_SPLIT_NO_EMPTY);
+
+        $matches = [];
+        if (count($parts) >= 2) {
+            // "LOT COIL" together — unambiguous, exact match on both.
+            $lot  = $parts[0];
+            $coil = $parts[1];
+            $stmtExact2->bind_param("ss", $lot, $coil);
+            $stmtExact2->execute();
+            $matches = $stmtExact2->get_result()->fetch_all(MYSQLI_ASSOC);
+        } else {
+            // Single token — try coil_no first, then lot_no.
+            $token = $parts[0];
+            $stmtByCoil->bind_param("s", $token);
+            $stmtByCoil->execute();
+            $matches = $stmtByCoil->get_result()->fetch_all(MYSQLI_ASSOC);
+
+            if (empty($matches)) {
+                $stmtByLot->bind_param("s", $token);
+                $stmtByLot->execute();
+                $matches = $stmtByLot->get_result()->fetch_all(MYSQLI_ASSOC);
+            }
+        }
+
+        if (count($matches) === 1) {
+            $row = $matches[0];
+            if (!isset($seenIds[$row['id']])) {
+                $resolved[] = $row;
+                $seenIds[$row['id']] = true;
+            }
+        } elseif (count($matches) > 1) {
+            $ambiguous[] = ['token' => $line, 'candidates' => $matches];
+        } else {
+            $not_found[] = $line;
+        }
+    }
+    $stmtExact2->close();
+    $stmtByCoil->close();
+    $stmtByLot->close();
+
+    echo json_encode([
+        'ok'        => true,
+        'resolved'  => $resolved,
+        'ambiguous' => $ambiguous,
+        'not_found' => $not_found,
+    ]);
+    exit;
+}
+
+/* ──────────────────────────────────────────────────────────────
    AJAX endpoint: mother_coil.php?ajax=get_product&coil=...
    Now returns:
      { ok: true/false, products: [...], product: "single or empty" }
@@ -310,6 +427,9 @@ include 'header.php';
             <button class="btn btn-outline-success btn-sm ms-2" data-bs-toggle="modal" data-bs-target="#bulkAddMotherModal">
                 <i class="bi bi-table"></i> Bulk Add from Excel
             </button>
+            <button class="btn btn-outline-danger btn-sm ms-2" data-bs-toggle="modal" data-bs-target="#bulkPrintSlittingModal">
+                <i class="bi bi-printer-fill"></i> Bulk Print for Slitting Plan
+            </button>
         <?php endif; ?>
     </div>
     <div class="col-md-6">
@@ -330,7 +450,7 @@ include 'header.php';
         <tr>
             <th>ID</th><th>Product</th><th>Lot No.</th><th>Coil No.</th>
             <th>Grade</th><th>Width</th><th>Length (mtr)</th>
-            <th>Date Created</th><th>QR Code</th><th>Action</th>
+            <th>Date Created</th><th>Print Status</th><th>QR Code</th><th>Action</th>
         </tr>
     </thead>
     <tbody>
@@ -345,6 +465,18 @@ include 'header.php';
                     <td><?= htmlspecialchars($row['width']   ?? '') ?></td>
                     <td><?= htmlspecialchars($row['length']  ?? '') ?></td>
                     <td><?= htmlspecialchars($row['date_created'] ?? '') ?></td>
+                    <td>
+                        <?php if (!empty($row['printed_at'])): ?>
+                            <span class="badge bg-success" title="<?= htmlspecialchars($row['printed_at']) ?>">
+                                <i class="bi bi-check-circle me-1"></i>Printed
+                            </span>
+                            <div class="small text-muted"><?= date('d M Y, H:i', strtotime($row['printed_at'])) ?></div>
+                        <?php else: ?>
+                            <span class="badge bg-secondary">
+                                <i class="bi bi-clock me-1"></i>Not Printed Yet
+                            </span>
+                        <?php endif; ?>
+                    </td>
                     <td>
                         <img src="generate_qr.php?product=<?= urlencode($row['product'] ?? '') ?>&lot=<?= urlencode($row['lot_no'] ?? '') ?>&coil=<?= urlencode($row['coil_no'] ?? '') ?>&width=<?= urlencode($row['width'] ?? '') ?>&length=<?= urlencode($row['length'] ?? '') ?>&type=mother"
                              width="70" alt="QR">
@@ -377,7 +509,7 @@ include 'header.php';
                 </tr>
             <?php endwhile; ?>
         <?php else: ?>
-            <tr><td colspan="10" class="text-center py-4 text-muted">No records found.</td></tr>
+            <tr><td colspan="11" class="text-center py-4 text-muted">No records found.</td></tr>
         <?php endif; ?>
     </tbody>
 </table>
@@ -596,6 +728,82 @@ include 'header.php';
     </div>
   </div>
 </div>
+
+<!-- ================================================================
+     BULK PRINT FOR SLITTING PLAN MODAL
+     Two intake paths (paste text, or quick search-and-add), both feed
+     the same ordered, drag-reorderable list, printed as one job.
+================================================================ -->
+<div class="modal fade" id="bulkPrintSlittingModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header bg-danger text-white">
+        <h5 class="modal-title"><i class="bi bi-printer-fill me-2"></i>Bulk Print for Slitting Plan</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+
+        <ul class="nav nav-tabs" id="bpsTabs">
+          <li class="nav-item">
+            <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#bpsPasteTab" type="button">
+              <i class="bi bi-clipboard-plus me-1"></i> Paste / Type List
+            </button>
+          </li>
+          <li class="nav-item">
+            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#bpsSearchTab" type="button">
+              <i class="bi bi-search me-1"></i> Quick Search &amp; Add
+            </button>
+          </li>
+        </ul>
+
+        <div class="tab-content border border-top-0 p-3 mb-3">
+
+          <!-- Option A: Paste / Type List -->
+          <div class="tab-pane fade show active" id="bpsPasteTab">
+            <label class="form-label fw-semibold">Coil Nos. / Lot Nos. — one per line, or comma-separated</label>
+            <textarea id="bps_paste_zone" class="form-control" rows="5"
+                      placeholder="e.g.&#10;N-4&#10;826403a N-4&#10;QA-1, QA-2, QA-3"></textarea>
+            <div class="form-text">
+                A single word is matched against Coil No first, then Lot No. For a guaranteed exact match
+                (coil numbers can repeat across different lots), type <strong>Lot No then Coil No</strong> together on one line, e.g. <code>826403a N-4</code>.
+            </div>
+            <button type="button" class="btn btn-primary btn-sm mt-2" id="bps_resolve_btn">
+                <i class="bi bi-list-check me-1"></i> Find Matching Coils
+            </button>
+          </div>
+
+          <!-- Option B: Quick Search & Add -->
+          <div class="tab-pane fade" id="bpsSearchTab">
+            <label class="form-label fw-semibold">Type a Coil No, Lot No, or Product, then pick from the results</label>
+            <input type="text" id="bps_search_input" class="form-control" placeholder="e.g. N-4" autocomplete="off">
+            <div id="bps_search_results" class="list-group mt-2"></div>
+          </div>
+
+        </div>
+
+        <div id="bps_resolve_feedback"></div>
+
+        <hr>
+
+        <h6 class="fw-bold"><i class="bi bi-list-ol me-1"></i> Print Order (<span id="bps_count">0</span> coils) — drag <i class="bi bi-grip-vertical"></i> to rearrange</h6>
+        <div id="bpsOrderedList"></div>
+        <div id="bps_empty_hint" class="text-muted small">No coils added yet — use either tab above.</div>
+
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-danger" id="bps_print_all_btn" onclick="bpsPrintAll()" disabled>
+          <i class="bi bi-printer-fill me-1"></i> Print All Selected Coils
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Hidden form used to POST the ordered coil IDs to the print job in a new tab -->
+<form id="bpsPrintForm" method="post" action="print_mother_batch_action.php" target="_blank" style="display:none;">
+    <input type="hidden" name="mother_coil_ids" id="bpsPrintIdsInput">
+</form>
 
 <script>
 /* ════════════════════════════════════════════════════════════
@@ -1132,6 +1340,178 @@ document.getElementById('bulkAddMotherModal').addEventListener('show.bs.modal', 
     showBulkWarning('');
     bulkResultMsg.classList.add('d-none');
 });
+</script>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.2/Sortable.min.js"></script>
+<script>
+/* ════════════════════════════════════════════════════════════
+   BULK PRINT FOR SLITTING PLAN
+   Two intake paths (paste, quick search) both push into the same
+   `bpsItems` ordered array, rendered as a drag-reorderable list,
+   then printed as one consolidated job.
+════════════════════════════════════════════════════════════ */
+let bpsItems = []; // [{id, product, lot_no, coil_no, grade, width, length}, ...]
+
+function bpsEsc(s) {
+    return String(s ?? '').replace(/[&<>"']/g,
+        c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function bpsAddItem(row) {
+    if (bpsItems.some(it => String(it.id) === String(row.id))) return; // no duplicates
+    bpsItems.push(row);
+    bpsRender();
+}
+
+function bpsRemoveItem(id) {
+    bpsItems = bpsItems.filter(it => String(it.id) !== String(id));
+    bpsRender();
+}
+
+function bpsRender() {
+    const listEl  = document.getElementById('bpsOrderedList');
+    const emptyEl = document.getElementById('bps_empty_hint');
+    const countEl = document.getElementById('bps_count');
+    const printBtn = document.getElementById('bps_print_all_btn');
+
+    countEl.textContent = bpsItems.length;
+    printBtn.disabled = bpsItems.length === 0;
+    emptyEl.classList.toggle('d-none', bpsItems.length > 0);
+
+    listEl.innerHTML = bpsItems.map((it, idx) => `
+        <div class="d-flex align-items-center gap-2 border rounded p-2 mb-2 bg-white" data-id="${it.id}">
+            <span class="text-muted" style="cursor:grab;"><i class="bi bi-grip-vertical"></i></span>
+            <span class="badge bg-secondary" style="min-width:26px;">${idx + 1}</span>
+            <div class="flex-grow-1">
+                <div class="fw-bold">${bpsEsc(it.product)}</div>
+                <div class="small text-muted">Lot ${bpsEsc(it.lot_no)} · Coil ${bpsEsc(it.coil_no)} · Grade ${bpsEsc(it.grade)} · ${bpsEsc(it.width)}mm × ${bpsEsc(it.length)}m</div>
+            </div>
+            <button type="button" class="btn btn-outline-danger btn-sm" onclick="bpsRemoveItem('${it.id}')">
+                <i class="bi bi-x-lg"></i>
+            </button>
+        </div>
+    `).join('');
+}
+
+new Sortable(document.getElementById('bpsOrderedList'), {
+    handle: '.bi-grip-vertical',
+    animation: 150,
+    onEnd: function () {
+        const newOrderIds = Array.from(document.querySelectorAll('#bpsOrderedList [data-id]')).map(el => el.dataset.id);
+        bpsItems.sort((a, b) => newOrderIds.indexOf(String(a.id)) - newOrderIds.indexOf(String(b.id)));
+        bpsRender();
+    },
+});
+
+/* ── Option A: Paste / Type List ─────────────────────────────── */
+document.getElementById('bps_resolve_btn').addEventListener('click', async function () {
+    const text = document.getElementById('bps_paste_zone').value.trim();
+    const feedback = document.getElementById('bps_resolve_feedback');
+    if (!text) return;
+
+    this.disabled = true;
+    this.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Searching…';
+
+    try {
+        const resp = await fetch('mother_coil.php?ajax=resolve_bulk_paste', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text }),
+        });
+        const data = await resp.json();
+
+        data.resolved.forEach(row => bpsAddItem(row));
+
+        let html = '';
+        if (data.resolved.length > 0) {
+            html += `<div class="alert alert-success py-2">Added ${data.resolved.length} coil(s).</div>`;
+        }
+        if (data.ambiguous.length > 0) {
+            html += `<div class="alert alert-warning py-2"><strong>${data.ambiguous.length} entr${data.ambiguous.length > 1 ? 'ies' : 'y'} matched more than one coil</strong> — use Quick Search &amp; Add to pick the right one, or retype as "Lot Coil":<ul class="mb-0 mt-1">`;
+            data.ambiguous.forEach(a => {
+                html += `<li><code>${bpsEsc(a.token)}</code> matched ${a.candidates.length} coils (e.g. ${a.candidates.map(c => bpsEsc(c.lot_no) + ' ' + bpsEsc(c.coil_no)).join(', ')})</li>`;
+            });
+            html += `</ul></div>`;
+        }
+        if (data.not_found.length > 0) {
+            html += `<div class="alert alert-danger py-2"><strong>Not found:</strong> ${data.not_found.map(bpsEsc).join(', ')}</div>`;
+        }
+        feedback.innerHTML = html;
+    } catch (e) {
+        feedback.innerHTML = '<div class="alert alert-danger py-2">Network error while searching.</div>';
+    }
+
+    this.disabled = false;
+    this.innerHTML = '<i class="bi bi-list-check me-1"></i> Find Matching Coils';
+});
+
+/* ── Option B: Quick Search & Add ────────────────────────────── */
+let bpsSearchDebounce = null;
+let bpsLastResults = []; // indexed lookup for the currently-shown result buttons
+
+document.getElementById('bps_search_input').addEventListener('input', function () {
+    const q = this.value.trim();
+    clearTimeout(bpsSearchDebounce);
+    const resultsEl = document.getElementById('bps_search_results');
+
+    if (q.length < 1) { resultsEl.innerHTML = ''; bpsLastResults = []; return; }
+
+    bpsSearchDebounce = setTimeout(async () => {
+        try {
+            const resp = await fetch('mother_coil.php?ajax=search_coil&q=' + encodeURIComponent(q));
+            const data = await resp.json();
+            bpsLastResults = data.results || [];
+
+            resultsEl.innerHTML = bpsLastResults.length === 0
+                ? '<div class="text-muted small p-2">No matches.</div>'
+                : bpsLastResults.map((r, i) => `
+                    <button type="button" class="list-group-item list-group-item-action bps-result-btn" data-index="${i}">
+                        <strong>${bpsEsc(r.product)}</strong> —
+                        Lot ${bpsEsc(r.lot_no)} · Coil ${bpsEsc(r.coil_no)} · Grade ${bpsEsc(r.grade)} ·
+                        ${bpsEsc(r.width)}mm × ${bpsEsc(r.length)}m
+                    </button>
+                `).join('');
+
+            resultsEl.querySelectorAll('.bps-result-btn').forEach(btn => {
+                btn.addEventListener('click', function () {
+                    const row = bpsLastResults[parseInt(this.dataset.index, 10)];
+                    if (row) bpsAddItem(row);
+                    document.getElementById('bps_search_input').value = '';
+                    resultsEl.innerHTML = '';
+                    bpsLastResults = [];
+                    document.getElementById('bps_search_input').focus();
+                });
+            });
+        } catch (e) {
+            resultsEl.innerHTML = '<div class="text-danger small p-2">Network error.</div>';
+        }
+    }, 250);
+});
+// Enter key adds the top result directly, so a scanner/fast typist
+// doesn't have to click.
+document.getElementById('bps_search_input').addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const first = document.querySelector('.bps-result-btn');
+    if (first) first.click();
+});
+
+/* ── Reset modal state each time it's opened ─────────────────── */
+document.getElementById('bulkPrintSlittingModal').addEventListener('show.bs.modal', function () {
+    bpsItems = [];
+    bpsRender();
+    document.getElementById('bps_paste_zone').value = '';
+    document.getElementById('bps_search_input').value = '';
+    document.getElementById('bps_search_results').innerHTML = '';
+    document.getElementById('bps_resolve_feedback').innerHTML = '';
+});
+
+/* ── Print All Selected Coils ────────────────────────────────── */
+function bpsPrintAll() {
+    if (bpsItems.length === 0) return;
+    document.getElementById('bpsPrintIdsInput').value = JSON.stringify(bpsItems.map(it => it.id));
+    document.getElementById('bpsPrintForm').submit();
+}
 </script>
 
 <?php if ($_SESSION['role'] === 'slitting'): ?>
