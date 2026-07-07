@@ -135,6 +135,41 @@ if (!in_array($filter_card, ['in_pending', 'stock', 'palletised', 'waiting', 'de
     $filter_card = 'in_pending';
 }
 
+// ── Origin filter ──────────────────────────────────────────────
+// Filters by where a roll ultimately came from — the same value already
+// shown in the table's "Origin" column (COALESCE(original_source, source,
+// 'raw_material')): e.g. RAW MAT, SFC, RESLIT, RECOILING. Options are
+// built from whatever distinct values actually exist in the data, so this
+// stays correct even if new origin values are introduced later.
+$filter_origin = trim($_GET['origin'] ?? '');
+
+$originOptions = [];
+$originOptRes = $conn->query("
+    SELECT DISTINCT LOWER(TRIM(COALESCE(original_source, source, 'raw_material'))) AS origin
+    FROM slitting_product
+    WHERE is_voided = 0
+    ORDER BY origin
+");
+if ($originOptRes) {
+    while ($optRow = $originOptRes->fetch_assoc()) {
+        if (($optRow['origin'] ?? '') !== '') {
+            $originOptions[] = $optRow['origin'];
+        }
+    }
+}
+function originLabel(string $origin): string {
+    return match ($origin) {
+        'sfc'          => 'SFC',
+        'raw_material' => 'RAW MAT',
+        default        => strtoupper($origin),
+    };
+}
+
+// ── Width filter ─────────────────────────────────────────────────
+// Free-text search on the roll's own width (sp.width), matched with LIKE
+// so partial values work too (e.g. typing "38" also matches 388, 380...).
+$filter_width = trim($_GET['width'] ?? '');
+
 // Clamp $day to the number of days actually in the selected month/year
 // (e.g. day=31 selected, then Month changed to April → falls back to
 // "All Days" instead of silently returning nothing).
@@ -724,6 +759,16 @@ if (!empty($searchTokens)) {
 if ($filter_lot !== '')  { $baseSql .= " AND sp.lot_no = ?";  }
 if ($filter_coil !== '') { $baseSql .= " AND sp.coil_no = ?"; }
 
+// ── Origin filter ─────────────────────────────────────────────
+if ($filter_origin !== '') {
+    $baseSql .= " AND LOWER(TRIM(COALESCE(sp.original_source, sp.source, 'raw_material'))) = ?";
+}
+
+// ── Width filter ─────────────────────────────────────────────────
+if ($filter_width !== '') {
+    $baseSql .= " AND sp.width = ?";
+}
+
 // ── Explicit Date In / Date Out column sort overrides the tab default ──
 if ($sort_col !== '') {
     $sortColumn = 'sp.' . $sort_col; // whitelisted to date_in|date_out above
@@ -751,6 +796,8 @@ foreach ($searchTokens as $token) {
 
 if ($filter_lot !== '')  { $types .= "s"; $params[] = $filter_lot;  }
 if ($filter_coil !== '') { $types .= "s"; $params[] = $filter_coil; }
+if ($filter_origin !== '') { $types .= "s"; $params[] = $filter_origin; }
+if ($filter_width !== '')  { $types .= "d"; $params[] = (float)$filter_width; }
 
 $bindArgs = [$types];
 foreach ($params as $key => $value) {
@@ -984,6 +1031,22 @@ table td.lot-coil-cell {
                     <option value="<?= $d ?>" <?= ($d === $day) ? 'selected' : '' ?>><?= $d ?></option>
                 <?php endfor; ?>
             </select>
+            <label class="small fw-bold">Origin:</label>
+            <select name="origin" onchange="this.form.submit()" class="form-select form-select-sm w-auto">
+                <option value="">All Origins</option>
+                <?php foreach ($originOptions as $opt): ?>
+                    <option value="<?= htmlspecialchars($opt) ?>" <?= ($opt === $filter_origin) ? 'selected' : '' ?>>
+                        <?= htmlspecialchars(originLabel($opt)) ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
+            <label class="small fw-bold">Width:</label>
+            <input type="text" name="width" class="form-control form-control-sm w-auto" style="width:100px;"
+                   placeholder="e.g. 388" value="<?= htmlspecialchars($filter_width) ?>">
+            <button type="submit" class="btn btn-outline-secondary btn-sm"><i class="bi bi-search"></i></button>
+            <?php if ($filter_width !== ''): ?>
+                <a href="?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?>" class="btn btn-outline-secondary btn-sm" title="Clear width filter"><i class="bi bi-x-lg"></i></a>
+            <?php endif; ?>
         </form>
     </div>
     <div class="col-md-4">
@@ -994,12 +1057,18 @@ table td.lot-coil-cell {
             <?php if ($filter_card !== ''): ?>
             <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_card) ?>">
             <?php endif; ?>
+            <?php if ($filter_origin !== ''): ?>
+            <input type="hidden" name="origin" value="<?= htmlspecialchars($filter_origin) ?>">
+            <?php endif; ?>
+            <?php if ($filter_width !== ''): ?>
+            <input type="hidden" name="width" value="<?= htmlspecialchars($filter_width) ?>">
+            <?php endif; ?>
             <input type="text" name="search" class="form-control"
                    placeholder="Search ID, Product, Lot, Coil, Roll, Pallet No..."
                    value="<?= htmlspecialchars($search) ?>">
             <button class="btn btn-primary" type="submit"><i class="bi bi-search"></i></button>
             <?php if ($search !== ''): ?>
-                <a href="?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>" class="btn btn-outline-secondary">Clear</a>
+                <a href="?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?>" class="btn btn-outline-secondary">Clear</a>
             <?php endif; ?>
         </form>
         <div class="form-text ps-1">Tip: type Lot, Coil, and Roll together separated by spaces (e.g. <code>826613 QA-1 R-6</code>) to find an exact roll.</div>
@@ -1013,6 +1082,12 @@ table td.lot-coil-cell {
             <?php if ($filter_card !== ''): ?>
             <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_card) ?>">
             <?php endif; ?>
+            <?php if ($filter_origin !== ''): ?>
+            <input type="hidden" name="origin" value="<?= htmlspecialchars($filter_origin) ?>">
+            <?php endif; ?>
+            <?php if ($filter_width !== ''): ?>
+            <input type="hidden" name="width" value="<?= htmlspecialchars($filter_width) ?>">
+            <?php endif; ?>
             <span class="input-group-text">Lot No</span>
             <input type="text" name="lot_no" class="form-control" placeholder="e.g. 826408a"
                    value="<?= htmlspecialchars($filter_lot) ?>">
@@ -1021,12 +1096,12 @@ table td.lot-coil-cell {
                    value="<?= htmlspecialchars($filter_coil) ?>">
             <button class="btn btn-primary" type="submit"><i class="bi bi-funnel"></i></button>
             <?php if ($filter_lot !== '' || $filter_coil !== ''): ?>
-                <a href="?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>" class="btn btn-outline-secondary">Clear</a>
+                <a href="?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?>" class="btn btn-outline-secondary">Clear</a>
             <?php endif; ?>
         </form>
         <?php if ($filter_lot !== '' && $filter_coil !== ''): ?>
             <div class="mt-1">
-                <a href="batch_setup.php?lot_no=<?= urlencode($filter_lot) ?>&coil_no=<?= urlencode($filter_coil) ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>"
+                <a href="batch_setup.php?lot_no=<?= urlencode($filter_lot) ?>&coil_no=<?= urlencode($filter_coil) ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?>"
                    class="btn btn-danger btn-sm">
                     <i class="bi bi-printer-fill me-1"></i> Batch Setup &amp; Print — all rolls in this Lot + Coil
                 </a>
@@ -1214,7 +1289,7 @@ table td.lot-coil-cell {
 // sort (otherwise defaults to DESC — newest first — on first click).
 function sortHeaderLink(string $col, string $label, string $currentSortCol, string $currentSortDir,
                          int $month, int $year, int $day, string $search, string $filter_card,
-                         string $filter_lot, string $filter_coil): string {
+                         string $filter_lot, string $filter_coil, string $filter_origin = '', string $filter_width = ''): string {
     $isActive = ($currentSortCol === $col);
     $nextDir  = ($isActive && $currentSortDir === 'DESC') ? 'ASC' : 'DESC';
     $qs = http_build_query(array_filter([
@@ -1225,6 +1300,8 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
         'filter'   => $filter_card !== '' ? $filter_card : null,
         'lot_no'   => $filter_lot !== '' ? $filter_lot : null,
         'coil_no'  => $filter_coil !== '' ? $filter_coil : null,
+        'origin'   => $filter_origin !== '' ? $filter_origin : null,
+        'width'    => $filter_width !== '' ? $filter_width : null,
         'sort_col' => $col,
         'sort_dir' => $nextDir,
     ], fn($v) => $v !== null && $v !== ''));
@@ -1242,8 +1319,8 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                 <th>#</th><th>Status</th><th>Origin</th><th>Product</th>
                 <th>Lot No</th><th>Roll No.</th><th>Width</th><th>Length</th>
                 <th>Actual</th><th>Pallet</th>
-                <th><?= sortHeaderLink('date_in',  'Date In',  $sort_col, $sort_dir, $month, $year, $day, $search, $filter_card, $filter_lot, $filter_coil) ?></th>
-                <th><?= sortHeaderLink('date_out', 'Date Out', $sort_col, $sort_dir, $month, $year, $day, $search, $filter_card, $filter_lot, $filter_coil) ?></th>
+                <th><?= sortHeaderLink('date_in',  'Date In',  $sort_col, $sort_dir, $month, $year, $day, $search, $filter_card, $filter_lot, $filter_coil, $filter_origin, $filter_width) ?></th>
+                <th><?= sortHeaderLink('date_out', 'Date Out', $sort_col, $sort_dir, $month, $year, $day, $search, $filter_card, $filter_lot, $filter_coil, $filter_origin, $filter_width) ?></th>
                 <th>Action</th>
             </tr>
         </thead>
@@ -1362,7 +1439,7 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
 
             <?php if ($row['is_completed'] == 0): ?>
                 <!-- No actual length yet — must update first -->
-                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>"
+                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?>"
                    class="btn btn-primary btn-sm w-100">Update</a>
 
             <?php elseif ($row['pallet_id']): ?>
@@ -1377,7 +1454,7 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
 
             <?php else: ?>
                 <!-- Stock counted, not yet on a pallet -->
-                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>"
+                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?>"
                    class="btn btn-outline-primary btn-sm w-100">Edit</a>
                 <a href="pallet.php" class="btn btn-primary btn-sm w-100">
                     <i class="bi bi-archive me-1"></i> Add to Pallet
@@ -1465,7 +1542,7 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
             <input type="hidden" name="filter"  value="<?= htmlspecialchars($filter_card) ?>">
             <div class="modal-header bg-primary text-white">
                 <h5>Edit Product</h5>
-                <a href="finish_product.php?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?>"
+                <a href="finish_product.php?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?>"
                    class="btn-close"></a>
             </div>
             <div class="modal-body">
