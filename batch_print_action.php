@@ -95,25 +95,16 @@ if (empty($clean)) {
         . '<a href="finish_product.php">&larr; Back to List</a>');
 }
 
-// ── Save customer / ref_no for each roll + audit log ──────────────
-$stmtUpd = $conn->prepare("UPDATE slitting_product SET customer_name = ?, ref_no = ? WHERE id = ?");
-foreach ($clean as $row) {
-    $stmtUpd->bind_param("ssi", $row['customer_to_save'], $row['ref_no'], $row['id']);
-    $stmtUpd->execute();
-
-    batch_log_process(
-        $conn,
-        $row['id'],
-        'batch_print',
-        "Batch print — Lot {$lot_no} Coil {$coil_no} · Customer: {$row['customer_to_save']} · Ref: {$row['ref_no']} · Copies: {$row['copies']}"
-    );
-}
-$stmtUpd->close();
-
-// ── Display fields (product/lot/coil/roll) for the manifest ───────
+// ── Fetch prior state (product/lot/coil/roll + print-tracking) BEFORE
+//    any updates, so we know whether each roll was already printed and
+//    can log/display that accurately.
 $ids = array_column($clean, 'id');
 $placeholders = implode(',', array_fill(0, count($ids), '?'));
-$stmtInfo = $conn->prepare("SELECT id, product, lot_no, coil_no, roll_no FROM slitting_product WHERE id IN ($placeholders)");
+$stmtInfo = $conn->prepare("
+    SELECT id, product, lot_no, coil_no, roll_no,
+           is_printed, print_count, mother_id
+    FROM slitting_product WHERE id IN ($placeholders)
+");
 $stmtInfo->bind_param(str_repeat('i', count($ids)), ...$ids);
 $stmtInfo->execute();
 $infoRows = $stmtInfo->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -122,13 +113,54 @@ $stmtInfo->close();
 $infoById = [];
 foreach ($infoRows as $ir) { $infoById[(int)$ir['id']] = $ir; }
 
+// ── Save customer / ref_no for each roll, mark print-tracking, + audit log ──
+$performedBy = $_SESSION['role'] ?? 'system';
+$stmtUpd = $conn->prepare("UPDATE slitting_product SET customer_name = ?, ref_no = ? WHERE id = ?");
+$stmtPrint = $conn->prepare("
+    UPDATE slitting_product
+    SET is_printed = 1,
+        print_count = print_count + 1,
+        first_printed_at = COALESCE(first_printed_at, NOW()),
+        last_printed_at  = NOW(),
+        last_printed_by  = ?
+    WHERE id = ?
+");
+
 foreach ($clean as &$row) {
+    $stmtUpd->bind_param("ssi", $row['customer_to_save'], $row['ref_no'], $row['id']);
+    $stmtUpd->execute();
+
     $info = $infoById[$row['id']] ?? null;
     $row['product_label']  = $info['product'] ?? ('Roll #' . $row['id']);
     $row['lot_coil_label'] = trim(($info['lot_no'] ?? '') . ' ' . ($info['coil_no'] ?? ''));
     $row['roll_label']     = str_replace('R', 'R-', $info['roll_no'] ?? '');
+    $row['was_already_printed'] = (bool)($info['is_printed'] ?? false);
+
+    // Only rolls that actually get a sticker generated (copies > 0) count
+    // as "printed" — a roll saved with 0 copies was deliberately skipped.
+    if ($row['copies'] > 0) {
+        $stmtPrint->bind_param("si", $performedBy, $row['id']);
+        $stmtPrint->execute();
+
+        batch_log_process(
+            $conn,
+            $row['id'],
+            'batch_print',
+            "Batch print — Lot {$lot_no} Coil {$coil_no} · Customer: {$row['customer_to_save']} · Ref: {$row['ref_no']} · Copies: {$row['copies']}"
+            . ($row['was_already_printed'] ? " · REPRINT (was {$info['print_count']}x)" : " · first print")
+        );
+    } else {
+        batch_log_process(
+            $conn,
+            $row['id'],
+            'batch_print_skipped',
+            "Batch save (no print) — Lot {$lot_no} Coil {$coil_no} · Customer: {$row['customer_to_save']} · Ref: {$row['ref_no']} · Copies: 0"
+        );
+    }
 }
 unset($row);
+$stmtUpd->close();
+$stmtPrint->close();
 
 // ── Back-to-list URL, preserving tab/filter/search state ──────────
 $backMonth  = intval($_POST['month'] ?? date('m'));
@@ -259,7 +291,11 @@ $totalCopies = array_sum(array_column($clean, 'copies'));
         <div class="manifest-main">
             <div class="product"><?= htmlspecialchars($row['product_label']) ?></div>
             <div class="sub"><?= htmlspecialchars($row['lot_coil_label']) ?> · Roll <?= htmlspecialchars($row['roll_label']) ?></div>
-            <div class="cust"><?= htmlspecialchars($row['customer_to_save']) ?> · Ref: <?= htmlspecialchars($row['ref_no']) ?></div>
+            <div class="cust"><?= htmlspecialchars($row['customer_to_save']) ?> · Ref: <?= htmlspecialchars($row['ref_no']) ?>
+                <?php if (!empty($row['was_already_printed'])): ?>
+                    <span style="color:#c62828;font-weight:700;">· REPRINT</span>
+                <?php endif; ?>
+            </div>
         </div>
         <?php if ($row['copies'] === 0): ?>
         <div class="manifest-badge is-skipped">

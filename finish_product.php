@@ -1402,16 +1402,40 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                     <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_card) ?>">
                     <button type="submit" class="btn btn-info btn-sm w-100 text-white">Recoiling</button>
                 </form>
+<?php if (!empty($row['is_printed'])): ?>
+                    <span class="badge bg-success w-100 mb-1"
+                          title="Last printed <?= htmlspecialchars($row['last_printed_at'] ? date('d M Y H:i', strtotime($row['last_printed_at'])) : '') ?> by <?= htmlspecialchars($row['last_printed_by'] ?? '') ?>">
+                        <i class="bi bi-printer-fill"></i> Printed (<?= (int)$row['print_count'] ?>×)
+                    </span>
+                <?php else: ?>
+                    <span class="badge bg-secondary w-100 mb-1">Not Printed</span>
+                <?php endif; ?>
                 <a href="select_customer.php?id=<?= $row['id'] ?>" class="btn btn-secondary btn-sm w-100">Print Only</a>
             <?php endif; ?>
 
         </div>
 
     <?php elseif ($row['status'] === 'APPROVED'): ?>
-        <a href="select_customer.php?id=<?= $row['id'] ?>" class="btn btn-success btn-sm w-100">Print & Deliver</a>
+<?php if (!empty($row['is_printed'])): ?>
+        <span class="badge bg-success w-100 mb-1"
+              title="Last printed <?= htmlspecialchars($row['last_printed_at'] ? date('d M Y H:i', strtotime($row['last_printed_at'])) : '') ?> by <?= htmlspecialchars($row['last_printed_by'] ?? '') ?>">
+            <i class="bi bi-printer-fill"></i> Printed (<?= (int)$row['print_count'] ?>×)
+        </span>
+    <?php else: ?>
+        <span class="badge bg-secondary w-100 mb-1">Not Printed</span>
+    <?php endif; ?>
+    <a href="select_customer.php?id=<?= $row['id'] ?>" class="btn btn-success btn-sm w-100">Print & Deliver</a>
 
     <?php else: ?>
-        <a href="select_customer.php?id=<?= $row['id'] ?>" class="btn btn-success btn-sm w-100">Print</a>
+<?php if (!empty($row['is_printed'])): ?>
+        <span class="badge bg-success w-100 mb-1"
+              title="Last printed <?= htmlspecialchars($row['last_printed_at'] ? date('d M Y H:i', strtotime($row['last_printed_at'])) : '') ?> by <?= htmlspecialchars($row['last_printed_by'] ?? '') ?>">
+            <i class="bi bi-printer-fill"></i> Printed (<?= (int)$row['print_count'] ?>×)
+        </span>
+    <?php else: ?>
+        <span class="badge bg-secondary w-100 mb-1">Not Printed</span>
+    <?php endif; ?>
+    <a href="select_customer.php?id=<?= $row['id'] ?>" class="btn btn-success btn-sm w-100">Print</a>
     <?php endif; ?>
                 </td>
             </tr>

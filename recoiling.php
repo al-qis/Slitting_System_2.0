@@ -14,20 +14,20 @@ include 'config.php';
 // ── Excel Download ────────────────────────────────────────────
 if (isset($_GET['download']) && $_GET['download'] === 'excel') {
     $exRes = $conn->query("
-        SELECT
-            rp.id, rp.status, rp.roll_no, rp.date_in, rp.completed_at, rp.remark,
-            rp.new_length, rp.mother_id,
-            IFNULL(mc.product, rp.product)   AS product,
-            IFNULL(mc.lot_no,  rp.lot_no)    AS lot_no,
-            IFNULL(mc.coil_no, rp.coil_no)   AS coil_no,
-            IFNULL(mc.width,   rp.width)     AS width,
-            IFNULL(mc.length,  rp.length)    AS length,
-            IFNULL(rp.actual_length, IFNULL(mc.length, rp.length)) AS actual_length,
-            rp.cut_type
-        FROM recoiling_product rp
-        LEFT JOIN mother_coil mc ON rp.mother_id = mc.id
-        ORDER BY rp.id ASC
-    ");
+    SELECT
+        rp.id, rp.status, rp.roll_no, rp.date_in, rp.completed_at, rp.remark,
+        rp.new_length, rp.mother_id,
+        IFNULL(rp.product, mc.product)   AS product,
+        IFNULL(rp.lot_no,  mc.lot_no)    AS lot_no,
+        IFNULL(rp.coil_no, mc.coil_no)   AS coil_no,
+        IFNULL(rp.width,   mc.width)     AS width,
+        IFNULL(rp.length,  mc.length)    AS length,
+        IFNULL(rp.actual_length, IFNULL(rp.length, mc.length)) AS actual_length,
+        rp.cut_type
+    FROM recoiling_product rp
+    LEFT JOIN mother_coil mc ON rp.mother_id = mc.id
+    ORDER BY rp.id ASC
+");
 
     $filename  = 'Recoiling_Report_' . date('Y-m-d') . '.xls';
     $cols      = 13;
@@ -140,13 +140,13 @@ if (isset($_GET['download']) && $_GET['download'] === 'excel') {
 $query = "
     (SELECT
         rp.id, rp.status,
-        IFNULL(mc.product, rp.product) as product,
-        IFNULL(mc.lot_no, rp.lot_no)   as lot_no,
-        IFNULL(mc.coil_no, rp.coil_no) as coil_no,
+        IFNULL(rp.product, mc.product) as product,
+        IFNULL(rp.lot_no, mc.lot_no)   as lot_no,
+        IFNULL(rp.coil_no, mc.coil_no) as coil_no,
         rp.roll_no,
-        IFNULL(mc.width, rp.width)     as width,
-        IFNULL(mc.length, rp.length)   as length,
-        IFNULL(rp.actual_length, IFNULL(mc.length, rp.length)) as actual_length,
+        IFNULL(rp.width, mc.width)     as width,
+        IFNULL(rp.length, mc.length)   as length,
+        IFNULL(rp.actual_length, IFNULL(rp.length, mc.length)) as actual_length,
         rp.new_length, rp.date_in, rp.completed_at, rp.remark, rp.mother_id,
         'recoiling_product' as source_table
     FROM recoiling_product rp

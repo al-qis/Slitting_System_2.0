@@ -56,6 +56,7 @@ $stmt = $conn->prepare("
     SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
            sp.width, sp.length, sp.actual_length, sp.status,
            sp.is_completed, sp.customer_name, sp.ref_no,
+           sp.is_printed, sp.print_count, sp.last_printed_at, sp.last_printed_by,
            pi.pallet_id
     FROM slitting_product sp
     LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
@@ -183,6 +184,15 @@ $stmt->close();
         </div>
     </div>
 
+    <?php $alreadyPrintedCount = count(array_filter($rolls, fn($r) => !empty($r['is_printed']))); ?>
+    <?php if ($alreadyPrintedCount > 0): ?>
+    <div class="alert alert-warning py-2 mb-3">
+        <i class="bi bi-exclamation-triangle-fill me-1"></i>
+        <strong><?= $alreadyPrintedCount ?> of <?= count($rolls) ?></strong> roll(s) in this batch were already printed before.
+        Check the badges in the grid below before printing again.
+    </div>
+    <?php endif; ?>
+
     <!-- Batch Grid ──────────────────────────────────────────────── -->
     <div class="table-responsive">
         <table class="table table-bordered table-sm grid-table bg-white" id="batchGridTable">
@@ -198,10 +208,20 @@ $stmt->close();
             </thead>
             <tbody>
                 <?php foreach ($rolls as $idx => $r): ?>
-                <tr data-id="<?= $r['id'] ?>" data-row="<?= $idx ?>">
+                <tr data-id="<?= $r['id'] ?>" data-row="<?= $idx ?>"
+                    data-is-printed="<?= !empty($r['is_printed']) ? 1 : 0 ?>"
+                    data-print-count="<?= (int)($r['print_count'] ?? 0) ?>">
                     <td class="readonly-cell">
                         <strong><?= htmlspecialchars(str_replace('R', 'R-', $r['roll_no'] ?? '')) ?></strong>
                         <div class="text-muted"><?= htmlspecialchars($r['product'] ?? '') ?></div>
+                        <?php if (!empty($r['is_printed'])): ?>
+                            <span class="badge bg-success mt-1" style="font-size:10px;"
+                                  title="Last printed <?= htmlspecialchars($r['last_printed_at'] ? date('d M Y H:i', strtotime($r['last_printed_at'])) : '') ?> by <?= htmlspecialchars($r['last_printed_by'] ?? '') ?>">
+                                <i class="bi bi-printer-fill"></i> Printed (<?= (int)$r['print_count'] ?>×)
+                            </span>
+                        <?php else: ?>
+                            <span class="badge bg-secondary mt-1" style="font-size:10px;">Not Printed</span>
+                        <?php endif; ?>
                     </td>
                     <td class="readonly-cell">
                         <?= number_format((float)$r['width'], 0) ?> mm<br>
@@ -457,6 +477,32 @@ function printAllStickers() {
             '<span class="text-danger">Fix the highlighted rows before printing.</span>';
         return;
     }
+
+    // ── Warn if any selected roll (with copies > 0) was already printed ──
+    // collectSelections() pushes one entry per row, in the same order as
+    // the table rows, skipping none (an error would have returned null
+    // above) — so selections[i] always corresponds to trs[i].
+    const trs = Array.from(document.querySelectorAll('#batchGridTable tbody tr'));
+    const alreadyPrinted = [];
+    selections.forEach((sel, idx) => {
+        if (sel.copies > 0) {
+            const tr = trs[idx];
+            if (tr && tr.dataset.isPrinted === '1') {
+                const rollLabel = tr.querySelector('.readonly-cell strong')?.textContent?.trim() || `Roll #${sel.id}`;
+                alreadyPrinted.push(`${rollLabel} (printed ${tr.dataset.printCount}×)`);
+            }
+        }
+    });
+
+    if (alreadyPrinted.length > 0) {
+        const proceed = confirm(
+            `${alreadyPrinted.length} roll(s) in this batch were already printed:\n\n` +
+            alreadyPrinted.join('\n') +
+            `\n\nPrint again anyway?`
+        );
+        if (!proceed) return;
+    }
+
     document.getElementById('batchPrintSelectionsInput').value = JSON.stringify(selections);
     document.getElementById('batchPrintForm').submit();
 }

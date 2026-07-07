@@ -2,6 +2,36 @@
 session_start();
 include 'config.php';
 
+// Helper: write one process_log row (shared pattern used across the app)
+if (!function_exists('log_process')) {
+    function log_process(
+        mysqli  $conn,
+        string  $entity_type,
+        int     $entity_id,
+        ?int    $mother_id,
+        ?string $from_status,
+        ?string $to_status,
+        string  $action_detail = '',
+        string  $remark = ''
+    ): void {
+        $performed_by = $_SESSION['role'] ?? 'system';
+        $stmt = $conn->prepare("
+            INSERT INTO process_log
+                (entity_type, entity_id, mother_id, from_status, to_status,
+                 performed_by, action_detail, remark)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ");
+        $stmt->bind_param(
+            "siisssss",
+            $entity_type, $entity_id, $mother_id,
+            $from_status, $to_status,
+            $performed_by, $action_detail, $remark
+        );
+        $stmt->execute();
+        $stmt->close();
+    }
+}
+
 function getCoilPrefix($coil_no) {
     $coil_no = trim((string)$coil_no);
     if ($coil_no === '') return '';
@@ -53,6 +83,67 @@ if (
         'msg' => $ok
             ? "Saved: {$customer} / {$ref_no}"
             : 'Update failed: ' . $conn->error,
+    ]);
+    exit;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// AJAX MARK-PRINTED ENDPOINT
+// Called right when the user clicks "Print Sticker", before the
+// browser print dialog opens. Increments print_count and timestamps.
+// Returns JSON { ok: bool, print_count: int, was_already_printed: bool }
+// ═══════════════════════════════════════════════════════════════
+if (
+    isset($_POST['action']) && $_POST['action'] === 'mark_printed' &&
+    !empty($_SERVER['HTTP_X_REQUESTED_WITH']) &&
+    strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest'
+) {
+    header('Content-Type: application/json');
+
+    $pid = intval($_POST['id'] ?? 0);
+    if ($pid <= 0) {
+        echo json_encode(['ok' => false, 'msg' => 'Invalid product ID.']);
+        exit;
+    }
+
+    $stmt = $conn->prepare("SELECT is_printed, print_count, mother_id FROM slitting_product WHERE id = ? LIMIT 1");
+    $stmt->bind_param("i", $pid);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    if (!$row) {
+        echo json_encode(['ok' => false, 'msg' => 'Product not found.']);
+        exit;
+    }
+
+    $wasAlreadyPrinted = (bool)$row['is_printed'];
+    $performedBy       = $_SESSION['role'] ?? 'system';
+
+    $stmt = $conn->prepare("
+        UPDATE slitting_product
+        SET is_printed = 1,
+            print_count = print_count + 1,
+            first_printed_at = COALESCE(first_printed_at, NOW()),
+            last_printed_at  = NOW(),
+            last_printed_by  = ?
+        WHERE id = ?
+    ");
+    $stmt->bind_param("si", $performedBy, $pid);
+    $ok = $stmt->execute();
+    $newCount = (int)$row['print_count'] + 1;
+    $stmt->close();
+
+    if ($ok) {
+        log_process($conn, 'slitting', $pid, $row['mother_id'] ? (int)$row['mother_id'] : null,
+            null, null, 'sticker_printed',
+            ($wasAlreadyPrinted ? "Reprinted" : "First print") . ", count now={$newCount}");
+    }
+
+    echo json_encode([
+        'ok'                   => $ok,
+        'print_count'          => $newCount,
+        'was_already_printed'  => $wasAlreadyPrinted,
     ]);
     exit;
 }
@@ -251,6 +342,12 @@ $justSaved = (
     !isset($_POST['action']) &&
     $id > 0
 );
+
+// ── Already-printed state (for the warning banner) ─────────────
+$alreadyPrinted       = (bool)($product['is_printed'] ?? false);
+$priorPrintCount      = (int)($product['print_count'] ?? 0);
+$lastPrintedAt        = $product['last_printed_at'] ?? null;
+$lastPrintedAtDisplay = $lastPrintedAt ? date('d M Y H:i', strtotime($lastPrintedAt)) : '';
 ?>
 <!DOCTYPE html>
 <html>
@@ -378,6 +475,13 @@ $justSaved = (
 </div>
 <?php endif; ?>
 
+<?php if ($alreadyPrinted && !$embed): ?>
+<div class="no-print" style="max-width:500px;margin:0 auto 12px;padding:10px 16px;background:#fff3cd;border:1px solid #ffe69c;border-radius:6px;color:#664d03;font-size:13px;text-align:center;">
+    <strong>⚠ Already printed <?= $priorPrintCount ?>×</strong> — last on <?= htmlspecialchars($lastPrintedAtDisplay) ?>.
+    Double-check before printing again.
+</div>
+<?php endif; ?>
+
 <div class="sticker-bg-wrap">
 <?php
 if (function_exists('render_sticker')) {
@@ -401,8 +505,8 @@ if (function_exists('render_sticker')) {
 <?php if (!$embed): ?>
 <div class="no-print action-toolbar">
 
-    <!-- Print button — triggers browser print dialog -->
-    <button type="button" class="btn btn-print" onclick="window.print()">
+    <!-- Print button — confirms if already printed, marks printed, then opens print dialog -->
+    <button type="button" class="btn btn-print" id="printBtn" onclick="handlePrintClick()">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
             <path d="M2.5 8a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1z"/>
             <path d="M5 1a2 2 0 0 0-2 2v2H2a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h1v1a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-1h1a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-1V3a2 2 0 0 0-2-2H5zM4 3a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2H4V3zm1 5a2 2 0 0 0-2 2v1H2a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1v-1a2 2 0 0 0-2-2H5zm7 2v3a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1z"/>
@@ -435,9 +539,40 @@ if (function_exists('render_sticker')) {
 
 <script>
 // ── Data to save ─────────────────────────────────────────────────
-const PRODUCT_ID = <?= (int)$id ?>;
-const CUSTOMER   = <?= json_encode($customer) ?>;
-const REF_NO     = <?= json_encode($ref_no) ?>;
+const PRODUCT_ID      = <?= (int)$id ?>;
+const CUSTOMER        = <?= json_encode($customer) ?>;
+const REF_NO          = <?= json_encode($ref_no) ?>;
+const ALREADY_PRINTED = <?= $alreadyPrinted ? 'true' : 'false' ?>;
+const PRIOR_COUNT     = <?= $priorPrintCount ?>;
+const LAST_PRINTED    = <?= json_encode($lastPrintedAtDisplay) ?>;
+
+// ── Print button flow: confirm (if reprint) → mark printed → open dialog ──
+async function handlePrintClick() {
+    if (ALREADY_PRINTED) {
+        const proceed = confirm(
+            `This roll was already printed ${PRIOR_COUNT}× (last on ${LAST_PRINTED}).\n\nPrint again?`
+        );
+        if (!proceed) return;
+    }
+    await markPrinted();
+    window.print();
+}
+
+async function markPrinted() {
+    const fd = new FormData();
+    fd.append('action', 'mark_printed');
+    fd.append('id', PRODUCT_ID);
+    try {
+        await fetch(window.location.pathname, {
+            method:  'POST',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            body:    fd,
+        });
+    } catch (err) {
+        console.error('mark_printed failed:', err);
+        // Non-blocking: printing still proceeds even if the flag write fails
+    }
+}
 
 // ── Show instant feedback if this page was loaded from a normal
 //    POST (old print-to-save path) — so user knows it was saved
