@@ -297,7 +297,7 @@ include 'header.php';
         <table class="table table-hover align-middle mb-0">
             <thead class="table-dark">
                 <tr>
-                    <th>ID</th><th>Status</th><th>Product</th>
+                    <th>No.</th><th>Status</th><th>Product</th>
                     <th>Lot &amp; Coil No.</th><th>Roll No.</th>
                     <th>Width</th><th>Length</th><th>New Length</th>
                     <th>Date In</th><th>Remark</th><th>Action</th>
@@ -305,8 +305,10 @@ include 'header.php';
             </thead>
             <tbody>
             <?php if (count($tableRows) > 0): ?>
+                <?php $rowNum = 0; ?>
                 <?php foreach ($tableRows as $row): ?>
                 <?php
+                    $rowNum++;
                     $rid       = (int)$row['id'];
                     $status    = $row['status'] ?? '';
                     $source    = $row['source_table'];
@@ -315,7 +317,7 @@ include 'header.php';
                     $kids      = ($source === 'recoiling_product') ? ($children[$rid] ?? []) : [];
                 ?>
                 <tr <?= ($rid === $reopenId) ? 'id="reopen-row"' : '' ?>>
-                    <td><strong><?= $rid ?></strong></td>
+                    <td><?= $rowNum ?></td>
                     <td>
                         <span class="badge <?= $status==='completed' ? 'bg-success' : ($status==='sfc' ? 'bg-info' : 'bg-warning text-dark') ?>">
                             <?= strtoupper($status) ?>
