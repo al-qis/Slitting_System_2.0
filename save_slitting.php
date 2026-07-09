@@ -1,5 +1,6 @@
 <?php
 // save_slitting.php — UPDATED (Schema Migration v2) — FIXED
+// + V-Coil Dynamic TS/RS Naming (added)
 session_start();
 
 if (!isset($_SESSION['role'])) {
@@ -43,6 +44,46 @@ function log_process(
     $stmt->close();
 }
 
+// ── Helper: V-Coil Dynamic TS/RS Naming ─────────────────────────
+// Applies ONLY to child products generated from a slit (never to the
+// mother_coil record itself, which always keeps its original RS prefix).
+//
+// Rule: if the mother coil's Lot/Coil No contains "V", AND the resulting
+// slit width matches one of the TS trigger widths, the child product gets
+// the TS- prefix (+ White sticker, handled automatically by print_product.php's
+// existing $PRODUCT_COLOR map). Otherwise it gets the standard RS- prefix.
+// Non-V mother coils are left completely unaffected (original code passes through).
+function resolveSlitProductCode(string $motherProductCode, bool $isVCoil, $slitWidth): array
+{
+    // Exact TS-trigger widths (mm), compared with a small float tolerance.
+    $tsWidths = [66.5, 81.0, 109.5, 118.0, 309.0];
+
+    $width = (float)$slitWidth;
+    $matchesTsWidth = false;
+    foreach ($tsWidths as $tsw) {
+        if (abs($width - $tsw) < 0.01) {
+            $matchesTsWidth = true;
+            break;
+        }
+    }
+
+    // Split "RS-3020" -> suffix "3020"
+    $parts  = explode('-', $motherProductCode, 2);
+    $suffix = $parts[1] ?? $motherProductCode;
+
+    if ($isVCoil && $matchesTsWidth) {
+        return ['code' => 'TS-' . $suffix, 'is_ts' => true];
+    }
+
+    if ($isVCoil) {
+        // V coil, but width not on the TS list -> standard RS prefix
+        return ['code' => 'RS-' . $suffix, 'is_ts' => false];
+    }
+
+    // Non-V mother coil: leave product code exactly as passed in — untouched
+    return ['code' => $motherProductCode, 'is_ts' => false];
+}
+
 // ── Read form data ──────────────────────────────────────────────
 $source_type = $_POST['source_type'] ?? '';
 $mother_id   = intval($_POST['mother_id']  ?? 0);
@@ -63,6 +104,9 @@ $sfc_balance_width = floatval($_POST['sfc_balance_width'] ?? 0);
 if (!$mother_id || !$cut_type) {
     die("Error: Missing required fields (mother_id or cut_type)");
 }
+
+// ── V-Coil detection (based on the mother's Lot/Coil No) ────────
+$isVCoil = (stripos($lot_no, 'V') !== false) || (stripos($coil_no, 'V') !== false);
 
 $conn->begin_transaction();
 
@@ -126,6 +170,10 @@ try {
         $roll_lot_no  = $lot_no . $cut_letter;
         $roll_no_safe = $roll_no;
 
+        // ── Resolve this roll's product code (TS/RS dynamic naming) ──
+        $resolved     = resolveSlitProductCode($product, $isVCoil, $width);
+        $roll_product = $resolved['code'];
+
         $roll_number_str  = (string)($index + 1);
         $send_to_sfc_flag = in_array($roll_number_str, $send_to_sfc);
 
@@ -140,7 +188,7 @@ try {
             // types: i s s s s d d
             $sfc_stmt->bind_param(
                 "issssdd",
-                $mother_id, $product, $roll_lot_no, $coil_no,
+                $mother_id, $roll_product, $roll_lot_no, $coil_no,
                 $roll_no_safe, $width, $length
             );
             if (!$sfc_stmt->execute()) {
@@ -151,7 +199,7 @@ try {
 
             log_process($conn, 'sfc', $sfc_id, $mother_id,
                 null, 'IN', 'sent_to_sfc_from_slitting',
-                "Roll {$roll_no_safe} width={$width}mm length={$length}m");
+                "Roll {$roll_no_safe} width={$width}mm length={$length}m product={$roll_product}");
 
             $rn_esc = $conn->real_escape_string($roll_no_safe);
             $conn->query(
@@ -191,7 +239,7 @@ try {
         // types: s s s s d d i s d s
         $insert_stmt->bind_param(
             "ssssddisds",
-            $product, $roll_lot_no, $coil_no, $roll_no_safe,
+            $roll_product, $roll_lot_no, $coil_no, $roll_no_safe,
             $width, $length, $mother_id,
             $cut_type, $slit_quantity_val,
             $source_type
@@ -205,7 +253,7 @@ try {
         log_process($conn, 'slitting', $new_slit_id, $mother_id,
             null, 'IN',
             "slitting_{$cut_type}",
-            "Roll {$roll_no_safe} width={$width}mm length={$length}m");
+            "Roll {$roll_no_safe} width={$width}mm length={$length}m product={$roll_product}");
 
         $rn_esc = $conn->real_escape_string($roll_no_safe);
         $conn->query(
@@ -228,6 +276,10 @@ try {
             $balance_length  = floatval($lengths[0] ?? 0);
             $balance_roll_no = "BALANCE";
 
+            // Resolve TS/RS naming for the balance-width entry too
+            $balance_resolved = resolveSlitProductCode($product, $isVCoil, $sfc_balance_width);
+            $balance_product  = $balance_resolved['code'];
+
             $sfc_bal = $conn->prepare(
                 "INSERT INTO sfc
                      (mother_id, product, lot_no, coil_no, roll_no,
@@ -237,7 +289,7 @@ try {
             // types: i s s s s d d
             $sfc_bal->bind_param(
                 "issssdd",
-                $mother_id, $product, $lot_no, $coil_no,
+                $mother_id, $balance_product, $lot_no, $coil_no,
                 $balance_roll_no, $sfc_balance_width, $balance_length
             );
             if (!$sfc_bal->execute()) {
@@ -248,7 +300,7 @@ try {
 
             log_process($conn, 'sfc', $sfc_bal_id, $mother_id,
                 null, 'IN', 'balance_width_to_sfc',
-                "Balance width {$sfc_balance_width}mm saved to SFC");
+                "Balance width {$sfc_balance_width}mm saved to SFC product={$balance_product}");
         }
 
         $conn->query(

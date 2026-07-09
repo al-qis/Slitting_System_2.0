@@ -159,9 +159,10 @@ if ($originOptRes) {
 }
 function originLabel(string $origin): string {
     return match ($origin) {
-        'sfc'          => 'SFC',
-        'raw_material' => 'RAW MAT',
-        default        => strtoupper($origin),
+        'sfc'           => 'SFC',
+        'raw_material'  => 'RM',
+        'initial_stock' => 'IS',
+        default         => strtoupper($origin),
     };
 }
 
@@ -169,6 +170,12 @@ function originLabel(string $origin): string {
 // Free-text search on the roll's own width (sp.width), matched with LIKE
 // so partial values work too (e.g. typing "38" also matches 388, 380...).
 $filter_width = trim($_GET['width'] ?? '');
+
+// ── NOD (Notice of Defect) filter ─────────────────────────────────
+// '' = all rolls, '1' = only rolls with an NOD recorded, '0' = only
+// rolls without one.
+$filter_nod = trim($_GET['nod'] ?? '');
+if (!in_array($filter_nod, ['', '1', '0'], true)) { $filter_nod = ''; }
 
 // Clamp $day to the number of days actually in the selected month/year
 // (e.g. day=31 selected, then Month changed to April → falls back to
@@ -244,6 +251,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     $redirectFilter = $_POST['filter'] ?? $filter_card;
     $redirectSearch = $_POST['search'] ?? $search;
     $redirectParams = ['month' => $month, 'year' => $year, 'success' => 'stock'];
+    if ($day > 0) $redirectParams['day'] = $day;
+    if ($redirectSearch !== '') $redirectParams['search'] = $redirectSearch;
+    if ($redirectFilter !== '') $redirectParams['filter'] = $redirectFilter;
+    header("Location: finish_product.php?" . http_build_query($redirectParams));
+    exit;
+}
+
+// ── Save / Clear Notice of Defect (NOD) ────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST'
+    && isset($_POST['action'])
+    && $_POST['action'] === 'save_nod') {
+
+    $id           = intval($_POST['id']);
+    $nodLengthRaw = trim($_POST['nod_length'] ?? '');
+
+    if ($nodLengthRaw === '') {
+        // Blank input = clear an existing NOD
+        $stmt = $conn->prepare("
+            UPDATE slitting_product
+            SET nod_length = NULL, nod_recorded_at = NULL, nod_recorded_by = NULL
+            WHERE id = ?
+        ");
+        $stmt->bind_param("i", $id);
+        $stmt->execute();
+        $stmt->close();
+
+        log_process($conn, 'slitting', $id, null,
+            '', '', 'nod_cleared', "NOD removed from roll id={$id}");
+    } else {
+        $nodLength = (float)$nodLengthRaw;
+        $performedBy = $_SESSION['role'] ?? 'system';
+
+        $stmt = $conn->prepare("
+            UPDATE slitting_product
+            SET nod_length = ?, nod_recorded_at = NOW(), nod_recorded_by = ?
+            WHERE id = ?
+        ");
+        $stmt->bind_param("dsi", $nodLength, $performedBy, $id);
+        $stmt->execute();
+        $stmt->close();
+
+        log_process($conn, 'slitting', $id, null,
+            '', '', 'nod_recorded', "NOD length={$nodLength}m recorded on roll id={$id}");
+    }
+
+    $redirectFilter = $_POST['filter'] ?? $filter_card;
+    $redirectSearch = $_POST['search'] ?? $search;
+    $redirectParams = ['month' => $month, 'year' => $year, 'success' => 'nod_saved'];
     if ($day > 0) $redirectParams['day'] = $day;
     if ($redirectSearch !== '') $redirectParams['search'] = $redirectSearch;
     if ($redirectFilter !== '') $redirectParams['filter'] = $redirectFilter;
@@ -769,6 +824,15 @@ if ($filter_width !== '') {
     $baseSql .= " AND sp.width = ?";
 }
 
+// ── NOD filter ─────────────────────────────────────────────────
+// $filter_nod is whitelisted to '', '1', '0' above, so it's safe to
+// inline directly — no bind param needed.
+if ($filter_nod === '1') {
+    $baseSql .= " AND sp.nod_length IS NOT NULL AND sp.nod_length > 0";
+} elseif ($filter_nod === '0') {
+    $baseSql .= " AND (sp.nod_length IS NULL OR sp.nod_length = 0)";
+}
+
 // ── Explicit Date In / Date Out column sort overrides the tab default ──
 if ($sort_col !== '') {
     $sortColumn = 'sp.' . $sort_col; // whitelisted to date_in|date_out above
@@ -866,6 +930,23 @@ $stmtSME->execute();
 $stockMonthEndCount = (int)$stmtSME->get_result()->fetch_assoc()['total'];
 $stmtSME->close();
 
+// ── NOD (Notice of Defect) count for the selected month ───────────
+// Counted by nod_recorded_at (when the defect was logged), not date_in,
+// since that's the actually meaningful "how many NODs happened this
+// month" question.
+$nodMonthCount = 0;
+$stmtNOD = $conn->prepare("
+    SELECT IFNULL(COUNT(*),0) AS total
+    FROM slitting_product
+    WHERE is_voided = 0
+      AND nod_length IS NOT NULL AND nod_length > 0
+      AND MONTH(nod_recorded_at) = ? AND YEAR(nod_recorded_at) = ?
+");
+$stmtNOD->bind_param("ii", $month, $year);
+$stmtNOD->execute();
+$nodMonthCount = (int)$stmtNOD->get_result()->fetch_assoc()['total'];
+$stmtNOD->close();
+
 $editData = null;
 if (isset($_GET['edit'])) {
     $eid = intval($_GET['edit']);
@@ -883,17 +964,25 @@ table th, table td { word-wrap: break-word; vertical-align: middle; font-size: 1
 table td img { max-width: 60px; max-height: 60px; display: block; margin: 0 auto; }
 table th:nth-child(1)  { width: 40px; }   /* # counter */
 table th:nth-child(2)  { width: 100px; }  /* Status */
-table th:nth-child(3)  { width: 110px; }  /* Origin */
+table th:nth-child(3)  { width: 55px; }   /* Origin */
 table th:nth-child(4)  { width: 90px; }   /* Product */
-table th:nth-child(5)  { width: 110px; }  /* Lot No */
-table th:nth-child(6)  { width: 65px; }   /* Roll No */
-table th:nth-child(7)  { width: 55px; }   /* Width */
-table th:nth-child(8)  { width: 55px; }   /* Length */
-table th:nth-child(9)  { width: 65px; }   /* Actual */
+table th:nth-child(5)  { width: 150px; }  /* Lot No (merged with Roll No) */
+table th:nth-child(6)  { width: 55px; }   /* Width */
+table th:nth-child(7)  { width: 55px; }   /* Length */
+table th:nth-child(8)  { width: 65px; }   /* Actual */
+table th:nth-child(9)  { width: 70px; }   /* NOD */
 table th:nth-child(10) { width: 90px; }   /* Pallet */
 table th:nth-child(11) { width: 85px; }   /* Date In */
 table th:nth-child(12) { width: 85px; }   /* Date Out */
-table th:nth-child(13) { width: 130px; }  /* Action */
+table th:nth-child(13) { width: 140px; }  /* Action */
+
+/* ── NOD (Notice of Defect) row highlight ──
+   !important so it wins over whatever status color (table-primary,
+   table-success, etc.) is already applied — a defective roll should
+   always stand out regardless of its current status. */
+tr.row-has-nod > * { background-color: #fff3cd !important; }
+.nod-value { color: #92400e; font-weight: 700; }
+.nod-badge { font-size: 9px; }
 
 .badge-pallet { background:#e0f2fe; color:#0369a1; font-size:10px; font-weight:700;
                 padding:3px 7px; border-radius:10px; white-space:nowrap; }
@@ -906,16 +995,15 @@ table td {
 table td .origin-cell {
     display: flex;
     align-items: center;
-    gap: 6px;
+    justify-content: center;
 }
 table td .origin-cell .badge {
     font-size: 10px;
     font-weight: 700;
-    padding: 4px 8px;
-    border-radius: 10px;
+    padding: 3px 6px;
+    border-radius: 8px;
     white-space: nowrap;
-    line-height: 1.4;
-    flex-shrink: 0;
+    line-height: 1.3;
 }
 /* Generic safeguard: stop any badge from touching neighbouring text */
 .badge {
@@ -1063,12 +1151,15 @@ table td.lot-coil-cell {
             <?php if ($filter_width !== ''): ?>
             <input type="hidden" name="width" value="<?= htmlspecialchars($filter_width) ?>">
             <?php endif; ?>
+            <?php if ($filter_nod !== ''): ?>
+            <input type="hidden" name="nod" value="<?= htmlspecialchars($filter_nod) ?>">
+            <?php endif; ?>
             <input type="text" name="search" class="form-control"
                    placeholder="Search ID, Product, Lot, Coil, Roll, Pallet No..."
                    value="<?= htmlspecialchars($search) ?>">
             <button class="btn btn-primary" type="submit"><i class="bi bi-search"></i></button>
             <?php if ($search !== ''): ?>
-                <a href="?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?>" class="btn btn-outline-secondary">Clear</a>
+                <a href="?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>" class="btn btn-outline-secondary">Clear</a>
             <?php endif; ?>
         </form>
         <div class="form-text ps-1">Tip: type Lot, Coil, and Roll together separated by spaces (e.g. <code>826613 QA-1 R-6</code>) to find an exact roll.</div>
@@ -1088,6 +1179,9 @@ table td.lot-coil-cell {
             <?php if ($filter_width !== ''): ?>
             <input type="hidden" name="width" value="<?= htmlspecialchars($filter_width) ?>">
             <?php endif; ?>
+            <?php if ($filter_nod !== ''): ?>
+            <input type="hidden" name="nod" value="<?= htmlspecialchars($filter_nod) ?>">
+            <?php endif; ?>
             <span class="input-group-text">Lot No</span>
             <input type="text" name="lot_no" class="form-control" placeholder="e.g. 826408a"
                    value="<?= htmlspecialchars($filter_lot) ?>">
@@ -1096,12 +1190,12 @@ table td.lot-coil-cell {
                    value="<?= htmlspecialchars($filter_coil) ?>">
             <button class="btn btn-primary" type="submit"><i class="bi bi-funnel"></i></button>
             <?php if ($filter_lot !== '' || $filter_coil !== ''): ?>
-                <a href="?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?>" class="btn btn-outline-secondary">Clear</a>
+                <a href="?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>" class="btn btn-outline-secondary">Clear</a>
             <?php endif; ?>
         </form>
         <?php if ($filter_lot !== '' && $filter_coil !== ''): ?>
             <div class="mt-1">
-                <a href="batch_setup.php?lot_no=<?= urlencode($filter_lot) ?>&coil_no=<?= urlencode($filter_coil) ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?>"
+                <a href="batch_setup.php?lot_no=<?= urlencode($filter_lot) ?>&coil_no=<?= urlencode($filter_coil) ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
                    class="btn btn-danger btn-sm">
                     <i class="bi bi-printer-fill me-1"></i> Batch Setup &amp; Print — all rolls in this Lot + Coil
                 </a>
@@ -1257,6 +1351,28 @@ table td.lot-coil-cell {
             </div>
         </div>
     </a>
+    <!-- NOD (Notice of Defect) this month -->
+    <?php
+        $isActiveNod = ($filter_nod === '1');
+        $nodCardParams = ['month' => $month, 'year' => $year];
+        if ($day > 0) $nodCardParams['day'] = $day;
+        if ($search !== '') $nodCardParams['search'] = $search;
+        if ($filter_card !== '') $nodCardParams['filter'] = $filter_card;
+        $nodCardParams['nod'] = $isActiveNod ? '' : '1'; // click again to toggle off
+    ?>
+    <a href="?<?= http_build_query($nodCardParams) ?>"
+       class="kpi-card-link flex-fill <?= $isActiveNod ? 'active-kpi' : '' ?>"
+       title="Show only rolls with a Notice of Defect recorded during the selected month">
+        <div class="card text-center h-100" style="background:#fffbeb; border-color:#fcd34d;">
+            <div class="card-body p-2">
+                <h6 class="mb-1" style="color:#92400e;"><i class="bi bi-exclamation-triangle-fill me-1"></i>NOD (<?= date("M", mktime(0,0,0,$month,1)) ?>)</h6>
+                <h2 class="mb-0" style="color:#92400e;"><?= $nodMonthCount ?></h2>
+                <?php if ($isActiveNod): ?>
+                    <span class="kpi-active-dot" style="color:#92400e;">▲ filtered</span>
+                <?php endif; ?>
+            </div>
+        </div>
+    </a>
 
 </div>
 
@@ -1275,6 +1391,9 @@ table td.lot-coil-cell {
         default            => ''
     } ?>
     </strong>
+    <?php if ($filter_nod === '1'): ?>
+        <strong class="text-warning-emphasis">· NOD only</strong>
+    <?php endif; ?>
     &nbsp;—&nbsp; click another card above to switch tabs. Sorted newest first.
     <?php if ($filter_card === 'stock_month_end'): ?>
         <br><small><i class="bi bi-info-circle me-1"></i>This is a historical reconstruction, not live data — actions (Add to Pallet, Reslit, etc.) are hidden here to avoid acting on a past snapshot by mistake.</small>
@@ -1289,7 +1408,7 @@ table td.lot-coil-cell {
 // sort (otherwise defaults to DESC — newest first — on first click).
 function sortHeaderLink(string $col, string $label, string $currentSortCol, string $currentSortDir,
                          int $month, int $year, int $day, string $search, string $filter_card,
-                         string $filter_lot, string $filter_coil, string $filter_origin = '', string $filter_width = ''): string {
+                         string $filter_lot, string $filter_coil, string $filter_origin = '', string $filter_width = '', string $filter_nod = ''): string {
     $isActive = ($currentSortCol === $col);
     $nextDir  = ($isActive && $currentSortDir === 'DESC') ? 'ASC' : 'DESC';
     $qs = http_build_query(array_filter([
@@ -1302,6 +1421,7 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
         'coil_no'  => $filter_coil !== '' ? $filter_coil : null,
         'origin'   => $filter_origin !== '' ? $filter_origin : null,
         'width'    => $filter_width !== '' ? $filter_width : null,
+        'nod'      => $filter_nod !== '' ? $filter_nod : null,
         'sort_col' => $col,
         'sort_dir' => $nextDir,
     ], fn($v) => $v !== null && $v !== ''));
@@ -1317,10 +1437,10 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
         <thead class="table-dark">
             <tr>
                 <th>#</th><th>Status</th><th>Origin</th><th>Product</th>
-                <th>Lot No</th><th>Roll No.</th><th>Width</th><th>Length</th>
-                <th>Actual</th><th>Pallet</th>
-                <th><?= sortHeaderLink('date_in',  'Date In',  $sort_col, $sort_dir, $month, $year, $day, $search, $filter_card, $filter_lot, $filter_coil, $filter_origin, $filter_width) ?></th>
-                <th><?= sortHeaderLink('date_out', 'Date Out', $sort_col, $sort_dir, $month, $year, $day, $search, $filter_card, $filter_lot, $filter_coil, $filter_origin, $filter_width) ?></th>
+                <th>Lot No</th><th>Width</th><th>Length</th>
+                <th>Actual</th><th>NOD</th><th>Pallet</th>
+                <th><?= sortHeaderLink('date_in',  'Date In',  $sort_col, $sort_dir, $month, $year, $day, $search, $filter_card, $filter_lot, $filter_coil, $filter_origin, $filter_width, $filter_nod) ?></th>
+                <th><?= sortHeaderLink('date_out', 'Date Out', $sort_col, $sort_dir, $month, $year, $day, $search, $filter_card, $filter_lot, $filter_coil, $filter_origin, $filter_width, $filter_nod) ?></th>
                 <th>Action</th>
             </tr>
         </thead>
@@ -1342,6 +1462,15 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
             };
             if ($isFromSFC) { $rowClass .= ' sfc-row'; }
 
+            // NOD (Notice of Defect) — yellow highlight overrides the
+            // status color so a defective roll is always visually
+            // distinct, regardless of what status it's currently in.
+            $hasNod = !empty($row['nod_length']) && (float)$row['nod_length'] > 0;
+            if ($hasNod) { $rowClass .= ' row-has-nod'; }
+            $nodDisplay = $hasNod
+                ? number_format((float)$row['actual_length'] - (float)$row['nod_length'], 2)
+                : '';
+
             $statusBadge = match($row['status']) {
                 'IN'        => $row['is_completed'] == 0
                                 ? '<span class="badge bg-info">IN (Pending)</span>'
@@ -1357,12 +1486,15 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
 
             $originalSource = $row['original_source'] ?? $row['source'] ?? 'raw_material';
             $originDisplay  = match(trim(strtolower($originalSource))) {
-                'sfc'          => ['label' => 'SFC',     'class' => 'bg-primary',   'icon' => '📦'],
-                'raw_material' => ['label' => 'RAW MAT', 'class' => 'bg-secondary', 'icon' => '📋'],
-                default        => ['label' => strtoupper($originalSource), 'class' => 'bg-info', 'icon' => '📊']
+                'sfc'           => ['label' => 'SFC', 'class' => 'bg-primary'],
+                'raw_material'  => ['label' => 'RM',  'class' => 'bg-secondary'],
+                'initial_stock' => ['label' => 'IS',  'class' => 'bg-dark'],
+                default         => ['label' => strtoupper($originalSource), 'class' => 'bg-info']
             };
 
-            $lotCoil = trim($row['lot_no'] ?? '') . ' ' . trim($row['coil_no'] ?? '');
+            $lotCoil     = trim($row['lot_no'] ?? '') . ' ' . trim($row['coil_no'] ?? '');
+            $formattedRoll = str_replace('R', 'R-', trim($row['roll_no'] ?? ''));
+            $lotCoilRoll = trim($lotCoil . ' ' . $formattedRoll);
 
             // Pallet display
             $palletDisplay = '—';
@@ -1395,15 +1527,31 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                     </div>
                 </td>
                 <td><?= htmlspecialchars($row['product'] ?? '') ?></td>
-                <td class="lot-coil-cell"><?= htmlspecialchars($lotCoil) ?></td>
-                <td><?= str_replace('R', 'R-', htmlspecialchars($row['roll_no'] ?? '')) ?></td>
+                <td class="lot-coil-cell"><?= htmlspecialchars($lotCoilRoll) ?></td>
                 <td><?= $row['width'] ?></td>
                 <td><?= $row['length'] ?></td>
                 <td id="actual-display-<?= $row['id'] ?>"><?= $row['actual_length'] ?></td>
+                <td>
+                    <?php if ($hasNod): ?>
+                        <span class="nod-value"><?= $nodDisplay ?></span>
+                        <br><small class="badge bg-warning text-dark nod-badge" title="Defect length: <?= number_format((float)$row['nod_length'], 2) ?> m">NOD -<?= number_format((float)$row['nod_length'], 2) ?></small>
+                    <?php endif; ?>
+                </td>
                 <td><?= $palletDisplay ?></td>
                 <td><?= $row['date_in'] ?></td>
                 <td><?= $row['date_out'] ?></td>
                 <td>
+    <?php if ($filter_card !== 'stock_month_end'): ?>
+        <button type="button"
+                class="btn btn-outline-warning btn-sm mb-1 w-100 btn-nod"
+                data-id="<?= $row['id'] ?>"
+                data-actual="<?= (float)($row['actual_length'] ?? 0) ?>"
+                data-nod="<?= $hasNod ? (float)$row['nod_length'] : '' ?>"
+                data-label="<?= htmlspecialchars($lotCoilRoll) ?>"
+                title="<?= $hasNod ? 'Edit / clear Notice of Defect' : 'Record a Notice of Defect' ?>">
+            <i class="bi bi-exclamation-triangle<?= $hasNod ? '-fill' : '' ?> me-1"></i><?= $hasNod ? 'NOD' : 'NOD +' ?>
+        </button>
+    <?php endif; ?>
     <?php if ($filter_card === 'stock_month_end'): ?>
         <span class="text-muted small"><i class="bi bi-eye me-1"></i>View only</span>
 
@@ -1439,7 +1587,7 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
 
             <?php if ($row['is_completed'] == 0): ?>
                 <!-- No actual length yet — must update first -->
-                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?>"
+                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
                    class="btn btn-primary btn-sm w-100">Update</a>
 
             <?php elseif ($row['pallet_id']): ?>
@@ -1454,7 +1602,7 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
 
             <?php else: ?>
                 <!-- Stock counted, not yet on a pallet -->
-                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?>"
+                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
                    class="btn btn-outline-primary btn-sm w-100">Edit</a>
                 <a href="pallet.php" class="btn btn-primary btn-sm w-100">
                     <i class="bi bi-archive me-1"></i> Add to Pallet
@@ -1542,7 +1690,7 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
             <input type="hidden" name="filter"  value="<?= htmlspecialchars($filter_card) ?>">
             <div class="modal-header bg-primary text-white">
                 <h5>Edit Product</h5>
-                <a href="finish_product.php?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?>"
+                <a href="finish_product.php?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
                    class="btn-close"></a>
             </div>
             <div class="modal-body">
@@ -1651,6 +1799,101 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
 <?php endif; ?>
 
 <!-- Manual Entry Modal -->
+<!-- ═══ NOTICE OF DEFECT (NOD) MODAL ══════════════════════════════ -->
+<div class="modal fade" id="nodModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <form class="modal-content" method="post" id="nodForm">
+            <input type="hidden" name="action" value="save_nod">
+            <input type="hidden" name="id" id="nod_id">
+            <input type="hidden" name="month"  value="<?= $month ?>">
+            <input type="hidden" name="year"   value="<?= $year ?>">
+            <input type="hidden" name="day"    value="<?= $day ?>">
+            <input type="hidden" name="search" value="<?= htmlspecialchars($search) ?>">
+            <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_card) ?>">
+            <div class="modal-header bg-warning">
+                <h5 class="mb-0"><i class="bi bi-exclamation-triangle-fill me-2"></i>Notice of Defect</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-2"><strong>Roll:</strong> <span id="nod_roll_label">-</span></p>
+                <p class="mb-3"><strong>Actual Length:</strong> <span id="nod_actual_label">-</span> m</p>
+                <div class="mb-2">
+                    <label class="form-label fw-bold">NOD Length (m)</label>
+                    <input type="number" step="0.01" min="0" name="nod_length" id="nod_length_input"
+                           class="form-control" placeholder="Leave blank to clear an existing NOD">
+                    <div class="form-text">Optional. Leave blank and save to remove an existing NOD from this roll.</div>
+                </div>
+                <div class="alert alert-warning py-2 mb-0" id="nod_preview" style="display:none;">
+                    Resulting length: <strong id="nod_preview_value">-</strong> m
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-danger me-auto d-none" id="nod_remove_btn"
+                        onclick="if(confirm('Remove the NOD from this roll? This restores it to a normal roll.')){ document.getElementById('nod_length_input').value=''; document.getElementById('nodForm').submit(); }">
+                    <i class="bi bi-x-circle me-1"></i> Remove NOD
+                </button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-warning">Save</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+// ── Notice of Defect (NOD) modal ─────────────────────────────
+// Kept in its own <script> tag, separate from other page scripts,
+// so it can't be silently disabled if unrelated code elsewhere on
+// the page throws an error first.
+(function () {
+    const nodModalEl   = document.getElementById('nodModal');
+    const nodIdInput   = document.getElementById('nod_id');
+    const nodRollLabel = document.getElementById('nod_roll_label');
+    const nodActualLbl = document.getElementById('nod_actual_label');
+    const nodLengthIn  = document.getElementById('nod_length_input');
+    const nodPreview   = document.getElementById('nod_preview');
+    const nodPreviewVal= document.getElementById('nod_preview_value');
+    const nodRemoveBtn = document.getElementById('nod_remove_btn');
+    if (!nodModalEl || !nodLengthIn) return;
+
+    let currentActual = 0;
+
+    function updatePreview() {
+        const nodVal = parseFloat(nodLengthIn.value);
+        if (!isNaN(nodVal) && nodVal > 0) {
+            const result = currentActual - nodVal;
+            if (nodPreviewVal) nodPreviewVal.textContent = result.toFixed(2);
+            if (nodPreview) nodPreview.style.display = 'block';
+        } else {
+            if (nodPreview) nodPreview.style.display = 'none';
+        }
+    }
+    nodLengthIn.addEventListener('input', updatePreview);
+
+    document.body.addEventListener('click', function (e) {
+        const btn = e.target.closest('.btn-nod');
+        if (!btn) return;
+
+        currentActual = parseFloat(btn.dataset.actual) || 0;
+        const existingNod = btn.dataset.nod || '';
+
+        if (nodIdInput)   nodIdInput.value = btn.dataset.id;
+        if (nodRollLabel) nodRollLabel.textContent = btn.dataset.label || '-';
+        if (nodActualLbl) nodActualLbl.textContent = currentActual.toFixed(2);
+        nodLengthIn.value = existingNod;
+        updatePreview();
+
+        // Only offer "Remove NOD" when this roll actually has one already
+        if (nodRemoveBtn) nodRemoveBtn.classList.toggle('d-none', existingNod === '');
+
+        if (typeof bootstrap === 'undefined' || !bootstrap.Modal) {
+            console.error('Bootstrap JS is not loaded — cannot open the NOD modal.');
+            return;
+        }
+        bootstrap.Modal.getOrCreateInstance(nodModalEl).show();
+    });
+})();
+</script>
+
 <div class="modal fade" id="manualEntryModal" tabindex="-1">
     <div class="modal-dialog"><div class="modal-content">
         <div class="modal-header">
@@ -2021,6 +2264,7 @@ initCameraScanner({
 // ── Tooltips ────────────────────────────────────────────────
 var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
 tooltipTriggerList.map(el => new bootstrap.Tooltip(el));
+
 
 // ── SweetAlert2 scan result notifications ──────────────────
 (function () {
