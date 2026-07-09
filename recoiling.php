@@ -212,11 +212,19 @@ if (isset($_GET['error'])) {
             $alertMessage = "Process failed: " . htmlspecialchars(urldecode($_GET['msg'] ?? '')); break;
         case 'invalid_id':  $alertMessage = "Invalid record ID."; break;
         case 'not_found':   $alertMessage = "Record not found."; break;
+        case 'not_pending':
+            $alertMessage = "Only pending recoiling records can be sent back to Finished Product."; break;
+        case 'return_failed':
+            $alertMessage = "Could not send this item back to Finished Product: " . htmlspecialchars(urldecode($_GET['msg'] ?? '')); break;
         default:            $alertMessage = "An unknown error occurred.";
     }
 } elseif (isset($_GET['success'])) {
-    $alertType    = 'success';
-    $alertMessage = "<strong>Recoiling completed successfully!</strong> The product has been saved.";
+    $alertType = 'success';
+    if ($_GET['success'] === 'returned') {
+        $alertMessage = "<strong>Sent back to Finished Product.</strong> This item has been removed from the Recoiling queue.";
+    } else {
+        $alertMessage = "<strong>Recoiling completed successfully!</strong> The product has been saved.";
+    }
 }
 
 $reopenId = isset($_GET['open_id']) ? (int)$_GET['open_id'] : 0;
@@ -348,6 +356,7 @@ include 'header.php';
                     <td class="small text-muted"><?= htmlspecialchars($row['remark'] ?? '-') ?></td>
                     <td>
                         <?php if ($canRecoil): ?>
+                            <div class="d-flex flex-column gap-1">
                             <button type="button"
                                     class="btn btn-primary btn-sm btn-recoil"
                                     data-rid="<?= $rid ?>"
@@ -360,6 +369,16 @@ include 'header.php';
                                     data-source="<?= htmlspecialchars($source) ?>">
                                 <i class="bi bi-play-circle"></i> Recoil
                             </button>
+                            <?php if ($status === 'pending'): ?>
+                                <button type="button"
+                                        class="btn btn-outline-danger btn-sm btn-send-back-recoil"
+                                        data-rid="<?= $rid ?>"
+                                        data-label="<?= htmlspecialchars(($row['lot_no'] ?? '-') . ' ' . ($row['coil_no'] ?? '') . ' / Roll ' . ($row['roll_no'] ?? '-')) ?>"
+                                        title="Send this item back to Finished Product">
+                                    <i class="bi bi-arrow-return-left"></i> Send Back
+                                </button>
+                            <?php endif; ?>
+                            </div>
                         <?php else: ?>
                             <span class="badge bg-light text-dark border">Done</span>
                         <?php endif; ?>
@@ -373,6 +392,11 @@ include 'header.php';
         </table>
     </div>
 </div>
+
+<!-- ═══ Hidden form: Send Back to Finished Product ═══════════════ -->
+<form id="sendBackRecoilForm" method="post" action="recoiling_send_back.php" style="display:none;">
+    <input type="hidden" name="id" id="sendBackRecoilId" value="">
+</form>
 
 <!-- ═══ SUMMARY REPORT MODAL ══════════════════════════════════ -->
 <div class="modal fade" id="summaryModal" tabindex="-1">
@@ -1028,6 +1052,37 @@ function escHtml(s) {
 document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('summaryModal').addEventListener('show.bs.modal', function () {
         loadSummary();
+    });
+
+    // ── Send Back to Finished Product (with confirmation) ──────
+    document.querySelectorAll('.btn-send-back-recoil').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            const rid   = btn.dataset.rid;
+            const label = btn.dataset.label || 'this item';
+
+            function doSubmit() {
+                document.getElementById('sendBackRecoilId').value = rid;
+                document.getElementById('sendBackRecoilForm').submit();
+            }
+
+            if (typeof Swal !== 'undefined') {
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'Send back to Finished Product?',
+                    html: `Are you sure you want to send <strong>${label}</strong> back to Finished Product?<br><span class="text-muted small">It will be removed from the Recoiling queue.</span>`,
+                    showCancelButton: true,
+                    confirmButtonText: 'Yes, send it back',
+                    cancelButtonText: 'Cancel',
+                    confirmButtonColor: '#dc3545'
+                }).then(function (result) {
+                    if (result.isConfirmed) doSubmit();
+                });
+            } else {
+                if (confirm('Are you sure you want to send this product back to Finished Products?')) {
+                    doSubmit();
+                }
+            }
+        });
     });
 });
 </script>

@@ -190,6 +190,32 @@ include 'header.php';
             if($_GET['success'] === 'added') echo "Product successfully added to reslit list!";
             elseif($_GET['success'] === 'started') echo "Reslit process started!";
             elseif($_GET['success'] === 'completed') echo "Reslit completed! Product added to stock.";
+            elseif($_GET['success'] === 'returned') echo "<strong>Sent back to Finished Product.</strong> This item has been removed from the Reslit queue.";
+        ?>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+<?php endif; ?>
+
+<?php if(isset($_GET['error'])): ?>
+    <div class="alert alert-danger alert-dismissible fade show shadow-sm mb-4">
+        <i class="bi bi-exclamation-triangle-fill me-2"></i>
+        <?php
+            switch ($_GET['error']) {
+                case 'not_pending':
+                    echo "Only pending reslit records can be sent back to Finished Product.";
+                    break;
+                case 'not_found':
+                    echo "Record not found.";
+                    break;
+                case 'invalid_id':
+                    echo "Invalid record ID.";
+                    break;
+                case 'return_failed':
+                    echo "Could not send this item back to Finished Product: " . htmlspecialchars(urldecode($_GET['msg'] ?? ''));
+                    break;
+                default:
+                    echo "An unknown error occurred.";
+            }
         ?>
         <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
     </div>
@@ -254,6 +280,13 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
                                         <i class="bi bi-play-circle"></i> Reslit
                                     </button>
                                     <a href="edit_reslit.php?id=<?= $row['id'] ?>" class="btn btn-warning btn-sm mb-1"><i class="bi bi-pencil"></i></a>
+                                    <button type="button"
+                                            class="btn btn-outline-danger btn-sm mb-1 btn-send-back-reslit"
+                                            data-rid="<?= (int)$row['id'] ?>"
+                                            data-label="<?= htmlspecialchars(($row['lot_no'] ?? '-') . ' ' . ($row['coil_no'] ?? '') . ' / Roll ' . ($row['roll_no'] ?? '-')) ?>"
+                                            title="Send this item back to Finished Product">
+                                        <i class="bi bi-arrow-return-left"></i> Send Back
+                                    </button>
                                 <?php else: ?>
                                     <span class="badge bg-light text-dark border">Done</span>
                                 <?php endif; ?>
@@ -288,6 +321,11 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
         </table>
     </div>
 </div>
+
+<!-- ═══ Hidden form: Send Back to Finished Product ═══════════════ -->
+<form id="sendBackReslitForm" method="post" action="reslit_send_back.php" style="display:none;">
+    <input type="hidden" name="id" id="sendBackReslitId" value="">
+</form>
 
 <!-- ═══ SUMMARY REPORT MODAL ══════════════════════════════════ -->
 <div class="modal fade" id="summaryModal" tabindex="-1">
@@ -586,6 +624,37 @@ function escHtml(s) {
 document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('summaryModal').addEventListener('show.bs.modal', function () {
         loadSummary();
+    });
+
+    // ── Send Back to Finished Product (with confirmation) ──────
+    document.querySelectorAll('.btn-send-back-reslit').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            const rid   = btn.dataset.rid;
+            const label = btn.dataset.label || 'this item';
+
+            function doSubmit() {
+                document.getElementById('sendBackReslitId').value = rid;
+                document.getElementById('sendBackReslitForm').submit();
+            }
+
+            if (typeof Swal !== 'undefined') {
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'Send back to Finished Product?',
+                    html: `Are you sure you want to send <strong>${label}</strong> back to Finished Product?<br><span class="text-muted small">It will be removed from the Reslit queue.</span>`,
+                    showCancelButton: true,
+                    confirmButtonText: 'Yes, send it back',
+                    cancelButtonText: 'Cancel',
+                    confirmButtonColor: '#dc3545'
+                }).then(function (result) {
+                    if (result.isConfirmed) doSubmit();
+                });
+            } else {
+                if (confirm('Are you sure you want to send this product back to Finished Products?')) {
+                    doSubmit();
+                }
+            }
+        });
     });
 });
 </script>
