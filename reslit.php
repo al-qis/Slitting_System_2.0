@@ -161,9 +161,27 @@ include 'header.php';
 
 <style>
     .status-cards { display: flex; gap: 15px; margin-bottom: 30px; }
-    .status-card { flex: 1; border-radius: 8px; padding: 20px; text-align: center; color: white; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+    .status-card {
+        flex: 1; border-radius: 8px; padding: 20px; text-align: center; color: white;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        cursor: pointer; user-select: none;
+        border: 3px solid transparent;
+        opacity: .72;
+        transition: transform .15s ease, opacity .15s ease, box-shadow .15s ease, border-color .15s ease;
+    }
+    .status-card:hover { opacity: 1; transform: translateY(-2px); }
+    .status-card.active {
+        opacity: 1;
+        border-color: #fff;
+        box-shadow: 0 6px 16px rgba(0,0,0,0.28);
+        transform: translateY(-2px);
+    }
     .status-card.pending { background: linear-gradient(135deg, #ffc107, #ff9800); }
     .status-card.completed { background: linear-gradient(135deg, #28a745, #20c997); }
+
+    /* Reslit search bar */
+    #reslitSearchWrap { padding: 14px 16px 0; }
+    #reslitSearchInput:focus { box-shadow: 0 0 0 .2rem rgba(13,110,253,.15); }
     
     .info-box { background: #f0f9ff; border-left: 4px solid #0d6efd; border-radius: 6px; padding: 15px; margin-bottom: 20px; }
     .slitting-box { border: 1px solid #ddd; padding: 15px; border-radius: 8px; margin-bottom: 15px; background: #f9f9f9; }
@@ -227,17 +245,28 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
 ?>
 
 <div class="status-cards">
-    <div class="status-card pending">
+    <div class="status-card pending active" id="statusCardPending" onclick="setReslitStatusFilter('pending', this)">
         <h5>Pending Reslit</h5>
         <h2><?= $pending ?></h2>
     </div>
-    <div class="status-card completed">
+    <div class="status-card completed" id="statusCardCompleted" onclick="setReslitStatusFilter('completed', this)">
         <h5>Completed</h5>
         <h2><?= $completed ?></h2>
     </div>
 </div>
 
 <div class="card shadow-sm border-0">
+    <div id="reslitSearchWrap">
+        <div class="input-group">
+            <span class="input-group-text bg-white"><i class="bi bi-search"></i></span>
+            <input type="text" id="reslitSearchInput" class="form-control"
+                   placeholder="Search Lot, Coil, or Roll — e.g. &quot;826529&quot;, &quot;N-2&quot;, or &quot;826529 N-2 R4&quot;"
+                   oninput="applyReslitFilters()">
+            <button class="btn btn-outline-secondary" type="button" onclick="clearReslitSearch()" title="Clear search">
+                <i class="bi bi-x-lg"></i>
+            </button>
+        </div>
+    </div>
     <div class="table-responsive">
         <table class="table table-hover align-middle text-center mb-0">
             <thead class="table-dark">
@@ -254,10 +283,18 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
                     <th>Action</th>
                 </tr>
             </thead>
-            <tbody>
+            <tbody id="reslitTableBody">
                 <?php if ($result && $result->num_rows > 0): ?>
                     <?php while ($row = $result->fetch_assoc()): ?>
-                        <tr>
+                        <?php
+                            $parentStatusGroup = ($row['status'] === 'completed') ? 'completed' : 'pending';
+                            $parentSearchBlob = strtolower(trim(
+                                ($row['product'] ?? '') . ' ' . ($row['lot_no'] ?? '') . ' ' .
+                                ($row['coil_no'] ?? '') . ' ' . ($row['roll_no'] ?? '')
+                            ));
+                        ?>
+                        <tr data-status-group="<?= htmlspecialchars($parentStatusGroup) ?>"
+                            data-search="<?= htmlspecialchars($parentSearchBlob) ?>">
                             <td><strong><?= $row['id'] ?></strong></td>
                             <td>
                                 <?php if($row['status'] === 'pending'): ?>
@@ -297,8 +334,15 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
                         $rolls = $conn->query("SELECT * FROM reslit_rolls WHERE parent_id = {$row['id']} ORDER BY id ASC");
                         if ($rolls && $rolls->num_rows > 0):
                             while ($roll = $rolls->fetch_assoc()):
+                                $childSearchBlob = strtolower(trim(
+                                    ($row['product'] ?? '') . ' ' . ($row['lot_no'] ?? '') .
+                                    ($roll['cut_letter'] ?? '') . ' ' . ($row['coil_no'] ?? '') . ' ' .
+                                    ($roll['roll_no'] ?? '')
+                                ));
                         ?>
-                        <tr class="child-row-bg">
+                        <tr class="child-row-bg"
+                            data-status-group="<?= htmlspecialchars($parentStatusGroup) ?>"
+                            data-search="<?= htmlspecialchars($childSearchBlob) ?>">
                             <td class="small text-muted">↳ R<?= $roll['id'] ?></td>
                             <td><span class="badge bg-success">COMPLETED</span></td>
                             <td><?= htmlspecialchars($row['product'] ?? '-') ?></td>
@@ -314,6 +358,11 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
                         </tr>
                         <?php endwhile; endif; ?>
                     <?php endwhile; ?>
+                    <tr id="reslitNoResultsRow" style="display:none;">
+                        <td colspan="10" class="py-5 text-muted">
+                            No <span id="reslitNoResultsStatus">pending</span> records match your search.
+                        </td>
+                    </tr>
                 <?php else: ?>
                     <tr><td colspan="10" class="py-5 text-muted">No reslit records found.</td></tr>
                 <?php endif; ?>
@@ -472,6 +521,51 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
 <script>
 let productData = {};
 
+// ── KPI Card Filter + Global Search (Pending/Completed table) ───
+let reslitStatusFilter = 'pending';
+
+function setReslitStatusFilter(status, cardEl) {
+    reslitStatusFilter = status;
+    document.querySelectorAll('.status-card').forEach(c => c.classList.remove('active'));
+    if (cardEl) cardEl.classList.add('active');
+    applyReslitFilters();
+}
+
+function clearReslitSearch() {
+    const input = document.getElementById('reslitSearchInput');
+    if (input) input.value = '';
+    applyReslitFilters();
+}
+
+function applyReslitFilters() {
+    const input = document.getElementById('reslitSearchInput');
+    const raw = (input ? input.value : '').trim().toLowerCase();
+    // Split on whitespace so a combined query like "826529 N-2 R4" requires
+    // every token to appear somewhere in the row (Lot + Coil + Roll + Product
+    // are concatenated server-side into data-search), while a single token
+    // like "826529" or "N-2" still matches on its own.
+    const tokens = raw.split(/\s+/).filter(Boolean);
+
+    const rows = document.querySelectorAll('#reslitTableBody tr[data-status-group]');
+    let visibleCount = 0;
+
+    rows.forEach(row => {
+        const matchesStatus = row.dataset.statusGroup === reslitStatusFilter;
+        const haystack = row.dataset.search || '';
+        const matchesSearch = tokens.length === 0 || tokens.every(t => haystack.includes(t));
+        const show = matchesStatus && matchesSearch;
+        row.style.display = show ? '' : 'none';
+        if (show) visibleCount++;
+    });
+
+    const emptyRow = document.getElementById('reslitNoResultsRow');
+    if (emptyRow) {
+        emptyRow.style.display = visibleCount === 0 ? '' : 'none';
+        const label = document.getElementById('reslitNoResultsStatus');
+        if (label) label.textContent = reslitStatusFilter;
+    }
+}
+
 function showReslitModal(id, product, lot_no, coil_no, roll_no, width, length) {
     productData = { id, product, lot_no, coil_no, roll_no, width, length };
     document.getElementById('reslit_id').value = id;
@@ -622,6 +716,9 @@ function escHtml(s) {
 }
 
 document.addEventListener('DOMContentLoaded', function () {
+    // Apply the default 'pending' filter to the table on first load
+    applyReslitFilters();
+
     document.getElementById('summaryModal').addEventListener('show.bs.modal', function () {
         loadSummary();
     });

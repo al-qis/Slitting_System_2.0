@@ -1,6 +1,36 @@
 <?php
 include 'config.php';
 
+// ── Helper: write one process_log row (shared pattern used across the app) ──
+if (!function_exists('log_process')) {
+    function log_process(
+        mysqli  $conn,
+        string  $entity_type,
+        int     $entity_id,
+        ?int    $mother_id,
+        ?string $from_status,
+        string  $to_status,
+        string  $action_detail = '',
+        string  $remark = ''
+    ): void {
+        $performed_by = $_SESSION['role'] ?? 'system';
+        $stmt = $conn->prepare("
+            INSERT INTO process_log
+                (entity_type, entity_id, mother_id, from_status, to_status,
+                 performed_by, action_detail, remark)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ");
+        $stmt->bind_param(
+            "siisssss",
+            $entity_type, $entity_id, $mother_id,
+            $from_status, $to_status,
+            $performed_by, $action_detail, $remark
+        );
+        $stmt->execute();
+        $stmt->close();
+    }
+}
+
 /* ──────────────────────────────────────────────────────────────
    Helper: return ALL products that match a coil_no prefix
    Returns an array (may be empty, 1 item, or multiple items)
@@ -194,10 +224,16 @@ $error_messages = [
     'delete_failed' => '❌ Delete failed: ' . htmlspecialchars(urldecode($_GET['msg'] ?? 'Unknown error')),
 ];
 
+$childrenUpdatedCount = isset($_GET['children_updated']) ? (int)$_GET['children_updated'] : null;
+
 $success_messages = [
     '1'      => '✅ Mother coil saved successfully.',
     '3'      => '✅ Mother coil deleted successfully.',
-    'update' => '✅ Mother coil updated successfully.',
+    'update' => ($childrenUpdatedCount !== null)
+        ? ($childrenUpdatedCount > 0
+            ? "✅ Mother coil updated successfully. Lot No. change cascaded to <strong>{$childrenUpdatedCount}</strong> child roll(s) on Finished Product."
+            : "✅ Mother coil updated successfully. Lot No. changed, but no child rolls were found to update.")
+        : '✅ Mother coil updated successfully.',
 ];
 
 /* ──────────────────────────────────────────────────────────────
@@ -310,17 +346,125 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'update' && $id > 0) {
-        $stmt = $conn->prepare("
-            UPDATE mother_coil
-            SET product=?, grade=?, lot_no=?, coil_no=?, width=?, length=?
-            WHERE id=?
-        ");
-        if (!$stmt) die("Prepare failed: " . $conn->error);
-        $stmt->bind_param("ssssssi", $product, $grade, $lot_no, $coil_no, $width, $length, $id);
-        $stmt->execute();
-        $stmt->close();
-        header("Location: mother_coil.php?success=update");
-        exit;
+        // Fetch the CURRENT lot_no before overwriting it — we need the OLD
+        // value to know what prefix to look for on child rolls.
+        $curStmt = $conn->prepare("SELECT lot_no FROM mother_coil WHERE id = ?");
+        $curStmt->bind_param("i", $id);
+        $curStmt->execute();
+        $curRow = $curStmt->get_result()->fetch_assoc();
+        $curStmt->close();
+
+        if (!$curRow) {
+            die("Mother coil not found.");
+        }
+        $oldLotNo     = $curRow['lot_no'];
+        $lotNoChanged = ($oldLotNo !== $lot_no);
+
+        $conn->begin_transaction();
+        try {
+            // 1. Update the mother coil itself
+            $stmt = $conn->prepare("
+                UPDATE mother_coil
+                SET product=?, grade=?, lot_no=?, coil_no=?, width=?, length=?
+                WHERE id=?
+            ");
+            if (!$stmt) throw new Exception("Prepare failed: " . $conn->error);
+            $stmt->bind_param("ssssssi", $product, $grade, $lot_no, $coil_no, $width, $length, $id);
+            if (!$stmt->execute()) {
+                throw new Exception("Failed to update mother coil: " . $stmt->error);
+            }
+            $stmt->close();
+
+            $childrenUpdated = 0;
+
+            // 2. Cascade the lot_no rename to every child slitting_product row
+            //    linked to this mother — this is the "Finished Product" stage
+            //    the mismatch was reported at.
+            //
+            //    IMPORTANT: a child's lot_no is not always identical to the
+            //    mother's — reslit/recoiled children pick up a letter suffix
+            //    (e.g. mother "826604" -> child "826604a"). A blind overwrite
+            //    would destroy that suffix, so instead we replace only the OLD
+            //    lot_no PREFIX and keep whatever comes after it intact:
+            //    "826604a" -> "{new lot_no}a".
+            if ($lotNoChanged) {
+                $childStmt = $conn->prepare("
+                    SELECT id, lot_no FROM slitting_product
+                    WHERE mother_id = ? AND (is_voided = 0 OR is_voided IS NULL)
+                ");
+                $childStmt->bind_param("i", $id);
+                $childStmt->execute();
+                $childRows = $childStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $childStmt->close();
+
+                $updChild = $conn->prepare("UPDATE slitting_product SET lot_no = ? WHERE id = ?");
+
+                foreach ($childRows as $child) {
+                    $childLot = $child['lot_no'] ?? '';
+
+                    // Only touch rows whose lot_no actually starts with the OLD
+                    // mother lot_no. This is what preserves any suffix, and it
+                    // also defensively skips anything that doesn't match the
+                    // expected pattern rather than guessing and risking
+                    // corrupting unrelated data.
+                    if (strpos($childLot, $oldLotNo) !== 0) {
+                        continue;
+                    }
+
+                    $suffix      = substr($childLot, strlen($oldLotNo));
+                    $newChildLot = $lot_no . $suffix;
+
+                    if ($newChildLot === $childLot) {
+                        continue; // no actual change for this row
+                    }
+
+                    $updChild->bind_param("si", $newChildLot, $child['id']);
+                    if (!$updChild->execute()) {
+                        // Most likely cause: renaming this child would collide
+                        // with the (lot_no, coil_no, roll_no) UNIQUE KEY of some
+                        // unrelated existing row. Abort the whole cascade rather
+                        // than leave it half-applied.
+                        throw new Exception(
+                            "Could not rename child roll (old lot: {$childLot}) to " .
+                            "\"{$newChildLot}\" — likely a duplicate Lot/Coil/Roll " .
+                            "combination already exists. " . $updChild->error
+                        );
+                    }
+                    $childrenUpdated++;
+
+                    // Lightweight audit trail — logged per child roll using
+                    // entity_type='slitting' (a value process_log already
+                    // accepts elsewhere in the app). 'mother_coil' is not a
+                    // valid entity_type, so we don't log a separate parent-
+                    // level entry; each renamed child gets its own line
+                    // instead, which is arguably more useful anyway.
+                    if (function_exists('log_process')) {
+                        log_process($conn, 'slitting', (int)$child['id'], $id,
+                            $childLot, $newChildLot, 'lot_no_cascade_rename',
+                            "Cascaded from mother_coil id={$id} lot_no rename " .
+                            "(\"{$oldLotNo}\" -> \"{$lot_no}\")"
+                        );
+                    }
+                }
+                $updChild->close();
+            }
+
+            $conn->commit();
+            $successParams = 'success=update';
+            if ($lotNoChanged) { $successParams .= '&children_updated=' . $childrenUpdated; }
+            header("Location: mother_coil.php?{$successParams}");
+            exit;
+
+        } catch (Throwable $e) {
+            $conn->rollback();
+            die("<div style='color:red;font-family:sans-serif;padding:20px;border:1px solid red;background:#fff5f5;'>
+                    <h2>Update Failed — No Changes Saved</h2>
+                    <p><strong>Reason:</strong> " . htmlspecialchars($e->getMessage()) . "</p>
+                    <p>The Mother Coil update was rolled back entirely (including the lot number
+                       change itself) so the parent and its child rolls never end up out of sync.</p>
+                    <button onclick='history.back()'>Go Back and Fix</button>
+                 </div>");
+        }
     }
 }
 

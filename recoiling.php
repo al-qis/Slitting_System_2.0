@@ -235,9 +235,27 @@ include 'header.php';
 
 <style>
     .status-cards { display:flex; gap:15px; margin-bottom:30px; flex-wrap:wrap; }
-    .status-card  { flex:1; min-width:140px; border-radius:8px; padding:20px; text-align:center; color:#fff; box-shadow:0 2px 8px rgba(0,0,0,0.1); }
+    .status-card  {
+        flex:1; min-width:140px; border-radius:8px; padding:20px; text-align:center; color:#fff;
+        box-shadow:0 2px 8px rgba(0,0,0,0.1);
+        cursor:pointer; user-select:none;
+        border:3px solid transparent;
+        opacity:.72;
+        transition: transform .15s ease, opacity .15s ease, box-shadow .15s ease, border-color .15s ease;
+    }
+    .status-card:hover { opacity:1; transform: translateY(-2px); }
+    .status-card.active {
+        opacity:1;
+        border-color:#fff;
+        box-shadow:0 6px 16px rgba(0,0,0,0.28);
+        transform: translateY(-2px);
+    }
     .status-card.pending   { background: linear-gradient(135deg,#ffc107,#ff9800); }
     .status-card.completed { background: linear-gradient(135deg,#28a745,#20c997); }
+
+    /* Recoiling search bar */
+    #recoilSearchWrap { padding: 14px 16px 0; }
+    #recoilSearchInput:focus { box-shadow: 0 0 0 .2rem rgba(13,110,253,.15); }
     .roll-box { border:1px solid #ddd; padding:18px; border-radius:8px; margin-bottom:15px; background:#f9f9f9; }
     .info-box { background:#f8f9fa; border-left:5px solid #0d6efd; padding:15px; border-radius:4px; }
 
@@ -296,11 +314,26 @@ include 'header.php';
 </div>
 
 <div class="status-cards">
-    <div class="status-card pending">  <h5>Pending Items</h5>  <h2><?= $pending ?></h2></div>
-    <div class="status-card completed"><h5>Completed Items</h5><h2><?= $completed ?></h2></div>
+    <div class="status-card pending active" id="statusCardPending" onclick="setRecoilStatusFilter('pending', this)">
+        <h5>Pending Items</h5><h2><?= $pending ?></h2>
+    </div>
+    <div class="status-card completed" id="statusCardCompleted" onclick="setRecoilStatusFilter('completed', this)">
+        <h5>Completed Items</h5><h2><?= $completed ?></h2>
+    </div>
 </div>
 
 <div class="card shadow-sm border-0">
+    <div id="recoilSearchWrap">
+        <div class="input-group">
+            <span class="input-group-text bg-white"><i class="bi bi-search"></i></span>
+            <input type="text" id="recoilSearchInput" class="form-control"
+                   placeholder="Search Lot, Coil, or Roll — e.g. &quot;826529&quot;, &quot;N-2&quot;, or &quot;826529 N-2 R4&quot;"
+                   oninput="applyRecoilFilters()">
+            <button class="btn btn-outline-secondary" type="button" onclick="clearRecoilSearch()" title="Clear search">
+                <i class="bi bi-x-lg"></i>
+            </button>
+        </div>
+    </div>
     <div class="table-responsive">
         <table class="table table-hover align-middle mb-0">
             <thead class="table-dark">
@@ -311,7 +344,7 @@ include 'header.php';
                     <th>Date In</th><th>Remark</th><th>Action</th>
                 </tr>
             </thead>
-            <tbody>
+            <tbody id="recoilTableBody">
             <?php if (count($tableRows) > 0): ?>
                 <?php $rowNum = 0; ?>
                 <?php foreach ($tableRows as $row): ?>
@@ -323,8 +356,21 @@ include 'header.php';
                     $isSfc     = ($status === 'sfc');
                     $canRecoil = ($status === 'pending' || $status === 'sfc');
                     $kids      = ($source === 'recoiling_product') ? ($children[$rid] ?? []) : [];
+
+                    // 'sfc' rows are still awaiting recoil, so they're grouped with
+                    // 'pending' for the KPI-card filter (only 'completed' is its own bucket).
+                    $statusGroup = ($status === 'completed') ? 'completed' : 'pending';
+
+                    $rowLot   = $kids[0]['lot_no']   ?? ($row['lot_no']  ?? '');
+                    $rowCoil  = $kids[0]['coil_no']  ?? ($row['coil_no'] ?? '');
+                    $rowRoll  = $kids[0]['roll_no']  ?? ($row['roll_no'] ?? '');
+                    $searchBlob = strtolower(trim(
+                        ($row['product'] ?? '') . ' ' . $rowLot . ' ' . $rowCoil . ' ' . $rowRoll
+                    ));
                 ?>
-                <tr <?= ($rid === $reopenId) ? 'id="reopen-row"' : '' ?>>
+                <tr <?= ($rid === $reopenId) ? 'id="reopen-row" ' : '' ?>
+                    data-status-group="<?= htmlspecialchars($statusGroup) ?>"
+                    data-search="<?= htmlspecialchars($searchBlob) ?>">
                     <td><?= $rowNum ?></td>
                     <td>
                         <span class="badge <?= $status==='completed' ? 'bg-success' : ($status==='sfc' ? 'bg-info' : 'bg-warning text-dark') ?>">
@@ -385,6 +431,11 @@ include 'header.php';
                     </td>
                 </tr>
                 <?php endforeach; ?>
+                <tr id="recoilNoResultsRow" style="display:none;">
+                    <td colspan="11" class="text-center py-4 text-muted">
+                        No <span id="recoilNoResultsStatus">pending</span> records match your search.
+                    </td>
+                </tr>
             <?php else: ?>
                 <tr><td colspan="11" class="text-center py-4 text-muted">No records found.</td></tr>
             <?php endif; ?>
@@ -651,6 +702,54 @@ include 'header.php';
 <script>
 let productData = {};
 const reopenId = <?= $reopenId ?>;
+
+// ── KPI Card Filter + Global Search (Pending/Completed table) ───
+// 'sfc' rows are grouped under 'pending' server-side via data-status-group,
+// since they're still awaiting recoil just like true pending rows.
+let recoilStatusFilter = 'pending';
+
+function setRecoilStatusFilter(status, cardEl) {
+    recoilStatusFilter = status;
+    document.querySelectorAll('.status-card').forEach(c => c.classList.remove('active'));
+    if (cardEl) cardEl.classList.add('active');
+    applyRecoilFilters();
+}
+
+function clearRecoilSearch() {
+    const input = document.getElementById('recoilSearchInput');
+    if (input) input.value = '';
+    applyRecoilFilters();
+}
+
+function applyRecoilFilters() {
+    const input = document.getElementById('recoilSearchInput');
+    const raw = (input ? input.value : '').trim().toLowerCase();
+    // Split on whitespace so a combined query like "826529 N-2 R4" requires
+    // every token to appear somewhere in the row (Lot + Coil + Roll + Product
+    // are all concatenated server-side into data-search), while a single
+    // token like "826529" or "N-2" still matches on its own.
+    const tokens = raw.split(/\s+/).filter(Boolean);
+
+    const rows = document.querySelectorAll('#recoilTableBody tr[data-status-group]');
+    let visibleCount = 0;
+
+    rows.forEach(row => {
+        const matchesStatus = row.dataset.statusGroup === recoilStatusFilter;
+        const haystack = row.dataset.search || '';
+        const matchesSearch = tokens.length === 0 || tokens.every(t => haystack.includes(t));
+        const show = matchesStatus && matchesSearch;
+        row.style.display = show ? '' : 'none';
+        if (show) visibleCount++;
+    });
+
+    const emptyRow = document.getElementById('recoilNoResultsRow');
+    if (emptyRow) {
+        emptyRow.style.display = visibleCount === 0 ? '' : 'none';
+        const label = document.getElementById('recoilNoResultsStatus');
+        if (label) label.textContent = recoilStatusFilter;
+    }
+}
+
 
 document.addEventListener('DOMContentLoaded', function () {
     document.body.addEventListener('click', function (e) {
@@ -1050,6 +1149,9 @@ function escHtml(s) {
 }
 
 document.addEventListener('DOMContentLoaded', function () {
+    // Apply the default 'pending' filter to the table on first load
+    applyRecoilFilters();
+
     document.getElementById('summaryModal').addEventListener('show.bs.modal', function () {
         loadSummary();
     });

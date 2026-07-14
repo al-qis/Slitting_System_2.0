@@ -100,6 +100,11 @@ if (strpos($product['product'], 'MV') !== false) $tomboNo = "1608 (METAFOAM)";
 $lotNo = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
 
 // ── QR URL ────────────────────────────────────────────────────
+// Includes roll (when this SFC entry actually has one — "BALANCE" is
+// blanked out above into $product['roll_no'], same as everywhere else
+// this value is used) so a scan can uniquely identify this exact roll,
+// not just its mother Lot+Coil, which is ambiguous when multiple rolls
+// share the same mother coil.
 $protocol   = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? "https" : "http";
 $host       = $_SERVER['HTTP_HOST'];
 $basePath   = rtrim(dirname($_SERVER['PHP_SELF']), '/');
@@ -107,6 +112,9 @@ $qrImageUrl = $protocol . "://" . $host . $basePath
             . "/generate_qr.php"
             . "?lot="  . urlencode($product['lot_no'])
             . "&coil=" . urlencode($product['coil_no']);
+if (trim($product['roll_no'] ?? '') !== '') {
+    $qrImageUrl .= "&roll=" . urlencode($product['roll_no']);
+}
 
 // ── Sticker colour — set BEFORE include $patternFile ─────────
 $PRODUCT_COLOR = [
@@ -250,6 +258,7 @@ include $patternFile;
 <div class="no-print info-bar">
     <strong>SFC Label Preview</strong> |
     SFC ID: #<?= $sfc_id ?> |
+    Roll: <?= htmlspecialchars($product['roll_no'] !== '' ? $product['roll_no'] : '(none)') ?> |
     Pattern: <?= ucfirst($pattern) ?> |
     Customer: <?= htmlspecialchars($customer) ?> |
     Sticker Color: <?= htmlspecialchars($colorName) ?>

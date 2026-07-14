@@ -30,25 +30,23 @@ if ($type === 'slitting') {
     if (!$row) die('Slitting product not found');
     $qrText = "LOT={$row['lot_no']};COIL={$row['coil_no']};ROLL={$row['roll_no']}";
 
-/*} else {
-    $lot  = trim($_GET['lot'] ?? '');
-    $coil = trim($_GET['coil'] ?? '');
-
-    if ($lot === '' || $coil === '') die('Invalid QR data');
-
-    // ✅ CHANGE THIS: Use the format your scan_mother_action.php expects
-    // This creates a string like "LOT=123;COIL=456" instead of a URL
-    $qrText = "LOT=$lot;COIL=$coil";
-} */
-
 } else {
     $lot  = trim($_GET['lot'] ?? '');
     $coil = trim($_GET['coil'] ?? '');
+    $roll = trim($_GET['roll'] ?? '');
 
     if ($lot === '' || $coil === '') die('Invalid QR data');
 
-    // This creates a string like "LOT=826175;COIL=FK-1"
+    // "LOT=826175;COIL=FK-1" or, when a roll is supplied (e.g. from
+    // print_sfc.php), "LOT=826175;COIL=FK-1;ROLL=R2" — matching the same
+    // format the 'slitting' branch above and the scan-matching code in
+    // sfc.php / scan_product_action.php already expect. ROLL is only
+    // appended when actually provided, since some SFC entries legitimately
+    // have none (e.g. "BALANCE" rolls, already blanked out upstream).
     $qrText = "LOT=$lot;COIL=$coil";
+    if ($roll !== '') {
+        $qrText .= ";ROLL=$roll";
+    }
 }
 
 // Ensure there is always text

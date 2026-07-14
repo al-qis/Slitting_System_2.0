@@ -1,767 +1,1860 @@
 <?php
+// =============================================================
+// pallet.php  —  v7 (Flexible Manual Entry Format)
+// NEW: The manual / scanned input now accepts TWO formats:
+//   A) KEY=value pairs (camera QR / hardware scanner):
+//        LOT=826277;COIL=FK-1;ROLL=R1
+//   B) Plain space-separated values (typed by hand):
+//        826277 FK-1 R1
+//   parseQR() auto-detects which one it received.
+//
+// Retained from v6: triple duplicate-scan guard (isAdding lock,
+//   same-pallet drop, slot-present drop); scanner cache-busted
+//   (?v=7).
+// Retained from v5: no first-roll reload; constraint badges live.
+// Retained from v4: client guard only blocks rolls on a DIFFERENT
+//   pallet.
+// Retained from v3: Est. Weight display (per-roll + running total).
+//   wgt = (actual_length_m × width_mm / 1000) × std_weight
+// =============================================================
+
 session_start();
 
-if (!isset($_SESSION['role'])) {
-    header("Location: login.php");
-    exit;
-}
-
-if (!in_array($_SESSION['role'], ['slitting','mkl3'], true)) {
-    die("Access denied for this role.");
-}
+if (!isset($_SESSION['role'])) { header("Location: login.php"); exit; }
+if ($_SESSION['role'] !== 'slitting') { die("Access denied"); }
 
 include 'config.php';
+require_once 'PalletManager.php';
 
-// ── Handle Action ────────────────────────────────────────────
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_POST['action'])) {
-    $sfcId  = (int)$_POST['sfc_id'];
-    $action = $_POST['action'];
+$pm           = new PalletManager($conn, $_SESSION['role']);
+$performed_by = $_SESSION['role'];
 
-    $stmt = $conn->prepare("SELECT * FROM sfc WHERE sfc_id = ? AND date_out IS NULL AND is_deleted = 0");
-    $stmt->bind_param("i", $sfcId);
-    $stmt->execute();
-    $sfc = $stmt->get_result()->fetch_assoc();
-    $stmt->close();
-
-    if ($sfc) {
-        $conn->begin_transaction();
-        try {
-            $original_source = 'sfc';
-
-            // ── DELETE — error-correction only, no downstream inserts ──
-            // Only reachable for entries that are still active (date_out
-            // IS NULL, checked above), i.e. nothing has been produced
-            // from this SFC item yet. Soft-deleted so the audit trail
-            // (and any accidental-delete recovery) is preserved; every
-            // stock count/listing query below already excludes
-            // is_deleted = 1 rows, so live SFC metrics stay accurate
-            // automatically — there's no separate stored balance to fix.
-            if ($action === 'DELETE') {
-                $deletedBy = $_SESSION['role'] ?? 'system';
-                $delStmt = $conn->prepare("
-                    UPDATE sfc SET is_deleted = 1, deleted_at = NOW(), deleted_by = ?
-                    WHERE sfc_id = ?
-                ");
-                $delStmt->bind_param("si", $deletedBy, $sfcId);
-                $delStmt->execute();
-                $delStmt->close();
-
-                log_source_tracking($conn, $sfcId, 'sfc', $original_source, 'sfc', 'DELETED_FROM_SFC');
-
-                $conn->commit();
-                header("Location: sfc.php?success=1&msg=deleted");
-                exit;
-            }
-
-            if ($action === 'RECOIL') {
-                $stmt = $conn->prepare("INSERT INTO recoiling_product
-                    (product, lot_no, coil_no, roll_no, width, length, status, date_in, original_source)
-                    VALUES (?, ?, ?, ?, ?, ?, 'pending', NOW(), ?)");
-                $stmt->bind_param("ssssdds",
-                    $sfc['product'], $sfc['lot_no'], $sfc['coil_no'],
-                    $sfc['roll_no'], $sfc['width'],  $sfc['length'], $original_source);
-                $stmt->execute();
-                $stmt->close();
-                log_source_tracking($conn, 0, 'recoiling_product', $original_source, 'sfc', 'RECOIL_FROM_SFC');
-
-            } elseif ($action === 'RESLIT') {
-                $stmt = $conn->prepare("INSERT INTO reslit_product
-                    (product, lot_no, coil_no, roll_no, width, length, status, date_in, original_source)
-                    VALUES (?, ?, ?, ?, ?, ?, 'pending', NOW(), ?)");
-                $stmt->bind_param("ssssdds",
-                    $sfc['product'], $sfc['lot_no'], $sfc['coil_no'],
-                    $sfc['roll_no'], $sfc['width'],  $sfc['length'], $original_source);
-                $stmt->execute();
-                $stmt->close();
-                log_source_tracking($conn, 0, 'reslit_product', $original_source, 'sfc', 'RESLIT_FROM_SFC');
-
-            } elseif ($action === 'SELL') {
-                $stmt = $conn->prepare("INSERT INTO slitting_product
-                    (product, lot_no, coil_no, roll_no, width, length,
-                     status, date_in, date_out, cut_type, source, original_source)
-                    VALUES (?, ?, ?, ?, ?, ?, 'WAITING', NOW(), NOW(), 'sfc_sell', 'sfc', ?)");
-                $stmt->bind_param("ssssdds",
-                    $sfc['product'], $sfc['lot_no'], $sfc['coil_no'],
-                    $sfc['roll_no'], $sfc['width'],  $sfc['length'], $original_source);
-                $stmt->execute();
-                $stmt->close();
-                log_source_tracking($conn, 0, 'slitting_product', $original_source, 'sfc', 'SELL_FROM_SFC');
-            }
-
-            $updateStmt = $conn->prepare("UPDATE sfc SET date_out = NOW(), action = ? WHERE sfc_id = ?");
-            $updateStmt->bind_param("si", $action, $sfcId);
-            $updateStmt->execute();
-            $updateStmt->close();
-
-            $conn->commit();
-
-            if ($action === 'SELL') {
-                header("Location: finish_product.php?success=1&msg=sfc_sold");
-            } else {
-                header("Location: sfc.php?success=1");
-            }
-            exit;
-        } catch (Exception $e) {
-            $conn->rollback();
-            die("An error occurred: " . $e->getMessage());
-        }
-    } else {
-        die("SFC not found, already used, or already deleted.");
-    }
-}
-
-// ── PIN verify via AJAX ──────────────────────────────────────
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['verify_pin'])) {
-    $enteredPin    = trim($_POST['verify_pin']);
-    $supervisorPin = '1234';
+// ── AJAX: validate pallet_no ──────────────────────────────────
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'validate_pallet_no') {
     header('Content-Type: application/json');
-    echo json_encode(['success' => ($enteredPin === $supervisorPin)]);
+    echo json_encode($pm->validatePalletNo(trim($_GET['pallet_no'] ?? '')));
     exit;
 }
 
-function log_source_tracking($conn, $product_id, $table_name, $original_source, $current_source, $action) {
-    $stmt = $conn->prepare("INSERT INTO source_tracking_log
-        (product_id, table_name, original_source, current_source, action)
-        VALUES (?, ?, ?, ?, ?)");
-    $stmt->bind_param("issss", $product_id, $table_name, $original_source, $current_source, $action);
+// ── AJAX: product lookup (now includes std_weight) ────────────
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
+    header('Content-Type: application/json');
+    $lot  = trim($_GET['lot']  ?? '');
+    $coil = trim($_GET['coil'] ?? '');
+    $roll = trim($_GET['roll'] ?? '');
+    if (!$lot || !$coil) { echo json_encode(['ok' => false, 'msg' => 'Incomplete data.']); exit; }
+    $stmt = $conn->prepare("
+        SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
+               sp.width, sp.actual_length, sp.length, sp.nod_length,
+               sp.stock_counted, sp.status, sp.is_voided,
+               sp.customer_name, sp.ref_no,
+               pi.pallet_id, p.pallet_no,
+               COALESCE(sw.std_weight, 0) AS std_weight
+        FROM slitting_product sp
+        LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+        LEFT JOIN pallets p       ON p.id = pi.pallet_id
+        LEFT JOIN std_wgt sw      ON sw.product_code = sp.product
+        WHERE sp.lot_no = ? AND sp.coil_no = ? AND sp.roll_no = ?
+          AND (sp.is_voided = 0 OR sp.is_voided IS NULL)
+        LIMIT 1
+    ");
+    $stmt->bind_param("sss", $lot, $coil, $roll);
     $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
+    if (!$row) { echo json_encode(['ok' => false, 'msg' => "Roll not found: {$lot} {$coil} {$roll}"]); exit; }
+    echo json_encode(['ok' => true, 'product' => $row]);
+    exit;
 }
 
-// ── Helper: get output rolls produced FROM a SFC item ────────
-// Checks slitting_product, reslit_product, recoiling_product
-// matching by lot_no + coil_no + roll_no (the SFC roll that was sent)
-function getSfcOutputs(mysqli $conn, array $sfc): array {
-    $lot  = $conn->real_escape_string($sfc['lot_no']  ?? '');
-    $coil = $conn->real_escape_string($sfc['coil_no'] ?? '');
-    $roll = $conn->real_escape_string($sfc['roll_no'] ?? '');
-    $out  = [];
+// ── Shared: build the flattened Summary Pallet dataset ─────────
+function buildSummaryPalletRows(mysqli $conn): array {
+    $rows = $conn->query("
+        SELECT p.pallet_no, p.status,
+               sp.roll_no, sp.lot_no, sp.coil_no, sp.product,
+               sp.customer_name, sp.ref_no, sp.width,
+               sp.length, sp.actual_length, sp.nod_length
+        FROM pallets p
+        LEFT JOIN pallet_items pi     ON pi.pallet_id = p.id
+        LEFT JOIN slitting_product sp ON sp.id = pi.slitting_product_id
+        ORDER BY p.created_at DESC, pi.seq ASC
+    ")->fetch_all(MYSQLI_ASSOC);
 
-    // 1. Reslit outputs — find reslit_product matching this SFC's lot/coil/roll
-    //    then get all reslit_rolls from that parent
-    $rp = $conn->query("
-        SELECT rp.id, rp.status, rp.lot_no, rp.coil_no, rp.roll_no
-        FROM reslit_product rp
-        WHERE rp.lot_no='$lot' AND rp.coil_no='$coil' AND rp.roll_no='$roll'
-          AND rp.original_source='sfc'
-        ORDER BY rp.id DESC LIMIT 1
-    ")->fetch_assoc();
+    return array_map(function ($r) {
+        // NOD shown as the net usable length (Actual − NOD), same
+        // convention as the Finish Product export — not the raw
+        // deduction value on its own.
+        $actualLen = $r['actual_length'] !== null ? (float)$r['actual_length'] : null;
+        $baseLen   = $actualLen ?: ($r['length'] !== null ? (float)$r['length'] : null);
+        $nodVal    = $r['nod_length'] !== null ? (float)$r['nod_length'] : 0;
+        $hasNod    = $nodVal > 0;
 
-    if ($rp) {
-        $rpId    = intval($rp['id']);
-        $rr_res  = $conn->query("
-            SELECT rr.*, rp.lot_no AS parent_lot, rp.coil_no AS parent_coil
-            FROM reslit_rolls rr
-            JOIN reslit_product rp ON rp.id = rr.parent_id
-            WHERE rr.parent_id = $rpId
-            ORDER BY rr.id ASC
-        ");
-        $rolls = [];
-        if ($rr_res) while ($r = $rr_res->fetch_assoc()) $rolls[] = $r;
-
-        $out[] = [
-            'process'    => 'RESLIT',
-            'parent_id'  => $rpId,
-            'status'     => $rp['status'],
-            'rolls'      => $rolls,
+        return [
+            'pallet_no' => $r['pallet_no'],
+            'status'    => $r['status'],
+            'roll_no'   => $r['roll_no'] ? str_replace('R', 'R-', $r['roll_no']) : null,
+            'lot_coil'  => trim(($r['lot_no'] ?? '') . ' ' . ($r['coil_no'] ?? '')),
+            'product'   => $r['product'],
+            'customer'  => $r['customer_name'],
+            'ref_no'    => $r['ref_no'],
+            'width'     => $r['width'] !== null ? (float)$r['width'] : null,
+            'nod'       => ($hasNod && $baseLen !== null) ? round($baseLen - $nodVal, 2) : null,
         ];
-    }
-
-    // 2. Recoiling outputs — find recoiling_product, then slitting_product outputs
-    $rcp = $conn->query("
-        SELECT rcp.id, rcp.status, rcp.lot_no, rcp.coil_no, rcp.roll_no
-        FROM recoiling_product rcp
-        WHERE rcp.lot_no='$lot' AND rcp.coil_no='$coil' AND rcp.roll_no='$roll'
-          AND rcp.original_source='sfc'
-        ORDER BY rcp.id DESC LIMIT 1
-    ")->fetch_assoc();
-
-    if ($rcp) {
-        $rcpId    = intval($rcp['id']);
-        $sp_res   = $conn->query("
-            SELECT id, lot_no, coil_no, roll_no, width, actual_length, length, status
-            FROM slitting_product
-            WHERE recoiling_id = $rcpId
-            ORDER BY id ASC
-        ");
-        $rolls = [];
-        if ($sp_res) while ($r = $sp_res->fetch_assoc()) $rolls[] = $r;
-
-        $out[] = [
-            'process'   => 'RECOIL',
-            'parent_id' => $rcpId,
-            'status'    => $rcp['status'],
-            'rolls'     => $rolls,
-        ];
-    }
-
-    // 3. Direct SELL to slitting_product (action=SELL)
-    $sp_res = $conn->query("
-        SELECT id, lot_no, coil_no, roll_no, width, actual_length, length, status
-        FROM slitting_product
-        WHERE lot_no='$lot' AND coil_no='$coil' AND roll_no='$roll'
-          AND source='sfc' AND original_source='sfc'
-        ORDER BY id DESC LIMIT 1
-    ")->fetch_assoc();
-
-    if ($sp_res) {
-        $out[] = [
-            'process'   => 'SELL',
-            'parent_id' => $sp_res['id'],
-            'status'    => $sp_res['status'],
-            'rolls'     => [$sp_res],
-        ];
-    }
-
-    return $out;
+    }, $rows);
 }
 
-// ── Search / fetch SFC rows ──────────────────────────────────
-$search = isset($_GET['search']) ? trim($_GET['search']) : '';
-$show_used = isset($_GET['show_used']) ? (int)$_GET['show_used'] : 0;
+// ── Shared: apply the same category/value filter used by the modal's
+//    client-side JS, so the exported Excel matches whatever the user
+//    was actually looking at when they clicked Export. ─────────────
+function filterSummaryPalletRows(array $rows, string $cat, string $val): array {
+    if ($val === '') return $rows;
 
-if ($search !== '') {
-    $baseWhere = $show_used ? "is_deleted = 0 AND " : "date_out IS NULL AND is_deleted = 0 AND ";
-    $query = "SELECT * FROM sfc WHERE {$baseWhere}(
-                sfc_id LIKE ? OR product LIKE ? OR lot_no LIKE ? OR coil_no LIKE ? OR roll_no LIKE ?
-              ) ORDER BY date_created DESC";
-    $stmt = $conn->prepare($query);
-    $like = "%$search%";
-    $stmt->bind_param("sssss", $like, $like, $like, $like, $like);
-    $stmt->execute();
-    $result = $stmt->get_result();
-} else {
-    $where  = $show_used ? "WHERE is_deleted = 0" : "WHERE date_out IS NULL AND is_deleted = 0";
-    $result = $conn->query("SELECT * FROM sfc $where ORDER BY date_created DESC");
+    if ($cat === 'status' || $cat === 'customer') {
+        return array_values(array_filter($rows, fn($r) => (string)($r[$cat] ?? '') === $val));
+    }
+
+    if ($cat === 'width') {
+        return array_values(array_filter($rows, function ($r) use ($val) {
+            return $r['width'] !== null && str_contains((string)round($r['width']), $val);
+        }));
+    }
+
+    // All Fields — free text across everything visible in the table
+    $needle = strtolower($val);
+    return array_values(array_filter($rows, function ($r) use ($needle) {
+        foreach ([$r['pallet_no'], $r['status'], $r['lot_coil'], $r['roll_no'], $r['customer'], $r['ref_no'], $r['width'], $r['nod']] as $field) {
+            if ($field !== null && str_contains(strtolower((string)$field), $needle)) return true;
+        }
+        return false;
+    }));
 }
 
-// Counts
-$total_active = (int)$conn->query("SELECT COUNT(*) AS c FROM sfc WHERE date_out IS NULL AND is_deleted = 0")->fetch_assoc()['c'];
-$total_used   = (int)$conn->query("SELECT COUNT(*) AS c FROM sfc WHERE date_out IS NOT NULL AND is_deleted = 0")->fetch_assoc()['c'];
+// ── AJAX: Summary Pallet — flattened pallet + nested product rows ──
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'summary_pallet') {
+    header('Content-Type: application/json');
 
-$page_title = "SFC Inventory";
-include 'header.php';
+    $out = buildSummaryPalletRows($conn);
+
+    echo json_encode(['ok' => true, 'rows' => $out]);
+    exit;
+}
+
+// ── Export: Summary Pallet as Excel (.xls) ──────────────────────
+// Respects the same category/value filter the modal has active, so
+// the download matches whatever the user was looking at on screen.
+if (isset($_GET['export']) && $_GET['export'] === 'summary_pallet') {
+    $cat = isset($_GET['cat']) ? trim($_GET['cat']) : '';
+    $val = isset($_GET['val']) ? trim($_GET['val']) : '';
+
+    $rows = buildSummaryPalletRows($conn);
+    $rows = filterSummaryPalletRows($rows, $cat, $val);
+
+    $catLabels = ['status' => 'Status', 'customer' => 'Customer', 'width' => 'Width'];
+    $filterLbl = ($val !== '' && isset($catLabels[$cat]))
+        ? "{$catLabels[$cat]}: {$val}"
+        : (($val !== '') ? "Search: {$val}" : 'All Records');
+
+    $filename = 'Summary_Pallet_' . date('Y-m-d_His') . '.xls';
+
+    header('Content-Type: application/vnd.ms-excel');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+    header('Cache-Control: max-age=0');
+
+    $cols      = 7; // Pallet No, Status, Rolls, Customer, Ref No, Width, NOD
+    $generated = date('d M Y, H:i');
+    ?>
+<html><head><meta charset="UTF-8"></head><body>
+
+<table>
+    <tr>
+        <td colspan="<?= $cols ?>" style="background:#1e3a5f;color:#fff;font-size:18px;font-weight:bold;padding:12px 16px;letter-spacing:1px;">
+            PALLET SUMMARY REPORT
+        </td>
+    </tr>
+    <tr>
+        <td colspan="<?= $cols ?>" style="background:#2c5282;color:#bee3f8;font-size:11px;padding:4px 16px;">
+            Generated: <?= htmlspecialchars($generated) ?> &nbsp;|&nbsp; Filter: <?= htmlspecialchars($filterLbl) ?> &nbsp;|&nbsp; System: Slitting Management
+        </td>
+    </tr>
+    <tr><td colspan="<?= $cols ?>"></td></tr><!-- spacer -->
+</table>
+
+<table border="1" style="border-collapse:collapse;">
+    <thead>
+        <tr style="background:#343a40;color:#fff;font-weight:bold;font-size:12px;">
+            <th style="padding:8px 10px;">Pallet No</th>
+            <th style="padding:8px 10px;">Status</th>
+            <th style="padding:8px 10px;">Rolls</th>
+            <th style="padding:8px 10px;">Customer</th>
+            <th style="padding:8px 10px;">Ref No</th>
+            <th style="padding:8px 10px;">Width (mm)</th>
+            <th style="padding:8px 10px;">NOD (m)</th>
+        </tr>
+    </thead>
+    <tbody>
+<?php
+    $td  = 'style="padding:6px 10px;"';
+    $tdN = 'style="padding:6px 10px;text-align:right;"';
+
+    if (!empty($rows)) {
+        foreach ($rows as $r) {
+            $statusLbl = ucwords(str_replace('_', ' ', $r['status'] ?? '-'));
+            $rollsCell = $r['roll_no'] ? trim($r['lot_coil'] . ' - ' . $r['roll_no']) : '-- no rolls --';
+
+            echo '<tr>';
+            echo '<td ' . $td  . '><b>' . htmlspecialchars($r['pallet_no'] ?? '-') . '</b></td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars($statusLbl) . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars($rollsCell) . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars($r['customer'] ?: '-') . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars($r['ref_no']   ?: '-') . '</td>';
+            echo '<td ' . $tdN . '>' . ($r['width'] !== null ? number_format($r['width']) : '-') . '</td>';
+            echo '<td ' . $tdN . '>' . ($r['nod'] !== null ? number_format($r['nod'], 2) : '-') . '</td>';
+            echo '</tr>';
+        }
+    } else {
+        echo '<tr><td colspan="' . $cols . '" style="padding:20px;text-align:center;color:#666;">No records found for this filter.</td></tr>';
+    }
 ?>
+    </tbody>
+</table>
+</body></html>
+<?php
+    exit;
+}
 
-<style>
-    .sfc-output-block {
-        margin-top: 10px;
-        border-radius: 8px;
-        padding: 10px 14px;
-        font-size: .82rem;
+
+// ── POST: Create pallet ───────────────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'create_pallet') {
+    header('Content-Type: application/json');
+    $palletNo = trim($_POST['pallet_no'] ?? '');
+    if (!$palletNo) { echo json_encode(['ok' => false, 'msg' => 'Pallet No is required.']); exit; }
+    echo json_encode($pm->createPallet($palletNo));
+    exit;
+}
+
+// ── POST: Add roll ────────────────────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'add_roll') {
+    header('Content-Type: application/json');
+    $palletId  = intval($_POST['pallet_id']  ?? 0);
+    $productId = intval($_POST['product_id'] ?? 0);
+    if (!$palletId || !$productId) { echo json_encode(['ok' => false, 'msg' => 'Missing IDs.']); exit; }
+    echo json_encode($pm->addRollToPallet($palletId, $productId));
+    exit;
+}
+
+// ── POST: Remove roll ─────────────────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'remove_roll') {
+    header('Content-Type: application/json');
+    $palletId  = intval($_POST['pallet_id']  ?? 0);
+    $productId = intval($_POST['product_id'] ?? 0);
+    if (!$palletId || !$productId) { echo json_encode(['ok' => false, 'msg' => 'Missing IDs.']); exit; }
+    echo json_encode($pm->removeRollFromPallet($palletId, $productId));
+    exit;
+}
+
+// ── POST: Delete entire pallet ────────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'delete_pallet') {
+    $palletId = intval($_POST['pallet_id'] ?? 0);
+    $result   = $pm->deletePallet($palletId);
+    if ($result['ok']) {
+        header("Location: pallet.php?success=pallet_deleted&pallet_no=" . urlencode($result['pallet_no'] ?? ''));
+    } else {
+        header("Location: pallet.php?error=" . urlencode($result['msg']));
     }
-    .sfc-output-reslit  { background:#fffbf0; border:1px solid #fde68a; }
-    .sfc-output-recoil  { background:#eff6ff; border:1px solid #bfdbfe; }
-    .sfc-output-sell    { background:#f0fdf4; border:1px solid #bbf7d0; }
-    .sfc-output-title   { font-size:.72rem; font-weight:700; text-transform:uppercase;
-                          letter-spacing:1px; margin-bottom:6px; display:flex; align-items:center; gap:6px; }
-    .sfc-roll-row       { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
-                          padding:5px 8px; border-radius:6px; background:rgba(255,255,255,.7);
-                          margin-bottom:4px; border:1px solid #e5e7eb; }
-    .sfc-roll-row:last-child { margin-bottom:0; }
-    .roll-ref  { font-family:monospace; font-weight:700; font-size:.85rem; }
-    .chip-sm   { font-size:.68rem; padding:1px 7px; border-radius:20px; font-weight:600; }
-    .chip-w    { background:#e8f4fd; color:#0369a1; }
-    .chip-l    { background:#f0fdf4; color:#166534; }
-    .chip-act  { background:#fef3c7; color:#92400e; }
+    exit;
+}
+
+// ── POST: Send to QC (first submission) ──────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'send_to_qc') {
+    $palletId = intval($_POST['pallet_id'] ?? 0);
+    $result   = $pm->sendToQC($palletId);
+    if ($result['ok']) { header("Location: pallet.php?success=sent_to_qc"); }
+    else               { header("Location: pallet.php?pallet_id={$palletId}&error=" . urlencode($result['msg'])); }
+    exit;
+}
+
+// ── POST: Reopen rejected pallet for editing ──────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'reopen_pallet') {
+    $palletId = intval($_POST['pallet_id'] ?? 0);
+    $result   = $pm->reopenRejectedPallet($palletId);
+    if ($result['ok']) {
+        header("Location: pallet.php?pallet_id={$palletId}&success=reopened");
+    } else {
+        header("Location: pallet.php?pallet_id={$palletId}&error=" . urlencode($result['msg']));
+    }
+    exit;
+}
+
+// ── POST: Resubmit edited pallet to QC ───────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'resubmit_to_qc') {
+    $palletId = intval($_POST['pallet_id'] ?? 0);
+    $result   = $pm->resubmitToQC($palletId);
+    if ($result['ok']) { header("Location: pallet.php?success=resubmitted"); }
+    else               { header("Location: pallet.php?pallet_id={$palletId}&error=" . urlencode($result['msg'])); }
+    exit;
+}
+
+// ── POST: Deliver ─────────────────────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'deliver_pallet') {
+    $palletId = intval($_POST['pallet_id'] ?? 0);
+    $result   = $pm->bundleDeliver($palletId);
+    if ($result['ok']) { header("Location: pallet.php?success=delivered&pallet_no=" . urlencode($result['pallet_no'] ?? '')); }
+    else               { header("Location: pallet.php?error=" . urlencode($result['msg'])); }
+    exit;
+}
+
+// ── Page data ─────────────────────────────────────────────────
+$activePalletId = intval($_GET['pallet_id'] ?? 0);
+$activePallet   = $activePalletId ? $pm->getPallet($activePalletId) : null;
+
+// Extended getPalletItems with std_weight for weight calculation
+function getPalletItemsWithWeight(mysqli $conn, int $pallet_id): array {
+    $stmt = $conn->prepare("
+        SELECT pi.seq, pi.added_at,
+               sp.id AS product_id,
+               sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
+               sp.width, sp.length, sp.actual_length, sp.nod_length, sp.status,
+               sp.customer_name, sp.ref_no,
+               COALESCE(sw.std_weight, 0) AS std_weight
+        FROM pallet_items pi
+        JOIN slitting_product sp ON sp.id = pi.slitting_product_id
+        LEFT JOIN std_wgt sw     ON sw.product_code = sp.product
+        WHERE pi.pallet_id = ?
+        ORDER BY pi.seq ASC
+    ");
+    $stmt->bind_param("i", $pallet_id);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    return $rows;
+}
+
+// Helper: calculate estimated weight for one roll
+function calcEstWeight(float $lengthM, float $widthMm, float $stdWeight): float {
+    if ($lengthM <= 0 || $widthMm <= 0 || $stdWeight <= 0) return 0.0;
+    return ($lengthM * $widthMm / 1000) * $stdWeight;
+}
+
+$activeItems = $activePallet ? getPalletItemsWithWeight($conn, $activePalletId) : [];
+
+// Build a lookup: seq → item, so PHP can render all 8 slots in order
+$itemsBySeq = [];
+foreach ($activeItems as $item) {
+    $itemsBySeq[(int)$item['seq']] = $item;
+}
+
+// Pre-calculate total Est. Weight for PHP-rendered slots
+$totalEstWgt = 0.0;
+foreach ($activeItems as $item) {
+    $len = (float)($item['actual_length'] ?: $item['length']);
+    $totalEstWgt += calcEstWeight($len, (float)$item['width'], (float)$item['std_weight']);
+}
+
+// Pallets in 'building' state (open)
+$openPallets = $conn->query(
+    "SELECT p.*, COUNT(pi.id) AS item_count
+     FROM pallets p LEFT JOIN pallet_items pi ON pi.pallet_id = p.id
+     WHERE p.status = 'building'
+     GROUP BY p.id ORDER BY p.created_at DESC LIMIT 30"
+)->fetch_all(MYSQLI_ASSOC);
+
+// Pallets rejected by QC
+$rejectedPallets = $conn->query(
+    "SELECT p.*, COUNT(pi.id) AS item_count
+     FROM pallets p LEFT JOIN pallet_items pi ON pi.pallet_id = p.id
+     WHERE p.status = 'rejected'
+     GROUP BY p.id ORDER BY p.rejected_at DESC, p.updated_at DESC LIMIT 20"
+)->fetch_all(MYSQLI_ASSOC);
+
+$allPallets = $conn->query(
+    "SELECT p.*, COUNT(pi.id) AS item_count
+     FROM pallets p LEFT JOIN pallet_items pi ON pi.pallet_id = p.id
+     GROUP BY p.id ORDER BY p.created_at DESC LIMIT 60"
+)->fetch_all(MYSQLI_ASSOC);
+
+$page_title = 'Pallet Management';
+include 'header.php';
+
+$MAX = PalletManager::MAX_ROLLS;
+
+$isBuilding = $activePallet && $activePallet['status'] === 'building';
+$isRejected = $activePallet && $activePallet['status'] === 'rejected';
+$isReadOnly = $activePallet && !in_array($activePallet['status'], ['building', 'rejected']);
+?>
+<style>
+/* ── Layout ── */
+.pallet-sidebar   { position:sticky; top:20px; }
+
+/* ── Slot cards ── */
+.slot-card {
+    border: 1px solid var(--bs-border-color);
+    border-radius: 8px;
+    padding: 12px 14px;
+    background: #fff;
+    margin-bottom: 8px;
+    transition: box-shadow .15s, background .15s;
+    min-height: 68px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.slot-card.slot-empty {
+    background: #f8f9fa;
+    border-style: dashed;
+    color: #adb5bd;
+}
+.slot-card.scan-flash { animation: flashBg .5s ease-out; }
+@keyframes flashBg { 0%{background:#d1fae5} 100%{background:#fff} }
+
+/* Sequence bubble */
+.roll-seq {
+    width: 28px; height: 28px; border-radius: 50%;
+    background: #0d6efd; color: #fff;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; flex-shrink: 0;
+}
+.slot-empty .roll-seq { background: #dee2e6; color: #6c757d; }
+
+/* ── Weight chip ── */
+.wgt-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: #fef3c7;
+    color: #92400e;
+    border: 1px solid #fcd34d;
+    border-radius: 10px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.wgt-chip i { font-size: 10px; }
+
+/* ── NOD chip ── */
+.nod-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: #fee2e2;
+    color: #991b1b;
+    border: 1px solid #fca5a5;
+    border-radius: 10px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.nod-chip i { font-size: 10px; }
+
+/* ── Total weight summary bar ── */
+.weight-summary-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: linear-gradient(135deg, #fef3c7 0%, #fffbeb 100%);
+    border: 1px solid #fcd34d;
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.weight-summary-bar .wgt-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: #78350f;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.weight-summary-bar .wgt-total {
+    font-size: 20px;
+    font-weight: 800;
+    color: #92400e;
+    font-family: 'Courier New', monospace;
+}
+.weight-summary-bar .wgt-unit {
+    font-size: 13px;
+    font-weight: 600;
+    color: #b45309;
+    margin-left: 2px;
+}
+.weight-summary-bar .wgt-avg {
+    font-size: 11px;
+    color: #92400e;
+    background: rgba(255,255,255,.6);
+    border-radius: 6px;
+    padding: 3px 9px;
+}
+
+/* Progress bar */
+.pallet-progress     { height:8px; border-radius:4px; background:#e9ecef; overflow:hidden; }
+.pallet-progress-bar { height:100%; border-radius:4px; background:#0d6efd; transition:width .3s; }
+
+/* Status badges */
+.badge-building   { background:#e0f2fe; color:#0369a1; }
+.badge-pending_qc { background:#fef3c7; color:#92400e; }
+.badge-approved   { background:#dcfce7; color:#166534; }
+.badge-rejected   { background:#fee2e2; color:#991b1b; }
+.badge-delivered  { background:#d1fae5; color:#065f46; }
+
+.pallet-table td, .pallet-table th { vertical-align:middle; font-size:13px; }
+.pallet-table th  { font-size:11px; text-transform:uppercase; letter-spacing:.5px; }
+
+.constraint-badge { font-size:10px; padding:2px 7px; border-radius:10px;
+                    background:#f1f5f9; color:#475569; font-weight:600; }
+
+/* Rejected banner */
+.rejected-banner   { background:#fee2e2; border:1.5px solid #fca5a5; border-radius:10px;
+                     padding:14px 18px; margin-bottom:16px; }
+.rejected-banner h6 { color:#991b1b; font-weight:700; margin:0 0 4px; }
+.rejected-banner p  { color:#7f1d1d; font-size:12px; margin:0; }
+
+/* Edit mode label */
+.edit-mode-pill { display:inline-flex; align-items:center; gap:5px; font-size:11px;
+                  font-weight:700; padding:3px 10px; border-radius:20px;
+                  background:#fef3c7; color:#92400e; border:1px solid #fcd34d; }
 </style>
 
-<div class="d-flex justify-content-between align-items-center mb-3">
-    <h2><i class="bi bi-box-seam-fill me-2 text-primary"></i>SFC Inventory Management</h2>
-    <?php if (isset($_GET['success'])): ?>
-        <div class="alert alert-success py-2 mb-0 shadow-sm">
-            <i class="bi bi-check-circle me-2"></i>
-            <?= ($_GET['msg'] ?? '') === 'deleted' ? 'Item deleted from SFC Inventory.' : 'Action processed successfully!' ?>
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-archive me-2"></i>Pallet Management</h2>
+    <div class="d-flex gap-2">
+        <button type="button" class="btn btn-outline-primary shadow-sm"
+                data-bs-toggle="modal" data-bs-target="#summaryPalletModal"
+                onclick="loadSummaryPallet()">
+            <i class="bi bi-table me-1"></i> Summary Pallet
+        </button>
+        <button type="button" class="btn btn-success shadow-sm"
+                data-bs-toggle="modal" data-bs-target="#createPalletModal">
+            <i class="bi bi-plus-lg me-1"></i> New Pallet
+        </button>
+    </div>
+</div>
+
+<!-- Alerts -->
+<?php
+$successMsgs = [
+    'created'        => 'Pallet created. Scan the first roll to lock its constraints.',
+    'sent_to_qc'     => 'Pallet submitted to QC successfully.',
+    'resubmitted'    => 'Pallet re-submitted to QC after editing.',
+    'reopened'       => 'Pallet reopened for editing — remove defective rolls and add replacements.',
+    'delivered'      => 'Pallet ' . htmlspecialchars($_GET['pallet_no'] ?? '') . ' delivered.',
+    'pallet_deleted' => 'Pallet ' . htmlspecialchars($_GET['pallet_no'] ?? '') . ' deleted. Rolls returned to stock.',
+];
+if (isset($_GET['success'])): ?>
+<div class="alert alert-success alert-dismissible fade show">
+    <i class="bi bi-check-circle me-2"></i>
+    <?= $successMsgs[$_GET['success']] ?? 'Done.' ?>
+    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+<?php endif; ?>
+<?php if (isset($_GET['error'])): ?>
+<div class="alert alert-danger alert-dismissible fade show">
+    <i class="bi bi-exclamation-triangle me-2"></i>
+    <?= htmlspecialchars(urldecode($_GET['error'])) ?>
+    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+<?php endif; ?>
+
+<!-- Rejected pallets notification strip -->
+<?php if (!empty($rejectedPallets) && !$activePalletId): ?>
+<div class="rejected-banner">
+    <h6><i class="bi bi-exclamation-triangle-fill me-2"></i>
+        <?= count($rejectedPallets) ?> Rejected Pallet<?= count($rejectedPallets) > 1 ? 's' : '' ?> Need Attention
+    </h6>
+    <p>QC has rejected the following pallets. Click "Edit" to reopen and fix them.</p>
+    <div class="d-flex flex-wrap gap-2 mt-2">
+        <?php foreach ($rejectedPallets as $rp): ?>
+        <a href="pallet.php?pallet_id=<?= $rp['id'] ?>"
+           class="btn btn-danger btn-sm">
+            <i class="bi bi-pencil me-1"></i>
+            <?= htmlspecialchars($rp['pallet_no']) ?>
+            (<?= $rp['item_count'] ?> roll<?= $rp['item_count'] != 1 ? 's' : '' ?>)
+        </a>
+        <?php endforeach; ?>
+    </div>
+</div>
+<?php endif; ?>
+
+<div class="row g-4">
+
+    <!-- ═══════════════════════════════════════════════════════
+         LEFT: Active pallet panel
+    ═══════════════════════════════════════════════════════════ -->
+    <div class="col-md-7">
+
+        <?php if ($isBuilding): ?>
+        <!-- BUILDING STATE -->
+        <div class="card shadow-sm border-0 mb-4">
+            <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                <div>
+                    <span class="fw-bold"><?= htmlspecialchars($activePallet['pallet_no']) ?></span>
+                    <?php if (($activePallet['edit_count'] ?? 0) > 0): ?>
+                    <span class="edit-mode-pill ms-2">
+                        <i class="bi bi-pencil-fill"></i>
+                        EDIT #<?= $activePallet['edit_count'] ?>
+                    </span>
+                    <?php endif; ?>
+                </div>
+                <span class="badge bg-white text-primary" id="rollCountBadge">
+                    <?= count($activeItems) ?> / <?= $MAX ?> rolls
+                </span>
+            </div>
+
+            <!-- Constraint badges -->
+            <!-- NOTE: this header carries id="constraintHeader" so JS can
+                 fill it live after the first roll, removing the need for a
+                 full page reload before scanning the second roll. -->
+            <?php if (!empty(trim($activePallet['customer_name'] ?? ''))): ?>
+            <div id="constraintHeader" class="px-3 pt-2 pb-1 border-bottom d-flex flex-wrap gap-2 align-items-center">
+                <span class="constraint-badge"><i class="bi bi-person-check me-1"></i><?= htmlspecialchars($activePallet['customer_name']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-hash me-1"></i><?= htmlspecialchars($activePallet['ref_no']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-tag me-1"></i><?= htmlspecialchars($activePallet['product_type']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-arrows-expand me-1"></i><?= number_format((float)$activePallet['width']) ?> mm</span>
+                <small class="text-muted align-self-center" style="font-size:10px;">All rolls must match</small>
+            </div>
+            <?php else: ?>
+            <div id="constraintHeader" class="px-3 py-2 border-bottom">
+                <small class="text-muted">
+                    <i class="bi bi-qr-code-scan me-1"></i>
+                    Scan the first roll — its Customer, Ref No, Product Type and Width will lock as constraints.
+                </small>
+            </div>
+            <?php endif; ?>
+
+            <div class="card-body p-4">
+                <div class="pallet-progress mb-2">
+                    <div class="pallet-progress-bar" id="palletProgressBar"
+                         style="width:<?= (count($activeItems) / $MAX * 100) ?>%"></div>
+                </div>
+
+                <!-- ── Total Est. Weight Summary Bar ── -->
+                <div class="weight-summary-bar" id="weightSummaryBar">
+                    <div class="wgt-label">
+                        <i class="bi bi-speedometer2"></i>
+                        Est. Total Weight
+                    </div>
+                    <div style="display:flex; align-items:baseline; gap:6px;">
+                        <span class="wgt-total" id="totalWeightDisplay">
+                            <?= $totalEstWgt > 0 ? number_format($totalEstWgt, 2) : '—' ?>
+                        </span>
+                        <span class="wgt-unit"><?= $totalEstWgt > 0 ? 'kg' : '' ?></span>
+                    </div>
+                    <div class="wgt-avg" id="avgWeightDisplay">
+                        <?php if (count($activeItems) > 0 && $totalEstWgt > 0): ?>
+                            avg <?= number_format($totalEstWgt / count($activeItems), 2) ?> kg/roll
+                        <?php else: ?>
+                            no weight data
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+                <div class="alert alert-info py-2 mb-3">
+                    <i class="bi bi-qr-code-scan me-1"></i>
+                    Scan a product QR, or type Lot + Coil + Roll below.
+                </div>
+
+                <!-- Manual entry row -->
+                <div class="row g-2 mb-3">
+                    <div class="col-md-3">
+                        <input type="text" id="manLot"  class="form-control form-control-sm"
+                               placeholder="Lot No" autocomplete="off">
+                    </div>
+                    <div class="col-md-3">
+                        <input type="text" id="manCoil" class="form-control form-control-sm"
+                               placeholder="Coil No" autocomplete="off">
+                    </div>
+                    <div class="col-md-3">
+                        <input type="text" id="manRoll" class="form-control form-control-sm"
+                               placeholder="Roll No" autocomplete="off">
+                    </div>
+                    <div class="col-md-3">
+                        <button type="button" class="btn btn-primary btn-sm w-100"
+                                onclick="manualLookup()">
+                            <i class="bi bi-search me-1"></i> Find & Add
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Combined single-line manual entry (space-separated) -->
+                <div class="row g-2 mb-3">
+                    <div class="col-md-9">
+                        <input type="text" id="manCombined" class="form-control form-control-sm"
+                               placeholder="Or type all-in-one:  826277 FK-1 R1"
+                               autocomplete="off" autocorrect="off" spellcheck="false"
+                               style="font-family:monospace;">
+                    </div>
+                    <div class="col-md-3">
+                        <button type="button" class="btn btn-outline-primary btn-sm w-100"
+                                onclick="combinedLookup()">
+                            <i class="bi bi-box-arrow-in-down me-1"></i> Add
+                        </button>
+                    </div>
+                </div>
+
+                <div id="scanFeedback" class="mb-3" style="min-height:40px;"></div>
+
+                <!-- =====================================================
+                     SLOT LIST — PHP renders ALL 8 slots in order.
+                     Each filled slot now shows a weight chip.
+                ===================================================== -->
+                <div id="rollList">
+                    <?php for ($s = 1; $s <= $MAX; $s++):
+                        $item = $itemsBySeq[$s] ?? null;
+                    ?>
+                    <?php if ($item):
+                        $itemLen = (float)($item['actual_length'] ?: $item['length']);
+                        $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)$item['std_weight']);
+                        $itemNod = (float)($item['nod_length'] ?? 0);
+                        $hasNod  = $itemNod > 0;
+                        $netLen  = $itemLen - $itemNod;
+                    ?>
+                    <!-- FILLED SLOT -->
+                    <div class="slot-card"
+                         id="slot<?= $s ?>"
+                         data-slot="<?= $s ?>"
+                         data-filled="1"
+                         data-weight="<?= number_format($itemWgt, 4) ?>">
+                        <span class="roll-seq"><?= $s ?></span>
+                        <div class="flex-grow-1">
+                            <div class="fw-bold small">
+                                <?= htmlspecialchars($item['lot_no']) ?>
+                                <?= htmlspecialchars($item['coil_no']) ?>
+                                &ndash; <?= str_replace('R', 'R-', htmlspecialchars($item['roll_no'])) ?>
+                            </div>
+                            <div class="text-muted" style="font-size:11px;">
+                                <?= htmlspecialchars($item['product']) ?> |
+                                <?= number_format((float)$item['width']) ?>mm |
+                                <?= number_format($itemLen, 1) ?>m
+                            </div>
+                        </div>
+                        <?php if ($hasNod): ?>
+                        <!-- NOD chip -->
+                        <span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m">
+                            <i class="bi bi-exclamation-triangle-fill"></i>
+                            NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m
+                        </span>
+                        <?php endif; ?>
+                        <!-- Weight chip -->
+                        <span class="wgt-chip" title="Est. Weight = (<?= number_format($itemLen,1) ?>m × <?= number_format((float)$item['width']) ?>mm / 1000) × <?= $item['std_weight'] ?>">
+                            <i class="bi bi-speedometer2"></i>
+                            <?= $itemWgt > 0 ? number_format($itemWgt, 2) . ' kg' : 'N/A' ?>
+                        </span>
+                        <button type="button"
+                                class="btn btn-outline-danger btn-sm"
+                                title="Remove this roll from the pallet"
+                                data-product-id="<?= $item['product_id'] ?>"
+                                onclick="removeRoll(<?= $activePalletId ?>, <?= $item['product_id'] ?>, <?= $s ?>, this)">
+                            <i class="bi bi-x-lg"></i>
+                        </button>
+                    </div>
+
+                    <?php else: ?>
+                    <!-- EMPTY SLOT -->
+                    <div class="slot-card slot-empty"
+                         id="slot<?= $s ?>"
+                         data-slot="<?= $s ?>"
+                         data-filled="0"
+                         data-weight="0">
+                        <span class="roll-seq"><?= $s ?></span>
+                        <span style="font-size:13px;">Empty slot <?= $s ?></span>
+                    </div>
+                    <?php endif; ?>
+                    <?php endfor; ?>
+                </div><!-- #rollList -->
+            </div>
+
+            <div class="card-footer bg-light d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <div class="d-flex gap-2">
+                    <a href="pallet.php" class="btn btn-outline-secondary btn-sm">Close panel</a>
+                    <form method="post"
+                          onsubmit="return confirm('Delete pallet <?= htmlspecialchars($activePallet['pallet_no'], ENT_QUOTES) ?>?\n\nAll rolls will be returned to stock — the products themselves are NOT deleted.')">
+                        <input type="hidden" name="action"    value="delete_pallet">
+                        <input type="hidden" name="pallet_id" value="<?= $activePalletId ?>">
+                        <button type="submit" class="btn btn-outline-danger btn-sm">
+                            <i class="bi bi-trash3 me-1"></i> Delete Pallet
+                        </button>
+                    </form>
+                </div>
+                <div class="d-flex gap-2">
+                    <?php
+                    $isEdit   = ($activePallet['edit_count'] ?? 0) > 0;
+                    $qcAction = $isEdit ? 'resubmit_to_qc' : 'send_to_qc';
+                    $qcLabel  = $isEdit ? 'Re-submit to QC' : 'Send to QC';
+                    ?>
+                    <form method="post">
+                        <input type="hidden" name="action"    value="<?= $qcAction ?>">
+                        <input type="hidden" name="pallet_id" value="<?= $activePalletId ?>">
+                        <button type="submit"
+                                class="btn btn-warning btn-sm fw-bold"
+                                id="sendToQcBtn"
+                                <?= count($activeItems) < 1 ? 'disabled' : '' ?>
+                                onclick="return confirm('<?= $isEdit
+                                    ? 'Re-submit this edited pallet to QC?'
+                                    : 'Send pallet to QC? No more rolls can be added after this.' ?>')">
+                            <i class="bi bi-send me-1"></i> <?= $qcLabel ?>
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div><!-- /building card -->
+
+        <?php elseif ($isRejected): ?>
+        <!-- REJECTED STATE -->
+        <div class="card shadow-sm border-0 mb-4 border-danger">
+            <div class="card-header text-white d-flex justify-content-between align-items-center"
+                 style="background:#991b1b;">
+                <div>
+                    <i class="bi bi-x-circle me-2"></i>
+                    <strong><?= htmlspecialchars($activePallet['pallet_no']) ?></strong>
+                    <span class="badge bg-white text-danger ms-2">QC REJECTED</span>
+                </div>
+                <span class="badge bg-white text-danger">
+                    <?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?>
+                </span>
+            </div>
+
+            <?php if (!empty($activePallet['qc_comment'])): ?>
+            <div class="px-4 py-3 border-bottom" style="background:#fff5f5;">
+                <div class="d-flex align-items-start gap-2">
+                    <i class="bi bi-chat-left-dots-fill text-danger mt-1"></i>
+                    <div>
+                        <div class="fw-bold text-danger" style="font-size:12px;">QC Rejection Reason</div>
+                        <div class="mt-1"><?= htmlspecialchars($activePallet['qc_comment']) ?></div>
+                    </div>
+                </div>
+            </div>
+            <?php endif; ?>
+
+            <div class="card-body p-4">
+                <?php
+                $rejectedTotalWgt = 0.0;
+                foreach ($activeItems as $item) {
+                    $len = (float)($item['actual_length'] ?: $item['length']);
+                    $rejectedTotalWgt += calcEstWeight($len, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                }
+                ?>
+                <?php if ($rejectedTotalWgt > 0): ?>
+                <div class="weight-summary-bar mb-3">
+                    <div class="wgt-label"><i class="bi bi-speedometer2"></i> Est. Total Weight</div>
+                    <div style="display:flex; align-items:baseline; gap:6px;">
+                        <span class="wgt-total"><?= number_format($rejectedTotalWgt, 2) ?></span>
+                        <span class="wgt-unit">kg</span>
+                    </div>
+                    <div class="wgt-avg"><?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?></div>
+                </div>
+                <?php endif; ?>
+
+                <p class="text-muted mb-3" style="font-size:13px;">
+                    <i class="bi bi-info-circle me-1"></i>
+                    Click <strong>Edit Pallet</strong> to reopen it. You can then remove the defective roll(s),
+                    add replacement rolls, and re-submit to QC.
+                </p>
+                <?php foreach ($activeItems as $item):
+                    $itemLen = (float)($item['actual_length'] ?: $item['length']);
+                    $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                ?>
+                <div class="slot-card">
+                    <span class="roll-seq" style="background:#991b1b;"><?= $item['seq'] ?></span>
+                    <div class="flex-grow-1">
+                        <div class="fw-bold small">
+                            <?= htmlspecialchars($item['lot_no']) ?>
+                            <?= htmlspecialchars($item['coil_no']) ?>
+                            &ndash; <?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?>
+                        </div>
+                        <div class="text-muted" style="font-size:11px;">
+                            <?= htmlspecialchars($item['product']) ?> |
+                            <?= number_format((float)$item['width']) ?>mm |
+                            <?= number_format($itemLen, 1) ?>m
+                        </div>
+                    </div>
+                    <?php if ($itemWgt > 0): ?>
+                    <span class="wgt-chip">
+                        <i class="bi bi-speedometer2"></i>
+                        <?= number_format($itemWgt, 2) ?> kg
+                    </span>
+                    <?php endif; ?>
+                </div>
+                <?php endforeach; ?>
+            </div>
+
+            <div class="card-footer bg-light d-flex justify-content-between align-items-center">
+                <div class="d-flex gap-2">
+                    <a href="pallet.php" class="btn btn-outline-secondary btn-sm">← Back</a>
+                    <form method="post"
+                          onsubmit="return confirm('Delete this rejected pallet?\nRolls will be returned to stock.')">
+                        <input type="hidden" name="action"    value="delete_pallet">
+                        <input type="hidden" name="pallet_id" value="<?= $activePalletId ?>">
+                        <button type="submit" class="btn btn-outline-danger btn-sm">
+                            <i class="bi bi-trash3 me-1"></i> Delete Pallet
+                        </button>
+                    </form>
+                </div>
+                <form method="post">
+                    <input type="hidden" name="action"    value="reopen_pallet">
+                    <input type="hidden" name="pallet_id" value="<?= $activePalletId ?>">
+                    <button type="submit" class="btn btn-warning fw-bold"
+                            onclick="return confirm('Reopen pallet <?= htmlspecialchars($activePallet['pallet_no'], ENT_QUOTES) ?> for editing?\nAll rolls will be reset to IN so you can modify the pallet.')">
+                        <i class="bi bi-pencil-fill me-1"></i> Edit Pallet
+                    </button>
+                </form>
+            </div>
         </div>
-    <?php endif; ?>
+
+        <?php elseif ($activePallet): ?>
+        <!-- READ-ONLY (approved / delivered / pending_qc) -->
+        <div class="alert alert-secondary">
+            <strong><?= htmlspecialchars($activePallet['pallet_no']) ?></strong> —
+            <span class="badge badge-<?= $activePallet['status'] ?>">
+                <?= strtoupper(str_replace('_', ' ', $activePallet['status'])) ?>
+            </span>
+            — read-only.
+            <a href="pallet.php" class="ms-2">← Back to list</a>
+        </div>
+
+        <?php else: ?>
+        <!-- NOTHING SELECTED -->
+        <div class="card shadow-sm border-0 text-center py-5">
+            <div class="text-muted mb-3"><i class="bi bi-archive" style="font-size:3rem;"></i></div>
+            <h5 class="text-muted">No pallet selected</h5>
+            <p class="text-muted small">Select an open pallet, or create a new one.</p>
+            <button type="button" class="btn btn-success mt-2"
+                    data-bs-toggle="modal" data-bs-target="#createPalletModal">
+                <i class="bi bi-plus-lg me-1"></i> Create New Pallet
+            </button>
+        </div>
+        <?php endif; ?>
+    </div><!-- /col-md-7 -->
+
+    <!-- ═══════════════════════════════════════════════════════
+         RIGHT: Sidebar
+    ═══════════════════════════════════════════════════════════ -->
+    <div class="col-md-5 pallet-sidebar">
+
+        <?php if (!empty($rejectedPallets)): ?>
+        <div class="card shadow-sm border-0 mb-3 border-danger">
+            <div class="card-header fw-bold py-2" style="background:#fee2e2;color:#991b1b;">
+                <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                Rejected by QC (<?= count($rejectedPallets) ?>)
+            </div>
+            <div class="list-group list-group-flush">
+                <?php foreach ($rejectedPallets as $rp): ?>
+                <a href="pallet.php?pallet_id=<?= $rp['id'] ?>"
+                   class="list-group-item list-group-item-action d-flex justify-content-between align-items-center
+                          <?= ($rp['id'] == $activePalletId) ? 'active' : '' ?>">
+                    <div>
+                        <div class="fw-bold small"><?= htmlspecialchars($rp['pallet_no']) ?></div>
+                        <div style="font-size:10px;" class="text-muted">
+                            <?= htmlspecialchars($rp['customer_name'] ?? '—') ?>
+                        </div>
+                    </div>
+                    <span class="badge bg-danger"><?= $rp['item_count'] ?> rolls</span>
+                </a>
+                <?php endforeach; ?>
+            </div>
+        </div>
+        <?php endif; ?>
+
+        <!-- Open pallets -->
+        <?php if (!empty($openPallets)): ?>
+        <div class="card shadow-sm border-0 mb-3">
+            <div class="card-header bg-dark text-white fw-bold py-2">
+                <i class="bi bi-list-task me-2"></i>Open Pallets (<?= count($openPallets) ?>)
+            </div>
+            <div class="list-group list-group-flush">
+                <?php foreach ($openPallets as $op): ?>
+                <a href="pallet.php?pallet_id=<?= $op['id'] ?>"
+                   class="list-group-item list-group-item-action d-flex justify-content-between align-items-center
+                          <?= ($op['id'] == $activePalletId) ? 'active' : '' ?>">
+                    <div>
+                        <div class="fw-bold small"><?= htmlspecialchars($op['pallet_no']) ?></div>
+                        <div style="font-size:10px;"
+                             class="<?= ($op['id'] == $activePalletId) ? 'text-white-50' : 'text-muted' ?>">
+                            <?= htmlspecialchars($op['customer_name'] ?: 'No constraint set yet') ?>
+                        </div>
+                    </div>
+                    <div class="d-flex align-items-center gap-2">
+                        <span style="font-size:11px;"><?= $op['item_count'] ?>/<?= $MAX ?></span>
+                        <div class="pallet-progress" style="width:60px;">
+                            <div class="pallet-progress-bar"
+                                 style="width:<?= ($op['item_count'] / $MAX * 100) ?>%;
+                                        <?= ($op['id'] == $activePalletId) ? 'background:#fff;' : '' ?>">
+                            </div>
+                        </div>
+                    </div>
+                </a>
+                <?php endforeach; ?>
+            </div>
+        </div>
+        <?php endif; ?>
+
+        <!-- All pallets table -->
+        <div class="card shadow-sm border-0">
+            <div class="card-header bg-dark text-white fw-bold py-2">
+                <i class="bi bi-table me-2"></i>All Pallets (Recent 60)
+            </div>
+            <div class="table-responsive">
+                <table class="table table-sm table-hover pallet-table mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Pallet No</th>
+                            <th>Status</th>
+                            <th>Rolls</th>
+                            <th>Customer</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($allPallets as $pal): ?>
+                    <tr>
+                        <td class="fw-bold" style="font-family:monospace;font-size:12px;">
+                            <?= htmlspecialchars($pal['pallet_no']) ?>
+                        </td>
+                        <td>
+                            <span class="badge badge-<?= $pal['status'] ?>">
+                                <?= strtoupper(str_replace('_', ' ', $pal['status'])) ?>
+                            </span>
+                        </td>
+                        <td><?= $pal['item_count'] ?>/<?= $MAX ?></td>
+                        <td class="text-muted" style="font-size:11px;">
+                            <?= htmlspecialchars($pal['customer_name'] ?: '—') ?>
+                        </td>
+                        <td>
+                            <?php if ($pal['status'] === 'building'): ?>
+                            <a href="pallet.php?pallet_id=<?= $pal['id'] ?>"
+                               class="btn btn-outline-primary btn-sm">Open</a>
+                            <?php elseif ($pal['status'] === 'rejected'): ?>
+                            <a href="pallet.php?pallet_id=<?= $pal['id'] ?>"
+                               class="btn btn-danger btn-sm">Edit</a>
+                            <?php elseif ($pal['status'] === 'approved'): ?>
+                            <form method="post" class="d-inline"
+                                  onsubmit="return confirm('Mark entire pallet as DELIVERED?')">
+                                <input type="hidden" name="action"    value="deliver_pallet">
+                                <input type="hidden" name="pallet_id" value="<?= $pal['id'] ?>">
+                                <button class="btn btn-success btn-sm">
+                                    <i class="bi bi-truck me-1"></i>Deliver
+                                </button>
+                            </form>
+                            <?php else: ?>
+                            <span class="text-muted small">—</span>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div><!-- /col-md-5 sidebar -->
+</div><!-- /row -->
+
+<!-- ── CREATE PALLET MODAL ───────────────────────────────────── -->
+<div class="modal fade" id="createPalletModal" tabindex="-1">
+  <div class="modal-dialog modal-sm">
+    <div class="modal-content">
+      <div class="modal-header" style="background:#0f2744;">
+        <h5 class="modal-title text-white">
+            <i class="bi bi-plus-circle me-2"></i>New Pallet
+        </h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body pb-2">
+        <div class="mb-3">
+          <label class="form-label fw-bold mb-1">
+            Pallet Serial No <span class="text-danger">*</span>
+          </label>
+          <input type="text" id="palletNoInput" class="form-control"
+                 placeholder="SFS-0024-001 or SFS-0024-001 (A)"
+                 autocomplete="off" spellcheck="false"
+                 style="font-family:monospace;letter-spacing:.4px;">
+          <div class="form-text"><code>SFS-XXXX-XXX</code> or <code>SFS-XXXX-XXX (A)</code></div>
+          <div id="palletNoFeedback" class="mt-1" style="font-size:12px;min-height:18px;"></div>
+        </div>
+        <div class="alert alert-info py-2 mb-0" style="font-size:12px;">
+          <i class="bi bi-info-circle me-1"></i>
+          The <strong>first roll</strong> scanned will set the Customer, Ref No, Product Type and Width constraints.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-success btn-sm" id="createPalletBtn" disabled
+                onclick="submitCreatePallet()">
+          <i class="bi bi-plus-lg me-1"></i> Create Pallet
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- =============================================================
+     SUMMARY PALLET MODAL
+     Flattened view of every pallet + its nested products (rolls),
+     loaded via ajax=summary_pallet and filtered entirely client-side.
+   ============================================================= -->
+<div class="modal fade" id="summaryPalletModal" tabindex="-1">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header" style="background:#0f2744;">
+        <h5 class="modal-title text-white">
+          <i class="bi bi-table me-2"></i>Summary Pallet
+        </h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+
+        <!-- Filter controls -->
+        <div class="row g-2 mb-3">
+          <div class="col-md-3">
+            <select id="summaryFilterCategory" class="form-select form-select-sm" onchange="onSummaryCategoryChange()">
+              <option value="">All Fields</option>
+              <option value="status">Status</option>
+              <option value="customer">Customer</option>
+              <option value="width">Width</option>
+            </select>
+          </div>
+          <div class="col-md-5">
+            <!-- Text input — used for "All Fields" free search, and for Width -->
+            <input type="text" id="summaryFilterValueText" class="form-control form-control-sm"
+                   placeholder="Search Pallet No, Status, Rolls, Customer, Ref No, Width..."
+                   oninput="applySummaryFilter()">
+            <!-- Dropdown — used for Status / Customer, populated dynamically with distinct values -->
+            <select id="summaryFilterValueSelect" class="form-select form-select-sm d-none" onchange="applySummaryFilter()">
+              <option value="">All</option>
+            </select>
+          </div>
+          <div class="col-md-2">
+            <button type="button" class="btn btn-outline-secondary btn-sm w-100" onclick="clearSummaryFilter()">
+              <i class="bi bi-x-lg me-1"></i>Clear
+            </button>
+          </div>
+          <div class="col-md-2 d-flex align-items-center justify-content-md-end">
+            <span class="text-muted small" id="summaryResultCount"></span>
+          </div>
+        </div>
+
+        <div id="summaryLoading" class="text-center text-muted py-5">
+          <div class="spinner-border spinner-border-sm me-2"></div> Loading summary…
+        </div>
+
+        <div class="table-responsive d-none" id="summaryTableWrap">
+          <table class="table table-sm table-hover table-bordered align-middle text-center mb-0 pallet-table">
+            <thead class="table-dark">
+              <tr>
+                <th>Pallet No</th>
+                <th>Status</th>
+                <th>Rolls</th>
+                <th>Customer</th>
+                <th>Ref No</th>
+                <th>Width</th>
+                <th>NOD</th>
+              </tr>
+            </thead>
+            <tbody id="summaryTableBody"></tbody>
+          </table>
+        </div>
+
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+        <button type="button" class="btn btn-success btn-sm" onclick="exportSummaryPallet()">
+          <i class="bi bi-file-earmark-excel me-1"></i> Export Excel
+        </button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <input id="qrScanInput" type="hidden" value="">
-<div id="qrAlert" class="d-none alert py-2 mb-3 shadow-sm"></div>
-
-<div class="alert alert-secondary py-2 mb-3 d-flex align-items-center gap-2">
-    <i class="bi bi-qr-code-scan fs-5"></i>
-    <span class="small">QR Scanner ready — scan an SFC label anytime, or click <strong>Process SFC</strong> (supervisor PIN required).</span>
-</div>
-
-<!-- Summary counts -->
-<div class="d-flex gap-3 mb-3">
-    <div class="card border-0 shadow-sm px-4 py-2 text-center">
-        <div class="fw-bold fs-4 text-primary"><?= $total_active ?></div>
-        <div class="small text-muted">Active</div>
-    </div>
-    <div class="card border-0 shadow-sm px-4 py-2 text-center">
-        <div class="fw-bold fs-4 text-secondary"><?= $total_used ?></div>
-        <div class="small text-muted">Used / Out</div>
-    </div>
-</div>
-
-<div class="row mb-3 g-2 align-items-center">
-    <div class="col-md-5">
-        <form method="GET" action="sfc.php" class="input-group shadow-sm">
-            <input type="hidden" name="show_used" value="<?= $show_used ?>">
-            <input type="text" name="search" class="form-control"
-                   placeholder="Search ID, Product, Lot, or Roll..."
-                   value="<?= htmlspecialchars($search) ?>">
-            <button class="btn btn-primary" type="submit">
-                <i class="bi bi-search me-1"></i> Search
-            </button>
-            <?php if ($search !== ''): ?>
-                <a href="sfc.php?show_used=<?= $show_used ?>" class="btn btn-outline-secondary">Clear</a>
-            <?php endif; ?>
-        </form>
-    </div>
-    <div class="col-auto">
-        <a href="sfc.php?show_used=<?= $show_used ? 0 : 1 ?>&search=<?= urlencode($search) ?>"
-           class="btn btn-sm <?= $show_used ? 'btn-dark' : 'btn-outline-dark' ?>">
-            <i class="bi bi-<?= $show_used ? 'eye-slash' : 'eye' ?> me-1"></i>
-            <?= $show_used ? 'Hide Used' : 'Show Used / Out' ?>
-        </a>
-    </div>
-    <div class="col-md-auto ms-auto">
-        <a href="sfc_tracking.php" class="btn btn-info btn-sm">
-            <i class="bi bi-graph-up me-1"></i> SFC Tracking Report
-        </a>
-    </div>
-</div>
-
-<div class="card shadow-sm border-0">
-    <div class="card-header bg-dark text-white fw-bold py-3">
-        <i class="bi bi-list-task me-2"></i>SFC Material
-        <?= $show_used ? '(All — including used)' : '(Active only)' ?>
-    </div>
-    <div class="table-responsive">
-        <table class="table table-hover align-middle mb-0">
-            <thead class="table-light">
-                <tr>
-                    <th>Print</th>
-                    <th>Product</th>
-                    <th>Lot No · Coil · Roll</th>
-                    <th>Width (mm)</th>
-                    <th>Length (m)</th>
-                    <th>Date Created</th>
-                    <th>Status / Output</th>
-                    <th class="no-print">Action</th>
-                </tr>
-            </thead>
-            <tbody>
-            <?php if ($result && $result->num_rows > 0):
-                while ($row = $result->fetch_assoc()):
-                    $isUsed   = !empty($row['date_out']);
-                    $outputs  = $isUsed ? getSfcOutputs($conn, $row) : [];
-                    $rowClass = $isUsed ? 'table-secondary' : '';
-            ?>
-                <tr class="<?= $rowClass ?>" style="vertical-align:top">
-                    <td>
-                        <a href="print_sfc.php?id=<?= (int)$row['sfc_id'] ?>"
-                           target="_blank" class="btn btn-outline-dark btn-sm">
-                            <i class="bi bi-printer-fill"></i>
-                        </a>
-                    </td>
-                    <td><span class="badge bg-secondary"><?= htmlspecialchars($row['product']) ?></span></td>
-                    <td class="fw-bold" style="font-family:monospace; font-size:.88rem;">
-                        <?= htmlspecialchars($row['lot_no']) ?>
-                        <?= htmlspecialchars($row['coil_no']) ?>
-                        <?php if ($row['roll_no'] && strtoupper($row['roll_no']) !== 'BALANCE'): ?>
-                            – <?= str_replace('R','R-', htmlspecialchars($row['roll_no'])) ?>
-                        <?php elseif ($row['roll_no']): ?>
-                            <span class="badge bg-warning text-dark ms-1" style="font-size:.65rem">BALANCE</span>
-                        <?php endif; ?>
-                    </td>
-                    <td><?= number_format($row['width']) ?></td>
-                    <td class="text-primary fw-bold"><?= number_format($row['length'], 2) ?></td>
-                    <td class="small text-muted"><?= date('d M Y', strtotime($row['date_created'])) ?></td>
-
-                    <!-- Status + Output Rolls column -->
-                    <td>
-                        <?php if (!$isUsed): ?>
-                            <span class="badge bg-success">IN SFC</span>
-
-                        <?php else: ?>
-                            <!-- Used status badge -->
-                            <?php
-                            $actionLabel = match(strtoupper($row['action'] ?? '')) {
-                                'RESLIT'  => ['RESLIT',   'bg-warning text-dark'],
-                                'RECOIL'  => ['RECOIL',   'bg-primary'],
-                                'SELL'    => ['SELL → QC','bg-success'],
-                                default   => [htmlspecialchars($row['action'] ?? 'USED'), 'bg-secondary'],
-                            };
-                            ?>
-                            <span class="badge <?= $actionLabel[1] ?> mb-1">
-                                USED → <?= $actionLabel[0] ?>
-                            </span>
-                            <small class="text-muted d-block mb-1">
-                                Out: <?= date('d M Y', strtotime($row['date_out'])) ?>
-                            </small>
-
-                            <!-- Output rolls produced from this SFC -->
-                            <?php if (!empty($outputs)): ?>
-                                <?php foreach ($outputs as $out):
-                                    $outClass = match($out['process']) {
-                                        'RESLIT' => 'sfc-output-reslit',
-                                        'RECOIL' => 'sfc-output-recoil',
-                                        default  => 'sfc-output-sell',
-                                    };
-                                    $outIcon = match($out['process']) {
-                                        'RESLIT' => 'bi-arrow-repeat',
-                                        'RECOIL' => 'bi-arrow-counterclockwise',
-                                        default  => 'bi-cart-check',
-                                    };
-                                    $outColor = match($out['process']) {
-                                        'RESLIT' => '#92400e',
-                                        'RECOIL' => '#1d4ed8',
-                                        default  => '#166534',
-                                    };
-                                ?>
-                                <div class="sfc-output-block <?= $outClass ?>">
-                                    <div class="sfc-output-title" style="color:<?= $outColor ?>">
-                                        <i class="bi <?= $outIcon ?>"></i>
-                                        <?= $out['process'] ?> Output
-                                        <span class="badge <?= $out['status']==='completed'||$out['status']==='DELIVERED' ? 'bg-success' : 'bg-warning text-dark' ?>"
-                                              style="font-size:.6rem">
-                                            <?= strtoupper($out['status']) ?>
-                                        </span>
-                                        <span class="ms-auto text-muted" style="font-size:.65rem; font-weight:400;">
-                                            <?= count($out['rolls']) ?> roll<?= count($out['rolls'])>1?'s':'' ?>
-                                        </span>
-                                    </div>
-
-                                    <?php if (!empty($out['rolls'])): ?>
-                                        <?php foreach ($out['rolls'] as $r):
-                                            // Determine ref label for each roll type
-                                            if ($out['process'] === 'RESLIT') {
-                                                $ref = htmlspecialchars(($row['lot_no'] ?? '') . ($r['cut_letter'] ?? ''))
-                                                     . ' ' . htmlspecialchars($row['coil_no'] ?? '')
-                                                     . ' – ' . str_replace('R','R-', htmlspecialchars($r['roll_no'] ?? ''));
-                                                $w   = $r['new_width']    ?? 0;
-                                                $l   = $r['length']       ?? 0;
-                                                $act = $r['actual_length'] ?? 0;
-                                                $st  = $r['status']        ?? 'pending';
-                                            } else {
-                                                $ref = htmlspecialchars($r['lot_no'] ?? '')
-                                                     . ' ' . htmlspecialchars($r['coil_no'] ?? '')
-                                                     . ' – ' . str_replace('R','R-', htmlspecialchars($r['roll_no'] ?? ''));
-                                                $w   = $r['width']        ?? 0;
-                                                $l   = $r['length']       ?? 0;
-                                                $act = $r['actual_length'] ?? 0;
-                                                $st  = $r['status']        ?? 'IN';
-                                            }
-                                            $stBadge = match(strtoupper($st)) {
-                                                'DELIVERED' => '<span class="badge bg-success" style="font-size:.6rem">DELIVERED</span>',
-                                                'APPROVED'  => '<span class="badge bg-primary" style="font-size:.6rem">APPROVED</span>',
-                                                'WAITING'   => '<span class="badge bg-warning text-dark" style="font-size:.6rem">WAITING</span>',
-                                                'COMPLETED' => '<span class="badge bg-success" style="font-size:.6rem">COMPLETED</span>',
-                                                'IN'        => '<span class="badge bg-info text-dark" style="font-size:.6rem">IN STOCK</span>',
-                                                default     => '<span class="badge bg-secondary" style="font-size:.6rem">'.htmlspecialchars($st).'</span>',
-                                            };
-                                        ?>
-                                        <div class="sfc-roll-row">
-                                            <i class="bi bi-arrow-right-circle text-muted"></i>
-                                            <span class="roll-ref"><?= $ref ?></span>
-                                            <span class="chip-sm chip-w"><?= number_format((float)$w) ?> mm</span>
-                                            <?php if ($act > 0): ?>
-                                                <span class="chip-sm chip-act">Actual: <?= number_format((float)$act, 1) ?> m</span>
-                                            <?php elseif ($l > 0): ?>
-                                                <span class="chip-sm chip-l">Nom: <?= number_format((float)$l, 1) ?> m</span>
-                                            <?php endif; ?>
-                                            <?= $stBadge ?>
-                                        </div>
-                                        <?php endforeach; ?>
-                                    <?php else: ?>
-                                        <div class="text-muted fst-italic" style="font-size:.75rem">
-                                            <i class="bi bi-hourglass-split me-1"></i>No output rolls yet
-                                        </div>
-                                    <?php endif; ?>
-                                </div>
-                                <?php endforeach; ?>
-                            <?php else: ?>
-                                <div class="text-muted small fst-italic mt-1">
-                                    <i class="bi bi-hourglass-split me-1"></i>Output not recorded yet
-                                </div>
-                            <?php endif; ?>
-                        <?php endif; ?>
-                    </td>
-
-                    <td class="no-print">
-                        <?php if (!$isUsed): ?>
-                            <div class="d-flex gap-1">
-                                <button type="button"
-                                        class="btn btn-primary btn-sm px-3 rounded-pill actionBtn shadow-sm"
-                                        data-sfc-id="<?= $row['sfc_id'] ?>"
-                                        data-sfc-lot="<?= htmlspecialchars($row['lot_no']) ?>"
-                                        data-sfc-coil="<?= htmlspecialchars($row['coil_no']) ?>"
-                                        data-sfc-details="<?= htmlspecialchars($row['product']) ?> | <?= htmlspecialchars($row['lot_no']) ?> <?= htmlspecialchars($row['coil_no']) ?> | <?= number_format($row['length'], 2) ?>m">
-                                    <i class="bi bi-shield-lock-fill me-1"></i> Process
-                                </button>
-                                <button type="button"
-                                        class="btn btn-outline-danger btn-sm rounded-pill deleteBtn shadow-sm"
-                                        title="Delete this SFC entry"
-                                        data-sfc-id="<?= $row['sfc_id'] ?>"
-                                        data-sfc-details="<?= htmlspecialchars($row['product']) ?> | <?= htmlspecialchars($row['lot_no']) ?> <?= htmlspecialchars($row['coil_no']) ?> | <?= number_format($row['length'], 2) ?>m">
-                                    <i class="bi bi-trash-fill"></i>
-                                </button>
-                            </div>
-                        <?php else: ?>
-                            <span class="text-muted small">Done</span>
-                        <?php endif; ?>
-                    </td>
-                </tr>
-            <?php endwhile;
-            else: ?>
-                <tr>
-                    <td colspan="8" class="py-5 text-muted text-center">
-                        <i class="bi bi-inbox fs-3 d-block mb-2"></i>
-                        No SFC inventory found.
-                    </td>
-                </tr>
-            <?php endif; ?>
-            </tbody>
-        </table>
-    </div>
-</div>
-
-<!-- PIN Modal -->
-<div class="modal fade" id="pinModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
-  <div class="modal-dialog modal-dialog-centered modal-sm">
-    <div class="modal-content border-0 shadow">
-      <div class="modal-header bg-warning text-dark">
-        <h5 class="modal-title"><i class="bi bi-shield-lock-fill me-2"></i>Supervisor PIN</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-      </div>
-      <div class="modal-body text-center p-4">
-        <p class="text-muted small mb-3">Enter supervisor PIN to proceed.</p>
-        <input type="password" id="pinInput" class="form-control form-control-lg text-center mb-2"
-               placeholder="••••" maxlength="10" autocomplete="off">
-        <div id="pinError" class="text-danger small d-none mt-1">
-            <i class="bi bi-x-circle me-1"></i>Incorrect PIN. Try again.
-        </div>
-      </div>
-      <div class="modal-footer justify-content-center border-0 pt-0">
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-        <button type="button" id="pinSubmitBtn" class="btn btn-warning fw-bold px-4">
-            <i class="bi bi-unlock-fill me-1"></i> Unlock
-        </button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- Action Modal -->
-<div class="modal fade" id="actionModal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered">
-    <div class="modal-content border-0 shadow">
-      <div class="modal-header bg-primary text-white">
-        <h5 class="modal-title"><i class="bi bi-gear-fill me-2"></i>Select Next Process</h5>
-        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-      </div>
-      <div class="modal-body text-center p-4">
-        <p class="text-muted small text-uppercase fw-bold mb-1">Processing Material:</p>
-        <h5 id="sfcDetails" class="fw-bold mb-1 text-primary"></h5>
-        <p class="text-muted small mb-4">SFC ID: <span id="sfcIdDisplay" class="fw-bold text-dark"></span></p>
-        <form id="actionForm" method="post" action="sfc.php">
-            <input type="hidden" name="sfc_id" id="sfc_id_input">
-            <div class="d-grid gap-3">
-                <button type="submit" name="action" value="RECOIL"
-                        class="btn btn-warning py-2 fw-bold shadow-sm"
-                        onclick="return confirm('Send to Recoiling?')">
-                    <i class="bi bi-arrow-repeat me-2"></i> RECOIL
-                </button>
-                <button type="submit" name="action" value="RESLIT"
-                        class="btn btn-info py-2 fw-bold text-white shadow-sm"
-                        onclick="return confirm('Send to Reslit?')">
-                    <i class="bi bi-intersect me-2"></i> RESLIT
-                </button>
-                <button type="submit" name="action" value="SELL"
-                        class="btn btn-success py-2 fw-bold shadow-sm"
-                        onclick="return confirm('Send to QC / Finish Product?')">
-                    <i class="bi bi-cart-check me-2"></i> SELL (To QC)
-                </button>
-            </div>
-        </form>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- Delete Confirmation Modal -->
-<div class="modal fade" id="deleteModal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered">
-    <div class="modal-content border-0 shadow">
-      <div class="modal-header bg-danger text-white">
-        <h5 class="modal-title"><i class="bi bi-exclamation-triangle-fill me-2"></i>Confirm Delete</h5>
-        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-      </div>
-      <div class="modal-body text-center p-4">
-        <p class="text-muted small text-uppercase fw-bold mb-1">Deleting:</p>
-        <h5 id="deleteSfcDetails" class="fw-bold mb-3 text-danger"></h5>
-        <p class="mb-0">Are you sure you want to delete this product from SFC Inventory? This action cannot be undone.</p>
-        <form id="deleteForm" method="post" action="sfc.php">
-            <input type="hidden" name="sfc_id" id="delete_sfc_id_input">
-            <input type="hidden" name="action" value="DELETE">
-        </form>
-      </div>
-      <div class="modal-footer justify-content-center border-0 pt-0">
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-        <button type="button" id="deleteConfirmBtn" class="btn btn-danger fw-bold px-4">
-            <i class="bi bi-trash-fill me-1"></i> Delete
-        </button>
-      </div>
-    </div>
-  </div>
-</div>
 
 <script>
-document.addEventListener('DOMContentLoaded', function () {
-    const pinModal     = new bootstrap.Modal(document.getElementById('pinModal'));
-    const actionModal  = new bootstrap.Modal(document.getElementById('actionModal'));
-    const deleteModal  = new bootstrap.Modal(document.getElementById('deleteModal'));
-    const pinInput     = document.getElementById('pinInput');
-    const pinError     = document.getElementById('pinError');
-    const pinSubmitBtn = document.getElementById('pinSubmitBtn');
-    const qrInput      = document.getElementById('qrScanInput');
-    const qrAlert      = document.getElementById('qrAlert');
+// ─────────────────────────────────────────────────────────────
+// CONSTANTS
+// ─────────────────────────────────────────────────────────────
+const PALLET_ID = <?= $activePalletId ?: 'null' ?>;
+const MAX_ROLLS = <?= $MAX ?>;
+let   rollCount = <?= count($activeItems) ?>;
 
-    let pendingSfcId = null, pendingSfcDetails = null, pendingIntent = 'process';
+// Guard against overlapping/duplicate scan submissions. While a
+// lookup+add round-trip is in flight, ignore any further scans —
+// this is the front-line defence against a camera double-decode.
+let   isAdding  = false;
 
-    function openActionModal(sfcId, details) {
-        document.getElementById('sfc_id_input').value      = sfcId;
-        document.getElementById('sfcIdDisplay').textContent = sfcId;
-        document.getElementById('sfcDetails').textContent   = details;
-        actionModal.show();
+// ─────────────────────────────────────────────────────────────
+// EST. WEIGHT HELPERS
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Calculate est. weight for one roll.
+ * Formula: (length_m × width_mm / 1000) × std_weight
+ */
+function calcWeight(lengthM, widthMm, stdWeight) {
+    if (!lengthM || !widthMm || !stdWeight) return 0;
+    return (parseFloat(lengthM) * parseFloat(widthMm) / 1000) * parseFloat(stdWeight);
+}
+
+/**
+ * Recalculate the total weight from all filled slot data-weight attributes
+ * and update the weight summary bar.
+ */
+function recalcTotalWeight() {
+    const slots   = document.querySelectorAll('#rollList [data-slot][data-filled="1"]');
+    let   total   = 0;
+    let   count   = 0;
+
+    slots.forEach(slot => {
+        const w = parseFloat(slot.dataset.weight || 0);
+        if (w > 0) { total += w; count++; }
+    });
+
+    const dispEl = document.getElementById('totalWeightDisplay');
+    const unitEl = dispEl ? dispEl.nextElementSibling : null;
+    const avgEl  = document.getElementById('avgWeightDisplay');
+
+    if (!dispEl) return;
+
+    if (total > 0) {
+        dispEl.textContent = total.toFixed(2);
+        if (unitEl) unitEl.textContent = 'kg';
+        if (avgEl)  avgEl.textContent  = 'avg ' + (total / slots.length).toFixed(2) + ' kg/roll';
+    } else {
+        dispEl.textContent = '—';
+        if (unitEl) unitEl.textContent = '';
+        if (avgEl)  avgEl.textContent  = 'no weight data';
     }
+}
 
-    function openDeleteModal(sfcId, details) {
-        document.getElementById('delete_sfc_id_input').value = sfcId;
-        document.getElementById('deleteSfcDetails').textContent = details;
-        deleteModal.show();
-    }
+// ─────────────────────────────────────────────────────────────
+// updateConstraintBadges(product)
+// After the FIRST roll seeds the pallet constraints, fill the
+// header badges live. This replaces the old location.reload(),
+// which created a window where the next scan failed.
+// ─────────────────────────────────────────────────────────────
+function updateConstraintBadges(p) {
+    const header = document.getElementById('constraintHeader');
+    if (!header) return;
+    header.className = 'px-3 pt-2 pb-1 border-bottom d-flex flex-wrap gap-2 align-items-center';
+    header.innerHTML = `
+        <span class="constraint-badge"><i class="bi bi-person-check me-1"></i>${escHtml(p.customer_name || '')}</span>
+        <span class="constraint-badge"><i class="bi bi-hash me-1"></i>${escHtml(p.ref_no || '')}</span>
+        <span class="constraint-badge"><i class="bi bi-tag me-1"></i>${escHtml(p.product || '')}</span>
+        <span class="constraint-badge"><i class="bi bi-arrows-expand me-1"></i>${(+p.width).toFixed(0)} mm</span>
+        <small class="text-muted align-self-center" style="font-size:10px;">All rolls must match</small>
+    `;
+}
 
-    document.querySelectorAll('.actionBtn').forEach(btn => {
-        btn.addEventListener('click', function () {
-            pendingIntent     = 'process';
-            pendingSfcId      = this.dataset.sfcId;
-            pendingSfcDetails = this.dataset.sfcDetails;
-            pinInput.value    = '';
-            pinError.classList.add('d-none');
-            pinModal.show();
-            document.getElementById('pinModal').addEventListener('shown.bs.modal', function h() {
-                pinInput.focus();
-                this.removeEventListener('shown.bs.modal', h);
-            });
-        });
-    });
+// ─────────────────────────────────────────────────────────────
+// QR / INPUT PARSING
+// Accepts TWO formats:
+//   A) KEY=value pairs (camera QR / hardware scanner):
+//        LOT=826277;COIL=FK-1;ROLL=R1
+//   B) Plain space-separated values (typed by hand):
+//        826277 FK-1 R1
+// ─────────────────────────────────────────────────────────────
+function parseQR(raw) {
+    raw = (raw || '').trim();
 
-    // Delete also goes through the same supervisor PIN gate as Process —
-    // it's at least as consequential, so it gets the same safeguard,
-    // followed by the dedicated confirmation dialog requested below.
-    document.querySelectorAll('.deleteBtn').forEach(btn => {
-        btn.addEventListener('click', function () {
-            pendingIntent     = 'delete';
-            pendingSfcId      = this.dataset.sfcId;
-            pendingSfcDetails = this.dataset.sfcDetails;
-            pinInput.value    = '';
-            pinError.classList.add('d-none');
-            pinModal.show();
-            document.getElementById('pinModal').addEventListener('shown.bs.modal', function h() {
-                pinInput.focus();
-                this.removeEventListener('shown.bs.modal', h);
-            });
-        });
-    });
-
-    document.getElementById('deleteConfirmBtn').addEventListener('click', function () {
-        document.getElementById('deleteForm').submit();
-    });
-
-    function submitPin() {
-        const pin = pinInput.value.trim();
-        if (!pin) return;
-        pinSubmitBtn.disabled = true;
-        pinSubmitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Checking...';
-
-        fetch('sfc.php', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'verify_pin=' + encodeURIComponent(pin)
-        })
-        .then(r => r.json())
-        .then(data => {
-            if (data.success) {
-                pinModal.hide();
-                document.getElementById('pinModal').addEventListener('hidden.bs.modal', function h() {
-                    this.removeEventListener('hidden.bs.modal', h);
-                    if (pendingIntent === 'delete') {
-                        openDeleteModal(pendingSfcId, pendingSfcDetails);
-                    } else {
-                        openActionModal(pendingSfcId, pendingSfcDetails);
-                    }
-                });
-            } else {
-                pinError.classList.remove('d-none');
-                pinInput.value = '';
-                pinInput.focus();
+    // ── Format A: contains '=' → KEY=value;KEY=value ──────────
+    if (raw.indexOf('=') > -1) {
+        const parts = {};
+        raw.split(';').forEach(p => {
+            const idx = p.indexOf('=');
+            if (idx > -1) {
+                parts[p.substring(0, idx).trim().toUpperCase()]
+                    = decodeURIComponent(p.substring(idx + 1).trim());
             }
-        })
-        .catch(() => {
-            pinError.innerHTML = '<i class="bi bi-wifi-off me-1"></i>Network error.';
-            pinError.classList.remove('d-none');
-        })
-        .finally(() => {
-            pinSubmitBtn.disabled = false;
-            pinSubmitBtn.innerHTML = '<i class="bi bi-unlock-fill me-1"></i> Unlock';
         });
+        return { lot: parts.LOT || '', coil: parts.COIL || '', roll: parts.ROLL || '' };
     }
 
-    pinSubmitBtn.addEventListener('click', submitPin);
-    pinInput.addEventListener('keydown', e => { if (e.key === 'Enter') submitPin(); });
+    // ── Format B: no '=' → split on whitespace ────────────────
+    //    First token = Lot, second = Coil, third = Roll.
+    //    Extra tokens are ignored.
+    const tokens = raw.split(/\s+/).filter(Boolean);
+    return {
+        lot:  tokens[0] || '',
+        coil: tokens[1] || '',
+        roll: tokens[2] || '',
+    };
+}
 
-   // Camera scanner handles input — see initCameraScanner below
+async function processQR(raw) {
+    const { lot, coil, roll } = parseQR(raw);
+    if (!lot || !coil) { showFeedback('Could not parse input: ' + escHtml(raw), false); return; }
+    await lookupAndAdd(lot, coil, roll);
+}
 
-    function showAlert(type, msg) {
-        qrAlert.className = 'alert alert-' + type + ' py-2 mb-3 shadow-sm';
-        qrAlert.innerHTML = '<i class="bi bi-exclamation-triangle-fill me-2"></i>' + msg;
-        qrAlert.classList.remove('d-none');
-        setTimeout(hideAlert, 5000);
+// ─────────────────────────────────────────────────────────────
+// MANUAL ENTRY — three separate boxes (Lot / Coil / Roll)
+// ─────────────────────────────────────────────────────────────
+async function manualLookup() {
+    const lot  = document.getElementById('manLot').value.trim();
+    const coil = document.getElementById('manCoil').value.trim();
+    const roll = document.getElementById('manRoll').value.trim();
+    if (!lot || !coil || !roll) {
+        showFeedback('Enter Lot, Coil and Roll No.', false);
+        return;
     }
-    function hideAlert() { qrAlert.classList.add('d-none'); }
-});
-</script>
+    await lookupAndAdd(lot, coil, roll);
+    ['manLot', 'manCoil', 'manRoll'].forEach(id => document.getElementById(id).value = '');
+}
 
-<script src="camera_scanner.js"></script>
-<script>
-initCameraScanner({
-    onScan: function(scanned) {
-        if (!scanned) return;
- 
-        var matchLotCoil  = scanned.match(/Lot=([^;]+);COIL=([^;]+)/i);
-        var matchPrefixed = scanned.match(/^sfc[_-]?(\d+)$/i);
-        var matchPlain    = scanned.match(/^(\d+)$/);
-        var btn = null;
- 
-        if (matchLotCoil) {
-            var lot  = matchLotCoil[1].trim().toLowerCase();
-            var coil = matchLotCoil[2].trim().toLowerCase();
-            document.querySelectorAll('.actionBtn').forEach(function(b) {
-                if ((b.dataset.sfcLot||'').toLowerCase()===lot &&
-                    (b.dataset.sfcCoil||'').toLowerCase()===coil) btn = b;
-            });
-        } else if (matchPrefixed) {
-            btn = document.querySelector('.actionBtn[data-sfc-id="'+matchPrefixed[1]+'"]');
-        } else if (matchPlain) {
-            btn = document.querySelector('.actionBtn[data-sfc-id="'+matchPlain[1]+'"]');
-        } else {
-            showAlert('danger', 'QR not recognised: <strong>' + scanned + '</strong>');
+// ─────────────────────────────────────────────────────────────
+// MANUAL ENTRY — single combined box (space-separated)
+//   e.g. "826277 FK-1 R1"
+// ─────────────────────────────────────────────────────────────
+async function combinedLookup() {
+    const el  = document.getElementById('manCombined');
+    const val = el.value.trim();
+    if (!val) { showFeedback('Type the roll, e.g. 826277 FK-1 R1', false); el.focus(); return; }
+    await processQR(val);
+    el.value = '';
+    el.focus();
+}
+
+// ─────────────────────────────────────────────────────────────
+// LOOKUP + ADD
+// ─────────────────────────────────────────────────────────────
+async function lookupAndAdd(lot, coil, roll) {
+    if (!PALLET_ID) return;
+
+    // Drop overlapping scans (e.g. camera double-decode) while a
+    // previous add is still being processed.
+    if (isAdding) return;
+
+    if (rollCount >= MAX_ROLLS) {
+        showFeedback(`Pallet is full (${MAX_ROLLS}/${MAX_ROLLS}).`, false);
+        return;
+    }
+
+    isAdding = true;
+    try {
+        let lk;
+        try {
+            lk = await fetch(
+                `pallet.php?ajax=lookup_product&lot=${enc(lot)}&coil=${enc(coil)}&roll=${enc(roll)}`
+            ).then(r => r.json());
+        } catch {
+            showFeedback('Network error during lookup.', false);
             return;
         }
- 
-        if (btn) {
-            hideAlert();
-            openActionModal(btn.dataset.sfcId, btn.dataset.sfcDetails);
+        if (!lk.ok) { showFeedback(lk.msg, false); return; }
+
+        const p = lk.product;
+
+        if (p.is_voided == 1) { showFeedback('This roll has been voided.', false); return; }
+        if (p.stock_counted != 1) { showFeedback(`Roll ${lot} ${coil} ${roll} — actual length not saved yet.`, false); return; }
+
+        // ── Already on a DIFFERENT pallet → real error ───────────
+        if (p.pallet_id && p.pallet_id != PALLET_ID) {
+            showFeedback(`Already on pallet ${escHtml(p.pallet_no)}.`, false);
+            return;
+        }
+
+        // ── Already on THIS pallet → duplicate scan of a roll we
+        //    just added. Silently ignore so a camera double-decode
+        //    cannot trigger a server "already on pallet" error or
+        //    jam the UI. It's already shown in a slot. ───────────
+        if (p.pallet_id && p.pallet_id == PALLET_ID) {
+            return;
+        }
+
+        // ── Belt-and-suspenders: if a slot already shows this
+        //    product id, treat it as a duplicate too (covers the
+        //    race where the lookup hasn't caught up to the just-
+        //    added row yet). ───────────────────────────────────
+        if (document.querySelector(`#rollList [data-product-id="${p.id}"]`)) {
+            return;
+        }
+
+        const fd = new FormData();
+        fd.append('action',     'add_roll');
+        fd.append('pallet_id',  PALLET_ID);
+        fd.append('product_id', p.id);
+
+        let ad;
+        try {
+            ad = await fetch('pallet.php', { method: 'POST', body: fd }).then(r => r.json());
+        } catch {
+            showFeedback('Network error while adding roll.', false);
+            return;
+        }
+        if (!ad.ok) { showFeedback(ad.msg, false); return; }
+
+        rollCount = ad.roll_count;
+        fillSlot(ad.seq, p);
+        updateProgress(rollCount);
+
+        // Clear manual entry fields after ANY successful add
+        ['manLot', 'manCoil', 'manRoll', 'manCombined'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+
+        showFeedback(
+            `✓ Added: ${escHtml(lot)} ${escHtml(coil)} – R-${escHtml(roll)} (slot ${ad.seq})`,
+            true
+        );
+
+        // First roll seeds the pallet constraints. Update the badges
+        // live instead of reloading the page — the old reload created
+        // a window where scanning the 2nd roll failed with a stale
+        // "already on pallet" error and forced a manual refresh.
+        if (ad.seq === 1) {
+            updateConstraintBadges(p);
+        }
+    } finally {
+        // Always release the lock so the next legitimate scan works.
+        isAdding = false;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// fillSlot(seq, product)
+// Fills an empty slot IN-PLACE; also renders weight chip.
+// ─────────────────────────────────────────────────────────────
+function fillSlot(seq, p) {
+    const slotEl = document.getElementById('slot' + seq);
+    if (!slotEl) return;
+
+    const len       = parseFloat(p.actual_length) > 0 ? parseFloat(p.actual_length) : parseFloat(p.length);
+    const stdWeight = parseFloat(p.std_weight) || 0;
+    const wgt       = calcWeight(len, p.width, stdWeight);
+    const wgtStr    = wgt > 0 ? wgt.toFixed(2) + ' kg' : 'N/A';
+
+    const nod       = parseFloat(p.nod_length) || 0;
+    const hasNod    = nod > 0;
+    const netLen    = len - nod;
+    const nodChip   = hasNod
+        ? `<span class="nod-chip" title="Actual ${len.toFixed(2)}m − NOD ${nod.toFixed(2)}m = ${netLen.toFixed(2)}m">
+               <i class="bi bi-exclamation-triangle-fill"></i>
+               NOD −${nod.toFixed(2)} → ${netLen.toFixed(2)}m
+           </span>`
+        : '';
+
+    slotEl.classList.remove('slot-empty');
+    slotEl.setAttribute('data-filled', '1');
+    slotEl.setAttribute('data-weight', wgt.toFixed(4));
+
+    slotEl.innerHTML = `
+        <span class="roll-seq">${seq}</span>
+        <div class="flex-grow-1">
+            <div class="fw-bold small">
+                ${escHtml(p.lot_no)} ${escHtml(p.coil_no)}
+                &ndash; ${escHtml(p.roll_no.replace(/^R/, 'R-'))}
+            </div>
+            <div class="text-muted" style="font-size:11px;">
+                ${escHtml(p.product)} |
+                ${(+p.width).toFixed(0)}mm |
+                ${len.toFixed(1)}m
+            </div>
+        </div>
+        ${nodChip}
+        <span class="wgt-chip" title="Est. Weight = (${len.toFixed(1)}m × ${(+p.width).toFixed(0)}mm / 1000) × ${stdWeight}">
+            <i class="bi bi-speedometer2"></i>
+            ${wgtStr}
+        </span>
+        <button type="button"
+                class="btn btn-outline-danger btn-sm"
+                title="Remove this roll from the pallet"
+                data-product-id="${p.id}"
+                onclick="removeRoll(${PALLET_ID}, ${p.id}, ${seq}, this)">
+            <i class="bi bi-x-lg"></i>
+        </button>
+    `;
+
+    // Flash animation
+    slotEl.classList.add('scan-flash');
+    slotEl.addEventListener('animationend', () => slotEl.classList.remove('scan-flash'), { once: true });
+
+    // Update total weight
+    recalcTotalWeight();
+}
+
+// ─────────────────────────────────────────────────────────────
+// removeRoll(palletId, productId, seq, btn)
+// ─────────────────────────────────────────────────────────────
+async function removeRoll(palletId, productId, seq, btn) {
+    if (!confirm('Remove this roll from the pallet?\nThe roll will return to Finish Good stock.')) return;
+    btn.disabled = true;
+
+    const fd = new FormData();
+    fd.append('action',     'remove_roll');
+    fd.append('pallet_id',  palletId);
+    fd.append('product_id', productId);
+
+    let d;
+    try {
+        d = await fetch('pallet.php', { method: 'POST', body: fd }).then(r => r.json());
+    } catch {
+        showFeedback('Network error while removing roll.', false);
+        btn.disabled = false;
+        return;
+    }
+
+    if (!d.ok) {
+        showFeedback(d.msg, false);
+        btn.disabled = false;
+        return;
+    }
+
+    rollCount = d.new_count;
+    updateProgress(rollCount);
+    clearSlot(seq);
+    resequenceSlots();
+    recalcTotalWeight();   // ← update weight after removal
+    showFeedback(d.msg, true);
+
+    if (rollCount === 0) setTimeout(() => location.reload(), 1000);
+}
+
+// ─────────────────────────────────────────────────────────────
+// clearSlot(seq)
+// ─────────────────────────────────────────────────────────────
+function clearSlot(seq) {
+    const slotEl = document.getElementById('slot' + seq);
+    if (!slotEl) return;
+    slotEl.classList.add('slot-empty');
+    slotEl.setAttribute('data-filled', '0');
+    slotEl.setAttribute('data-weight', '0');
+    slotEl.innerHTML = `
+        <span class="roll-seq">${seq}</span>
+        <span style="font-size:13px;">Empty slot ${seq}</span>
+    `;
+}
+
+// ─────────────────────────────────────────────────────────────
+// resequenceSlots()
+// ─────────────────────────────────────────────────────────────
+function resequenceSlots() {
+    const allSlots = Array.from(
+        document.querySelectorAll('#rollList [data-slot]')
+    ).sort((a, b) => +a.dataset.slot - +b.dataset.slot);
+
+    let filledCount = 0;
+    allSlots.forEach(slotEl => {
+        const slotNo = +slotEl.dataset.slot;
+        if (slotEl.dataset.filled === '1') {
+            filledCount++;
+            const newSeq = filledCount;
+            const bubble = slotEl.querySelector('.roll-seq');
+            if (bubble) bubble.textContent = newSeq;
+            const removeBtn = slotEl.querySelector('button[data-product-id]');
+            if (removeBtn) {
+                const pid = removeBtn.getAttribute('data-product-id');
+                removeBtn.setAttribute('onclick', `removeRoll(${PALLET_ID}, ${pid}, ${newSeq}, this)`);
+            }
         } else {
-            showAlert('danger', 'No matching active SFC found for: <strong>' + scanned + '</strong>');
+            const bubble = slotEl.querySelector('.roll-seq');
+            if (bubble) bubble.textContent = slotNo;
+            const label = slotEl.querySelector('span:not(.roll-seq)');
+            if (label) label.textContent = `Empty slot ${slotNo}`;
+        }
+    });
+}
+
+// ─────────────────────────────────────────────────────────────
+// UI HELPERS
+// ─────────────────────────────────────────────────────────────
+function updateProgress(count) {
+    const bar   = document.getElementById('palletProgressBar');
+    const badge = document.getElementById('rollCountBadge');
+    const btn   = document.getElementById('sendToQcBtn');
+    if (bar)   bar.style.width = (count / MAX_ROLLS * 100) + '%';
+    if (badge) badge.textContent = count + ' / ' + MAX_ROLLS + ' rolls';
+    if (btn)   btn.disabled = count < 1;
+}
+
+function showFeedback(msg, ok) {
+    const el = document.getElementById('scanFeedback');
+    if (!el) return;
+    el.innerHTML = `
+        <div class="alert alert-${ok ? 'success' : 'danger'} py-2 mb-0 d-flex align-items-center gap-2">
+            <i class="bi bi-${ok ? 'check-circle-fill' : 'exclamation-triangle-fill'}"></i>
+            <span>${msg}</span>
+        </div>`;
+    setTimeout(() => { el.innerHTML = ''; }, 5000);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Enter key on the combined box → Add
+// ─────────────────────────────────────────────────────────────
+document.getElementById('manCombined')?.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); combinedLookup(); }
+});
+
+// ─────────────────────────────────────────────────────────────
+// CREATE PALLET MODAL
+// ─────────────────────────────────────────────────────────────
+let palletNoValid = false;
+let palletNoTimer;
+
+document.getElementById('createPalletModal')?.addEventListener('show.bs.modal', () => {
+    palletNoValid = false;
+    const inp = document.getElementById('palletNoInput');
+    inp.value = '';
+    inp.classList.remove('is-valid', 'is-invalid');
+    document.getElementById('palletNoFeedback').innerHTML = '';
+    document.getElementById('createPalletBtn').disabled = true;
+    setTimeout(() => inp.focus(), 300);
+});
+
+document.getElementById('palletNoInput')?.addEventListener('input', function () {
+    clearTimeout(palletNoTimer);
+    palletNoValid = false;
+    document.getElementById('createPalletBtn').disabled = true;
+    const val = this.value.trim();
+    if (!val) {
+        document.getElementById('palletNoFeedback').innerHTML = '';
+        this.classList.remove('is-valid', 'is-invalid');
+        return;
+    }
+    palletNoTimer = setTimeout(async () => {
+        try {
+            const r = await fetch(
+                `pallet.php?ajax=validate_pallet_no&pallet_no=${enc(val)}`
+            ).then(x => x.json());
+            const fb = document.getElementById('palletNoFeedback');
+            this.classList.remove('is-valid', 'is-invalid');
+            if (r.ok) {
+                fb.innerHTML = `<span class="text-success"><i class="bi bi-check-circle me-1"></i>Valid &amp; available</span>`;
+                this.classList.add('is-valid');
+                palletNoValid = true;
+                document.getElementById('createPalletBtn').disabled = false;
+            } else {
+                fb.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>${escHtml(r.msg)}</span>`;
+                this.classList.add('is-invalid');
+            }
+        } catch (_) {}
+    }, 500);
+});
+
+document.getElementById('palletNoInput')?.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && palletNoValid) submitCreatePallet();
+});
+
+async function submitCreatePallet() {
+    const palletNo = document.getElementById('palletNoInput').value.trim();
+    if (!palletNo || !palletNoValid) return;
+
+    const btn = document.getElementById('createPalletBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Creating…';
+
+    const fd = new FormData();
+    fd.append('action',    'create_pallet');
+    fd.append('pallet_no', palletNo);
+
+    let r;
+    try {
+        r = await fetch('pallet.php', { method: 'POST', body: fd }).then(x => x.json());
+    } catch (_) {
+        r = { ok: false, msg: 'Network error.' };
+    }
+
+    if (r.ok) {
+        window.location.href = `pallet.php?pallet_id=${r.pallet_id}&success=created`;
+    } else {
+        document.getElementById('palletNoFeedback').innerHTML =
+            `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>${escHtml(r.msg)}</span>`;
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-plus-lg me-1"></i> Create Pallet';
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// UTILITIES
+// ─────────────────────────────────────────────────────────────
+function escHtml(s) {
+    return String(s ?? '').replace(
+        /[&<>"']/g,
+        c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])
+    );
+}
+function enc(s) { return encodeURIComponent(s ?? ''); }
+
+// ─────────────────────────────────────────────────────────────
+// SUMMARY PALLET
+// Loads a flattened pallet + nested-product dataset once per modal
+// open, then filters/renders entirely client-side (no re-fetch per
+// keystroke).
+// ─────────────────────────────────────────────────────────────
+let summaryData    = [];
+let summaryLoaded  = false;
+
+const SUMMARY_STATUS_BADGE = {
+    building:   'badge-building',
+    pending_qc: 'badge-pending_qc',
+    approved:   'badge-approved',
+    rejected:   'badge-rejected',
+    delivered:  'badge-delivered',
+};
+
+function summaryStatusLabel(status) {
+    return String(status ?? '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+async function loadSummaryPallet() {
+    // Reset filter UI each time the modal is opened
+    document.getElementById('summaryFilterCategory').value = '';
+    document.getElementById('summaryFilterValueText').value = '';
+    document.getElementById('summaryFilterValueText').classList.remove('d-none');
+    document.getElementById('summaryFilterValueSelect').classList.add('d-none');
+
+    document.getElementById('summaryLoading').classList.remove('d-none');
+    document.getElementById('summaryTableWrap').classList.add('d-none');
+
+    try {
+        const res  = await fetch('pallet.php?ajax=summary_pallet');
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.msg || 'Failed to load summary.');
+        summaryData   = data.rows;
+        summaryLoaded = true;
+        renderSummaryTable(summaryData);
+    } catch (e) {
+        document.getElementById('summaryLoading').innerHTML =
+            `<div class="alert alert-danger py-2 mb-0">Failed to load summary: ${escHtml(e.message)}</div>`;
+        return;
+    }
+
+    document.getElementById('summaryLoading').classList.add('d-none');
+    document.getElementById('summaryTableWrap').classList.remove('d-none');
+}
+
+function renderSummaryTable(rows) {
+    const tbody = document.getElementById('summaryTableBody');
+    const countEl = document.getElementById('summaryResultCount');
+
+    if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="7" class="py-4 text-muted">No matching records.</td></tr>`;
+        countEl.textContent = '0 rows';
+        return;
+    }
+
+    tbody.innerHTML = rows.map(r => {
+        const badgeClass = SUMMARY_STATUS_BADGE[r.status] || 'badge-building';
+        const rollsCell  = r.roll_no
+            ? `<span class="fw-bold">${escHtml(r.lot_coil)}</span> &ndash; ${escHtml(r.roll_no)}`
+            : '<span class="text-muted">&mdash; no rolls &mdash;</span>';
+        return `
+            <tr>
+                <td class="fw-bold">${escHtml(r.pallet_no)}</td>
+                <td><span class="badge ${badgeClass}">${escHtml(summaryStatusLabel(r.status))}</span></td>
+                <td>${rollsCell}</td>
+                <td>${r.customer ? escHtml(r.customer) : '<span class="text-muted">&mdash;</span>'}</td>
+                <td>${r.ref_no ? escHtml(r.ref_no) : '<span class="text-muted">&mdash;</span>'}</td>
+                <td>${r.width !== null ? (+r.width).toFixed(0) + ' mm' : '<span class="text-muted">&mdash;</span>'}</td>
+                <td>${r.nod !== null ? `<span class="nod-chip"><i class="bi bi-exclamation-triangle-fill"></i> ${(+r.nod).toFixed(2)}m</span>` : '<span class="text-muted">&mdash;</span>'}</td>
+            </tr>
+        `;
+    }).join('');
+
+    countEl.textContent = rows.length + (rows.length === 1 ? ' row' : ' rows');
+}
+
+// When the filter category changes, swap between the free-text
+// search box (All Fields / Width) and a dropdown of distinct values
+// (Status / Customer) so users pick from what's actually in the data.
+function onSummaryCategoryChange() {
+    const cat        = document.getElementById('summaryFilterCategory').value;
+    const textInput  = document.getElementById('summaryFilterValueText');
+    const selectInput = document.getElementById('summaryFilterValueSelect');
+
+    if (cat === 'status' || cat === 'customer') {
+        const distinct = [...new Set(
+            summaryData
+                .map(r => cat === 'status' ? r.status : r.customer)
+                .filter(v => v !== null && v !== '')
+        )].sort();
+
+        selectInput.innerHTML = '<option value="">All</option>' +
+            distinct.map(v => `<option value="${escHtml(v)}">${escHtml(cat === 'status' ? summaryStatusLabel(v) : v)}</option>`).join('');
+
+        textInput.classList.add('d-none');
+        selectInput.classList.remove('d-none');
+    } else {
+        // "All Fields" and "Width" both use free-text search
+        textInput.value = '';
+        textInput.placeholder = (cat === 'width')
+            ? 'Type a width in mm, e.g. 309'
+            : 'Search Pallet No, Status, Rolls, Customer, Ref No, Width...';
+        textInput.classList.remove('d-none');
+        selectInput.classList.add('d-none');
+    }
+
+    applySummaryFilter();
+}
+
+function applySummaryFilter() {
+    const cat = document.getElementById('summaryFilterCategory').value;
+    let rows = summaryData;
+
+    if (cat === 'status' || cat === 'customer') {
+        const val = document.getElementById('summaryFilterValueSelect').value;
+        if (val !== '') {
+            rows = rows.filter(r => String(r[cat] ?? '') === val);
+        }
+    } else if (cat === 'width') {
+        const val = document.getElementById('summaryFilterValueText').value.trim();
+        if (val !== '') {
+            rows = rows.filter(r => r.width !== null && String(Math.round(r.width)).includes(val));
+        }
+    } else {
+        // All Fields — free text across everything visible in the table
+        const val = document.getElementById('summaryFilterValueText').value.trim().toLowerCase();
+        if (val !== '') {
+            rows = rows.filter(r => [
+                r.pallet_no, r.status, r.lot_coil, r.roll_no,
+                r.customer, r.ref_no, r.width
+            ].some(v => v !== null && String(v).toLowerCase().includes(val)));
         }
     }
-});
+
+    renderSummaryTable(rows);
+}
+
+function clearSummaryFilter() {
+    document.getElementById('summaryFilterCategory').value = '';
+    document.getElementById('summaryFilterValueText').value = '';
+    document.getElementById('summaryFilterValueText').classList.remove('d-none');
+    document.getElementById('summaryFilterValueSelect').classList.add('d-none');
+    renderSummaryTable(summaryData);
+}
+
+function exportSummaryPallet() {
+    const cat = document.getElementById('summaryFilterCategory').value;
+    let val = '';
+
+    if (cat === 'status' || cat === 'customer') {
+        val = document.getElementById('summaryFilterValueSelect').value;
+    } else {
+        val = document.getElementById('summaryFilterValueText').value.trim();
+    }
+
+    const params = new URLSearchParams({ export: 'summary_pallet' });
+    if (cat) params.set('cat', cat);
+    if (val) params.set('val', val);
+
+    // Plain navigation — the server responds with Content-Disposition:
+    // attachment, so this triggers a download without leaving the page.
+    window.location.href = 'pallet.php?' + params.toString();
+}
+
+
+</script>
+
+<!-- Cache-busted (?v=7) so the browser always loads the latest scanner. -->
+<script src="camera_scanner.js?v=7"></script>
+<script>
+if (PALLET_ID) {
+    initCameraScanner({
+        onScan: function(decodedText) {
+            processQR(decodedText);
+        }
+    });
+}
 </script>
 
 <?php include 'footer.php'; ?>

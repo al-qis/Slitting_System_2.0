@@ -45,7 +45,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
     if (!$lot || !$coil) { echo json_encode(['ok' => false, 'msg' => 'Incomplete data.']); exit; }
     $stmt = $conn->prepare("
         SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
-               sp.width, sp.actual_length, sp.length,
+               sp.width, sp.actual_length, sp.length, sp.nod_length,
                sp.stock_counted, sp.status, sp.is_voided,
                sp.customer_name, sp.ref_no,
                pi.pallet_id, p.pallet_no,
@@ -66,6 +66,150 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
     echo json_encode(['ok' => true, 'product' => $row]);
     exit;
 }
+
+// ── Shared: build the flattened Summary Pallet dataset ─────────
+function buildSummaryPalletRows(mysqli $conn): array {
+    $rows = $conn->query("
+        SELECT p.pallet_no, p.status,
+               sp.roll_no, sp.lot_no, sp.coil_no, sp.product,
+               sp.customer_name, sp.ref_no, sp.width
+        FROM pallets p
+        LEFT JOIN pallet_items pi     ON pi.pallet_id = p.id
+        LEFT JOIN slitting_product sp ON sp.id = pi.slitting_product_id
+        ORDER BY p.created_at DESC, pi.seq ASC
+    ")->fetch_all(MYSQLI_ASSOC);
+
+    return array_map(function ($r) {
+        return [
+            'pallet_no' => $r['pallet_no'],
+            'status'    => $r['status'],
+            'roll_no'   => $r['roll_no'] ? str_replace('R', 'R-', $r['roll_no']) : null,
+            'lot_coil'  => trim(($r['lot_no'] ?? '') . ' ' . ($r['coil_no'] ?? '')),
+            'product'   => $r['product'],
+            'customer'  => $r['customer_name'],
+            'ref_no'    => $r['ref_no'],
+            'width'     => $r['width'] !== null ? (float)$r['width'] : null,
+        ];
+    }, $rows);
+}
+
+// ── Shared: apply the same category/value filter used by the modal's
+//    client-side JS, so the exported Excel matches whatever the user
+//    was actually looking at when they clicked Export. ─────────────
+function filterSummaryPalletRows(array $rows, string $cat, string $val): array {
+    if ($val === '') return $rows;
+
+    if ($cat === 'status' || $cat === 'customer') {
+        return array_values(array_filter($rows, fn($r) => (string)($r[$cat] ?? '') === $val));
+    }
+
+    if ($cat === 'width') {
+        return array_values(array_filter($rows, function ($r) use ($val) {
+            return $r['width'] !== null && str_contains((string)round($r['width']), $val);
+        }));
+    }
+
+    // All Fields — free text across everything visible in the table
+    $needle = strtolower($val);
+    return array_values(array_filter($rows, function ($r) use ($needle) {
+        foreach ([$r['pallet_no'], $r['status'], $r['lot_coil'], $r['roll_no'], $r['customer'], $r['ref_no'], $r['width']] as $field) {
+            if ($field !== null && str_contains(strtolower((string)$field), $needle)) return true;
+        }
+        return false;
+    }));
+}
+
+// ── AJAX: Summary Pallet — flattened pallet + nested product rows ──
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'summary_pallet') {
+    header('Content-Type: application/json');
+
+    $out = buildSummaryPalletRows($conn);
+
+    echo json_encode(['ok' => true, 'rows' => $out]);
+    exit;
+}
+
+// ── Export: Summary Pallet as Excel (.xls) ──────────────────────
+// Respects the same category/value filter the modal has active, so
+// the download matches whatever the user was looking at on screen.
+if (isset($_GET['export']) && $_GET['export'] === 'summary_pallet') {
+    $cat = isset($_GET['cat']) ? trim($_GET['cat']) : '';
+    $val = isset($_GET['val']) ? trim($_GET['val']) : '';
+
+    $rows = buildSummaryPalletRows($conn);
+    $rows = filterSummaryPalletRows($rows, $cat, $val);
+
+    $catLabels = ['status' => 'Status', 'customer' => 'Customer', 'width' => 'Width'];
+    $filterLbl = ($val !== '' && isset($catLabels[$cat]))
+        ? "{$catLabels[$cat]}: {$val}"
+        : (($val !== '') ? "Search: {$val}" : 'All Records');
+
+    $filename = 'Summary_Pallet_' . date('Y-m-d_His') . '.xls';
+
+    header('Content-Type: application/vnd.ms-excel');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+    header('Cache-Control: max-age=0');
+
+    $cols      = 6; // Pallet No, Status, Rolls, Customer, Ref No, Width
+    $generated = date('d M Y, H:i');
+    ?>
+<html><head><meta charset="UTF-8"></head><body>
+
+<table>
+    <tr>
+        <td colspan="<?= $cols ?>" style="background:#1e3a5f;color:#fff;font-size:18px;font-weight:bold;padding:12px 16px;letter-spacing:1px;">
+            PALLET SUMMARY REPORT
+        </td>
+    </tr>
+    <tr>
+        <td colspan="<?= $cols ?>" style="background:#2c5282;color:#bee3f8;font-size:11px;padding:4px 16px;">
+            Generated: <?= htmlspecialchars($generated) ?> &nbsp;|&nbsp; Filter: <?= htmlspecialchars($filterLbl) ?> &nbsp;|&nbsp; System: Slitting Management
+        </td>
+    </tr>
+    <tr><td colspan="<?= $cols ?>"></td></tr><!-- spacer -->
+</table>
+
+<table border="1" style="border-collapse:collapse;">
+    <thead>
+        <tr style="background:#343a40;color:#fff;font-weight:bold;font-size:12px;">
+            <th style="padding:8px 10px;">Pallet No</th>
+            <th style="padding:8px 10px;">Status</th>
+            <th style="padding:8px 10px;">Rolls</th>
+            <th style="padding:8px 10px;">Customer</th>
+            <th style="padding:8px 10px;">Ref No</th>
+            <th style="padding:8px 10px;">Width (mm)</th>
+        </tr>
+    </thead>
+    <tbody>
+<?php
+    $td  = 'style="padding:6px 10px;"';
+    $tdN = 'style="padding:6px 10px;text-align:right;"';
+
+    if (!empty($rows)) {
+        foreach ($rows as $r) {
+            $statusLbl = ucwords(str_replace('_', ' ', $r['status'] ?? '-'));
+            $rollsCell = $r['roll_no'] ? trim($r['lot_coil'] . ' - ' . $r['roll_no']) : '-- no rolls --';
+
+            echo '<tr>';
+            echo '<td ' . $td  . '><b>' . htmlspecialchars($r['pallet_no'] ?? '-') . '</b></td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars($statusLbl) . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars($rollsCell) . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars($r['customer'] ?: '-') . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars($r['ref_no']   ?: '-') . '</td>';
+            echo '<td ' . $tdN . '>' . ($r['width'] !== null ? number_format($r['width']) : '-') . '</td>';
+            echo '</tr>';
+        }
+    } else {
+        echo '<tr><td colspan="' . $cols . '" style="padding:20px;text-align:center;color:#666;">No records found for this filter.</td></tr>';
+    }
+?>
+    </tbody>
+</table>
+</body></html>
+<?php
+    exit;
+}
+
 
 // ── POST: Create pallet ───────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'create_pallet') {
@@ -157,7 +301,7 @@ function getPalletItemsWithWeight(mysqli $conn, int $pallet_id): array {
         SELECT pi.seq, pi.added_at,
                sp.id AS product_id,
                sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
-               sp.width, sp.length, sp.actual_length, sp.status,
+               sp.width, sp.length, sp.actual_length, sp.nod_length, sp.status,
                sp.customer_name, sp.ref_no,
                COALESCE(sw.std_weight, 0) AS std_weight
         FROM pallet_items pi
@@ -276,6 +420,23 @@ $isReadOnly = $activePallet && !in_array($activePallet['status'], ['building', '
 }
 .wgt-chip i { font-size: 10px; }
 
+/* ── NOD chip ── */
+.nod-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: #fee2e2;
+    color: #991b1b;
+    border: 1px solid #fca5a5;
+    border-radius: 10px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.nod-chip i { font-size: 10px; }
+
 /* ── Total weight summary bar ── */
 .weight-summary-bar {
     display: flex;
@@ -348,10 +509,17 @@ $isReadOnly = $activePallet && !in_array($activePallet['status'], ['building', '
 
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-archive me-2"></i>Pallet Management</h2>
-    <button type="button" class="btn btn-success shadow-sm"
-            data-bs-toggle="modal" data-bs-target="#createPalletModal">
-        <i class="bi bi-plus-lg me-1"></i> New Pallet
-    </button>
+    <div class="d-flex gap-2">
+        <button type="button" class="btn btn-outline-primary shadow-sm"
+                data-bs-toggle="modal" data-bs-target="#summaryPalletModal"
+                onclick="loadSummaryPallet()">
+            <i class="bi bi-table me-1"></i> Summary Pallet
+        </button>
+        <button type="button" class="btn btn-success shadow-sm"
+                data-bs-toggle="modal" data-bs-target="#createPalletModal">
+            <i class="bi bi-plus-lg me-1"></i> New Pallet
+        </button>
+    </div>
 </div>
 
 <!-- Alerts -->
@@ -528,6 +696,9 @@ if (isset($_GET['success'])): ?>
                     <?php if ($item):
                         $itemLen = (float)($item['actual_length'] ?: $item['length']);
                         $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)$item['std_weight']);
+                        $itemNod = (float)($item['nod_length'] ?? 0);
+                        $hasNod  = $itemNod > 0;
+                        $netLen  = $itemLen - $itemNod;
                     ?>
                     <!-- FILLED SLOT -->
                     <div class="slot-card"
@@ -548,6 +719,13 @@ if (isset($_GET['success'])): ?>
                                 <?= number_format($itemLen, 1) ?>m
                             </div>
                         </div>
+                        <?php if ($hasNod): ?>
+                        <!-- NOD chip -->
+                        <span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m">
+                            <i class="bi bi-exclamation-triangle-fill"></i>
+                            NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m
+                        </span>
+                        <?php endif; ?>
                         <!-- Weight chip -->
                         <span class="wgt-chip" title="Est. Weight = (<?= number_format($itemLen,1) ?>m × <?= number_format((float)$item['width']) ?>mm / 1000) × <?= $item['std_weight'] ?>">
                             <i class="bi bi-speedometer2"></i>
@@ -899,6 +1077,83 @@ if (isset($_GET['success'])): ?>
   </div>
 </div>
 
+<!-- =============================================================
+     SUMMARY PALLET MODAL
+     Flattened view of every pallet + its nested products (rolls),
+     loaded via ajax=summary_pallet and filtered entirely client-side.
+   ============================================================= -->
+<div class="modal fade" id="summaryPalletModal" tabindex="-1">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header" style="background:#0f2744;">
+        <h5 class="modal-title text-white">
+          <i class="bi bi-table me-2"></i>Summary Pallet
+        </h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+
+        <!-- Filter controls -->
+        <div class="row g-2 mb-3">
+          <div class="col-md-3">
+            <select id="summaryFilterCategory" class="form-select form-select-sm" onchange="onSummaryCategoryChange()">
+              <option value="">All Fields</option>
+              <option value="status">Status</option>
+              <option value="customer">Customer</option>
+              <option value="width">Width</option>
+            </select>
+          </div>
+          <div class="col-md-5">
+            <!-- Text input — used for "All Fields" free search, and for Width -->
+            <input type="text" id="summaryFilterValueText" class="form-control form-control-sm"
+                   placeholder="Search Pallet No, Status, Rolls, Customer, Ref No, Width..."
+                   oninput="applySummaryFilter()">
+            <!-- Dropdown — used for Status / Customer, populated dynamically with distinct values -->
+            <select id="summaryFilterValueSelect" class="form-select form-select-sm d-none" onchange="applySummaryFilter()">
+              <option value="">All</option>
+            </select>
+          </div>
+          <div class="col-md-2">
+            <button type="button" class="btn btn-outline-secondary btn-sm w-100" onclick="clearSummaryFilter()">
+              <i class="bi bi-x-lg me-1"></i>Clear
+            </button>
+          </div>
+          <div class="col-md-2 d-flex align-items-center justify-content-md-end">
+            <span class="text-muted small" id="summaryResultCount"></span>
+          </div>
+        </div>
+
+        <div id="summaryLoading" class="text-center text-muted py-5">
+          <div class="spinner-border spinner-border-sm me-2"></div> Loading summary…
+        </div>
+
+        <div class="table-responsive d-none" id="summaryTableWrap">
+          <table class="table table-sm table-hover table-bordered align-middle text-center mb-0 pallet-table">
+            <thead class="table-dark">
+              <tr>
+                <th>Pallet No</th>
+                <th>Status</th>
+                <th>Rolls</th>
+                <th>Customer</th>
+                <th>Ref No</th>
+                <th>Width</th>
+              </tr>
+            </thead>
+            <tbody id="summaryTableBody"></tbody>
+          </table>
+        </div>
+
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+        <button type="button" class="btn btn-success btn-sm" onclick="exportSummaryPallet()">
+          <i class="bi bi-file-earmark-excel me-1"></i> Export Excel
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <input id="qrScanInput" type="hidden" value="">
 
 <script>
@@ -1156,6 +1411,16 @@ function fillSlot(seq, p) {
     const wgt       = calcWeight(len, p.width, stdWeight);
     const wgtStr    = wgt > 0 ? wgt.toFixed(2) + ' kg' : 'N/A';
 
+    const nod       = parseFloat(p.nod_length) || 0;
+    const hasNod    = nod > 0;
+    const netLen    = len - nod;
+    const nodChip   = hasNod
+        ? `<span class="nod-chip" title="Actual ${len.toFixed(2)}m − NOD ${nod.toFixed(2)}m = ${netLen.toFixed(2)}m">
+               <i class="bi bi-exclamation-triangle-fill"></i>
+               NOD −${nod.toFixed(2)} → ${netLen.toFixed(2)}m
+           </span>`
+        : '';
+
     slotEl.classList.remove('slot-empty');
     slotEl.setAttribute('data-filled', '1');
     slotEl.setAttribute('data-weight', wgt.toFixed(4));
@@ -1173,6 +1438,7 @@ function fillSlot(seq, p) {
                 ${len.toFixed(1)}m
             </div>
         </div>
+        ${nodChip}
         <span class="wgt-chip" title="Est. Weight = (${len.toFixed(1)}m × ${(+p.width).toFixed(0)}mm / 1000) × ${stdWeight}">
             <i class="bi bi-speedometer2"></i>
             ${wgtStr}
@@ -1395,6 +1661,174 @@ function escHtml(s) {
     );
 }
 function enc(s) { return encodeURIComponent(s ?? ''); }
+
+// ─────────────────────────────────────────────────────────────
+// SUMMARY PALLET
+// Loads a flattened pallet + nested-product dataset once per modal
+// open, then filters/renders entirely client-side (no re-fetch per
+// keystroke).
+// ─────────────────────────────────────────────────────────────
+let summaryData    = [];
+let summaryLoaded  = false;
+
+const SUMMARY_STATUS_BADGE = {
+    building:   'badge-building',
+    pending_qc: 'badge-pending_qc',
+    approved:   'badge-approved',
+    rejected:   'badge-rejected',
+    delivered:  'badge-delivered',
+};
+
+function summaryStatusLabel(status) {
+    return String(status ?? '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+async function loadSummaryPallet() {
+    // Reset filter UI each time the modal is opened
+    document.getElementById('summaryFilterCategory').value = '';
+    document.getElementById('summaryFilterValueText').value = '';
+    document.getElementById('summaryFilterValueText').classList.remove('d-none');
+    document.getElementById('summaryFilterValueSelect').classList.add('d-none');
+
+    document.getElementById('summaryLoading').classList.remove('d-none');
+    document.getElementById('summaryTableWrap').classList.add('d-none');
+
+    try {
+        const res  = await fetch('pallet.php?ajax=summary_pallet');
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.msg || 'Failed to load summary.');
+        summaryData   = data.rows;
+        summaryLoaded = true;
+        renderSummaryTable(summaryData);
+    } catch (e) {
+        document.getElementById('summaryLoading').innerHTML =
+            `<div class="alert alert-danger py-2 mb-0">Failed to load summary: ${escHtml(e.message)}</div>`;
+        return;
+    }
+
+    document.getElementById('summaryLoading').classList.add('d-none');
+    document.getElementById('summaryTableWrap').classList.remove('d-none');
+}
+
+function renderSummaryTable(rows) {
+    const tbody = document.getElementById('summaryTableBody');
+    const countEl = document.getElementById('summaryResultCount');
+
+    if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="6" class="py-4 text-muted">No matching records.</td></tr>`;
+        countEl.textContent = '0 rows';
+        return;
+    }
+
+    tbody.innerHTML = rows.map(r => {
+        const badgeClass = SUMMARY_STATUS_BADGE[r.status] || 'badge-building';
+        const rollsCell  = r.roll_no
+            ? `<span class="fw-bold">${escHtml(r.lot_coil)}</span> &ndash; ${escHtml(r.roll_no)}`
+            : '<span class="text-muted">&mdash; no rolls &mdash;</span>';
+        return `
+            <tr>
+                <td class="fw-bold">${escHtml(r.pallet_no)}</td>
+                <td><span class="badge ${badgeClass}">${escHtml(summaryStatusLabel(r.status))}</span></td>
+                <td>${rollsCell}</td>
+                <td>${r.customer ? escHtml(r.customer) : '<span class="text-muted">&mdash;</span>'}</td>
+                <td>${r.ref_no ? escHtml(r.ref_no) : '<span class="text-muted">&mdash;</span>'}</td>
+                <td>${r.width !== null ? (+r.width).toFixed(0) + ' mm' : '<span class="text-muted">&mdash;</span>'}</td>
+            </tr>
+        `;
+    }).join('');
+
+    countEl.textContent = rows.length + (rows.length === 1 ? ' row' : ' rows');
+}
+
+// When the filter category changes, swap between the free-text
+// search box (All Fields / Width) and a dropdown of distinct values
+// (Status / Customer) so users pick from what's actually in the data.
+function onSummaryCategoryChange() {
+    const cat        = document.getElementById('summaryFilterCategory').value;
+    const textInput  = document.getElementById('summaryFilterValueText');
+    const selectInput = document.getElementById('summaryFilterValueSelect');
+
+    if (cat === 'status' || cat === 'customer') {
+        const distinct = [...new Set(
+            summaryData
+                .map(r => cat === 'status' ? r.status : r.customer)
+                .filter(v => v !== null && v !== '')
+        )].sort();
+
+        selectInput.innerHTML = '<option value="">All</option>' +
+            distinct.map(v => `<option value="${escHtml(v)}">${escHtml(cat === 'status' ? summaryStatusLabel(v) : v)}</option>`).join('');
+
+        textInput.classList.add('d-none');
+        selectInput.classList.remove('d-none');
+    } else {
+        // "All Fields" and "Width" both use free-text search
+        textInput.value = '';
+        textInput.placeholder = (cat === 'width')
+            ? 'Type a width in mm, e.g. 309'
+            : 'Search Pallet No, Status, Rolls, Customer, Ref No, Width...';
+        textInput.classList.remove('d-none');
+        selectInput.classList.add('d-none');
+    }
+
+    applySummaryFilter();
+}
+
+function applySummaryFilter() {
+    const cat = document.getElementById('summaryFilterCategory').value;
+    let rows = summaryData;
+
+    if (cat === 'status' || cat === 'customer') {
+        const val = document.getElementById('summaryFilterValueSelect').value;
+        if (val !== '') {
+            rows = rows.filter(r => String(r[cat] ?? '') === val);
+        }
+    } else if (cat === 'width') {
+        const val = document.getElementById('summaryFilterValueText').value.trim();
+        if (val !== '') {
+            rows = rows.filter(r => r.width !== null && String(Math.round(r.width)).includes(val));
+        }
+    } else {
+        // All Fields — free text across everything visible in the table
+        const val = document.getElementById('summaryFilterValueText').value.trim().toLowerCase();
+        if (val !== '') {
+            rows = rows.filter(r => [
+                r.pallet_no, r.status, r.lot_coil, r.roll_no,
+                r.customer, r.ref_no, r.width
+            ].some(v => v !== null && String(v).toLowerCase().includes(val)));
+        }
+    }
+
+    renderSummaryTable(rows);
+}
+
+function clearSummaryFilter() {
+    document.getElementById('summaryFilterCategory').value = '';
+    document.getElementById('summaryFilterValueText').value = '';
+    document.getElementById('summaryFilterValueText').classList.remove('d-none');
+    document.getElementById('summaryFilterValueSelect').classList.add('d-none');
+    renderSummaryTable(summaryData);
+}
+
+function exportSummaryPallet() {
+    const cat = document.getElementById('summaryFilterCategory').value;
+    let val = '';
+
+    if (cat === 'status' || cat === 'customer') {
+        val = document.getElementById('summaryFilterValueSelect').value;
+    } else {
+        val = document.getElementById('summaryFilterValueText').value.trim();
+    }
+
+    const params = new URLSearchParams({ export: 'summary_pallet' });
+    if (cat) params.set('cat', cat);
+    if (val) params.set('val', val);
+
+    // Plain navigation — the server responds with Content-Disposition:
+    // attachment, so this triggers a download without leaving the page.
+    window.location.href = 'pallet.php?' + params.toString();
+}
+
+
 </script>
 
 <!-- Cache-busted (?v=7) so the browser always loads the latest scanner. -->

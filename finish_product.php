@@ -91,11 +91,23 @@ if (isset($_GET['download']) && $_GET['download'] === 'excel') {
     $m = isset($_GET['month']) ? (int)$_GET['month'] : (int)date('m');
     $y = isset($_GET['year'])  ? (int)$_GET['year']  : (int)date('Y');
     $d = isset($_GET['day'])   ? (int)$_GET['day']   : 0;
-    // NOTE: finish_product_export.php isn't part of this change set — if
-    // it should also respect the Day filter, it needs its own $_GET['day']
-    // handling added to match. Passed through here regardless so it's
-    // available whenever that update happens.
-    header("Location: finish_product_export.php?month=$m&year=$y" . ($d > 0 ? "&day=$d" : ""));
+
+    // Forward every active filter so the exported spreadsheet matches
+    // whichever tab/search/sort was on screen when the button was clicked,
+    // instead of silently always exporting the default "IN (Pending)" tab.
+    $exportParams = array_filter([
+        'month'    => $m,
+        'year'     => $y,
+        'day'      => $d > 0 ? $d : null,
+        'filter'   => $_GET['filter']   ?? null,
+        'search'   => $_GET['search']   ?? null,
+        'lot_no'   => $_GET['lot_no']   ?? null,
+        'coil_no'  => $_GET['coil_no']  ?? null,
+        'sort_col' => $_GET['sort_col'] ?? null,
+        'sort_dir' => $_GET['sort_dir'] ?? null,
+    ], fn($v) => $v !== null && $v !== '');
+
+    header("Location: finish_product_export.php?" . http_build_query($exportParams));
     exit;
 }
 
@@ -1207,7 +1219,18 @@ table td.lot-coil-cell {
 </div>
 
 <div class="mb-3 d-flex gap-2 flex-wrap">
-    <a href="?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&download=excel" class="btn btn-success btn-sm">Download Excel</a>
+    <a href="?<?= http_build_query(array_filter([
+        'month'    => $month,
+        'year'     => $year,
+        'day'      => $day > 0 ? $day : null,
+        'filter'   => $filter_card !== '' ? $filter_card : null,
+        'search'   => $search !== '' ? $search : null,
+        'lot_no'   => $filter_lot !== '' ? $filter_lot : null,
+        'coil_no'  => $filter_coil !== '' ? $filter_coil : null,
+        'sort_col' => $sort_col !== '' ? $sort_col : null,
+        'sort_dir' => $sort_col !== '' ? $sort_dir : null,
+        'download' => 'excel',
+    ], fn($v) => $v !== null && $v !== '')) ?>" class="btn btn-success btn-sm">Download Excel</a>
     <button type="button" class="btn btn-warning btn-sm" data-bs-toggle="modal" data-bs-target="#manualEntryModal">Manual Entry</button>
     <button type="button" class="btn btn-outline-dark btn-sm" data-bs-toggle="modal" data-bs-target="#initialStockSetupModal">
         <i class="bi bi-box-seam me-1"></i> Initial Stock Setup
