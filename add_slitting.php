@@ -98,6 +98,69 @@ if ($from_stock) {
         .info-badge { background: #e7f1ff; color: #0d6efd; padding: 10px; border-radius: 6px; font-size: 0.85em; margin-top: 15px; border-left: 4px solid #0d6efd; }
         .source-info { border-left: 5px solid #198754; }
         .source-info-leftover { border-left: 5px solid #ffc107; background-color: #fffbf0; }
+
+        /* ── Compact rolls table (replaces one big card per roll) ── */
+        #rollsTableWrap {
+            max-height: 65vh;
+            overflow-y: auto;
+            border: 1px solid #dee2e6;
+            border-radius: 10px;
+        }
+        #rollsTable { margin-bottom: 0; }
+        #rollsTable thead th {
+            position: sticky;
+            top: 0;
+            z-index: 5;
+            background: #f8f9fa;
+            white-space: nowrap;
+        }
+        #rollsTable td, #rollsTable th { vertical-align: middle; padding: 8px 10px; }
+        #rollsTable input.form-control, #rollsTable select.form-select { min-width: 90px; }
+        #bulkApplyBar {
+            background: #e7f1ff;
+            border: 1px solid #b6d4fe;
+            border-radius: 8px;
+            padding: 10px 14px;
+        }
+
+        /* ── SFC toggle — was an easy-to-miss bare checkbox before;
+           now a visible pill with icon + text, larger checkbox, and a
+           highlighted state so it's obvious both before AND after
+           it's been ticked. ── */
+        .sfc-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 10px;
+            border: 1px solid #ced4da;
+            border-radius: 20px;
+            background: #fff;
+            cursor: pointer;
+            user-select: none;
+            transition: all .15s ease;
+            font-size: .8rem;
+            font-weight: 600;
+            color: #6c757d;
+        }
+        .sfc-toggle:hover { border-color: #0d6efd; background: #f0f6ff; }
+        .sfc-toggle .sfc-checkbox {
+            width: 18px;
+            height: 18px;
+            margin: 0;
+            cursor: pointer;
+        }
+        .sfc-toggle:has(.sfc-checkbox:checked) {
+            background: #cfe2ff;
+            border-color: #0d6efd;
+            color: #0d6efd;
+        }
+        /* Fallback for browsers without :has() support — JS toggles this class too */
+        .sfc-toggle.sfc-active {
+            background: #cfe2ff;
+            border-color: #0d6efd;
+            color: #0d6efd;
+        }
+        tr.sfc-row-active { background-color: #f0f6ff !important; }
     </style>
 </head>
 <body>
@@ -286,7 +349,7 @@ function generateForm(){
     const total = parseInt(document.getElementById('total').value);
     const container = document.getElementById('slittingForm');
     const cutType = document.querySelector('input[name="cut_type"]:checked').value;
-    
+
     if (!total) {
         container.innerHTML = '';
         document.getElementById('submitBtn').style.display = 'none';
@@ -294,67 +357,115 @@ function generateForm(){
     }
 
     // Determine the default length based on selection
-    let defaultLength = (cutType === 'cut_into_2') 
-        ? (parseFloat(document.getElementById('slitQuantity').value) || 0) 
+    let defaultLength = (cutType === 'cut_into_2')
+        ? (parseFloat(document.getElementById('slitQuantity').value) || 0)
         : sourceData.originalLength;
 
-    let html = "";
+    // ── Bulk "Apply to All" toolbar for Width ──
+    // Length is already auto-filled/readonly (identical for every roll in
+    // both modes), so the only field worth bulk-filling is Width — very
+    // common case: cutting one coil into several identical-width rolls.
+    let html = `
+        <div id="bulkApplyBar" class="mb-2 d-flex flex-wrap gap-2 align-items-center">
+            <i class="bi bi-lightning-charge-fill text-primary"></i>
+            <strong class="small">Apply Width to All Rolls:</strong>
+            <div class="input-group input-group-sm" style="width:200px;">
+                <input type="number" step="0.1" id="bulkWidthInput" class="form-control" placeholder="e.g. 50">
+                <span class="input-group-text">mm</span>
+            </div>
+            <button type="button" class="btn btn-primary btn-sm" onclick="applyWidthToAll()">
+                <i class="bi bi-check2-all me-1"></i>Apply to All ${total} Rolls
+            </button>
+            <span class="text-muted small ms-auto">${total} roll${total>1?'s':''} — scroll the table below if needed</span>
+        </div>
+        <div id="rollsTableWrap">
+        <table class="table table-bordered table-hover align-middle" id="rollsTable">
+            <thead>
+                <tr>
+                    <th>Roll</th>
+                    <th>Cut Letter</th>
+                    <th>Length (m)</th>
+                    <th>Width (mm)</th>
+                    <th class="text-center">To SFC</th>
+                    <th>Lot Preview</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+
     for (let i = 1; i <= total; i++) {
         html += `
-            <div class="slitting-box">
-                <div class="d-flex justify-content-between border-bottom pb-2 mb-3 align-items-center">
-                    <h5 class="mb-0 text-primary">Output Roll #${i}</h5>
-                    <div class="d-flex gap-2 align-items-center">
-                        <span class="badge bg-light text-dark border">Label: R${i}</span>
-                        <div class="form-check">
-                            <input class="form-check-input sfc-checkbox" type="checkbox" name="send_to_sfc[]" id="sfcCheck${i-1}" value="${i}">
-                            <label class="form-check-label small" for="sfcCheck${i-1}" title="Send this roll to SFC inventory">
-                                <i class="bi bi-box-seam text-primary"></i> To SFC
-                            </label>
-                        </div>
-                    </div>
-                </div>
-                <input type="hidden" name="roll_no[]" value="R${i}">
-
-                <div class="row g-3">
-                    <div class="col-md-4">
-                        <label class="form-label small fw-bold">Cut Letter</label>
-                        <select name="cut_letter[]" class="form-select" onchange="updateLotLabel(${i-1})">
+                <tr>
+                    <td>
+                        <span class="badge bg-light text-dark border">R${i}</span>
+                        <input type="hidden" name="roll_no[]" value="R${i}">
+                    </td>
+                    <td>
+                        <select name="cut_letter[]" class="form-select form-select-sm" onchange="updateLotLabel(${i-1})">
                             <option value="">Standard</option>
                             <option value="a">a</option>
                             <option value="b">b</option>
                             <option value="c">c</option>
                             <option value="d">d</option>
                         </select>
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label small fw-bold">Length (m)</label>
-                        <input type="number" step="0.1" name="length[]" class="form-control length-input" 
-                               value="${defaultLength}" readonly required>
-                        <small class="text-muted">Auto-filled based on selection</small>
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label small fw-bold">Width (mm)</label>
-                        <input type="number" step="0.1" name="width[]" class="form-control" placeholder="Enter Width" required>
-                    </div>
-                </div>
-                
-                <div class="info-badge" id="infoBadge${i-1}">
-                    <i class="bi bi-tag me-1"></i> ${sourceData.lotNo} ${sourceData.coilNo}-R${i}
-                </div>
-            </div>
+                    </td>
+                    <td>
+                        <input type="number" step="0.1" name="length[]" class="form-control form-control-sm length-input"
+                               value="${defaultLength}" readonly required title="Auto-filled based on selection">
+                    </td>
+                    <td>
+                        <input type="number" step="0.1" name="width[]" class="form-control form-control-sm width-input"
+                               placeholder="Width" required>
+                    </td>
+                    <td class="text-center sfc-cell">
+                        <label class="sfc-toggle" for="sfcCheck${i-1}">
+                            <input class="form-check-input sfc-checkbox" type="checkbox" name="send_to_sfc[]" id="sfcCheck${i-1}" value="${i}"
+                                   onchange="toggleSfcRowHighlight(this)">
+                            <span class="sfc-toggle-text"><i class="bi bi-box-seam-fill me-1"></i>SFC</span>
+                        </label>
+                    </td>
+                    <td>
+                        <small class="text-primary" id="infoBadge${i-1}">
+                            <i class="bi bi-tag me-1"></i>${sourceData.lotNo} ${sourceData.coilNo}-R${i}
+                        </small>
+                    </td>
+                </tr>
         `;
     }
 
+    html += `
+            </tbody>
+        </table>
+        </div>
+    `;
+
     container.innerHTML = html;
     document.getElementById('submitBtn').style.display = 'inline-block';
+}
+
+function applyWidthToAll() {
+    const bulkVal = document.getElementById('bulkWidthInput').value;
+    if (bulkVal === '' || isNaN(parseFloat(bulkVal))) {
+        alert('Enter a width value first.');
+        return;
+    }
+    document.querySelectorAll('.width-input').forEach(input => {
+        input.value = bulkVal;
+    });
+}
+
+function toggleSfcRowHighlight(checkbox) {
+    const row = checkbox.closest('tr');
+    const pill = checkbox.closest('.sfc-toggle');
+    row.classList.toggle('sfc-row-active', checkbox.checked);
+    pill.classList.toggle('sfc-active', checkbox.checked);
 }
 
 function updateLotLabel(idx) {
     const selectElem = document.querySelectorAll('select[name="cut_letter[]"]')[idx];
     const letter = selectElem.value;
     const badge = document.getElementById(`infoBadge${idx}`);
-    badge.innerHTML = `<i class="bi bi-tag me-1"></i> ${sourceData.lotNo}${letter} ${sourceData.coilNo}-R${idx+1}`;
+    badge.innerHTML = `<i class="bi bi-tag me-1"></i>${sourceData.lotNo}${letter} ${sourceData.coilNo}-R${idx+1}`;
 }
 </script>
 

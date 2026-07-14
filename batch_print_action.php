@@ -69,7 +69,7 @@ foreach ($selections as $sel) {
     // 0 is a valid, deliberate choice — "save the customer/ref no, but
     // skip printing a sticker for this roll in this batch". Only clamp
     // the upper bound and reject negative/garbage input.
-    $copies   = max(0, min(3, intval($sel['copies'] ?? 3)));
+    $copies   = max(0, min(4, intval($sel['copies'] ?? 4)));
     $nciResolved = trim($sel['nci_resolved_customer'] ?? '');
 
     if ($id <= 0)         { $errors[] = "Invalid roll ID."; continue; }
@@ -385,7 +385,7 @@ function updateTopStatus() {
 // Loads frames ONE AT A TIME rather than all at once — firing many
 // requests simultaneously on a shop-floor tablet's Wi-Fi is exactly what
 // caused a single slow/dropped request to stall the whole batch with no
-// recovery. With copies now up to 3 per roll, this matters even more.
+// recovery. With copies now up to 4 per roll, this matters even more.
 function loadFrame(i) {
     if (i >= frames.length) return;
     const frame = frames[i];

@@ -131,13 +131,6 @@ $sort_col = isset($_GET['sort_col']) ? $_GET['sort_col'] : '';
 if (!in_array($sort_col, ['date_in', 'date_out'], true)) { $sort_col = ''; }
 $sort_dir = (isset($_GET['sort_dir']) && strtoupper($_GET['sort_dir']) === 'ASC') ? 'ASC' : 'DESC';
 
-// ── Dedicated Lot No / Coil No filter (Batch Setup & Print entry point) ──
-// Separate from the free-text search box: this narrows the table to an
-// exact Lot + Coil combination — the same combination used to open the
-// Batch Setup & Print page for all rolls under that coil.
-$filter_lot  = isset($_GET['lot_no'])  ? trim($_GET['lot_no'])  : '';
-$filter_coil = isset($_GET['coil_no']) ? trim($_GET['coil_no']) : '';
-
 // ── Card filter (tab system) ───────────────────────────────────
 // Values: in_pending | stock | palletised | waiting | deliver
 //         produced_month (production report) | stock_month_end (point-in-time snapshot)
@@ -178,16 +171,17 @@ function originLabel(string $origin): string {
     };
 }
 
-// ── Width filter ─────────────────────────────────────────────────
-// Free-text search on the roll's own width (sp.width), matched with LIKE
-// so partial values work too (e.g. typing "38" also matches 388, 380...).
-$filter_width = trim($_GET['width'] ?? '');
-
 // ── NOD (Notice of Defect) filter ─────────────────────────────────
 // '' = all rolls, '1' = only rolls with an NOD recorded, '0' = only
 // rolls without one.
 $filter_nod = trim($_GET['nod'] ?? '');
 if (!in_array($filter_nod, ['', '1', '0'], true)) { $filter_nod = ''; }
+
+// ── Unified search — validate month/year/day FIRST (moved ahead of the
+// day-count calculation below, which used to run against unvalidated
+// values) ──────────────────────────────────────────────────────
+if ($month < 1 || $month > 12) { $month = (int)date('m'); }
+if ($year < 2000 || $year > 2100) { $year = (int)date('Y'); }
 
 // Clamp $day to the number of days actually in the selected month/year
 // (e.g. day=31 selected, then Month changed to April → falls back to
@@ -195,9 +189,48 @@ if (!in_array($filter_nod, ['', '1', '0'], true)) { $filter_nod = ''; }
 $daysInSelectedMonth = (int)date('t', mktime(0, 0, 0, $month, 1, $year));
 if ($day > $daysInSelectedMonth) { $day = 0; }
 
+// ── Single unified search box ──────────────────────────────────
+// Replaces the old separate global search / Width filter / dedicated
+// Lot No + Coil No dual-input with ONE field. Splitting on whitespace
+// lets the same box handle several intents:
+//   1 token   -> broad OR match across product/lot/coil/roll/id/pallet/width
+//   2 tokens  -> if they exactly match an existing Lot+Coil pairing,
+//                auto-redirect straight to Batch Setup & Print for every
+//                roll under that coil (see below) — otherwise falls back
+//                to the same broad per-token OR match as a normal filter.
+//   3+ tokens -> per-token OR match (e.g. "826613 QA-1 R-6" narrows to
+//                that exact roll via AND-across-tokens).
+$searchTokens = ($search !== '')
+    ? preg_split('/\s+/', $search, -1, PREG_SPLIT_NO_EMPTY)
+    : [];
 
-if ($month < 1 || $month > 12) { $month = (int)date('m'); }
-if ($year < 2000 || $year > 2100) { $year = (int)date('Y'); }
+// ── Batch Setup & Print detection ──────────────────────────────
+// Exactly 2 tokens + they form a real, existing Lot+Coil combination ->
+// don't redirect away immediately (that removed the ability to just
+// look at the coil's rolls first) — instead, let the table filter
+// normally (the per-token search below already narrows to this Lot+Coil
+// on its own), and surface an explicit "Batch Setup & Print" button near
+// the results so the user can launch it when ready. A 2-word search that
+// ISN'T a real Lot+Coil pairing (e.g. a two-word product description)
+// just behaves as a normal filtered search, no button shown.
+$batchSetupLot  = '';
+$batchSetupCoil = '';
+if (count($searchTokens) === 2) {
+    $chkStmt = $conn->prepare("
+        SELECT 1 FROM slitting_product
+        WHERE is_voided = 0 AND LOWER(lot_no) = LOWER(?) AND LOWER(coil_no) = LOWER(?)
+        LIMIT 1
+    ");
+    $chkStmt->bind_param("ss", $searchTokens[0], $searchTokens[1]);
+    $chkStmt->execute();
+    $isRealLotCoil = $chkStmt->get_result()->num_rows > 0;
+    $chkStmt->close();
+
+    if ($isRealLotCoil) {
+        $batchSetupLot  = $searchTokens[0];
+        $batchSetupCoil = $searchTokens[1];
+    }
+}
 
 // ── Helper: build tab URL preserving all params ────────────────
 function cardUrl(string $filterVal, int $month, int $year, string $search): string {
@@ -801,39 +834,27 @@ if ($filter_card === 'produced_month') {
 }
 
 // ── Tokenized search ─────────────────────────────────────────
-// Splits the search box on whitespace so a combined query like
-// "826613 QA-1 R-6" (Lot, Coil, Roll typed together — the same
-// format used by the manual scan entry) matches Lot No AGAINST
-// one token, Coil No against another, Roll No against a third,
-// all at once (AND across tokens, OR across fields per token).
-// A single-word search still behaves exactly as before.
-$searchTokens = ($search !== '')
-    ? preg_split('/\s+/', $search, -1, PREG_SPLIT_NO_EMPTY)
-    : [];
-
+// $searchTokens was already computed earlier (right after $search was
+// read) — reused here so the auto-Batch-Setup redirect above and this
+// query see the exact same tokens. Splits on whitespace so a combined
+// query like "826613 QA-1 R-6" (Lot, Coil, Roll typed together — the
+// same format used by the manual scan entry) matches Lot No against one
+// token, Coil No against another, Roll No against a third, all at once
+// (AND across tokens, OR across fields per token). A single-word search
+// still behaves exactly as before — now also matching Width, since the
+// dedicated Width box was folded into this one field.
 if (!empty($searchTokens)) {
     $tokenClauses = array_fill(
         0,
         count($searchTokens),
-        "(sp.product LIKE ? OR sp.lot_no LIKE ? OR sp.coil_no LIKE ? OR sp.roll_no LIKE ? OR sp.id LIKE ? OR p.pallet_no LIKE ?)"
+        "(sp.product LIKE ? OR sp.lot_no LIKE ? OR sp.coil_no LIKE ? OR sp.roll_no LIKE ? OR sp.id LIKE ? OR p.pallet_no LIKE ? OR sp.width LIKE ?)"
     );
     $baseSql .= " AND (" . implode(" AND ", $tokenClauses) . ")";
 }
 
-// ── Dedicated Lot No / Coil No filter ────────────────────────────
-// Exact-match (not LIKE) so the Batch Setup entry point shows precisely
-// the rolls belonging to one coil, no partial-match noise.
-if ($filter_lot !== '')  { $baseSql .= " AND sp.lot_no = ?";  }
-if ($filter_coil !== '') { $baseSql .= " AND sp.coil_no = ?"; }
-
 // ── Origin filter ─────────────────────────────────────────────
 if ($filter_origin !== '') {
     $baseSql .= " AND LOWER(TRIM(COALESCE(sp.original_source, sp.source, 'raw_material'))) = ?";
-}
-
-// ── Width filter ─────────────────────────────────────────────────
-if ($filter_width !== '') {
-    $baseSql .= " AND sp.width = ?";
 }
 
 // ── NOD filter ─────────────────────────────────────────────────
@@ -857,23 +878,20 @@ $stmt = $conn->prepare($baseSql);
 if (!$stmt) { die("Query prepare failed: " . htmlspecialchars($conn->error)); }
 
 // Build bind_param args dynamically: the mode-specific base params above,
-// then 6 string placeholders per search token (all sharing that token's
-// LIKE value).
+// then 7 string placeholders per search token (all sharing that token's
+// LIKE value) — product/lot/coil/roll/id/pallet/width.
 $types  = $baseTypes;
 $params = $baseParams;
 
 foreach ($searchTokens as $token) {
     $like = '%' . $token . '%';
-    for ($i = 0; $i < 6; $i++) {
+    for ($i = 0; $i < 7; $i++) {
         $types    .= "s";
         $params[] = $like;
     }
 }
 
-if ($filter_lot !== '')  { $types .= "s"; $params[] = $filter_lot;  }
-if ($filter_coil !== '') { $types .= "s"; $params[] = $filter_coil; }
 if ($filter_origin !== '') { $types .= "s"; $params[] = $filter_origin; }
-if ($filter_width !== '')  { $types .= "d"; $params[] = (float)$filter_width; }
 
 $bindArgs = [$types];
 foreach ($params as $key => $value) {
@@ -1102,13 +1120,16 @@ table td.lot-coil-cell {
 </div>
 <?php endif; ?>
 
-<!-- Month/Year filter + search -->
-<div class="row mb-3 g-2 align-items-center">
+<!-- Row 1: Month / Year / Day / Origin — compact controls only -->
+<div class="row mb-2 g-2 align-items-center">
     <div class="col-auto">
-        <form method="get" class="d-flex gap-2 align-items-center">
+        <form method="get" class="d-flex gap-2 align-items-center flex-wrap">
             <input type="hidden" name="search" value="<?= htmlspecialchars($search) ?>">
             <?php if ($filter_card !== ''): ?>
             <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_card) ?>">
+            <?php endif; ?>
+            <?php if ($filter_nod !== ''): ?>
+            <input type="hidden" name="nod" value="<?= htmlspecialchars($filter_nod) ?>">
             <?php endif; ?>
             <label class="small fw-bold">Month:</label>
             <select name="month" onchange="this.form.submit()" class="form-select form-select-sm w-auto">
@@ -1140,16 +1161,18 @@ table td.lot-coil-cell {
                     </option>
                 <?php endforeach; ?>
             </select>
-            <label class="small fw-bold">Width:</label>
-            <input type="text" name="width" class="form-control form-control-sm w-auto" style="width:100px;"
-                   placeholder="e.g. 388" value="<?= htmlspecialchars($filter_width) ?>">
-            <button type="submit" class="btn btn-outline-secondary btn-sm"><i class="bi bi-search"></i></button>
-            <?php if ($filter_width !== ''): ?>
-                <a href="?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?>" class="btn btn-outline-secondary btn-sm" title="Clear width filter"><i class="bi bi-x-lg"></i></a>
-            <?php endif; ?>
         </form>
     </div>
-    <div class="col-md-4">
+</div>
+
+<!-- Row 2: ONE unified search bar — replaces the old separate global
+     search / Width filter / dedicated Lot No + Coil No dual-input.
+     Handles broad single-attribute search (ID, Product, Pallet No,
+     Width...), exact Lot+Coil+Roll lookup, AND auto-triggers Batch
+     Setup & Print when exactly a Lot+Coil pairing is entered (see the
+     server-side redirect check near the top of this file). -->
+<div class="row mb-3 g-2 align-items-center">
+    <div class="col-md-8">
         <form method="get" class="input-group input-group-sm">
             <input type="hidden" name="month" value="<?= $month ?>">
             <input type="hidden" name="year"  value="<?= $year ?>">
@@ -1160,60 +1183,43 @@ table td.lot-coil-cell {
             <?php if ($filter_origin !== ''): ?>
             <input type="hidden" name="origin" value="<?= htmlspecialchars($filter_origin) ?>">
             <?php endif; ?>
-            <?php if ($filter_width !== ''): ?>
-            <input type="hidden" name="width" value="<?= htmlspecialchars($filter_width) ?>">
-            <?php endif; ?>
             <?php if ($filter_nod !== ''): ?>
             <input type="hidden" name="nod" value="<?= htmlspecialchars($filter_nod) ?>">
             <?php endif; ?>
+            <span class="input-group-text"><i class="bi bi-search"></i></span>
             <input type="text" name="search" class="form-control"
-                   placeholder="Search ID, Product, Lot, Coil, Roll, Pallet No..."
+                   placeholder="Search ID, Product, Width, Pallet No, or type Lot + Coil (+ Roll)..."
                    value="<?= htmlspecialchars($search) ?>">
-            <button class="btn btn-primary" type="submit"><i class="bi bi-search"></i></button>
+            <button class="btn btn-primary" type="submit">Search</button>
             <?php if ($search !== ''): ?>
-                <a href="?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>" class="btn btn-outline-secondary">Clear</a>
+                <a href="?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>" class="btn btn-outline-secondary">Clear</a>
             <?php endif; ?>
         </form>
-        <div class="form-text ps-1">Tip: type Lot, Coil, and Roll together separated by spaces (e.g. <code>826613 QA-1 R-6</code>) to find an exact roll.</div>
-    </div>
-    <div class="col-md-5">
-        <form method="get" class="input-group input-group-sm" id="lotCoilFilterForm">
-            <input type="hidden" name="month" value="<?= $month ?>">
-            <input type="hidden" name="year"  value="<?= $year ?>">
-            <input type="hidden" name="day" value="<?= $day ?>">
-            <input type="hidden" name="search" value="<?= htmlspecialchars($search) ?>">
-            <?php if ($filter_card !== ''): ?>
-            <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_card) ?>">
-            <?php endif; ?>
-            <?php if ($filter_origin !== ''): ?>
-            <input type="hidden" name="origin" value="<?= htmlspecialchars($filter_origin) ?>">
-            <?php endif; ?>
-            <?php if ($filter_width !== ''): ?>
-            <input type="hidden" name="width" value="<?= htmlspecialchars($filter_width) ?>">
-            <?php endif; ?>
-            <?php if ($filter_nod !== ''): ?>
-            <input type="hidden" name="nod" value="<?= htmlspecialchars($filter_nod) ?>">
-            <?php endif; ?>
-            <span class="input-group-text">Lot No</span>
-            <input type="text" name="lot_no" class="form-control" placeholder="e.g. 826408a"
-                   value="<?= htmlspecialchars($filter_lot) ?>">
-            <span class="input-group-text">Coil No</span>
-            <input type="text" name="coil_no" class="form-control" placeholder="e.g. CI-2"
-                   value="<?= htmlspecialchars($filter_coil) ?>">
-            <button class="btn btn-primary" type="submit"><i class="bi bi-funnel"></i></button>
-            <?php if ($filter_lot !== '' || $filter_coil !== ''): ?>
-                <a href="?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>" class="btn btn-outline-secondary">Clear</a>
-            <?php endif; ?>
-        </form>
-        <?php if ($filter_lot !== '' && $filter_coil !== ''): ?>
-            <div class="mt-1">
-                <a href="batch_setup.php?lot_no=<?= urlencode($filter_lot) ?>&coil_no=<?= urlencode($filter_coil) ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
-                   class="btn btn-danger btn-sm">
-                    <i class="bi bi-printer-fill me-1"></i> Batch Setup &amp; Print — all rolls in this Lot + Coil
+        <?php if ($batchSetupLot !== '' && $batchSetupCoil !== ''): ?>
+            <div class="mt-2">
+                <?php
+                    $batchParams = [
+                        'lot_no'  => $batchSetupLot,
+                        'coil_no' => $batchSetupCoil,
+                        'month'   => $month,
+                        'year'    => $year,
+                    ];
+                    if ($day > 0) $batchParams['day'] = $day;
+                    if ($filter_card !== '') $batchParams['filter'] = $filter_card;
+                    if ($filter_origin !== '') $batchParams['origin'] = $filter_origin;
+                    if ($filter_nod !== '') $batchParams['nod'] = $filter_nod;
+                ?>
+                <a href="batch_setup.php?<?= http_build_query($batchParams) ?>" class="btn btn-danger btn-sm">
+                    <i class="bi bi-printer-fill me-1"></i> Batch Setup &amp; Print — all rolls in
+                    Lot <?= htmlspecialchars($batchSetupLot) ?> / Coil <?= htmlspecialchars($batchSetupCoil) ?>
                 </a>
             </div>
         <?php else: ?>
-            <div class="form-text ps-1">Enter both Lot No and Coil No to open Batch Setup &amp; Print for every roll under that coil.</div>
+            <div class="form-text ps-1">
+                Tip: type <strong>Lot No + Coil No</strong> together (e.g. <code>826604 A-6</code>) to filter to that
+                coil AND reveal a <strong>Batch Setup &amp; Print</strong> button for every roll under it —
+                or add a Roll No too (e.g. <code>826613 QA-1 R-6</code>) to find one exact roll instead.
+            </div>
         <?php endif; ?>
     </div>
 </div>
@@ -1225,8 +1231,8 @@ table td.lot-coil-cell {
         'day'      => $day > 0 ? $day : null,
         'filter'   => $filter_card !== '' ? $filter_card : null,
         'search'   => $search !== '' ? $search : null,
-        'lot_no'   => $filter_lot !== '' ? $filter_lot : null,
-        'coil_no'  => $filter_coil !== '' ? $filter_coil : null,
+        'origin'   => $filter_origin !== '' ? $filter_origin : null,
+        'nod'      => $filter_nod !== '' ? $filter_nod : null,
         'sort_col' => $sort_col !== '' ? $sort_col : null,
         'sort_dir' => $sort_col !== '' ? $sort_dir : null,
         'download' => 'excel',
@@ -1426,12 +1432,12 @@ table td.lot-coil-cell {
 <?php
 // ── Sortable Date In / Date Out column header helper ──────────────
 // Builds a link that preserves every other active filter (month, year,
-// day, search, filter tab, lot/coil), sets sort_col to the clicked
-// column, and toggles sort_dir if that column is already the active
-// sort (otherwise defaults to DESC — newest first — on first click).
+// day, search, filter tab), sets sort_col to the clicked column, and
+// toggles sort_dir if that column is already the active sort (otherwise
+// defaults to DESC — newest first — on first click).
 function sortHeaderLink(string $col, string $label, string $currentSortCol, string $currentSortDir,
                          int $month, int $year, int $day, string $search, string $filter_card,
-                         string $filter_lot, string $filter_coil, string $filter_origin = '', string $filter_width = '', string $filter_nod = ''): string {
+                         string $filter_origin = '', string $filter_nod = ''): string {
     $isActive = ($currentSortCol === $col);
     $nextDir  = ($isActive && $currentSortDir === 'DESC') ? 'ASC' : 'DESC';
     $qs = http_build_query(array_filter([
@@ -1440,10 +1446,7 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
         'day'      => $day > 0 ? $day : null,
         'search'   => $search !== '' ? $search : null,
         'filter'   => $filter_card !== '' ? $filter_card : null,
-        'lot_no'   => $filter_lot !== '' ? $filter_lot : null,
-        'coil_no'  => $filter_coil !== '' ? $filter_coil : null,
         'origin'   => $filter_origin !== '' ? $filter_origin : null,
-        'width'    => $filter_width !== '' ? $filter_width : null,
         'nod'      => $filter_nod !== '' ? $filter_nod : null,
         'sort_col' => $col,
         'sort_dir' => $nextDir,
@@ -1462,8 +1465,8 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                 <th>#</th><th>Status</th><th>Origin</th><th>Product</th>
                 <th>Lot No</th><th>Width</th><th>Length</th>
                 <th>Actual</th><th>NOD</th><th>Pallet</th>
-                <th><?= sortHeaderLink('date_in',  'Date In',  $sort_col, $sort_dir, $month, $year, $day, $search, $filter_card, $filter_lot, $filter_coil, $filter_origin, $filter_width, $filter_nod) ?></th>
-                <th><?= sortHeaderLink('date_out', 'Date Out', $sort_col, $sort_dir, $month, $year, $day, $search, $filter_card, $filter_lot, $filter_coil, $filter_origin, $filter_width, $filter_nod) ?></th>
+                <th><?= sortHeaderLink('date_in',  'Date In',  $sort_col, $sort_dir, $month, $year, $day, $search, $filter_card, $filter_origin, $filter_nod) ?></th>
+                <th><?= sortHeaderLink('date_out', 'Date Out', $sort_col, $sort_dir, $month, $year, $day, $search, $filter_card, $filter_origin, $filter_nod) ?></th>
                 <th>Action</th>
             </tr>
         </thead>
@@ -1610,7 +1613,7 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
 
             <?php if ($row['is_completed'] == 0): ?>
                 <!-- No actual length yet — must update first -->
-                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
+                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
                    class="btn btn-primary btn-sm w-100">Update</a>
 
             <?php elseif ($row['pallet_id']): ?>
@@ -1625,7 +1628,7 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
 
             <?php else: ?>
                 <!-- Stock counted, not yet on a pallet -->
-                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
+                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
                    class="btn btn-outline-primary btn-sm w-100">Edit</a>
                 <a href="pallet.php" class="btn btn-primary btn-sm w-100">
                     <i class="bi bi-archive me-1"></i> Add to Pallet
@@ -1713,7 +1716,7 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
             <input type="hidden" name="filter"  value="<?= htmlspecialchars($filter_card) ?>">
             <div class="modal-header bg-primary text-white">
                 <h5>Edit Product</h5>
-                <a href="finish_product.php?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_width !== '' ? '&width='.urlencode($filter_width) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
+                <a href="finish_product.php?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
                    class="btn-close"></a>
             </div>
             <div class="modal-body">

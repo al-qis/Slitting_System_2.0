@@ -172,6 +172,7 @@ $stmt->close();
                         <option value="1">1</option>
                         <option value="2">2</option>
                         <option value="3">3</option>
+                        <option value="4">4</option>
                     </select>
                 </div>
                 <div class="col-12 col-md-2">
@@ -271,6 +272,7 @@ $stmt->close();
                             <option value="1">1</option>
                             <option value="2">2</option>
                             <option value="3" selected>3</option>
+                             <option value="4" >4</option>
                         </select>
                     </td>
                     <td class="row-status text-muted" data-row="<?= $idx ?>">—</td>
