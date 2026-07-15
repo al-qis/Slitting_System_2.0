@@ -1615,6 +1615,9 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                 <!-- No actual length yet — must update first -->
                 <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
                    class="btn btn-primary btn-sm w-100">Update</a>
+                <a href="select_customer.php?id=<?= $row['id'] ?>" class="btn btn-secondary btn-sm w-100 mt-1">
+                    <i class="bi bi-printer-fill me-1"></i>Print
+                </a>
 
             <?php elseif ($row['pallet_id']): ?>
                 <!-- Already palletised — hide Reslit/Recoiling to prevent mistakes -->
