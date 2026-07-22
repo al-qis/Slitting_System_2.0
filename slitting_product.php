@@ -31,7 +31,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 }
 
 // === Soft-delete (void) Product ===
-// Hard delete removed — voiding preserves FK chain and history
 if (isset($_GET['delete'])) {
     $id   = intval($_GET['delete']);
     $stmt = $conn->prepare("
@@ -48,22 +47,8 @@ if (isset($_GET['delete'])) {
 
 // === Search Logic ===
 $search = isset($_GET['search']) ? trim($_GET['search']) : '';
-
-// Tokenize search: split on whitespace so users can type e.g.
-// "826403a N-4 R7" (Lot + Coil + Roll together) and get an exact
-// match across all three, instead of one literal string matched
-// against a single column (which would find nothing).
-//
-//   1 word   -> broad OR across product, coil_no, lot_no, roll_no
-//               (existing behavior — unchanged)
-//   2 words  -> token1 -> lot_no, token2 -> coil_no
-//   3+ words -> token1 -> lot_no, token2 -> coil_no, token3 -> roll_no
-//               (tokens beyond the 3rd are ignored)
 $tokens = $search !== '' ? preg_split('/\s+/', $search, -1, PREG_SPLIT_NO_EMPTY) : [];
 
-// BASE condition: never show voided, recoiled, or reslitted rows
-// These rows have already been sent to recoiling/reslit — they are
-// replaced by a new row once that process completes.
 $base_where = "
     (is_voided    = 0 OR is_voided    IS NULL)
     AND (is_recoiled  = 0 OR is_recoiled  IS NULL)
@@ -71,7 +56,6 @@ $base_where = "
 ";
 
 if (count($tokens) === 1) {
-    // Single keyword — original broad OR search across all columns
     $stmt = $conn->prepare("
         SELECT * FROM slitting_product
         WHERE ($base_where)
@@ -87,7 +71,6 @@ if (count($tokens) === 1) {
     $stmt->close();
 
 } elseif (count($tokens) === 2) {
-    // Two tokens — Lot No + Coil No
     $stmt = $conn->prepare("
         SELECT * FROM slitting_product
         WHERE ($base_where)
@@ -104,8 +87,6 @@ if (count($tokens) === 1) {
     $stmt->close();
 
 } elseif (count($tokens) >= 3) {
-    // Three or more tokens — Lot No + Coil No + Roll No
-    // (tokens beyond the 3rd are ignored)
     $stmt = $conn->prepare("
         SELECT * FROM slitting_product
         WHERE ($base_where)
@@ -159,7 +140,7 @@ include 'header.php';
 </div>
 
 <div class="row mb-3">
-    <div class="col-md-5">
+    <div class="col-md-7">
         <form method="GET" action="slitting_product.php" class="input-group shadow-sm">
             <input type="text" name="search" class="form-control"
                    placeholder="Search Coil, Product, Lot, Roll... (e.g. 826403a N-4 R7)"
@@ -169,6 +150,9 @@ include 'header.php';
             </button>
             <?php if ($search !== ''): ?>
                 <a href="slitting_product.php" class="btn btn-outline-secondary">Clear</a>
+                <a href="bulk_print_action.php?search=<?= urlencode($search) ?>" target="_blank" class="btn btn-info text-dark fw-bold">
+                    <i class="bi bi-printer-fill me-1"></i> Bulk Print Results
+                </a>
             <?php endif; ?>
         </form>
     </div>

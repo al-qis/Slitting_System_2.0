@@ -275,10 +275,29 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
         <input type="hidden" name="line" id="lineInput" value="B">
 
         <table class="preview-table">
-            <tr>
-                <td>TOMBO No.</td><td>:</td>
-                <td><strong><?= htmlspecialchars($product['tombo_no'] ?? '1600 (METAKOTE)') ?></strong></td>
-            </tr>
+        
+<tr>
+    <td>TOMBO No.</td><td>:</td>
+    <td>
+        <strong>
+            <?php 
+                // Default value
+                $tomboNo = "1600 (METAKOTE)"; 
+                
+                // Check if MV, HBV, or PS exists in the product name
+                if (isset($product['product']) && (
+                    stripos($product['product'], 'MV') !== false || 
+                    stripos($product['product'], 'HBV') !== false ||
+                    stripos($product['product'], 'PS') !== false
+                )) {
+                    $tomboNo = "1608 (METAFOAM)";
+                }
+                
+                echo htmlspecialchars($tomboNo);
+            ?>
+        </strong>
+    </td>
+</tr>
             <tr>
                 <td>Grade</td><td>:</td>
                 <td><strong><?= htmlspecialchars($product['product'] ?? '') ?></strong></td>
@@ -314,10 +333,12 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
                         <option value="NVC"     <?= $savedCustomer==='NVC'     ?'selected':'' ?>>NICHIAS VIETNAM CO., LTD</option>
                         <option value="NCS"     <?= $savedCustomer==='NCS'     ?'selected':'' ?>>NC-PT NICHIAS SUNIJAYA</option>
                         <option value="SNP"     <?= $savedCustomer==='SNP'     ?'selected':'' ?>>SUZHOU NICHIAS IND. PRODUCTS</option>
+                        <option value="YTEC"    <?= $savedCustomer==='YTEC'    ?'selected':'' ?>>YTEC CO., LTD.</option>
+                        <option value="NSEA"    <?= $savedCustomer==='NSEA'    ?'selected':'' ?>>NICHIAS SOUTH EAST ASIA (UP PACKING)</option>
                         <option value="NCI 2"   <?= $savedCustomer==='NCI 2'   ?'selected':'' ?>>NCI 2</option>
                         <option value="STOCK"   <?= ($savedCustomer==='' || $savedCustomer==='STOCK') ?'selected':'' ?>>STOCK</option>
                         <option value="TRIAL"   <?= $savedCustomer==='TRIAL'   ?'selected':'' ?>>TRIAL</option>
-                        <option value="OTHER"   <?= ($savedCustomer!=='' && !in_array($savedCustomer,['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA','NIPPON','NTC','SGC','STAMPING','YANTAI','NIP','NVC','NCS','SNP','NCI 2','STOCK','TRIAL'])) ?'selected':'' ?>>OTHER (type below)</option>
+                        <option value="OTHER"   <?= ($savedCustomer!=='' && !in_array($savedCustomer,['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA','NIPPON','NTC','SGC','STAMPING','YANTAI','NIP','NVC','NCS','SNP','YTEC','NSEA','NCI 2','STOCK','TRIAL'])) ?'selected':'' ?>>OTHER (type below)</option>
                     </select>
                     <input type="text" name="custom_customer" id="custom_customer"
                            class="form-control mt-2" placeholder="Enter customer name"
@@ -597,7 +618,7 @@ document.getElementById('mainForm').addEventListener('submit', (e) => {
 (function () {
     const knownOptions = ['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA',
                           'NIPPON','NTC','SGC','STAMPING','YANTAI','NIP',
-                          'NVC','NCS','SNP','NCI 2','STOCK','TRIAL',''];
+                          'NVC','NCS','SNP','YTEC','NSEA','NCI 2','STOCK','TRIAL',''];
     const saved = <?= json_encode($savedCustomer) ?>;
     if (saved !== '' && !knownOptions.includes(saved)) {
         const customEl = document.getElementById('custom_customer');

@@ -64,6 +64,31 @@ function productsFromCoil(mysqli $conn, string $coil_no): array
 }
 
 /* ──────────────────────────────────────────────────────────────
+   AJAX endpoint: mother_coil.php?ajax=validate_product&code=...
+   Used by Bulk Add's auto-detected Product column (pasted from
+   Excel): validates the pasted text against known products in
+   coil_product_map (the same source of truth productsFromCoil()
+   already uses) rather than trusting pasted text blindly. Exact,
+   case-insensitive match only — no fuzzy/partial matching, since a
+   wrong guess here would silently mis-assign a real product.
+────────────────────────────────────────────────────────────── */
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'validate_product') {
+    header('Content-Type: application/json; charset=utf-8');
+
+    $code = trim($_GET['code'] ?? '');
+    if ($code === '') { echo json_encode(['ok' => true, 'found' => false]); exit; }
+
+    $stmt = $conn->prepare("SELECT DISTINCT product FROM coil_product_map WHERE product = ? LIMIT 1");
+    $stmt->bind_param("s", $code);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    echo json_encode(['ok' => true, 'found' => (bool)$row, 'product' => $row['product'] ?? null]);
+    exit;
+}
+
+/* ──────────────────────────────────────────────────────────────
    AJAX endpoint: mother_coil.php?ajax=search_coil&q=...
    "Quick Search & Add" (Option B) for Bulk Print for Slitting Plan —
    returns matching mother_coil rows for the operator to pick from.
@@ -481,30 +506,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
      2 words  -> token1 -> lot_no, token2 -> coil_no
      3+ words -> token1 -> lot_no, token2 -> coil_no, token3 -> product
                  (tokens beyond the 3rd are ignored)
+
+   PRINT STATUS FILTER
+   Combinable with the search above via ?print_status=printed|not_printed
+   (any other/absent value means "All" — no filtering by print status).
 ────────────────────────────────────────────────────────────── */
 $search = trim($_GET['search'] ?? '');
 $tokens = $search !== '' ? preg_split('/\s+/', $search, -1, PREG_SPLIT_NO_EMPTY) : [];
 
+$printFilter = $_GET['print_status'] ?? '';
+if (!in_array($printFilter, ['printed', 'not_printed'], true)) {
+    $printFilter = ''; // treat anything else as "All"
+}
+
+$where  = [];
+$params = [];
+$types  = '';
+
 if (count($tokens) === 1) {
     // Single keyword — original broad OR search across all columns
     $searchTerm = '%' . $tokens[0] . '%';
-    $stmt = $conn->prepare("SELECT * FROM mother_coil
-                            WHERE coil_no LIKE ? OR lot_no LIKE ? OR product LIKE ?
-                            ORDER BY id ASC");
-    $stmt->bind_param("sss", $searchTerm, $searchTerm, $searchTerm);
-    $stmt->execute();
-    $result = $stmt->get_result();
+    $where[]  = '(coil_no LIKE ? OR lot_no LIKE ? OR product LIKE ?)';
+    $params[] = $searchTerm; $params[] = $searchTerm; $params[] = $searchTerm;
+    $types   .= 'sss';
 
 } elseif (count($tokens) === 2) {
     // Two tokens — Lot No + Coil No
     $likeLot  = '%' . $tokens[0] . '%';
     $likeCoil = '%' . $tokens[1] . '%';
-    $stmt = $conn->prepare("SELECT * FROM mother_coil
-                            WHERE lot_no LIKE ? AND coil_no LIKE ?
-                            ORDER BY id ASC");
-    $stmt->bind_param("ss", $likeLot, $likeCoil);
-    $stmt->execute();
-    $result = $stmt->get_result();
+    $where[]  = '(lot_no LIKE ? AND coil_no LIKE ?)';
+    $params[] = $likeLot; $params[] = $likeCoil;
+    $types   .= 'ss';
 
 } elseif (count($tokens) >= 3) {
     // Three or more tokens — Lot No + Coil No + Product
@@ -512,16 +544,29 @@ if (count($tokens) === 1) {
     $likeLot     = '%' . $tokens[0] . '%';
     $likeCoil    = '%' . $tokens[1] . '%';
     $likeProduct = '%' . $tokens[2] . '%';
-    $stmt = $conn->prepare("SELECT * FROM mother_coil
-                            WHERE lot_no LIKE ? AND coil_no LIKE ? AND product LIKE ?
-                            ORDER BY id ASC");
-    $stmt->bind_param("sss", $likeLot, $likeCoil, $likeProduct);
-    $stmt->execute();
-    $result = $stmt->get_result();
-
-} else {
-    $result = $conn->query("SELECT * FROM mother_coil ORDER BY id ASC");
+    $where[]  = '(lot_no LIKE ? AND coil_no LIKE ? AND product LIKE ?)';
+    $params[] = $likeLot; $params[] = $likeCoil; $params[] = $likeProduct;
+    $types   .= 'sss';
 }
+
+if ($printFilter === 'printed') {
+    $where[] = 'printed_at IS NOT NULL';
+} elseif ($printFilter === 'not_printed') {
+    $where[] = 'printed_at IS NULL';
+}
+
+$sql = 'SELECT * FROM mother_coil';
+if ($where) {
+    $sql .= ' WHERE ' . implode(' AND ', $where);
+}
+$sql .= ' ORDER BY id ASC';
+
+$stmt = $conn->prepare($sql);
+if ($types !== '') {
+    $stmt->bind_param($types, ...$params);
+}
+$stmt->execute();
+$result = $stmt->get_result();
 
 // Load all distinct products for the edit modal dropdown
 $all_products = [];
@@ -581,8 +626,13 @@ include 'header.php';
             <input type="text" name="search" class="form-control"
                    placeholder="Search Coil No, Lot, or Product... (e.g. 826403a N-4 DS-3020)"
                    value="<?= htmlspecialchars($search) ?>">
+            <select name="print_status" class="form-select" style="max-width:160px;" onchange="this.form.submit()">
+                <option value="" <?= $printFilter === '' ? 'selected' : '' ?>>All Coils</option>
+                <option value="printed" <?= $printFilter === 'printed' ? 'selected' : '' ?>>Printed</option>
+                <option value="not_printed" <?= $printFilter === 'not_printed' ? 'selected' : '' ?>>Not Printed Yet</option>
+            </select>
             <button class="btn btn-primary" type="submit"><i class="bi bi-search"></i> Search</button>
-            <?php if ($search !== ''): ?>
+            <?php if ($search !== '' || $printFilter !== ''): ?>
                 <a href="mother_coil.php" class="btn btn-outline-secondary">Clear</a>
             <?php endif; ?>
         </form>
@@ -991,6 +1041,11 @@ async function handlePasteAutofill(raw) {
     const cols = text.split('\t');
     if (cols.length < 6) { showPasteWarning(true); return; }
 
+    // cols[0] = "Type" column from Excel (e.g. "JZ-2520-2C") — the real
+    // product code. cols[1] "Product Code" (e.g. "QA") is just the
+    // coil-code family, already redundant with what's derived from the
+    // Lot No column below, so it's intentionally not read here.
+    const pastedProduct = (cols[0] || '').trim();
     const widthVal    = (cols[2] || '').trim();
     const lotCoilCell  = (cols[3] || '').trim();
     const lengthVal   = (cols[4] || '').trim();
@@ -1023,6 +1078,41 @@ async function handlePasteAutofill(raw) {
     elWidth.disabled  = false; elWidth.value  = widthVal;
     elLength.disabled = false; elLength.value = lengthVal;
     elSubmit.disabled = false;
+
+    /* ── Auto-Detection + Exact Matching + Seamless Bypass ────────
+       If Excel already gave us a product code, validate it against real
+       product records first. A confirmed exact match fills the Product
+       field directly and skips the coil-based lookup entirely — no
+       "Multiple products found" dropdown, no manual selection needed.
+       An unrecognized/blank pasted value falls through to the exact
+       same coil-based lookup this form already used before this change. */
+    if (pastedProduct) {
+        try {
+            elCoilHint.textContent = '🔍 Checking pasted product…';
+            const vRes  = await fetch('mother_coil.php?ajax=validate_product&code=' + encodeURIComponent(pastedProduct));
+            const vData = await vRes.json();
+
+            if (vData.ok && vData.found) {
+                elDisplay.value      = vData.product;
+                elDisplay.className  = 'form-control state-auto';
+                elHidden.value       = vData.product;
+                elHidden.disabled    = false;
+                elAutoWrap.style.display = 'block';
+                elSelectWrap.classList.remove('visible');
+                elSelect.required = false;
+                elCoilHint.textContent = '';
+
+                /* Re-assert pasted values, same as the coil-lookup path below */
+                elGrade.disabled  = false; elGrade.value  = gradeVal;
+                elWidth.disabled  = false; elWidth.value  = widthVal;
+                elLength.disabled = false; elLength.value = lengthVal;
+                elSubmit.disabled = false;
+                return; // bypass coil-based lookup entirely
+            }
+        } catch (err) {
+            // Validation call failed — fall through to coil-based lookup below
+        }
+    }
 
     /* Best-effort background product lookup; pasted values are preserved either way */
     try {
@@ -1296,6 +1386,14 @@ function parseBulkRows(raw) {
         const cols = line.split('\t');
         if (cols.length < 6) { badLines.push(idx + 1); return; }
 
+        // cols[0] = the "Type" column from Excel (e.g. "JZ-2520-2C") — the
+        // real product code. Confirmed against a real sample paste; was
+        // previously never read at all. cols[1] "Product Code" (e.g. "QA")
+        // is just the coil-code family, already redundant with what's
+        // derived from the Lot No column below, so it's intentionally not
+        // read here. Everything else keeps its exact original column
+        // position/meaning, so pastes without this column still work.
+        const pastedProduct = (cols[0] || '').trim();
         const widthVal     = (cols[2] || '').trim();
         const lotCoilCell  = (cols[3] || '').trim();
         const lengthVal    = (cols[4] || '').trim();
@@ -1315,6 +1413,7 @@ function parseBulkRows(raw) {
             width:   widthVal,
             length:  lengthVal,
             product: '',
+            pastedProduct: pastedProduct,   // candidate from Excel, unvalidated
             productOptions: [],
             productStatus: 'pending'   // pending | single | multiple | none
         });
@@ -1401,6 +1500,34 @@ function renderBulkTable() {
 async function lookupBulkProduct(i) {
     const row = bulkRows[i];
     if (!row || !row.coil_no) return;
+
+    // ── Auto-Detection + Exact Matching ─────────────────────────
+    // If Excel already gave us a product code for this row, validate it
+    // against real product records first. A confirmed exact match bypasses
+    // the coil-based lookup (and its ambiguous multi-match dropdown)
+    // entirely — added directly, no manual selection needed. An
+    // unrecognized/blank pasted value falls through to the exact same
+    // coil-based lookup this page already used before this change.
+    if (row.pastedProduct) {
+        try {
+            const vRes  = await fetch('mother_coil.php?ajax=validate_product&code=' + encodeURIComponent(row.pastedProduct));
+            const vData = await vRes.json();
+
+            if (vData.ok && vData.found) {
+                row.productStatus = 'single';
+                row.product = vData.product;
+
+                const tr = bulkTbody.querySelector(`tr[data-index="${i}"]`);
+                if (tr) {
+                    const cell = tr.querySelector('.bulk-product-cell');
+                    cell.innerHTML = renderProductCell(row);
+                }
+                return; // Seamless Bypass — skip coil-based lookup entirely
+            }
+        } catch (e) {
+            // Validation call failed — fall through to coil-based lookup below
+        }
+    }
 
     try {
         const res  = await fetch('mother_coil.php?ajax=get_product&coil=' + encodeURIComponent(row.coil_no));

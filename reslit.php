@@ -96,8 +96,9 @@ if (isset($_GET['download']) && $_GET['download'] === 'excel') {
             echo '<td ' . $td  . '>' . htmlspecialchars($row['roll_no']  ?? '-') . '</td>';
             echo '<td ' . $tdN . '>' . number_format((float)($row['width']            ?? 0)) . '</td>';
             echo '<td ' . $tdN . '>' . number_format((float)($row['length']           ?? 0)) . '</td>';
+            $isBalanceRow = strtoupper(trim($row['roll_no'] ?? '')) === 'BALANCE';
             echo '<td ' . $tdN . '>' . number_format((float)($row['effective_length'] ?? 0)) . '</td>';
-            echo '<td ' . $tdN . '>' . number_format((float)($row['actual_length']    ?? 0)) . '</td>';
+            echo '<td ' . $tdN . '>' . ($isBalanceRow ? '-' : number_format((float)($row['actual_length'] ?? 0))) . '</td>';
             echo '<td ' . $td  . '>' . htmlspecialchars($row['date_in']      ?? '-') . '</td>';
             echo '<td ' . $td  . '>' . htmlspecialchars($row['completed_at'] ?? '-') . '</td>';
             echo '</tr>';
@@ -187,6 +188,65 @@ include 'header.php';
     .slitting-box { border: 1px solid #ddd; padding: 15px; border-radius: 8px; margin-bottom: 15px; background: #f9f9f9; }
     .highlight-field { background: #fff3cd !important; border: 2px solid #ffc107 !important; }
     .child-row-bg { background-color: #f0f9ff; }
+
+    /* ── Compact rolls table for reslit output (matches add_slitting.php) ── */
+    #rollsTableWrap {
+        max-height: 45vh;
+        overflow-y: auto;
+        border: 1px solid #dee2e6;
+        border-radius: 10px;
+    }
+    #rollsTable { margin-bottom: 0; }
+    #rollsTable thead th {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        background: #f8f9fa;
+        white-space: nowrap;
+    }
+    #rollsTable td, #rollsTable th { vertical-align: middle; padding: 8px 10px; }
+    #rollsTable input.form-control, #rollsTable select.form-select { min-width: 90px; }
+    #bulkApplyBar {
+        background: #e7f1ff;
+        border: 1px solid #b6d4fe;
+        border-radius: 8px;
+        padding: 10px 14px;
+    }
+
+    /* ── SFC toggle — visible pill with icon + text, matches add_slitting.php ── */
+    .sfc-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 10px;
+        border: 1px solid #ced4da;
+        border-radius: 20px;
+        background: #fff;
+        cursor: pointer;
+        user-select: none;
+        transition: all .15s ease;
+        font-size: .8rem;
+        font-weight: 600;
+        color: #6c757d;
+    }
+    .sfc-toggle:hover { border-color: #0d6efd; background: #f0f6ff; }
+    .sfc-toggle .sfc-checkbox {
+        width: 18px;
+        height: 18px;
+        margin: 0;
+        cursor: pointer;
+    }
+    .sfc-toggle:has(.sfc-checkbox:checked) {
+        background: #cfe2ff;
+        border-color: #0d6efd;
+        color: #0d6efd;
+    }
+    .sfc-toggle.sfc-active {
+        background: #cfe2ff;
+        border-color: #0d6efd;
+        color: #0d6efd;
+    }
+    tr.sfc-row-active { background-color: #f0f6ff !important; }
 </style>
 
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -198,6 +258,36 @@ include 'header.php';
         <a href="?download=excel" class="btn btn-success shadow-sm">
             <i class="bi bi-download me-1"></i> Download Excel
         </a>
+    </div>
+</div>
+
+<!-- ═══ ADD PRODUCT TO RESLIT — one unified intake bar ═══════════
+     No mode selection: this single field handles hardware-scanner
+     input (which types like a keyboard, ending in Enter), manual
+     typing of a combined Lot-Coil-Roll string, and camera-scanned
+     QR content (fed in via the floating scan button). Server-side
+     parsing lives in reslit_intake.php. Same pattern as recoiling.php. -->
+<div class="card shadow-sm border-0 mb-4">
+    <div class="card-header bg-white">
+        <span class="fw-bold"><i class="bi bi-upc-scan text-primary me-1"></i> Add Product to Reslit</span>
+    </div>
+    <div class="card-body">
+        <form id="intakeForm" class="d-flex gap-2" onsubmit="return submitIntake(event)">
+            <div class="input-group">
+                <span class="input-group-text bg-white"><i class="bi bi-upc-scan"></i></span>
+                <input type="text" id="intakeInput" class="form-control form-control-lg"
+                       placeholder="Scan, or type Lot-Coil-Roll (e.g. 826529-N-2-R4)"
+                       autocomplete="off" autofocus>
+            </div>
+            <button type="submit" class="btn btn-primary btn-lg px-4" id="intakeSubmitBtn">
+                <i class="bi bi-plus-lg me-1"></i>Add
+            </button>
+        </form>
+        <div class="form-text mt-1">
+            Ready for scanner input — just scan a label. Typing manually? Use
+            <code>LotNo-CoilNo-RollNo</code> or <code>LotNo CoilNo RollNo</code>, then press Enter.
+        </div>
+        <div id="intakeFeedback" class="alert py-2 mb-0 mt-3" style="display:none;"></div>
     </div>
 </div>
 
@@ -271,7 +361,7 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
         <table class="table table-hover align-middle text-center mb-0">
             <thead class="table-dark">
                 <tr>
-                    <th>ID</th>
+                    <th>No.</th>
                     <th>Status</th>
                     <th>Product</th>
                     <th>Lot & Coil No.</th>
@@ -285,8 +375,10 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
             </thead>
             <tbody id="reslitTableBody">
                 <?php if ($result && $result->num_rows > 0): ?>
+                    <?php $rowNum = 0; ?>
                     <?php while ($row = $result->fetch_assoc()): ?>
                         <?php
+                            $rowNum++;
                             $parentStatusGroup = ($row['status'] === 'completed') ? 'completed' : 'pending';
                             $parentSearchBlob = strtolower(trim(
                                 ($row['product'] ?? '') . ' ' . ($row['lot_no'] ?? '') . ' ' .
@@ -295,7 +387,7 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
                         ?>
                         <tr data-status-group="<?= htmlspecialchars($parentStatusGroup) ?>"
                             data-search="<?= htmlspecialchars($parentSearchBlob) ?>">
-                            <td><strong><?= $row['id'] ?></strong></td>
+                            <td><?= $rowNum ?></td>
                             <td>
                                 <?php if($row['status'] === 'pending'): ?>
                                     <span class="badge bg-warning text-dark">PENDING</span>
@@ -308,7 +400,13 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
                             <td><strong><?= htmlspecialchars($row['roll_no'] ?? '-') ?></strong></td>
                             <td><?= isset($row['width']) ? number_format($row['width']) : '-' ?></td>
                             <td><?= isset($row['effective_length']) ? number_format($row['effective_length']) : '-' ?></td>
-                            <td class="text-success fw-bold"><?= isset($row['actual_length']) ? number_format($row['actual_length']) : '-' ?></td>
+                            <td class="text-success fw-bold">
+                                <?php if (strtoupper(trim($row['roll_no'] ?? '')) === 'BALANCE'): ?>
+                                    <span class="text-muted">-</span>
+                                <?php else: ?>
+                                    <?= isset($row['actual_length']) ? number_format($row['actual_length']) : '-' ?>
+                                <?php endif; ?>
+                            </td>
                             <td class="small"><?= htmlspecialchars($row['date_in'] ?? '-') ?></td>
                             <td>
                                 <?php if ($row['status'] === 'pending'): ?>
@@ -343,7 +441,7 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
                         <tr class="child-row-bg"
                             data-status-group="<?= htmlspecialchars($parentStatusGroup) ?>"
                             data-search="<?= htmlspecialchars($childSearchBlob) ?>">
-                            <td class="small text-muted">↳ R<?= $roll['id'] ?></td>
+                            <td class="small text-muted">↳</td>
                             <td><span class="badge bg-success">COMPLETED</span></td>
                             <td><?= htmlspecialchars($row['product'] ?? '-') ?></td>
                             <td class="small">
@@ -460,7 +558,7 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
 
 <!-- ═══ RESLIT MODAL ═══════════════════════════════════════════ -->
 <div class="modal fade" id="reslitModal" tabindex="-1">
-    <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-dialog modal-xl modal-dialog-centered">
         <div class="modal-content border-0 shadow">
             <div class="modal-header bg-primary text-white">
                 <h5 class="modal-title"><i class="bi bi-scissors me-2"></i>Start Reslit Process</h5>
@@ -496,16 +594,51 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
                         </div>
                     </div>
                     
+                    <div id="cutInto2Section" style="display:none;" class="card shadow-sm mb-4 border-warning">
+                        <div class="card-body bg-light-subtle">
+                            <h6 class="mb-3 text-warning-emphasis">Step 2: Slit Calculation</h6>
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <label class="form-label fw-bold">Slit Quantity (Length Used)</label>
+                                    <div class="input-group">
+                                        <input type="number" step="0.01" name="slit_quantity" id="slitQuantity"
+                                               class="form-control" placeholder="0.0" oninput="calculateReslitStock()">
+                                        <span class="input-group-text">meters</span>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label fw-bold">Remaining Stock (Leftover)</label>
+                                    <div class="input-group">
+                                        <input type="number" step="0.01" name="stock" id="reslitStock"
+                                               class="form-control bg-white" readonly>
+                                        <span class="input-group-text">meters</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="mt-3">
+                                <label class="sfc-toggle" for="leftoverSfcCheck">
+                                    <input class="form-check-input sfc-checkbox" type="checkbox" name="leftover_to_sfc"
+                                           id="leftoverSfcCheck" value="1" onchange="toggleLeftoverSfcHighlight(this)">
+                                    <span class="sfc-toggle-text"><i class="bi bi-box-seam-fill me-1"></i>Send Leftover to SFC</span>
+                                </label>
+                                <div class="form-text mt-1" id="leftoverRouteHint">
+                                    Unticked: leftover goes to <strong>Finished Product</strong> only. Ticked: leftover goes to <strong>SFC</strong> only — never both.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <div id="rollCountSection" style="display:none;" class="mb-4">
                         <hr>
-                        <h6 class="fw-bold mb-3">Step 2: Number of Rolls</h6>
+                        <h6 class="fw-bold mb-3" id="rollCountTitle">Step 2: Number of Rolls</h6>
                         <select name="total" id="total" class="form-select w-auto" onchange="generateForm()">
                             <option value="">-- Select --</option>
                             <?php for($i=1;$i<=10;$i++): ?><option value="<?= $i ?>"><?= $i ?> Roll<?= $i>1?'s':'' ?></option><?php endfor; ?>
                         </select>
                     </div>
-                    
+
                     <div id="slittingForm"></div>
+                    <div class="form-text mt-1"><i class="bi bi-box-seam-fill me-1 text-primary"></i>Tick <strong>To SFC</strong> for any roll that should be sent to SFC instead of finished stock.</div>
                 </div>
                 <div class="modal-footer bg-light">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -518,8 +651,83 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
     </div>
 </div>
 
+<script src="camera_scanner.js"></script>
 <script>
 let productData = {};
+
+// ── Add Product to Reslit — one unified intake bar ───────────────
+// No mode toggle: submitIntake() handles Enter-key submission from the
+// form (hardware keyboard-wedge scanners "type" their payload then send
+// Enter, so this just works automatically) as well as a manual click on
+// the Add button. handleIntakeScan() is the camera-scanner widget's
+// onScan callback (wired up in the DOMContentLoaded listener further
+// down) — it feeds into the exact same single code path. Same pattern
+// as recoiling.php's intake bar.
+
+function submitIntake(e) {
+    e.preventDefault();
+    const input = document.getElementById('intakeInput');
+    const raw = input.value.trim();
+    if (!raw) return false;
+    addToReslitQueue(raw, 'unified');
+    return false;
+}
+
+function handleIntakeScan(scanned) {
+    if (!scanned) return;
+    const input = document.getElementById('intakeInput');
+    input.value = scanned;
+    addToReslitQueue(scanned, 'scan');
+}
+
+function addToReslitQueue(raw, source) {
+    const submitBtn = document.getElementById('intakeSubmitBtn');
+    const input     = document.getElementById('intakeInput');
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    }
+
+    fetch('reslit_intake.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ raw: raw, source: source })
+    })
+    .then(r => r.json())
+    .then(data => {
+        showIntakeFeedback(data.ok, data.msg);
+        input.value = '';
+        if (data.ok) {
+            // Brief pause so the confirmation is actually seen before the
+            // page reloads to show the newly-added pending roll — the
+            // input's `autofocus` attribute takes care of re-focusing it
+            // on the fresh page load, ready for the very next scan.
+            setTimeout(() => window.location.reload(), 1400);
+        } else {
+            // Failed — no reload, so refocus immediately so the operator
+            // can correct and retry without touching the mouse.
+            input.focus();
+        }
+    })
+    .catch(() => {
+        showIntakeFeedback(false, 'Network error — could not reach the server.');
+        input.focus();
+    })
+    .finally(() => {
+        if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = '<i class="bi bi-plus-lg me-1"></i>Add';
+        }
+    });
+}
+
+function showIntakeFeedback(ok, msg) {
+    const box = document.getElementById('intakeFeedback');
+    if (!box) return;
+    box.className = 'alert py-2 mb-0 mt-3 alert-' + (ok ? 'success' : 'danger');
+    box.innerHTML = '<i class="bi bi-' + (ok ? 'check-circle-fill' : 'exclamation-triangle-fill') + ' me-2"></i>' + msg;
+    box.style.display = '';
+}
 
 // ── KPI Card Filter + Global Search (Pending/Completed table) ───
 let reslitStatusFilter = 'pending';
@@ -576,10 +784,37 @@ function showReslitModal(id, product, lot_no, coil_no, roll_no, width, length) {
     document.getElementById('modal_length').textContent = length;
 
     document.getElementById('reslitForm').reset();
+    document.getElementById('cutInto2Section').style.display = 'none';
+    document.getElementById('reslitStock').value = '';
     document.getElementById('rollCountSection').style.display = 'none';
     document.getElementById('slittingForm').innerHTML = '';
     document.getElementById('submitBtn').style.display = 'none';
     new bootstrap.Modal(document.getElementById('reslitModal')).show();
+}
+
+function calculateReslitStock() {
+    const slitQty = parseFloat(document.getElementById('slitQuantity').value) || 0;
+    const original = parseFloat(productData.length) || 0;
+    const stock = original - slitQty;
+    const stockField = document.getElementById('reslitStock');
+    stockField.value = stock.toFixed(2);
+    stockField.style.color = stock < 0 ? '#dc3545' : (stock === 0 ? '#ffc107' : '#198754');
+
+    // Keep the Nominal Length column in the rolls table (if already
+    // generated) in sync with the Slit Quantity — the output rolls are
+    // being cut from that quantity, not the full original roll length.
+    document.querySelectorAll('#slittingForm .nominal-length-input').forEach(input => {
+        input.value = slitQty > 0 ? slitQty : original;
+    });
+}
+
+function toggleLeftoverSfcHighlight(checkbox) {
+    const pill = checkbox.closest('.sfc-toggle');
+    pill.classList.toggle('sfc-active', checkbox.checked);
+    const hint = document.getElementById('leftoverRouteHint');
+    hint.innerHTML = checkbox.checked
+        ? 'Leftover will be routed to <strong>SFC</strong> only.'
+        : 'Unticked: leftover goes to <strong>Finished Product</strong> only. Ticked: leftover goes to <strong>SFC</strong> only — never both.';
 }
 
 function handleCutTypeChange() {
@@ -588,13 +823,17 @@ function handleCutTypeChange() {
     document.getElementById('slittingForm').innerHTML = '';
     document.getElementById('submitBtn').style.display = 'none';
     document.getElementById('total').value = '';
-    
+
+    const rollCountTitle = document.getElementById('rollCountTitle');
+
     if (cutType === 'cut_into_2') {
-        document.getElementById('rollCountSection').style.display = 'none';
-        document.getElementById('total').value = '2';
-        generateForm();
-    } else if (cutType === 'normal') {
+        document.getElementById('cutInto2Section').style.display = 'block';
         document.getElementById('rollCountSection').style.display = 'block';
+        if (rollCountTitle) rollCountTitle.innerText = 'Step 3: Number of Rolls';
+    } else if (cutType === 'normal') {
+        document.getElementById('cutInto2Section').style.display = 'none';
+        document.getElementById('rollCountSection').style.display = 'block';
+        if (rollCountTitle) rollCountTitle.innerText = 'Step 2: Number of Rolls';
     }
 }
 
@@ -606,48 +845,178 @@ function generateForm() {
 
     if (!total || total <= 0) { submitBtn.style.display = 'none'; return; }
 
-    let formHTML = '<hr><h6 class="mb-3 fw-bold text-primary">Step 3: Roll Details</h6>';
+    // ── Nominal Length default: for Cut Into 2, this should be the
+    // Slit Quantity (Length Used) the user just entered — NOT the full
+    // original roll length, since only part of it is being used here.
+    const cutType = document.querySelector('input[name="cut_type"]:checked')?.value;
+    const slitQty = parseFloat(document.getElementById('slitQuantity')?.value) || 0;
+    const defaultNominalLength = (cutType === 'cut_into_2' && slitQty > 0)
+        ? slitQty
+        : productData.length;
+
+    // ── Bulk "Apply to All" toolbar for New Width + Actual Length (same pattern as add_slitting.php) ──
+    let html = `
+        <hr><h6 class="mb-3 fw-bold text-primary">Roll Output Details</h6>
+        <div id="bulkApplyBar" class="mb-2 d-flex flex-wrap gap-2 align-items-center">
+            <i class="bi bi-lightning-charge-fill text-primary"></i>
+            <strong class="small">Apply to All Rolls:</strong>
+            <div class="input-group input-group-sm" style="width:150px;">
+                <span class="input-group-text">Letter</span>
+                <select id="bulkCutLetterInput" class="form-select">
+                    <option value="">-- None --</option>
+                    <option value="a">a</option>
+                    <option value="b">b</option>
+                    <option value="c">c</option>
+                    <option value="d">d</option>
+                </select>
+            </div>
+            <button type="button" class="btn btn-outline-primary btn-sm" onclick="applyCutLetterToAll()">
+                <i class="bi bi-check2-all me-1"></i>Apply Letter
+            </button>
+            <div class="input-group input-group-sm" style="width:180px;">
+                <span class="input-group-text">Width</span>
+                <input type="number" step="0.01" id="bulkWidthInput" class="form-control" placeholder="e.g. 50">
+                <span class="input-group-text">mm</span>
+            </div>
+            <button type="button" class="btn btn-primary btn-sm" onclick="applyWidthToAll()">
+                <i class="bi bi-check2-all me-1"></i>Apply Width
+            </button>
+            <div class="input-group input-group-sm" style="width:180px;">
+                <span class="input-group-text">Act. Length</span>
+                <input type="number" step="0.01" id="bulkActualLengthInput" class="form-control" placeholder="e.g. 100">
+                <span class="input-group-text">m</span>
+            </div>
+            <button type="button" class="btn btn-success btn-sm" onclick="applyActualLengthToAll()">
+                <i class="bi bi-check2-all me-1"></i>Apply Act. Length
+            </button>
+            <span class="text-muted small ms-auto">${total} roll${total > 1 ? 's' : ''} — scroll the table below if needed</span>
+        </div>
+        <div id="rollsTableWrap">
+        <table class="table table-bordered table-hover align-middle" id="rollsTable">
+            <thead>
+                <tr>
+                    <th>Roll</th>
+                    <th>Cut Letter</th>
+                    <th>Nominal Length</th>
+                    <th>New Width (mm)</th>
+                    <th>Actual Length (mtr)</th>
+                    <th class="text-center">To SFC</th>
+                    <th>Lot Preview</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+
     for (let i = 1; i <= total; i++) {
-        formHTML += `
-            <div class="slitting-box shadow-sm">
-                <h6 class="fw-bold mb-3 border-bottom pb-2">Roll ${i}</h6>
-                <input type="hidden" name="roll_number[]" value="R${i}">
-                <div class="row g-3">
-                    <div class="col-md-6">
-                        <label class="form-label small fw-bold">Cut Letter</label>
-                        <select name="cut_letter[]" class="form-select form-select-sm" onchange="updateLotDisplay(this, ${i - 1})">
-                            <option value="">-- None --</option><option value="a">a</option><option value="b">b</option><option value="c">c</option><option value="d">d</option>
+        html += `
+                <tr>
+                    <td>
+                        <span class="badge bg-light text-dark border">R${i}</span>
+                        <input type="hidden" name="roll_number[]" value="R${i}">
+                    </td>
+                    <td>
+                        <select name="cut_letter[]" class="form-select form-select-sm cut-letter-input" onchange="updateLotDisplay(this, ${i - 1})">
+                            <option value="">-- None --</option>
+                            <option value="a">a</option>
+                            <option value="b">b</option>
+                            <option value="c">c</option>
+                            <option value="d">d</option>
                         </select>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label small fw-bold text-danger">New Width (mm)</label>
-                        <input type="number" step="0.01" name="new_width[]" class="form-control form-select-sm highlight-field" required>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label small fw-bold">Nominal Length</label>
-                        <input type="number" step="0.01" name="length[]" class="form-control form-select-sm" value="${productData.length}">
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label small fw-bold text-success">Actual Length (mtr)</label>
-                        <input type="number" step="0.01" name="actual_length[]" class="form-control form-select-sm highlight-field" required>
-                    </div>
-                </div>
-                <div class="mt-2 p-2 bg-light rounded small" id="lotDisplay${i - 1}">
-                    <strong>Ref:</strong> ${productData.lot_no} ${productData.coil_no} R${i} | ${productData.width}mm
-                </div>
-            </div>`;
+                    </td>
+                    <td>
+                        <input type="number" step="0.01" name="length[]" class="form-control form-control-sm nominal-length-input" value="${defaultNominalLength}">
+                    </td>
+                    <td>
+                        <input type="number" step="0.01" name="new_width[]" class="form-control form-control-sm highlight-field width-input" required>
+                    </td>
+                    <td>
+                        <input type="number" step="0.01" name="actual_length[]" class="form-control form-control-sm highlight-field actual-length-input" required>
+                    </td>
+                    <td class="text-center sfc-cell">
+                        <label class="sfc-toggle" for="sfcCheck${i - 1}">
+                            <input class="form-check-input sfc-checkbox" type="checkbox" name="send_to_sfc[]" id="sfcCheck${i - 1}" value="R${i}"
+                                   onchange="toggleSfcRowHighlight(this)">
+                            <span class="sfc-toggle-text"><i class="bi bi-box-seam-fill me-1"></i>SFC</span>
+                        </label>
+                    </td>
+                    <td>
+                        <small class="text-primary" id="lotDisplay${i - 1}">
+                            <i class="bi bi-tag me-1"></i>${productData.lot_no} ${productData.coil_no} R${i} | ${productData.width}mm
+                        </small>
+                    </td>
+                </tr>
+        `;
     }
-    container.innerHTML = formHTML;
+
+    html += `
+            </tbody>
+        </table>
+        </div>
+    `;
+
+    container.innerHTML = html;
     submitBtn.style.display = 'inline-block';
+}
+
+function applyCutLetterToAll() {
+    const bulkVal = document.getElementById('bulkCutLetterInput').value;
+    document.querySelectorAll('#slittingForm .cut-letter-input').forEach((select, idx) => {
+        select.value = bulkVal;
+        updateLotDisplay(select, idx);
+    });
+}
+
+function applyWidthToAll() {
+    const bulkVal = document.getElementById('bulkWidthInput').value;
+    if (bulkVal === '' || isNaN(parseFloat(bulkVal))) {
+        alert('Enter a width value first.');
+        return;
+    }
+    document.querySelectorAll('#slittingForm .width-input').forEach(input => {
+        input.value = bulkVal;
+    });
+}
+
+function applyActualLengthToAll() {
+    const bulkVal = document.getElementById('bulkActualLengthInput').value;
+    if (bulkVal === '' || isNaN(parseFloat(bulkVal))) {
+        alert('Enter an actual length value first.');
+        return;
+    }
+    document.querySelectorAll('#slittingForm .actual-length-input').forEach(input => {
+        input.value = bulkVal;
+    });
+}
+
+function toggleSfcRowHighlight(checkbox) {
+    const row = checkbox.closest('tr');
+    const pill = checkbox.closest('.sfc-toggle');
+    row.classList.toggle('sfc-row-active', checkbox.checked);
+    pill.classList.toggle('sfc-active', checkbox.checked);
 }
 
 function updateLotDisplay(select, rollNum) {
     const cutLetter = select.value;
     const displayDiv = document.getElementById('lotDisplay' + rollNum);
-    displayDiv.innerHTML = `<strong>Ref:</strong> ${productData.lot_no}${cutLetter} ${productData.coil_no} R${rollNum + 1} | ${productData.width}mm`;
+    displayDiv.innerHTML = `<i class="bi bi-tag me-1"></i>${productData.lot_no}${cutLetter} ${productData.coil_no} R${rollNum + 1} | ${productData.width}mm`;
 }
 
 document.getElementById('reslitForm').addEventListener('submit', function(e) {
+    const cutType = document.querySelector('input[name="cut_type"]:checked')?.value;
+    if (cutType === 'cut_into_2') {
+        const slitQty = parseFloat(document.getElementById('slitQuantity').value) || 0;
+        if (slitQty <= 0) {
+            e.preventDefault();
+            alert('Enter a Slit Quantity (Length Used) greater than 0 before completing a Cut Into 2 reslit.');
+            return;
+        }
+        const stock = parseFloat(document.getElementById('reslitStock').value);
+        if (isNaN(stock) || stock < 0) {
+            e.preventDefault();
+            alert('Slit Quantity cannot exceed the original length — check the Remaining Stock value.');
+            return;
+        }
+    }
     if (!confirm('Complete reslit process now? Product will be added back to stock.')) e.preventDefault();
 });
 
@@ -700,7 +1069,7 @@ function loadSummary() {
                     <td class="font-monospace small">${escHtml(r.lot_no ?? '-')}</td>
                     <td class="small">${escHtml(r.roll_no ?? '-')}</td>
                     <td class="small">${escHtml(r.product ?? '-')}</td>
-                    <td class="text-end small">${parseFloat(r.actual_length || 0).toLocaleString()}</td>
+                    <td class="text-end small">${String(r.roll_no ?? '').toUpperCase().trim() === 'BALANCE' ? '-' : parseFloat(r.actual_length || 0).toLocaleString()}</td>
                     <td class="small">${rollsHtml}</td>
                 </tr>`;
             }).join('');
@@ -718,6 +1087,14 @@ function escHtml(s) {
 document.addEventListener('DOMContentLoaded', function () {
     // Apply the default 'pending' filter to the table on first load
     applyReslitFilters();
+
+    // Initialize the shared camera scanner widget (same library used by
+    // sfc.php / finish_product.php / recoiling.php) — it manages its own
+    // floating trigger UI, so no custom container or "start camera"
+    // button is needed here.
+    initCameraScanner({
+        onScan: handleIntakeScan
+    });
 
     document.getElementById('summaryModal').addEventListener('show.bs.modal', function () {
         loadSummary();

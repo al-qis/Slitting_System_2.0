@@ -55,9 +55,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
 
             if ($action === 'RECOIL') {
                 $stmt = $conn->prepare("INSERT INTO recoiling_product
-                    (product, lot_no, coil_no, roll_no, width, length, status, date_in, original_source)
-                    VALUES (?, ?, ?, ?, ?, ?, 'pending', NOW(), ?)");
-                $stmt->bind_param("ssssdds",
+                    (mother_id, product, lot_no, coil_no, roll_no, width, length, status, date_in, original_source)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NOW(), ?)");
+                $stmt->bind_param("issssdds",
+                    $sfc['mother_id'],
                     $sfc['product'], $sfc['lot_no'], $sfc['coil_no'],
                     $sfc['roll_no'], $sfc['width'],  $sfc['length'], $original_source);
                 $stmt->execute();
@@ -66,9 +67,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
 
             } elseif ($action === 'RESLIT') {
                 $stmt = $conn->prepare("INSERT INTO reslit_product
-                    (product, lot_no, coil_no, roll_no, width, length, status, date_in, original_source)
-                    VALUES (?, ?, ?, ?, ?, ?, 'pending', NOW(), ?)");
-                $stmt->bind_param("ssssdds",
+                    (mother_id, product, lot_no, coil_no, roll_no, width, length, status, date_in, original_source)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NOW(), ?)");
+                $stmt->bind_param("issssdds",
+                    $sfc['mother_id'],
                     $sfc['product'], $sfc['lot_no'], $sfc['coil_no'],
                     $sfc['roll_no'], $sfc['width'],  $sfc['length'], $original_source);
                 $stmt->execute();
@@ -77,10 +79,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
 
             } elseif ($action === 'SELL') {
                 $stmt = $conn->prepare("INSERT INTO slitting_product
-                    (product, lot_no, coil_no, roll_no, width, length,
+                    (mother_id, product, lot_no, coil_no, roll_no, width, length,
                      status, date_in, date_out, cut_type, source, original_source)
-                    VALUES (?, ?, ?, ?, ?, ?, 'WAITING', NOW(), NOW(), 'sfc_sell', 'sfc', ?)");
-                $stmt->bind_param("ssssdds",
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'WAITING', NOW(), NOW(), 'sfc_sell', 'sfc', ?)");
+                $stmt->bind_param("issssdds",
+                    $sfc['mother_id'],
                     $sfc['product'], $sfc['lot_no'], $sfc['coil_no'],
                     $sfc['roll_no'], $sfc['width'],  $sfc['length'], $original_source);
                 $stmt->execute();

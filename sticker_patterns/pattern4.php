@@ -269,6 +269,7 @@ function getCustomerFullName($code) {
         'NVC'     => 'NICHIAS VIETNAM CO., LTD',
         'NCS'     => 'NC-PT NICHIAS SUNIJAYA',
         'SNP'     => 'SUZHOU NICHIAS IND. PRODUCTS',
+        'NSEA'    => 'NICHIAS SOUTH EAST ASIA (UP PACKING)',
     ];
     return $customers[$code] ?? $code;
 }

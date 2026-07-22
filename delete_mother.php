@@ -104,6 +104,32 @@ try {
 
         $reslit_ids = array_column($reslit_rows, 'id');
 
+        // Also collect reslit_product linked via mother_id directly — same
+        // belt-and-suspenders reasoning as recoiling_product above: a
+        // reslit row's slitting_product_id may not resolve back into this
+        // batch of sp_ids (NULL, or pointing at an already-voided/relinked
+        // slit row), so without this check those rows are silently never
+        // collected and never deleted. Guarded with a column-exists check
+        // in case this deployment's reslit_product predates a mother_id
+        // column being added (same defensive pattern used in
+        // save_slitting.php for the leftover_length/stock column).
+        $hasReslitMotherId = $conn->query("
+            SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME   = 'reslit_product'
+              AND COLUMN_NAME  = 'mother_id'
+        ")->fetch_assoc()['cnt'] > 0;
+
+        if ($hasReslitMotherId) {
+            $stmt = $conn->prepare("SELECT id FROM reslit_product WHERE mother_id = ?");
+            $stmt->bind_param("i", $id);
+            $stmt->execute();
+            $reslit_rows2 = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+
+            $reslit_ids = array_unique(array_merge($reslit_ids, array_column($reslit_rows2, 'id')));
+        }
+
         // ── STEP 4: Delete recoil OUTPUT slitting_product rows
         //    (rows where recoiling_id points to one of our recoiling_product rows)
         if (!empty($rp_ids)) {

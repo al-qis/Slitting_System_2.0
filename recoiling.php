@@ -259,6 +259,7 @@ include 'header.php';
     .roll-box { border:1px solid #ddd; padding:18px; border-radius:8px; margin-bottom:15px; background:#f9f9f9; }
     .info-box { background:#f8f9fa; border-left:5px solid #0d6efd; padding:15px; border-radius:4px; }
 
+
     /* Mode selector cards */
     .mode-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-bottom:4px; }
     @media (max-width: 576px) {
@@ -310,6 +311,36 @@ include 'header.php';
         <a href="?download=excel" class="btn btn-success shadow-sm">
             <i class="bi bi-download"></i> Download Excel
         </a>
+    </div>
+</div>
+
+<!-- ═══ ADD PRODUCT TO RECOILING — one unified intake bar ═══════════
+     No mode selection: this single field handles hardware-scanner
+     input (which types like a keyboard, ending in Enter), manual
+     typing of a combined Lot-Coil-Roll string, and camera-scanned
+     QR content (fed in via the floating scan button, same as before).
+     Server-side parsing lives in recoiling_intake.php. -->
+<div class="card shadow-sm border-0 mb-4">
+    <div class="card-header bg-white">
+        <span class="fw-bold"><i class="bi bi-upc-scan text-primary me-1"></i> Add Product to Recoiling</span>
+    </div>
+    <div class="card-body">
+        <form id="intakeForm" class="d-flex gap-2" onsubmit="return submitIntake(event)">
+            <div class="input-group">
+                <span class="input-group-text bg-white"><i class="bi bi-upc-scan"></i></span>
+                <input type="text" id="intakeInput" class="form-control form-control-lg"
+                       placeholder="Scan, or type Lot-Coil-Roll (e.g. 826529-N-2-R4)"
+                       autocomplete="off" autofocus>
+            </div>
+            <button type="submit" class="btn btn-primary btn-lg px-4" id="intakeSubmitBtn">
+                <i class="bi bi-plus-lg me-1"></i>Add
+            </button>
+        </form>
+        <div class="form-text mt-1">
+            Ready for scanner input — just scan a label. Typing manually? Use
+            <code>LotNo-CoilNo-RollNo</code> or <code>LotNo CoilNo RollNo</code>, then press Enter.
+        </div>
+        <div id="intakeFeedback" class="alert py-2 mb-0 mt-3" style="display:none;"></div>
     </div>
 </div>
 
@@ -699,9 +730,89 @@ include 'header.php';
     </div>
 </div>
 
+<script src="camera_scanner.js"></script>
 <script>
 let productData = {};
 const reopenId = <?= $reopenId ?>;
+
+// ── Add Product to Recoiling — one unified intake bar ───────────
+// No mode toggle: submitIntake() handles Enter-key submission from the
+// form (hardware keyboard-wedge scanners "type" their payload then send
+// Enter, so this just works for them automatically) as well as a manual
+// click on the Add button. handleIntakeScan() is the camera-scanner
+// widget's onScan callback (wired up in the DOMContentLoaded listener
+// further down) — it feeds into the exact same single code path.
+
+function submitIntake(e) {
+    e.preventDefault();
+    const input = document.getElementById('intakeInput');
+    const raw = input.value.trim();
+    if (!raw) return false;
+    addToRecoilingQueue(raw, 'unified');
+    return false;
+}
+
+function handleIntakeScan(scanned) {
+    if (!scanned) return;
+    const input = document.getElementById('intakeInput');
+    input.value = scanned;
+    addToRecoilingQueue(scanned, 'scan');
+}
+
+function addToRecoilingQueue(raw, source) {
+    const submitBtn = document.getElementById('intakeSubmitBtn');
+    const input     = document.getElementById('intakeInput');
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    }
+
+    fetch('recoiling_intake.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ raw: raw, source: source })
+    })
+    .then(r => r.json())
+    .then(data => {
+        showIntakeFeedback(data.ok, data.msg);
+        input.value = '';
+        if (data.ok) {
+            // Brief pause so the confirmation is actually seen before the
+            // page reloads to show the newly-added pending roll — the
+            // input's `autofocus` attribute takes care of re-focusing it
+            // on the fresh page load, ready for the very next scan.
+            setTimeout(() => window.location.reload(), 1400);
+        } else {
+            // Failed — no reload, so refocus immediately so the operator
+            // can correct and retry without touching the mouse.
+            input.focus();
+        }
+    })
+    .catch(() => {
+        showIntakeFeedback(false, 'Network error — could not reach the server.');
+        input.focus();
+    })
+    .finally(() => {
+        if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = '<i class="bi bi-plus-lg me-1"></i>Add';
+        }
+    });
+}
+
+function showIntakeFeedback(ok, msg) {
+    const box = document.getElementById('intakeFeedback');
+    if (!box) return;
+    box.className = 'alert py-2 mb-0 mt-3 alert-' + (ok ? 'success' : 'danger');
+    box.innerHTML = '<i class="bi bi-' + (ok ? 'check-circle-fill' : 'exclamation-triangle-fill') + ' me-2"></i>' + msg;
+    box.style.display = '';
+}
+
+// Camera scanner is initialized inside the existing DOMContentLoaded
+// listener further down this file (see handleIntakeScan usage there) —
+// kept in that single shared listener rather than a second one, since a
+// prior page in this app (sfc.php) had a real bug from splitting related
+// setup across multiple separate script scopes.
 
 // ── KPI Card Filter + Global Search (Pending/Completed table) ───
 // 'sfc' rows are grouped under 'pending' server-side via data-status-group,
@@ -1151,6 +1262,13 @@ function escHtml(s) {
 document.addEventListener('DOMContentLoaded', function () {
     // Apply the default 'pending' filter to the table on first load
     applyRecoilFilters();
+
+    // Initialize the shared camera scanner widget (same library used by
+    // sfc.php / finish_product.php) — it manages its own floating trigger
+    // UI, so no custom container or "start camera" button is needed here.
+    initCameraScanner({
+        onScan: handleIntakeScan
+    });
 
     document.getElementById('summaryModal').addEventListener('show.bs.modal', function () {
         loadSummary();

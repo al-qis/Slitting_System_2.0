@@ -33,25 +33,21 @@ $lotCoil = trim($row['lot_no']) . ' ' . trim($row['coil_no'] ?? '');
     <style>
         @media print {
             @page {
-                size: 148mm 105mm;
+                size: 120mm 47mm;
                 margin: 0;
             }
 
             html, body {
                 margin: 0 !important;
                 padding: 0 !important;
-                width: 148mm;
-                height: 105mm;
+                width: 120mm;
+                height: 47mm;
             }
 
             .container {
-                width: 148mm !important;
-                height: 105mm !important;
-                max-width: none !important;
+                width: 100% !important;
+                height: 100% !important;
                 margin: 0 !important;
-                border: 2px solid #000;
-                padding: 10mm !important;
-                box-sizing: border-box;
                 page-break-after: always;
             }
 
@@ -60,70 +56,95 @@ $lotCoil = trim($row['lot_no']) . ' ' . trim($row['coil_no'] ?? '');
             }
         }
 
+        /* =========================
+           STICKER LAYOUT — fixed
+           120mm (W) x 47mm (H)
+           Matches print_mother.php
+           ========================= */
         body {
             font-family: Arial, sans-serif;
-            padding: 50px;
+            padding: 10mm;
         }
 
         .container {
-            max-width: 500px;
+            width: 120mm;
+            height: 47mm;
             margin: 0 auto;
-            border: 2px solid #000;
-            padding: 10px;
+            border: 0.4mm solid #000;
+            padding: 1.5mm 2.5mm;
             box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
         }
 
         .header {
-            display: flex;
-            align-items: center;
-            border-bottom: 3px solid #000;
-            padding-bottom: 0px;
-            margin-bottom: 20px;
+            flex-shrink: 0;
+            border-bottom: 0.6mm solid #000;
+            padding-bottom: 0.6mm;
+            margin-bottom: 1mm;
         }
 
         .title {
-            font-size: 30px;
+            font-size: 16pt;
             font-weight: bold;
+            letter-spacing: 0.3px;
+            line-height: 1;
         }
 
         .content {
+            flex: 1;
             display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
+            align-items: center;
+            gap: 2mm;
+            min-height: 0;
         }
 
         .info-table {
             flex: 1;
-            margin-right: 20px;
+            min-width: 0;
         }
 
         .info-table table {
             width: 100%;
+            height: 100%;
             border-collapse: collapse;
         }
 
         .info-table td {
-            border: 1px solid #000;
-            padding: 10px;
-            font-size: 16px;
+            border: 0.2mm solid #000;
+            padding: 1mm 2mm;
+            line-height: 1.15;
         }
 
         .info-table td:first-child {
             font-weight: bold;
-            width: 120px;
+            font-size: 10pt;
+            width: 26mm;
             background-color: #f0f0f0;
         }
 
+        .info-table td:last-child {
+            font-size: 14pt;
+            font-weight: 700;
+        }
+
         .qr-section {
-            text-align: center;
             flex-shrink: 0;
+            width: 40mm;
+            height: 40mm;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
 
         .qr-section img {
-            width: 120px;
-            height: 120px;
-            border: 1px solid #000;
-            padding: 5px;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            border: 0.2mm solid #000;
+            padding: 1mm;
+            box-sizing: border-box;
         }
 
         .print-btn {

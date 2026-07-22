@@ -647,13 +647,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
 
         $stmt = $conn->prepare("
             INSERT INTO reslit_product
-                (slitting_product_id, status, product,
+                (slitting_product_id, mother_id, status, product,
                  lot_no, coil_no, roll_no, width, length, date_in, original_source)
-            VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, NOW(), ?)
+            VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, NOW(), ?)
         ");
         $stmt->bind_param(
-            "issssdds",
+            "iissssdds",
             $id,
+            $mid,
             $p['product'], $p['lot_no'], $p['coil_no'], $p['roll_no'],
             $p['width'],
             $insert_length,

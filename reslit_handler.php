@@ -1,6 +1,9 @@
 <?php
-// reslit_handler.php — Fixed: reslit_product has no coil_no column
-// coil_no is fetched from slitting_product via parent_slit_id instead
+// reslit_handler.php
+// coil_no now comes directly from reslit_product.coil_no (populated by both
+// sfc.php and finish_product.php when the reslit_product row is created).
+// The old slitting_product_id-based lookup is kept only as a fallback for
+// legacy rows that may have been inserted with a blank coil_no.
 
 session_start();
 
@@ -54,6 +57,12 @@ $cut_letters    = $_POST['cut_letter']    ?? [];
 $new_widths     = $_POST['new_width']     ?? [];
 $lengths        = $_POST['length']        ?? [];
 $actual_lengths = $_POST['actual_length'] ?? [];
+$send_to_sfc    = $_POST['send_to_sfc']   ?? [];
+
+// Cut Into 2 leftover routing (mutually exclusive: SFC XOR Finished Product)
+$slit_quantity    = floatval($_POST['slit_quantity'] ?? 0);
+$leftover_length  = floatval($_POST['stock']         ?? 0); // "Remaining Stock" field
+$leftover_to_sfc  = ($_POST['leftover_to_sfc'] ?? '') === '1';
 
 // 1. Fetch parent reslit_product
 $stmt = $conn->prepare("SELECT * FROM reslit_product WHERE id = ?");
@@ -69,22 +78,31 @@ $originalSource = $parent['original_source'] ?? 'raw_material';
 // slitting_product_id on reslit_product = the roll that was sent here.
 $parent_slit_id = $parent['slitting_product_id'] ?? null;
 
-// ── Fetch coil_no + mother_id from the source slitting row ────
-// reslit_product has NO coil_no column, so we read it from slitting_product
-$coil_no_val   = '';
-$mother_id_val = null;
+// ── Coil No + mother_id ────────────────────────────────────────
+// PRIMARY: both reslit_product.coil_no AND reslit_product.mother_id are
+// now populated directly when this row is created, whether the source
+// was finish_product.php's "Send to Reslit" or sfc.php's "Reslit" action
+// (sfc.php now carries mother_id forward from the sfc row — see fix).
+// Only fall back to deriving via slitting_product/mother_coil for older
+// rows created before mother_id/coil_no were captured directly here.
+$coil_no_val   = trim($parent['coil_no'] ?? '');
+$mother_id_val = !empty($parent['mother_id']) ? intval($parent['mother_id']) : null;
 
-if ($parent_slit_id) {
+if ($parent_slit_id && ($coil_no_val === '' || $mother_id_val === null)) {
     $sp_row = $conn->query(
         "SELECT mother_id, coil_no FROM slitting_product WHERE id=" . intval($parent_slit_id)
     )->fetch_assoc();
     if ($sp_row) {
-        $mother_id_val = intval($sp_row['mother_id']) ?: null;
-        $coil_no_val   = $sp_row['coil_no'] ?? '';
+        if ($mother_id_val === null) {
+            $mother_id_val = intval($sp_row['mother_id']) ?: null;
+        }
+        if ($coil_no_val === '') {
+            $coil_no_val = $sp_row['coil_no'] ?? '';
+        }
     }
 }
 
-// Fallback: try mother_coil if still empty
+// Last-resort fallback: try mother_coil if still empty
 if ($coil_no_val === '' && $mother_id_val) {
     $mc_row = $conn->query(
         "SELECT coil_no FROM mother_coil WHERE id=" . intval($mother_id_val)
@@ -114,6 +132,27 @@ try {
         $check->close();
     }
 
+    // Cut Into 2 leftover, routed to Finished Product, also needs a
+    // duplicate check (a row for this lot/coil/roll may already exist).
+    // The leftover keeps the ORIGINAL roll_no — it's not renamed to
+    // "BALANCE" — since it's still physically the same roll.
+    // Not needed for the SFC path — sfc has no such uniqueness constraint.
+    $leftover_roll_no = $parent['roll_no'] ?? '';
+    if ($cut_type === 'cut_into_2' && $leftover_length > 0 && !$leftover_to_sfc) {
+        $check = $conn->prepare("
+            SELECT id FROM slitting_product
+            WHERE lot_no = ? AND coil_no = ? AND roll_no = ?
+        ");
+        $check->bind_param("sss", $parent['lot_no'], $coil_no_val, $leftover_roll_no);
+        $check->execute();
+        if ($check->get_result()->num_rows > 0) {
+            throw new Exception(
+                "Duplicate: Lot [{$parent['lot_no']}] Coil [{$coil_no_val}] Roll [{$leftover_roll_no}] already exists."
+            );
+        }
+        $check->close();
+    }
+
     $total_actual = 0;
 
     // ── Insert pass ───────────────────────────────────────────
@@ -126,7 +165,47 @@ try {
         $new_lot_no    = $parent['lot_no'] . $letter;
         $total_actual += $act_len;
 
-        // A. Insert into slitting_product
+        // ── PATH A: Send to SFC (mirrors save_slitting.php's SFC path) ──
+        if (in_array($roll_label, $send_to_sfc, true)) {
+            $sfc_stmt = $conn->prepare("
+                INSERT INTO sfc
+                    (mother_id, product, lot_no, coil_no, roll_no,
+                     width, length, action, date_created)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'reslit', NOW())
+            ");
+            $sfc_stmt->bind_param(
+                "issssdd",
+                $mother_id_val,
+                $parent['product'],
+                $new_lot_no,
+                $coil_no_val,
+                $roll_label,
+                $width,
+                $act_len
+            );
+            if (!$sfc_stmt->execute()) {
+                throw new Exception("Failed to insert into SFC: " . $sfc_stmt->error);
+            }
+            $sfc_id = $conn->insert_id;
+            $sfc_stmt->close();
+
+            log_process($conn, 'sfc', $sfc_id, $mother_id_val,
+                null, 'IN', 'sent_to_sfc_from_reslit',
+                "Roll {$roll_label} from reslit_product id={$parent_id}, width={$width}mm length={$act_len}m product={$parent['product']}");
+
+            $audit_stmt = $conn->prepare("
+                INSERT INTO slitting_audit_log
+                    (mother_id, action, roll_no, destination, created_at)
+                VALUES (?, 'send_to_sfc', ?, 'sfc_stock', NOW())
+            ");
+            $audit_stmt->bind_param("is", $mother_id_val, $roll_label);
+            $audit_stmt->execute();
+            $audit_stmt->close();
+
+            continue; // skip the slitting_product / reslit_rolls insert below for this roll
+        }
+
+        // ── PATH B: Go to Finished Products (existing behavior) ─────
         $stmt_ins = $conn->prepare("
             INSERT INTO slitting_product
                 (mother_id, parent_slit_id,
@@ -178,13 +257,88 @@ try {
         $stmt_roll->close();
     }
 
-    // Mark parent as completed
+    // ── Cut Into 2: route the LEFTOVER balance — mutually exclusive ────
+    // Exactly one branch runs (if/else, not two separate ifs), so the
+    // leftover can never be inserted into both SFC and Finished Product.
+    // The leftover STAYS on its original roll_no (e.g. "R-4") — it is
+    // NOT renamed to "BALANCE", since it's still physically that same roll.
+    if ($cut_type === 'cut_into_2' && $leftover_length > 0) {
+        $leftover_width = floatval($parent['width'] ?? 0);
+
+        if ($leftover_to_sfc) {
+            // ── Leftover → SFC ONLY ──
+            $sfc_stmt = $conn->prepare("
+                INSERT INTO sfc
+                    (mother_id, product, lot_no, coil_no, roll_no,
+                     width, length, action, date_created)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'reslit_balance', NOW())
+            ");
+            $sfc_stmt->bind_param(
+                "issssdd",
+                $mother_id_val,
+                $parent['product'],
+                $parent['lot_no'],
+                $coil_no_val,
+                $leftover_roll_no,
+                $leftover_width,
+                $leftover_length
+            );
+            if (!$sfc_stmt->execute()) {
+                throw new Exception("Failed to insert leftover into SFC: " . $sfc_stmt->error);
+            }
+            $sfc_leftover_id = $conn->insert_id;
+            $sfc_stmt->close();
+
+            log_process($conn, 'sfc', $sfc_leftover_id, $mother_id_val,
+                null, 'IN', 'reslit_leftover_to_sfc',
+                "Leftover {$leftover_length}m (roll {$leftover_roll_no}) from reslit_product id={$parent_id} routed to SFC (slit_quantity={$slit_quantity}m used)");
+
+        } else {
+            // ── Leftover → Finished Product ONLY ──
+            $stmt_leftover = $conn->prepare("
+                INSERT INTO slitting_product
+                    (mother_id, parent_slit_id,
+                     product, lot_no, coil_no, roll_no,
+                     width, length, actual_length,
+                     status, is_completed, stock_counted,
+                     date_in, source, original_source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, NOW(), 'reslit', ?)
+            ");
+            $stmt_leftover->bind_param(
+                "iissssddds",
+                $mother_id_val,
+                $parent_slit_id,
+                $parent['product'],
+                $parent['lot_no'],
+                $coil_no_val,
+                $leftover_roll_no,
+                $leftover_width,
+                $leftover_length,
+                $leftover_length,
+                $originalSource
+            );
+            if (!$stmt_leftover->execute()) {
+                throw new Exception("Failed to insert leftover into Finished Product: " . $stmt_leftover->error);
+            }
+            $leftover_slit_id = $conn->insert_id;
+            $stmt_leftover->close();
+
+            log_process($conn, 'slitting', $leftover_slit_id, $mother_id_val,
+                null, 'IN', 'reslit_leftover_output',
+                "Leftover {$leftover_length}m (roll {$leftover_roll_no}) from reslit_product id={$parent_id} routed to Finished Product (slit_quantity={$slit_quantity}m used)");
+        }
+    }
+
+    // Mark parent as completed — do NOT touch actual_length here.
+    // It must keep the value it already had (the measured length of the
+    // BALANCE roll itself); the per-output-roll actual lengths live on
+    // reslit_rolls / slitting_product instead.
     $stmt_upd = $conn->prepare("
         UPDATE reslit_product
-        SET status='completed', actual_length=?, completed_at=NOW()
+        SET status='completed', completed_at=NOW()
         WHERE id=?
     ");
-    $stmt_upd->bind_param("di", $total_actual, $parent_id);
+    $stmt_upd->bind_param("i", $parent_id);
     $stmt_upd->execute();
     $stmt_upd->close();
 

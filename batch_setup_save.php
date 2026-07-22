@@ -2,9 +2,9 @@
 // batch_setup_save.php
 // ============================================================
 // AJAX "Save All" endpoint for batch_setup.php.
-// Receives { selections: [{ id, customer, ref_no, nci_resolved_customer }, ...] }
-// as a JSON body and persists customer_name/ref_no for every roll,
-// without navigating away from the batch grid.
+// Receives { selections: [{ id, customer, ref_no, length, nci_resolved_customer }, ...] }
+// as a JSON body and persists customer_name/ref_no/actual_length for every
+// roll, without navigating away from the batch grid.
 // ============================================================
 
 session_start();
@@ -30,7 +30,7 @@ if (!is_array($selections) || empty($selections)) {
     exit;
 }
 
-$stmt = $conn->prepare("UPDATE slitting_product SET customer_name = ?, ref_no = ? WHERE id = ?");
+$stmt = $conn->prepare("UPDATE slitting_product SET customer_name = ?, ref_no = ?, actual_length = ? WHERE id = ?");
 if (!$stmt) {
     echo json_encode(['ok' => false, 'msg' => 'DB prepare failed: ' . $conn->error]);
     exit;
@@ -44,10 +44,12 @@ foreach ($selections as $sel) {
     $customer = trim($sel['customer'] ?? '');
     $ref_no   = trim($sel['ref_no']   ?? '');
     $nciResolved = trim($sel['nci_resolved_customer'] ?? '');
+    $length   = isset($sel['length']) ? (float)$sel['length'] : 0;
 
     if ($id <= 0)         { $errors[] = "Invalid roll ID."; continue; }
     if ($customer === '') { $errors[] = "Roll #{$id}: customer required."; continue; }
     if ($ref_no === '')   { $errors[] = "Roll #{$id}: Ref No required."; continue; }
+    if ($length <= 0)     { $errors[] = "Roll #{$id}: length must be greater than 0."; continue; }
 
     // Same rule as select_customer.php / bulk print: for NCI MFG / NCI 2,
     // save the resolved end-customer name, not the raw dropdown code.
@@ -56,7 +58,7 @@ foreach ($selections as $sel) {
         $customerToSave = $nciResolved;
     }
 
-    $stmt->bind_param("ssi", $customerToSave, $ref_no, $id);
+    $stmt->bind_param("ssdi", $customerToSave, $ref_no, $length, $id);
     if ($stmt->execute()) {
         $saved++;
     } else {

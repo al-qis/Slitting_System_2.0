@@ -255,7 +255,14 @@ $GLOBALS['showStickerB'] = ($line !== 'A');   // false = hide "Sticker B"
 
 // ── Sticker data ──────────────────────────────────────────────────
 $tomboNo = "1600 (METAKOTE)";
-if (strpos($product['product'], 'MV') !== false) $tomboNo = "1608 (METAFOAM)";
+
+// Checks if 'MV', 'HBV', or 'PS' exists in the product name
+if (stripos($product['product'], 'MV') !== false || 
+    stripos($product['product'], 'HBV') !== false || 
+    stripos($product['product'], 'PS') !== false) {
+    
+    $tomboNo = "1608 (METAFOAM)";
+}
 
 $lotNo = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
 

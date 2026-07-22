@@ -7,9 +7,10 @@
 // with ?lot_no=...&coil_no=... once both are set.
 //
 // Shows every printable roll under that exact Lot + Coil combination in
-// one grid: Roll No / Size (read-only), Customer + Ref No (editable
-// inline per row). "Copy to All Rows" quick-fills Customer/Ref No across
-// every row. "Save All" persists via AJAX without navigating away.
+// one grid: Roll No / Width (read-only), Length (editable), Customer +
+// Ref No (editable inline per row). "Copy to All Rows" quick-fills
+// Customer/Ref No across every row. "Save All" persists via AJAX without
+// navigating away.
 // "Print All Stickers" saves, then opens a consolidated print job
 // (batch_print_action.php) — one browser print dialog for every roll.
 // ============================================================
@@ -152,6 +153,8 @@ $stmt->close();
                         <option value="NVC">NICHIAS VIETNAM CO., LTD</option>
                         <option value="NCS">NC-PT NICHIAS SUNIJAYA</option>
                         <option value="SNP">SUZHOU NICHIAS IND. PRODUCTS</option>
+                        <option value="YTEC">YTEC CO., LTD.</option>
+                        <option value="NSEA">NICHIAS SOUTH EAST ASIA (UP PACKING)</option>
                         <option value="NCI 2">NCI 2</option>
                         <option value="STOCK">STOCK</option>
                         <option value="TRIAL">TRIAL</option>
@@ -226,12 +229,18 @@ $stmt->close();
                     </td>
                     <td class="readonly-cell">
                         <?= number_format((float)$r['width'], 0) ?> mm<br>
-                        <?= number_format((float)($r['actual_length'] ?? $r['length']), 0) ?> Mtr
+                        <?php $curLength = (!empty($r['actual_length']) && $r['actual_length'] > 0) ? $r['actual_length'] : $r['length']; ?>
+                        <div class="input-group input-group-sm mt-1" style="max-width:120px;">
+                            <input type="number" step="0.01" min="0"
+                                   class="form-control form-control-sm row-length" data-row="<?= $idx ?>"
+                                   value="<?= htmlspecialchars($curLength ?? '') ?>">
+                            <span class="input-group-text" style="font-size:11px;">Mtr</span>
+                        </div>
                     </td>
                     <td>
                         <?php
                             $saved = trim($r['customer_name'] ?? '');
-                            $knownCustomers = ['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA','NIPPON','NTC','SGC','STAMPING','YANTAI','NIP','NVC','NCS','SNP','NCI 2','STOCK','TRIAL'];
+                            $knownCustomers = ['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA','NIPPON','NTC','SGC','STAMPING','YANTAI','NIP','NVC','NCS','SNP','YTEC','NSEA','NCI 2','STOCK','TRIAL'];
                             $isOther = ($saved !== '' && !in_array($saved, $knownCustomers, true));
                         ?>
                         <select class="form-select form-select-sm row-customer" data-row="<?= $idx ?>"
@@ -252,6 +261,8 @@ $stmt->close();
                             <option value="NVC"      <?= $saved==='NVC'      ?'selected':'' ?>>NICHIAS VIETNAM CO., LTD</option>
                             <option value="NCS"      <?= $saved==='NCS'      ?'selected':'' ?>>NC-PT NICHIAS SUNIJAYA</option>
                             <option value="SNP"      <?= $saved==='SNP'      ?'selected':'' ?>>SUZHOU NICHIAS IND. PRODUCTS</option>
+                            <option value="YTEC"     <?= $saved==='YTEC'     ?'selected':'' ?>>YTEC CO., LTD.</option>
+                            <option value="NSEA"     <?= $saved==='NSEA'     ?'selected':'' ?>>NICHIAS SOUTH EAST ASIA (UP PACKING)</option>
                             <option value="NCI 2"    <?= $saved==='NCI 2'    ?'selected':'' ?>>NCI 2</option>
                             <option value="STOCK"    <?= ($saved===''||$saved==='STOCK')?'selected':'' ?>>STOCK</option>
                             <option value="TRIAL"    <?= $saved==='TRIAL'    ?'selected':'' ?>>TRIAL</option>
@@ -414,6 +425,7 @@ function collectSelections() {
         const otherEl  = document.querySelector(`.row-custom-customer[data-row="${idx}"]`);
         const refEl    = document.querySelector(`.row-refno[data-row="${idx}"]`);
         const copiesEl = document.querySelector(`.row-copies[data-row="${idx}"]`);
+        const lengthEl = document.querySelector(`.row-length[data-row="${idx}"]`);
 
         let customer = sel.value;
         if (customer === 'OTHER') customer = otherEl.value.trim();
@@ -423,9 +435,11 @@ function collectSelections() {
         // instead so 0 is preserved as a valid, meaningful value.
         const parsedCopies = parseInt(copiesEl.value, 10);
         const copies = isNaN(parsedCopies) ? 1 : parsedCopies;
+        const length = parseFloat(lengthEl.value);
 
         if (!customer) { setRowStatus(idx, 'Select a customer', true); hasError = true; return; }
         if (!ref_no)   { setRowStatus(idx, 'Ref No required', true);   hasError = true; return; }
+        if (isNaN(length) || length <= 0) { setRowStatus(idx, 'Length must be > 0', true); hasError = true; return; }
 
         setRowStatus(idx, copies === 0 ? 'Saved, print skipped' : 'OK', false);
         selections.push({
@@ -433,6 +447,7 @@ function collectSelections() {
             customer:              customer,
             ref_no:                ref_no,
             copies:                copies,
+            length:                length,
             nci_resolved_customer: refEl.dataset.nciResolvedCustomer || '',
         });
     });
