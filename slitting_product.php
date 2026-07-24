@@ -49,6 +49,19 @@ if (isset($_GET['delete'])) {
 $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 $tokens = $search !== '' ? preg_split('/\s+/', $search, -1, PREG_SPLIT_NO_EMPTY) : [];
 
+// Print status filter — combinable with the search above via
+// ?print_status=printed|not_printed (anything else/absent = "All").
+$printFilter = $_GET['print_status'] ?? '';
+if (!in_array($printFilter, ['printed', 'not_printed'], true)) {
+    $printFilter = '';
+}
+$print_where = '';
+if ($printFilter === 'printed') {
+    $print_where = " AND (is_printed = 1)";
+} elseif ($printFilter === 'not_printed') {
+    $print_where = " AND (is_printed = 0 OR is_printed IS NULL)";
+}
+
 $base_where = "
     (is_voided    = 0 OR is_voided    IS NULL)
     AND (is_recoiled  = 0 OR is_recoiled  IS NULL)
@@ -60,6 +73,7 @@ if (count($tokens) === 1) {
         SELECT * FROM slitting_product
         WHERE ($base_where)
           AND (coil_no LIKE ? OR product LIKE ? OR lot_no LIKE ? OR roll_no LIKE ?)
+          $print_where
         ORDER BY id DESC
     ");
     if (!$stmt) { die("Query preparation failed: " . htmlspecialchars($conn->error)); }
@@ -75,6 +89,7 @@ if (count($tokens) === 1) {
         SELECT * FROM slitting_product
         WHERE ($base_where)
           AND lot_no LIKE ? AND coil_no LIKE ?
+          $print_where
         ORDER BY id DESC
     ");
     if (!$stmt) { die("Query preparation failed: " . htmlspecialchars($conn->error)); }
@@ -91,6 +106,7 @@ if (count($tokens) === 1) {
         SELECT * FROM slitting_product
         WHERE ($base_where)
           AND lot_no LIKE ? AND coil_no LIKE ? AND roll_no LIKE ?
+          $print_where
         ORDER BY id DESC
     ");
     if (!$stmt) { die("Query preparation failed: " . htmlspecialchars($conn->error)); }
@@ -107,6 +123,7 @@ if (count($tokens) === 1) {
     $slitting = $conn->query("
         SELECT * FROM slitting_product
         WHERE $base_where
+        $print_where
         ORDER BY id DESC
     ");
 }
@@ -126,6 +143,26 @@ $page_title = 'Slitting Product';
 include 'header.php';
 ?>
 
+<style>
+    /* Bulk-select checkboxes — default Bootstrap checkboxes are too
+       faint on this table; make them bigger and unmistakably visible. */
+    .coil-select, #selectAllCoils {
+        width: 1.2em;
+        height: 1.2em;
+        border: 2px solid #000 !important;
+        box-shadow: none;
+        cursor: pointer;
+    }
+    .coil-select:checked, #selectAllCoils:checked {
+        background-color: #000 !important;
+        border-color: #000 !important;
+    }
+    .coil-select:focus, #selectAllCoils:focus {
+        box-shadow: 0 0 0 0.2rem rgba(0,0,0,0.25);
+        border-color: #000;
+    }
+</style>
+
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-scissors me-2 text-primary"></i>Slitting Product Inventory</h2>
     <?php if ($success === 'update'): ?>
@@ -139,24 +176,37 @@ include 'header.php';
     <?php endif; ?>
 </div>
 
-<div class="row mb-3">
+<div class="row mb-3 align-items-center">
     <div class="col-md-7">
         <form method="GET" action="slitting_product.php" class="input-group shadow-sm">
             <input type="text" name="search" class="form-control"
                    placeholder="Search Coil, Product, Lot, Roll... (e.g. 826403a N-4 R7)"
                    value="<?= htmlspecialchars($search) ?>">
+            <select name="print_status" class="form-select" style="max-width:160px;" onchange="this.form.submit()">
+                <option value="" <?= $printFilter === '' ? 'selected' : '' ?>>All Products</option>
+                <option value="printed" <?= $printFilter === 'printed' ? 'selected' : '' ?>>Printed</option>
+                <option value="not_printed" <?= $printFilter === 'not_printed' ? 'selected' : '' ?>>Not Printed Yet</option>
+            </select>
             <button class="btn btn-primary" type="submit">
                 <i class="bi bi-search me-1"></i> Search
             </button>
-            <?php if ($search !== ''): ?>
+            <?php if ($search !== '' || $printFilter !== ''): ?>
                 <a href="slitting_product.php" class="btn btn-outline-secondary">Clear</a>
-                <a href="bulk_print_action.php?search=<?= urlencode($search) ?>" target="_blank" class="btn btn-info text-dark fw-bold">
-                    <i class="bi bi-printer-fill me-1"></i> Bulk Print Results
-                </a>
             <?php endif; ?>
         </form>
     </div>
+    <div class="col-md-5 text-md-end mt-2 mt-md-0">
+        <span id="bulkPrintCount" class="text-muted me-2" style="font-size:13px;">0 selected</span>
+        <button type="button" id="bulkPrintBtn" class="btn btn-info text-dark fw-bold" disabled onclick="submitBulkPrint()">
+            <i class="bi bi-printer-fill me-1"></i> Bulk Print Selected
+        </button>
+    </div>
 </div>
+
+<!-- Hidden form used to POST the selected IDs in a new tab -->
+<form id="bulkPrintForm" method="post" action="bulk_print_action.php" target="_blank" style="display:none;">
+    <input type="hidden" name="ids" id="bulkPrintIdsInput">
+</form>
 
 <div class="card shadow-sm border-0">
     <div class="card-header bg-dark text-white fw-bold py-3 d-flex justify-content-between align-items-center">
@@ -169,11 +219,16 @@ include 'header.php';
         <table class="table table-hover align-middle text-center mb-0">
             <thead class="table-light">
                 <tr>
+                    <th style="width:36px;">
+                        <input type="checkbox" id="selectAllCoils" class="form-check-input"
+                               onchange="toggleSelectAllCoils(this)" title="Select all">
+                    </th>
                     <th>Product</th>
                     <th>Coil No</th>
                     <th>Roll No</th>
                     <th>Width (mm)</th>
                     <th>Length (m)</th>
+                    <th>Print Status</th>
                     <th>QR Code</th>
                     <th>Action</th>
                 </tr>
@@ -189,6 +244,10 @@ include 'header.php';
                     $isActual      = (!empty($row['actual_length']) && $row['actual_length'] > 0);
             ?>
                 <tr>
+                    <td>
+                        <input type="checkbox" class="form-check-input coil-select"
+                               value="<?= $row['id'] ?>" onchange="updateBulkPrintButton()">
+                    </td>
                     <td><span class="badge bg-secondary"><?= htmlspecialchars($row['product'] ?? '') ?></span></td>
                     <td><span class="fw-bold"><?= $lotCoil ?></span></td>
                     <td><span class="badge bg-light text-dark border"><?= htmlspecialchars($formattedRoll) ?></span></td>
@@ -199,6 +258,20 @@ include 'header.php';
                         </span>
                         <?php if ($isActual): ?>
                             <br><small class="badge bg-info text-dark" style="font-size:0.65rem;">ACTUAL</small>
+                        <?php endif; ?>
+                    </td>
+                    <td>
+                        <?php if (!empty($row['is_printed'])): ?>
+                            <span class="badge bg-success" title="Last printed <?= htmlspecialchars($row['last_printed_at'] ? date('d M Y H:i', strtotime($row['last_printed_at'])) : '') ?> by <?= htmlspecialchars($row['last_printed_by'] ?? '') ?>">
+                                <i class="bi bi-printer-fill me-1"></i>Printed (<?= (int)($row['print_count'] ?? 0) ?>×)
+                            </span>
+                            <?php if (!empty($row['last_printed_at'])): ?>
+                                <div class="small text-muted"><?= date('d M Y, H:i', strtotime($row['last_printed_at'])) ?></div>
+                            <?php endif; ?>
+                        <?php else: ?>
+                            <span class="badge bg-secondary">
+                                <i class="bi bi-clock me-1"></i>Not Printed Yet
+                            </span>
                         <?php endif; ?>
                     </td>
                     <td>
@@ -218,7 +291,7 @@ include 'header.php';
                 </tr>
             <?php endwhile; else: ?>
                 <tr>
-                    <td colspan="7" class="py-5 text-muted">
+                    <td colspan="9" class="py-5 text-muted">
                         No products found<?= $search !== '' ? ' matching "' . htmlspecialchars($search) . '"' : '' ?>.
                     </td>
                 </tr>
@@ -288,5 +361,38 @@ include 'header.php';
 <div class="mt-4">
     <a href="index.php" class="btn btn-secondary shadow-sm">← Back to Dashboard</a>
 </div>
+
+<script>
+function toggleSelectAllCoils(cb) {
+    document.querySelectorAll('.coil-select').forEach(el => el.checked = cb.checked);
+    updateBulkPrintButton();
+}
+
+function updateBulkPrintButton() {
+    const boxes   = document.querySelectorAll('.coil-select');
+    const checked = document.querySelectorAll('.coil-select:checked');
+
+    document.getElementById('bulkPrintCount').textContent = `${checked.length} selected`;
+    document.getElementById('bulkPrintBtn').disabled = checked.length === 0;
+
+    // Keep "Select All" in sync: checked if every row is checked,
+    // indeterminate (the dash state) if some-but-not-all are checked.
+    const selectAll = document.getElementById('selectAllCoils');
+    if (selectAll) {
+        selectAll.checked       = boxes.length > 0 && checked.length === boxes.length;
+        selectAll.indeterminate = checked.length > 0 && checked.length < boxes.length;
+    }
+}
+
+function submitBulkPrint() {
+    const ids = Array.from(document.querySelectorAll('.coil-select:checked')).map(el => el.value);
+    if (ids.length === 0) {
+        alert('Select at least one product to print.');
+        return;
+    }
+    document.getElementById('bulkPrintIdsInput').value = JSON.stringify(ids);
+    document.getElementById('bulkPrintForm').submit();
+}
+</script>
 
 <?php include 'footer.php'; ?>

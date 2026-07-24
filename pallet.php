@@ -63,6 +63,8 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
     $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
     if (!$row) { echo json_encode(['ok' => false, 'msg' => "Roll not found: {$lot} {$coil} {$roll}"]); exit; }
+    $lenForCode = (!empty($row['actual_length']) && $row['actual_length'] > 0) ? $row['actual_length'] : $row['length'];
+    $row['stock_code'] = PalletManager::formatStockCode($row['coil_no'], $row['width'], $lenForCode);
     echo json_encode(['ok' => true, 'product' => $row]);
     exit;
 }
@@ -70,9 +72,9 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
 // ── Shared: build the flattened Summary Pallet dataset ─────────
 function buildSummaryPalletRows(mysqli $conn): array {
     $rows = $conn->query("
-        SELECT p.pallet_no, p.status,
+        SELECT p.pallet_no, p.status, pi.stock_code AS pi_stock_code,
                sp.roll_no, sp.lot_no, sp.coil_no, sp.product,
-               sp.customer_name, sp.ref_no, sp.width
+               sp.customer_name, sp.ref_no, sp.width, sp.length, sp.actual_length
         FROM pallets p
         LEFT JOIN pallet_items pi     ON pi.pallet_id = p.id
         LEFT JOIN slitting_product sp ON sp.id = pi.slitting_product_id
@@ -80,15 +82,27 @@ function buildSummaryPalletRows(mysqli $conn): array {
     ")->fetch_all(MYSQLI_ASSOC);
 
     return array_map(function ($r) {
+        // Stock Code = SFS-{Coil No}-{Width}-{Length}, e.g. SFS-FK-357-796
+        // Trusts the value stored on pallet_items (set at insert time via
+        // PalletManager); only recomputes for legacy rows added before that
+        // column existed, so old pallets still show a code.
+        $stockCode = $r['pi_stock_code'];
+        if (empty($stockCode) && !empty($r['coil_no'])) {
+            $lenVal = (!empty($r['actual_length']) && $r['actual_length'] > 0)
+                ? $r['actual_length'] : $r['length'];
+            $stockCode = PalletManager::formatStockCode($r['coil_no'], $r['width'] ?? 0, $lenVal ?? 0);
+        }
+
         return [
-            'pallet_no' => $r['pallet_no'],
-            'status'    => $r['status'],
-            'roll_no'   => $r['roll_no'] ? str_replace('R', 'R-', $r['roll_no']) : null,
-            'lot_coil'  => trim(($r['lot_no'] ?? '') . ' ' . ($r['coil_no'] ?? '')),
-            'product'   => $r['product'],
-            'customer'  => $r['customer_name'],
-            'ref_no'    => $r['ref_no'],
-            'width'     => $r['width'] !== null ? (float)$r['width'] : null,
+            'pallet_no'  => $r['pallet_no'],
+            'status'     => $r['status'],
+            'stock_code' => $stockCode,
+            'roll_no'    => $r['roll_no'] ? str_replace('R', 'R-', $r['roll_no']) : null,
+            'lot_coil'   => trim(($r['lot_no'] ?? '') . ' ' . ($r['coil_no'] ?? '')),
+            'product'    => $r['product'],
+            'customer'   => $r['customer_name'],
+            'ref_no'     => $r['ref_no'],
+            'width'      => $r['width'] !== null ? (float)$r['width'] : null,
         ];
     }, $rows);
 }
@@ -112,7 +126,7 @@ function filterSummaryPalletRows(array $rows, string $cat, string $val): array {
     // All Fields — free text across everything visible in the table
     $needle = strtolower($val);
     return array_values(array_filter($rows, function ($r) use ($needle) {
-        foreach ([$r['pallet_no'], $r['status'], $r['lot_coil'], $r['roll_no'], $r['customer'], $r['ref_no'], $r['width']] as $field) {
+        foreach ([$r['pallet_no'], $r['status'], $r['stock_code'], $r['lot_coil'], $r['roll_no'], $r['customer'], $r['ref_no'], $r['width']] as $field) {
             if ($field !== null && str_contains(strtolower((string)$field), $needle)) return true;
         }
         return false;
@@ -150,7 +164,7 @@ if (isset($_GET['export']) && $_GET['export'] === 'summary_pallet') {
     header('Content-Disposition: attachment; filename="' . $filename . '"');
     header('Cache-Control: max-age=0');
 
-    $cols      = 6; // Pallet No, Status, Rolls, Customer, Ref No, Width
+    $cols      = 7; // Pallet No, Status, Stock Code, Rolls, Customer, Ref No, Width
     $generated = date('d M Y, H:i');
     ?>
 <html><head><meta charset="UTF-8"></head><body>
@@ -174,6 +188,7 @@ if (isset($_GET['export']) && $_GET['export'] === 'summary_pallet') {
         <tr style="background:#343a40;color:#fff;font-weight:bold;font-size:12px;">
             <th style="padding:8px 10px;">Pallet No</th>
             <th style="padding:8px 10px;">Status</th>
+            <th style="padding:8px 10px;">Stock Code</th>
             <th style="padding:8px 10px;">Rolls</th>
             <th style="padding:8px 10px;">Customer</th>
             <th style="padding:8px 10px;">Ref No</th>
@@ -193,6 +208,7 @@ if (isset($_GET['export']) && $_GET['export'] === 'summary_pallet') {
             echo '<tr>';
             echo '<td ' . $td  . '><b>' . htmlspecialchars($r['pallet_no'] ?? '-') . '</b></td>';
             echo '<td ' . $td  . '>' . htmlspecialchars($statusLbl) . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars($r['stock_code'] ?: '-') . '</td>';
             echo '<td ' . $td  . '>' . htmlspecialchars($rollsCell) . '</td>';
             echo '<td ' . $td  . '>' . htmlspecialchars($r['customer'] ?: '-') . '</td>';
             echo '<td ' . $td  . '>' . htmlspecialchars($r['ref_no']   ?: '-') . '</td>';
@@ -718,6 +734,11 @@ if (isset($_GET['success'])): ?>
                                 <?= number_format((float)$item['width']) ?>mm |
                                 <?= number_format($itemLen, 1) ?>m
                             </div>
+                            <?php if (!empty($item['stock_code'])): ?>
+                            <div class="text-muted" style="font-size:11px;font-family:monospace;">
+                                <?= htmlspecialchars($item['stock_code']) ?>
+                            </div>
+                            <?php endif; ?>
                         </div>
                         <?php if ($hasNod): ?>
                         <!-- NOD chip -->
@@ -858,6 +879,11 @@ if (isset($_GET['success'])): ?>
                             <?= number_format((float)$item['width']) ?>mm |
                             <?= number_format($itemLen, 1) ?>m
                         </div>
+                        <?php if (!empty($item['stock_code'])): ?>
+                        <div class="text-muted" style="font-size:11px;font-family:monospace;">
+                            <?= htmlspecialchars($item['stock_code']) ?>
+                        </div>
+                        <?php endif; ?>
                     </div>
                     <?php if ($itemWgt > 0): ?>
                     <span class="wgt-chip">
@@ -1011,6 +1037,7 @@ if (isset($_GET['success'])): ?>
                             <?= htmlspecialchars($pal['customer_name'] ?: '—') ?>
                         </td>
                         <td>
+                            <div class="d-flex gap-1 flex-wrap">
                             <?php if ($pal['status'] === 'building'): ?>
                             <a href="pallet.php?pallet_id=<?= $pal['id'] ?>"
                                class="btn btn-outline-primary btn-sm">Open</a>
@@ -1029,6 +1056,12 @@ if (isset($_GET['success'])): ?>
                             <?php else: ?>
                             <span class="text-muted small">—</span>
                             <?php endif; ?>
+                            <a href="print_slip.php?pallet_no=<?= urlencode($pal['pallet_no']) ?>"
+                               target="_blank" class="btn btn-outline-secondary btn-sm"
+                               title="Print Warehousing Slip">
+                                <i class="bi bi-printer"></i>
+                            </a>
+                            </div>
                         </td>
                     </tr>
                     <?php endforeach; ?>
@@ -1055,10 +1088,10 @@ if (isset($_GET['success'])): ?>
             Pallet Serial No <span class="text-danger">*</span>
           </label>
           <input type="text" id="palletNoInput" class="form-control"
-                 placeholder="SFS-0024-001 or SFS-0024-001 (A)"
+                 placeholder="e.g. 2607185 or 2607185(A)"
                  autocomplete="off" spellcheck="false"
                  style="font-family:monospace;letter-spacing:.4px;">
-          <div class="form-text"><code>SFS-XXXX-XXX</code> or <code>SFS-XXXX-XXX (A)</code></div>
+          <div class="form-text">Just type the digits — <code>SFS-</code> and the dashes are added automatically. Format: <code>SFS-XXXX-XXX</code> or <code>SFS-XXXX-XXX (A)</code></div>
           <div id="palletNoFeedback" class="mt-1" style="font-size:12px;min-height:18px;"></div>
         </div>
         <div class="alert alert-info py-2 mb-0" style="font-size:12px;">
@@ -1106,7 +1139,7 @@ if (isset($_GET['success'])): ?>
           <div class="col-md-5">
             <!-- Text input — used for "All Fields" free search, and for Width -->
             <input type="text" id="summaryFilterValueText" class="form-control form-control-sm"
-                   placeholder="Search Pallet No, Status, Rolls, Customer, Ref No, Width..."
+                   placeholder="Search Pallet No, Status, Stock Code, Rolls, Customer, Ref No, Width..."
                    oninput="applySummaryFilter()">
             <!-- Dropdown — used for Status / Customer, populated dynamically with distinct values -->
             <select id="summaryFilterValueSelect" class="form-select form-select-sm d-none" onchange="applySummaryFilter()">
@@ -1133,6 +1166,7 @@ if (isset($_GET['success'])): ?>
               <tr>
                 <th>Pallet No</th>
                 <th>Status</th>
+                <th>Stock Code</th>
                 <th>Rolls</th>
                 <th>Customer</th>
                 <th>Ref No</th>
@@ -1437,6 +1471,7 @@ function fillSlot(seq, p) {
                 ${(+p.width).toFixed(0)}mm |
                 ${len.toFixed(1)}m
             </div>
+            ${p.stock_code ? `<div class="text-muted" style="font-size:11px;font-family:monospace;">${escHtml(p.stock_code)}</div>` : ''}
         </div>
         ${nodChip}
         <span class="wgt-chip" title="Est. Weight = (${len.toFixed(1)}m × ${(+p.width).toFixed(0)}mm / 1000) × ${stdWeight}">
@@ -1588,16 +1623,66 @@ document.getElementById('createPalletModal')?.addEventListener('show.bs.modal', 
     setTimeout(() => inp.focus(), 300);
 });
 
+// ── Pallet No auto-formatting ───────────────────────────────────
+// User only types digits (and optionally letters for a suffix like
+// "A" or "AB"); we build "SFS-XXXX-XXX" or "SFS-XXXX-XXX (A)" for
+// them in real time. Always rebuilding from scratch (rather than
+// patching the string) means stray characters can never sneak in
+// and break the format, no matter what the user types or pastes.
+const PALLET_NO_PREFIX = 'SFS-';
+
+function formatPalletNo(raw) {
+    if (!raw) return '';
+    // Strip an already-formatted "SFS-" prefix (case-insensitive) so
+    // reformatting an already-formatted value is a no-op, not a doubling.
+    const cleaned = raw.replace(/^\s*SFS-?\s*/i, '');
+    const digits  = cleaned.replace(/[^0-9]/g, '').slice(0, 7);   // XXXX + XXX
+    const letters = cleaned.replace(/[^A-Za-z]/g, '').toUpperCase().slice(0, 3); // optional (A)/(AB)/(ABC)
+
+    if (!digits && !letters) return '';
+
+    let out = PALLET_NO_PREFIX + (digits.length <= 4 ? digits : digits.slice(0, 4) + '-' + digits.slice(4));
+    if (letters) out += ` (${letters})`;
+    return out;
+}
+
 document.getElementById('palletNoInput')?.addEventListener('input', function () {
     clearTimeout(palletNoTimer);
     palletNoValid = false;
     document.getElementById('createPalletBtn').disabled = true;
-    const val = this.value.trim();
-    if (!val) {
+
+    const raw      = this.value;
+    const selStart = this.selectionStart;
+
+    // Preserve cursor position across reformatting: count how many real
+    // "content" characters (digits/letters typed by the user, not the
+    // literal SFS-/-/space/() the mask inserts) sit before the cursor,
+    // ignoring the fixed "SFS-" prefix — this is what makes backspace
+    // and mid-string edits land in the right place instead of always
+    // jumping to the end of the field.
+    const prefixMatch     = raw.match(/^\s*SFS-?\s*/i);
+    const prefixLen       = prefixMatch ? prefixMatch[0].length : 0;
+    const afterPrefixCur  = Math.max(0, selStart - prefixLen);
+    const contentBefore   = raw.slice(prefixLen).slice(0, afterPrefixCur).replace(/[^0-9A-Za-z]/g, '').length;
+
+    const formatted = formatPalletNo(raw);
+    this.value = formatted;
+
+    if (!formatted) {
         document.getElementById('palletNoFeedback').innerHTML = '';
         this.classList.remove('is-valid', 'is-invalid');
         return;
     }
+
+    let seen = 0, newPos = formatted.length;
+    for (let i = PALLET_NO_PREFIX.length; i < formatted.length; i++) {
+        if (/[0-9A-Za-z]/.test(formatted[i])) seen++;
+        if (seen === contentBefore) { newPos = i + 1; break; }
+    }
+    if (contentBefore === 0) newPos = PALLET_NO_PREFIX.length;
+    this.setSelectionRange(newPos, newPos);
+
+    const val = formatted.trim();
     palletNoTimer = setTimeout(async () => {
         try {
             const r = await fetch(
@@ -1715,7 +1800,7 @@ function renderSummaryTable(rows) {
     const countEl = document.getElementById('summaryResultCount');
 
     if (!rows.length) {
-        tbody.innerHTML = `<tr><td colspan="6" class="py-4 text-muted">No matching records.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="7" class="py-4 text-muted">No matching records.</td></tr>`;
         countEl.textContent = '0 rows';
         return;
     }
@@ -1729,6 +1814,7 @@ function renderSummaryTable(rows) {
             <tr>
                 <td class="fw-bold">${escHtml(r.pallet_no)}</td>
                 <td><span class="badge ${badgeClass}">${escHtml(summaryStatusLabel(r.status))}</span></td>
+                <td style="font-family:monospace;font-size:12px;">${r.stock_code ? escHtml(r.stock_code) : '<span class="text-muted">&mdash;</span>'}</td>
                 <td>${rollsCell}</td>
                 <td>${r.customer ? escHtml(r.customer) : '<span class="text-muted">&mdash;</span>'}</td>
                 <td>${r.ref_no ? escHtml(r.ref_no) : '<span class="text-muted">&mdash;</span>'}</td>
@@ -1792,7 +1878,7 @@ function applySummaryFilter() {
         const val = document.getElementById('summaryFilterValueText').value.trim().toLowerCase();
         if (val !== '') {
             rows = rows.filter(r => [
-                r.pallet_no, r.status, r.lot_coil, r.roll_no,
+                r.pallet_no, r.status, r.stock_code, r.lot_coil, r.roll_no,
                 r.customer, r.ref_no, r.width
             ].some(v => v !== null && String(v).toLowerCase().includes(val)));
         }

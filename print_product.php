@@ -581,6 +581,21 @@ async function markPrinted() {
     }
 }
 
+<?php if ($embed && (($_GET['mark_print'] ?? '0') === '1')): ?>
+// ── Bulk-print mode (first copy only) ─────────────────────────────
+// The action toolbar (Print button → handlePrintClick() → markPrinted())
+// is hidden in embed mode, since bulk_print_action.php stacks many of
+// these in iframes and prints them all at once from the parent window —
+// there's no per-iframe button click to hang this off of. So we mark
+// this roll printed as soon as the iframe finishes loading instead.
+// Only the FIRST of the 3 copy-iframes for a given product carries
+// mark_print=1 (see bulk_print_action.php), so this fires exactly once
+// per product per bulk print — matching the single-print flow, where
+// one click of "Print" counts as one print_count increment regardless
+// of how many physical copies come out of it.
+window.addEventListener('DOMContentLoaded', () => { markPrinted(); });
+<?php endif; ?>
+
 // ── Show instant feedback if this page was loaded from a normal
 //    POST (old print-to-save path) — so user knows it was saved
 <?php if ($justSaved): ?>

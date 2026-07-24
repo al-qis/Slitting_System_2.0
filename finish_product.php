@@ -993,19 +993,20 @@ include 'header.php';
 table { table-layout: fixed; width: 100%; }
 table th, table td { word-wrap: break-word; vertical-align: middle; font-size: 13px; }
 table td img { max-width: 60px; max-height: 60px; display: block; margin: 0 auto; }
-table th:nth-child(1)  { width: 40px; }   /* # counter */
-table th:nth-child(2)  { width: 100px; }  /* Status */
-table th:nth-child(3)  { width: 55px; }   /* Origin */
-table th:nth-child(4)  { width: 90px; }   /* Product */
-table th:nth-child(5)  { width: 150px; }  /* Lot No (merged with Roll No) */
-table th:nth-child(6)  { width: 55px; }   /* Width */
-table th:nth-child(7)  { width: 55px; }   /* Length */
-table th:nth-child(8)  { width: 65px; }   /* Actual */
-table th:nth-child(9)  { width: 70px; }   /* NOD */
-table th:nth-child(10) { width: 90px; }   /* Pallet */
-table th:nth-child(11) { width: 85px; }   /* Date In */
-table th:nth-child(12) { width: 85px; }   /* Date Out */
-table th:nth-child(13) { width: 140px; }  /* Action */
+table th:nth-child(1)  { width: 32px; }   /* checkbox (Mixed Bulk Print select) */
+table th:nth-child(2)  { width: 40px; }   /* # counter */
+table th:nth-child(3)  { width: 100px; }  /* Status */
+table th:nth-child(4)  { width: 55px; }   /* Origin */
+table th:nth-child(5)  { width: 90px; }   /* Product */
+table th:nth-child(6)  { width: 150px; }  /* Lot No (merged with Roll No) */
+table th:nth-child(7)  { width: 55px; }   /* Width */
+table th:nth-child(8)  { width: 55px; }   /* Length */
+table th:nth-child(9)  { width: 65px; }   /* Actual */
+table th:nth-child(10) { width: 70px; }   /* NOD */
+table th:nth-child(11) { width: 90px; }   /* Pallet */
+table th:nth-child(12) { width: 85px; }   /* Date In */
+table th:nth-child(13) { width: 85px; }   /* Date Out */
+table th:nth-child(14) { width: 140px; }  /* Action */
 
 /* ── NOD (Notice of Defect) row highlight ──
    !important so it wins over whatever status color (table-primary,
@@ -1252,7 +1253,27 @@ table td.lot-coil-cell {
     <a href="pallet.php" class="btn btn-primary btn-sm">
         <i class="bi bi-archive me-1"></i> Manage Pallets
     </a>
+    <span class="ms-auto d-flex align-items-center gap-2">
+        <span id="mixedBulkPrintCount" class="text-muted" style="font-size:13px;">0 selected</span>
+        <button type="button" id="mixedBulkPrintBtn" class="btn btn-danger btn-sm fw-bold" disabled
+                onclick="goToMixedBatchSetup()">
+            <i class="bi bi-printer-fill me-1"></i> Bulk Print Selected
+        </button>
+    </span>
 </div>
+
+<!-- Hidden form used to POST the mixed selection of IDs to
+     mixed_batch_setup.php, where Customer/Ref No are now set
+     individually per roll (instead of one global pair applied to
+     everything — see mixed_batch_setup.php / mixed_batch_print_action.php). -->
+<form id="mixedBulkPrintForm" method="post" action="mixed_batch_setup.php" style="display:none;">
+    <input type="hidden" name="ids"      id="mixedBulkPrintIdsInput">
+    <input type="hidden" name="month"    value="<?= $month ?>">
+    <input type="hidden" name="year"     value="<?= $year ?>">
+    <input type="hidden" name="day"      value="<?= $day ?>">
+    <input type="hidden" name="search"   value="<?= htmlspecialchars($search) ?>">
+    <input type="hidden" name="filter"   value="<?= htmlspecialchars($filter_card) ?>">
+</form>
 
 <!-- ================================================================
      KPI SUMMARY CARDS — clickable filters
@@ -1463,6 +1484,10 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
     <table class="table table-bordered table-striped align-middle text-center">
         <thead class="table-dark">
             <tr>
+                <th style="width:32px;">
+                    <input type="checkbox" id="selectAllMixedPrint" class="form-check-input"
+                           onchange="toggleSelectAllMixedPrint(this)" title="Select all printable rolls">
+                </th>
                 <th>#</th><th>Status</th><th>Origin</th><th>Product</th>
                 <th>Lot No</th><th>Width</th><th>Length</th>
                 <th>Actual</th><th>NOD</th><th>Pallet</th>
@@ -1539,11 +1564,26 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                     class="' . $pBadgeClass . '" style="font-size:10px;">'
                     . htmlspecialchars($row['pallet_no']) . '</a>';
             }
+
+            // Same "printable" rule batch_setup.php's SQL uses: not
+            // WAITING/REJECTED, and not an IN roll still pending Actual
+            // Length or already palletised.
+            $isPrintableForMixedBatch = !in_array($row['status'], ['WAITING', 'REJECTED'], true)
+                && !($row['status'] === 'IN' && ($row['is_completed'] == 0 || $row['pallet_id']));
         ?>
             <tr class="<?= $rowClass ?>"
                 data-id="<?= $row['id'] ?>"
                 data-product="<?= htmlspecialchars($row['product'] ?? '') ?>"
                 data-lot="<?= htmlspecialchars(trim($row['lot_no'] ?? '')) ?>">
+                <td>
+                    <?php if ($isPrintableForMixedBatch): ?>
+                        <input type="checkbox" class="form-check-input mixed-print-select"
+                               value="<?= $row['id'] ?>" onchange="updateMixedBulkPrintButton()">
+                    <?php else: ?>
+                        <input type="checkbox" class="form-check-input" disabled
+                               title="<?= $row['status'] === 'IN' && $row['pallet_id'] ? 'Already palletised' : ($row['status'] === 'IN' ? 'Pending Actual Length' : 'Not printable in this status') ?>">
+                    <?php endif; ?>
+                </td>
                 <td class="row-counter"><?= $rowNum ?></td>
                 <td><?= $statusBadge ?></td>
                 <td>
@@ -1695,7 +1735,7 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                 </td>
             </tr>
         <?php endwhile; else: ?>
-            <tr><td colspan="13" class="py-4 text-muted">
+            <tr><td colspan="14" class="py-4 text-muted">
                 No products found<?= $search !== '' ? ' matching "' . htmlspecialchars($search) . '"' : '' ?><?= $filter_card !== '' ? ' for the selected filter' : '' ?>.
             </td></tr>
         <?php endif; ?>
@@ -2349,6 +2389,41 @@ tooltipTriggerList.map(el => new bootstrap.Tooltip(el));
         + (params.get('filter') ? '&filter=' + encodeURIComponent(params.get('filter')) : '');
     window.history.replaceState({}, '', cleanUrl);
 })();
+
+// ── Mixed Bulk Print: selection across any product/coil ─────────────
+function toggleSelectAllMixedPrint(cb) {
+    document.querySelectorAll('.mixed-print-select').forEach(el => el.checked = cb.checked);
+    updateMixedBulkPrintButton();
+}
+
+function updateMixedBulkPrintButton() {
+    const boxes   = document.querySelectorAll('.mixed-print-select');
+    const checked = document.querySelectorAll('.mixed-print-select:checked');
+
+    document.getElementById('mixedBulkPrintCount').textContent = `${checked.length} selected`;
+    document.getElementById('mixedBulkPrintBtn').disabled = checked.length === 0;
+
+    const selectAll = document.getElementById('selectAllMixedPrint');
+    if (selectAll) {
+        selectAll.checked       = boxes.length > 0 && checked.length === boxes.length;
+        selectAll.indeterminate = checked.length > 0 && checked.length < boxes.length;
+    }
+}
+
+// Customer/Ref No are no longer collected here in one shared modal —
+// they're set per roll on the Mixed Batch Setup page instead. This just
+// forwards the checked IDs there.
+function goToMixedBatchSetup() {
+    const checked = document.querySelectorAll('.mixed-print-select:checked');
+    if (checked.length === 0) {
+        alert('Select at least one roll to bulk print.');
+        return;
+    }
+
+    const ids = Array.from(checked).map(el => el.value);
+    document.getElementById('mixedBulkPrintIdsInput').value = JSON.stringify(ids);
+    document.getElementById('mixedBulkPrintForm').submit();
+}
 </script>
 
 <div><a href="index.php" class="btn btn-secondary mt-3">← Back</a></div>

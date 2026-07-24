@@ -27,6 +27,34 @@ class PalletManager
      */
     public const PALLET_NO_REGEX = '/^SFS-\d{4}-\d{3}(?: \([A-Z]{1,3}\))?$/';
 
+    // =========================================================
+    // STOCK CODE
+    // Format: SFS-{Coil No}-{Width}-{Length}  e.g. SFS-FK-357-796
+    // Coil No is truncated to whatever comes before its first "-"
+    // (e.g. "FK-3" -> "FK"; a coil_no with no "-" is used as-is).
+    // Whole numbers show with no decimals; any real decimal value
+    // always shows exactly 2 digits (375.50 stays "375.50", never
+    // rounded away or stripped to "375.5"). actual_length is used
+    // when measured, falling back to nominal length otherwise —
+    // same "actual takes priority" rule used everywhere else.
+    // =========================================================
+    public static function formatStockCode(?string $coilNo, $width, $length): ?string
+    {
+        if ($coilNo === null || trim($coilNo) === '') {
+            return null;
+        }
+        $coilPart = explode('-', trim($coilNo), 2)[0];
+        return 'SFS-' . $coilPart
+            . '-' . self::formatStockCodeNumber($width)
+            . '-' . self::formatStockCodeNumber($length);
+    }
+
+    private static function formatStockCodeNumber($value): string
+    {
+        $formatted = number_format((float)$value, 2, '.', '');
+        return str_ends_with($formatted, '.00') ? substr($formatted, 0, -3) : $formatted;
+    }
+
     private mysqli $conn;
     private string $actor;
 
@@ -189,7 +217,10 @@ class PalletManager
             }
 
             $seq = $currentCount + 1;
-            $add = $this->_insertPalletItem($palletId, $productId, $seq);
+            $lenForCode = (!empty($product['actual_length']) && $product['actual_length'] > 0)
+                ? $product['actual_length'] : $product['length'];
+            $stockCode = self::formatStockCode($product['coil_no'], $product['width'], $lenForCode);
+            $add = $this->_insertPalletItem($palletId, $productId, $seq, $stockCode);
             if (!$add['ok']) {
                 throw new RuntimeException($add['msg']);
             }
@@ -888,7 +919,7 @@ class PalletManager
     public function getPalletItems(int $palletId): array
     {
         $stmt = $this->conn->prepare("
-            SELECT pi.seq, pi.added_at,
+            SELECT pi.seq, pi.added_at, pi.stock_code,
                    sp.id AS product_id,
                    sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
                    sp.width, sp.length, sp.actual_length, sp.status,
@@ -902,6 +933,19 @@ class PalletManager
         $stmt->execute();
         $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
         $stmt->close();
+
+        // Trust the stored value (set at insert time by addRollToPallet());
+        // only compute on the fly for legacy rows added before this column
+        // existed, so nothing shows blank for older pallets.
+        foreach ($rows as &$row) {
+            if (empty($row['stock_code'])) {
+                $lenVal = (!empty($row['actual_length']) && $row['actual_length'] > 0)
+                    ? $row['actual_length'] : $row['length'];
+                $row['stock_code'] = self::formatStockCode($row['coil_no'], $row['width'], $lenVal);
+            }
+        }
+        unset($row);
+
         return $rows;
     }
 
@@ -971,14 +1015,14 @@ class PalletManager
         return ['ok' => true, 'msg' => 'OK'];
     }
 
-    private function _insertPalletItem(int $palletId, int $productId, int $seq): array
+    private function _insertPalletItem(int $palletId, int $productId, int $seq, ?string $stockCode = null): array
     {
         try {
             $stmt = $this->conn->prepare("
-                INSERT INTO pallet_items (pallet_id, slitting_product_id, seq, added_by)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO pallet_items (pallet_id, slitting_product_id, seq, added_by, stock_code)
+                VALUES (?, ?, ?, ?, ?)
             ");
-            $stmt->bind_param("iiis", $palletId, $productId, $seq, $this->actor);
+            $stmt->bind_param("iiiss", $palletId, $productId, $seq, $this->actor, $stockCode);
             $stmt->execute();
             $stmt->close();
             return ['ok' => true, 'msg' => 'Inserted.'];

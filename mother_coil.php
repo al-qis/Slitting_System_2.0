@@ -729,7 +729,7 @@ include 'header.php';
             <label class="form-label fw-semibold">Shortcut: Paste Excel Row Here to Auto-Fill</label>
             <textarea id="add_paste_zone" class="form-control" rows="2"
                       placeholder="Copy a row from Excel (without headers) and paste it here…"></textarea>
-            <div class="form-text">Tab-separated row from Excel — auto-fills Lot No, Coil No, Grade, Width and Length below.</div>
+            <div class="form-text">Tab-separated row from Excel — 10 columns including blank spacer cells (Product, [blank], Width, Lot No., [blank], Material Length, Actual Length, Slitting Date, [blank], Grade); Actual Length, Slitting Date and the blank spacer cells are ignored — auto-fills Product, Lot No, Coil No, Width, Length and Grade below.</div>
             <div class="alert alert-warning mt-2 mb-0 d-none" id="add_paste_warning">
               Format mismatch. Please ensure you copied a valid row from the spreadsheet.
             </div>
@@ -1039,18 +1039,28 @@ async function handlePasteAutofill(raw) {
     if (!text) { showPasteWarning(false); return; }
 
     const cols = text.split('\t');
-    if (cols.length < 6) { showPasteWarning(true); return; }
+    // Real Excel layout is 10 tab-separated cells, including 3 blank
+    // spacer columns that have no header text at all:
+    //   0 Product | 1 (blank spacer) | 2 Width (mm) | 3 Lot No. (base + coil) |
+    //   4 (blank spacer) | 5 Material Length | 6 Actual Length (ignored) |
+    //   7 Slitting Date (ignored) | 8 (blank spacer) | 9 Grade
+    if (cols.length < 10) { showPasteWarning(true); return; }
 
-    // cols[0] = "Type" column from Excel (e.g. "JZ-2520-2C") — the real
-    // product code. cols[1] "Product Code" (e.g. "QA") is just the
-    // coil-code family, already redundant with what's derived from the
-    // Lot No column below, so it's intentionally not read here.
     const pastedProduct = (cols[0] || '').trim();
-    const widthVal    = (cols[2] || '').trim();
-    const lotCoilCell  = (cols[3] || '').trim();
-    const lengthVal   = (cols[4] || '').trim();
-    const gradeVal    = (cols[5] || '').trim();
+    const widthVal       = (cols[2] || '').trim();
+    const lotCoilCell     = (cols[3] || '').trim();
+    const lengthVal       = (cols[5] || '').trim();
+    // cols[1], cols[4], cols[8] are blank spacer columns; cols[6] (Actual
+    // Length) and cols[7] (Slitting Date) are intentionally never read —
+    // present or blank, none of these shift the Grade column.
+    const gradeVal        = (cols[9] || '').trim();
 
+    // Split "826711 CH-2" -> base lot "826711" + coil "CH-2". Splitting on
+    // whitespace (rather than a fixed-length/charset regex) is what makes
+    // this robust to base lot numbers of any length (4-7 chars) and mixed
+    // case, since we never need to know its exact shape — only that it's
+    // whatever comes before the first space, with the coil being everything
+    // after (rejoined, in case the coil identifier itself contains a space).
     const lotCoilParts = lotCoilCell.split(' ').filter(Boolean);
     const widthNum  = parseFloat(widthVal);
     const lengthNum = parseFloat(lengthVal);
@@ -1384,20 +1394,20 @@ function parseBulkRows(raw) {
 
     lines.forEach((line, idx) => {
         const cols = line.split('\t');
-        if (cols.length < 6) { badLines.push(idx + 1); return; }
+        // Same 10-column Excel layout as the single-row paste shortcut
+        // (including 3 blank spacer columns with no header text):
+        //   0 Product | 1 (blank spacer) | 2 Width (mm) | 3 Lot No. (base + coil) |
+        //   4 (blank spacer) | 5 Material Length | 6 Actual Length (ignored) |
+        //   7 Slitting Date (ignored) | 8 (blank spacer) | 9 Grade
+        if (cols.length < 10) { badLines.push(idx + 1); return; }
 
-        // cols[0] = the "Type" column from Excel (e.g. "JZ-2520-2C") — the
-        // real product code. Confirmed against a real sample paste; was
-        // previously never read at all. cols[1] "Product Code" (e.g. "QA")
-        // is just the coil-code family, already redundant with what's
-        // derived from the Lot No column below, so it's intentionally not
-        // read here. Everything else keeps its exact original column
-        // position/meaning, so pastes without this column still work.
         const pastedProduct = (cols[0] || '').trim();
-        const widthVal     = (cols[2] || '').trim();
-        const lotCoilCell  = (cols[3] || '').trim();
-        const lengthVal    = (cols[4] || '').trim();
-        const gradeVal     = (cols[5] || '').trim();
+        const widthVal       = (cols[2] || '').trim();
+        const lotCoilCell     = (cols[3] || '').trim();
+        const lengthVal       = (cols[5] || '').trim();
+        // cols[1], cols[4], cols[8] are blank spacers; cols[6] (Actual
+        // Length) and cols[7] (Slitting Date) are intentionally never read.
+        const gradeVal        = (cols[9] || '').trim();
 
         const lotCoilParts = lotCoilCell.split(' ').filter(Boolean);
 
