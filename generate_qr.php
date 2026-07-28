@@ -21,19 +21,37 @@ if ($type === 'slitting') {
     $id = intval($_GET['id'] ?? 0);
     if ($id <= 0) die('Invalid ID');
 
-    $stmt = $conn->prepare("SELECT lot_no, coil_no, roll_no FROM slitting_product WHERE id=?");
+    $stmt = $conn->prepare("SELECT lot_no, coil_no, roll_no, width, length, actual_length FROM slitting_product WHERE id=?");
     $stmt->bind_param("i", $id);
     $stmt->execute();
     $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
 
     if (!$row) die('Slitting product not found');
+
+    // Prefer actual_length over the original/nominal length whenever it's
+    // been recorded — same "measured beats planned" rule already used for
+    // display elsewhere in this system (finish_product.php, slitting_product.php,
+    // print_slip.php). Falls back to length only if actual_length is still
+    // blank (e.g. before QC has measured the roll).
+    $effectiveLength = (!empty($row['actual_length']) && $row['actual_length'] > 0)
+        ? $row['actual_length']
+        : $row['length'];
+
+    // New 5-field format: LOT / COIL / ROLL / WIDTH / LENGTH. WIDTH and
+    // LENGTH are only appended when actually present on the row, so a
+    // legacy row with no width/length recorded still generates a plain
+    // 3-field QR — scan_product_action.php treats both shapes identically.
     $qrText = "LOT={$row['lot_no']};COIL={$row['coil_no']};ROLL={$row['roll_no']}";
+    if ($row['width']        !== null && $row['width']        !== '') $qrText .= ";WIDTH={$row['width']}";
+    if ($effectiveLength     !== null && $effectiveLength      !== '') $qrText .= ";LENGTH={$effectiveLength}";
 
 } else {
     $lot  = trim($_GET['lot'] ?? '');
     $coil = trim($_GET['coil'] ?? '');
     $roll = trim($_GET['roll'] ?? '');
+    $width  = trim($_GET['width']  ?? '');
+    $length = trim($_GET['length'] ?? '');
 
     if ($lot === '' || $coil === '') die('Invalid QR data');
 
@@ -43,10 +61,11 @@ if ($type === 'slitting') {
     // sfc.php / scan_product_action.php already expect. ROLL is only
     // appended when actually provided, since some SFC entries legitimately
     // have none (e.g. "BALANCE" rolls, already blanked out upstream).
+    // WIDTH/LENGTH follow the same "only if provided" rule.
     $qrText = "LOT=$lot;COIL=$coil";
-    if ($roll !== '') {
-        $qrText .= ";ROLL=$roll";
-    }
+    if ($roll !== '')   $qrText .= ";ROLL=$roll";
+    if ($width !== '')  $qrText .= ";WIDTH=$width";
+    if ($length !== '') $qrText .= ";LENGTH=$length";
 }
 
 // Ensure there is always text

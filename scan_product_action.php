@@ -60,19 +60,30 @@ if ($qr === '') {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  QR PARSING — supports two formats
+//  QR PARSING — supports two formats, each with an OLD (3-field)
+//  and NEW (5-field) shape. WIDTH/LENGTH are always optional: if
+//  they're missing (old stickers already printed), they simply come
+//  back as '' — nothing downstream breaks or throws on that.
 //
 //  Format A  (KEY=value, all scan sources):
-//    LOT=826277;COIL=FK-1;ROLL=R1
+//    Old:  LOT=826277;COIL=FK-1;ROLL=R1
+//    New:  LOT=826277;COIL=FK-1;ROLL=R1;WIDTH=450;LENGTH=1200
 //    Keys matched case-insensitively; segments without "=" skipped.
+//    Note: LENGTH here is generate_qr.php's *effective* length — it
+//    already prioritizes actual_length over the nominal/original length
+//    whenever the roll has been measured, so this parser doesn't need
+//    to know or care which one it actually is; it just reads "LENGTH".
 //
 //  Format B  (space-separated, manual overlay entry):
-//    826277 FK-1 R1
+//    Old:  826277 FK-1 R1
+//    New:  826277 FK-1 R1 450 1200
 // ═══════════════════════════════════════════════════════════════
 
-$lot  = '';
-$coil = '';
-$roll = '';
+$lot    = '';
+$coil   = '';
+$roll   = '';
+$width  = '';
+$length = '';
 
 if (strpos($qr, '=') !== false) {
     // Format A — KEY=value pairs
@@ -83,16 +94,21 @@ if (strpos($qr, '=') !== false) {
         [$k, $v] = explode('=', $segment, 2);
         $pairs[strtoupper(trim($k))] = trim($v);
     }
-    $lot  = $pairs['LOT']  ?? '';
-    $coil = $pairs['COIL'] ?? '';
-    $roll = $pairs['ROLL'] ?? '';
+    $lot    = $pairs['LOT']    ?? '';
+    $coil   = $pairs['COIL']   ?? '';
+    $roll   = $pairs['ROLL']   ?? '';
+    $width  = $pairs['WIDTH']  ?? ''; // '' on old 3-field stickers — never errors
+    $length = $pairs['LENGTH'] ?? ''; // '' on old 3-field stickers — never errors
 
 } else {
-    // Format B — space-separated "826277 FK-1 R1"
-    $tokens = preg_split('/\s+/', $qr, 3);
+    // Format B — space-separated "826277 FK-1 R1" or
+    // "826277 FK-1 R1 450 1200"
+    $tokens = preg_split('/\s+/', $qr, 5);
     $lot    = trim($tokens[0] ?? '');
     $coil   = trim($tokens[1] ?? '');
     $roll   = trim($tokens[2] ?? '');
+    $width  = trim($tokens[3] ?? ''); // '' when only 3 tokens present
+    $length = trim($tokens[4] ?? ''); // '' when only 3 tokens present
 }
 
 if ($lot === '' || $coil === '') {

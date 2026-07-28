@@ -234,7 +234,7 @@ header('Content-Type: application/vnd.ms-excel');
 header('Content-Disposition: attachment; filename="' . $filename . '"');
 header('Cache-Control: max-age=0');
 
-$cols      = 13; // Status, Origin, Product, Lot No, Roll No, Width, Length, Actual, NOD, Customer, Ref No, Date In, Date Out
+$cols      = 14; // Status, Origin, Product, Lot No, Roll No, Width, Length, Actual, NOD, Invoice Length, Customer, Ref No, Date In, Date Out
 $generated = date('d M Y, H:i');
 ?>
 <html><head><meta charset="UTF-8"></head><body>
@@ -265,6 +265,7 @@ $generated = date('d M Y, H:i');
             <th style="padding:8px 10px;">Length (m)</th>
             <th style="padding:8px 10px;">Actual (m)</th>
             <th style="padding:8px 10px;">NOD (m)</th>
+            <th style="padding:8px 10px;">Invoice Length (m)</th>
             <th style="padding:8px 10px;">Customer</th>
             <th style="padding:8px 10px;">Ref No</th>
             <th style="padding:8px 10px;">Date In</th>
@@ -287,10 +288,10 @@ if ($result && $result->num_rows > 0) {
 
         $lotCoil = trim(($row['lot_no'] ?? '') . ' ' . ($row['coil_no'] ?? ''));
 
-        $hasNod = !empty($row['nod_length']) && (float)$row['nod_length'] > 0;
-        $nodNetValue = $hasNod
-            ? number_format((float)$row['actual_length'] - (float)$row['nod_length'], 2)
-            : '-';
+        $hasNod       = !empty($row['nod_length']) && (float)$row['nod_length'] > 0;
+        $nodValue     = $hasNod ? (float)$row['nod_length'] : 0;
+        $nodDisplay   = $hasNod ? number_format($nodValue, 2) : '-';
+        $invoiceLength = number_format((float)($row['actual_length'] ?? 0) - $nodValue, 2);
 
         echo '<tr>';
         echo '<td ' . $td  . '>' . htmlspecialchars(strtoupper($row['status'] ?? '-')) . '</td>';
@@ -301,7 +302,8 @@ if ($result && $result->num_rows > 0) {
         echo '<td ' . $tdN . '>' . number_format((float)($row['width']         ?? 0)) . '</td>';
         echo '<td ' . $tdN . '>' . number_format((float)($row['length']        ?? 0)) . '</td>';
         echo '<td ' . $tdN . '>' . number_format((float)($row['actual_length'] ?? 0)) . '</td>';
-        echo '<td ' . $tdN . '>' . $nodNetValue . '</td>';
+        echo '<td ' . $tdN . '>' . $nodDisplay . '</td>';
+        echo '<td ' . $tdN . '>' . $invoiceLength . '</td>';
         echo '<td ' . $td  . '>' . htmlspecialchars($row['customer_name'] ?: '-') . '</td>';
         echo '<td ' . $td  . '>' . htmlspecialchars($row['ref_no']        ?: '-') . '</td>';
         echo '<td ' . $td  . '>' . htmlspecialchars($row['date_in']  ?? '-') . '</td>';

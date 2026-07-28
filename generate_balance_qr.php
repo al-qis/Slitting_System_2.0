@@ -16,13 +16,20 @@ $balance_query = "SELECT id, lot_no, coil_no, grade, width, length, status, sour
 $balance_result = $conn->query($balance_query);
 
 // Build QR code data for each leftover
-// Format: LOT=<lot_no>|COIL=<coil_no>|TYPE=BALANCE|ID=<stock_id>
+// Format: LOT=<lot_no>;COIL=<coil_no>;WIDTH=<width>;LENGTH=<length>;TYPE=BALANCE;ID=<stock_id>
+// Semicolon-delimited to match the format scan_mother_action.php /
+// scan_product_action.php / generate_qr.php already parse (their
+// Format-A parser splits on ';' then 'KEY=value' — TYPE and ID are
+// extra fields those parsers simply ignore, kept here only as
+// human-readable/debugging metadata, not for any parsing logic).
 $qr_data = [];
 if ($balance_result) {
     while ($row = $balance_result->fetch_assoc()) {
-        $qr_content = "LOT=" . urlencode($row['lot_no']) . 
-                      "|COIL=" . urlencode($row['coil_no']) . 
-                      "|TYPE=BALANCE|ID=" . $row['id'];
+        $qr_content = "LOT=" . $row['lot_no']
+                    . ";COIL=" . $row['coil_no']
+                    . ";WIDTH=" . $row['width']
+                    . ";LENGTH=" . $row['length']
+                    . ";TYPE=BALANCE;ID=" . $row['id'];
         $qr_data[$row['id']] = [
             'content' => $qr_content,
             'lot_no' => $row['lot_no'],
@@ -38,12 +45,14 @@ if ($balance_result) {
 if (isset($_GET['generate_qr']) && isset($_GET['stock_id'])) {
     $stock_id = intval($_GET['stock_id']);
     if (isset($qr_data[$stock_id])) {
-        // Use QR code API
-        $qr_text = urlencode($qr_data[$stock_id]['content']);
-        $qr_url = "https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=" . $qr_text;
-        
-        // Redirect to QR code image
-        header("Location: " . $qr_url);
+        // Local Endroid-based generator — works fully offline, unlike the
+        // old api.qrserver.com redirect this replaced.
+        $d = $qr_data[$stock_id];
+        header("Location: generate_qr.php?type=balance"
+            . "&lot="    . urlencode($d['lot_no'])
+            . "&coil="   . urlencode($d['coil_no'])
+            . "&width="  . urlencode($d['width'])
+            . "&length=" . urlencode($d['length']));
         exit;
     }
 }
@@ -293,7 +302,7 @@ if (isset($_GET['generate_qr']) && isset($_GET['stock_id'])) {
 
                         <!-- QR Code Image -->
                         <div class="qr-image-container">
-                            <img src="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=<?= urlencode($data['content']) ?>" 
+                            <img src="generate_qr.php?type=balance&lot=<?= urlencode($data['lot_no']) ?>&coil=<?= urlencode($data['coil_no']) ?>&width=<?= urlencode($data['width']) ?>&length=<?= urlencode($data['length']) ?>"
                                  alt="QR Code for <?= htmlspecialchars($data['lot_no']) ?>"
                                  class="qr-code-img">
                         </div>

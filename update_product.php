@@ -18,8 +18,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         die("Error: Invalid Product ID.");
     }
 
-    // 1. Fetch current Lot and Coil to perform the unique validation
-    $current_stmt = $conn->prepare("SELECT lot_no, coil_no FROM slitting_product WHERE id = ?");
+    // 1. Fetch current values to perform the unique validation AND to
+    //    detect whether this update actually changes any QR-affecting
+    //    field (lot_no/coil_no aren't editable here, but roll_no/width/
+    //    length are — same trigger rule as slitting_product.php's edit
+    //    modal: the QR is generated live from the DB on every view/print,
+    //    so there's nothing to "regenerate" — what matters is flagging
+    //    the roll as needing a reprint via is_printed=0 whenever one of
+    //    these changes, so Print Status stops showing a stale "Printed"
+    //    badge for data that no longer matches the physical sticker).
+    $current_stmt = $conn->prepare("SELECT lot_no, coil_no, roll_no, width, length, actual_length FROM slitting_product WHERE id = ?");
     $current_stmt->bind_param("i", $product_id);
     $current_stmt->execute();
     $current = $current_stmt->get_result()->fetch_assoc();
@@ -60,6 +68,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($update_stmt->execute()) {
         $update_stmt->close();
+
+        // Same trigger fields as slitting_product.php's edit modal:
+        // lot_no, coil_no, roll_no, width, length, actual_length.
+        // lot_no/coil_no can't change here (not editable on this form),
+        // actual_length isn't touched by this form either, so only
+        // roll_no/width/length can actually differ — but compared the
+        // same way for consistency, in case this form ever grows those
+        // fields later.
+        $qrFieldsChanged =
+               (string)$current['roll_no'] !== (string)$roll_no
+            || (float)$current['width']    !== (float)$width
+            || (float)$current['length']   !== (float)$length;
+
+        if ($qrFieldsChanged) {
+            $resetStmt = $conn->prepare("UPDATE slitting_product SET is_printed = 0 WHERE id = ?");
+            $resetStmt->bind_param("i", $product_id);
+            $resetStmt->execute();
+            $resetStmt->close();
+        }
+
         header("Location: finish_product.php?success=update");
     } else {
         die("Error updating record: " . $conn->error);

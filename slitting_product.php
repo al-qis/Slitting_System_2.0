@@ -9,21 +9,64 @@ if (!isset($_SESSION['role'])) {
 
 // === Handle Update Product ===
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    $coil_no = $_POST['coil_no'];
-    $product = $_POST['product'];
-    $lot_no  = $_POST['lot_no'];
-    $roll_no = $_POST['roll_no'];
-    $width   = $_POST['width'];
-    $length  = $_POST['length'];
+    $coil_no       = $_POST['coil_no'];
+    $product       = $_POST['product'];
+    $lot_no        = $_POST['lot_no'];
+    $roll_no       = $_POST['roll_no'];
+    $width         = $_POST['width'];
+    $length        = $_POST['length'];
+    $actual_length = $_POST['actual_length'] ?? '';
 
     if ($_POST['action'] === 'update') {
-        $id   = intval($_POST['id']);
+        $id = intval($_POST['id']);
+
+        // Fetch the BEFORE values for the fields that affect the QR code's
+        // embedded data — the QR is generated live from the DB on every
+        // view/print (generate_qr.php), so there's no stored image to
+        // regenerate; what actually needs to happen is flagging the roll
+        // as no-longer-printed whenever one of these changes, so the Print
+        // Status column correctly signals "this needs reprinting" instead
+        // of still showing a stale "Printed" badge for data that no longer
+        // matches the physical sticker.
+        $beforeStmt = $conn->prepare("
+            SELECT lot_no, coil_no, roll_no, width, length, actual_length
+            FROM slitting_product WHERE id = ?
+        ");
+        $beforeStmt->bind_param("i", $id);
+        $beforeStmt->execute();
+        $before = $beforeStmt->get_result()->fetch_assoc();
+        $beforeStmt->close();
+
         $stmt = $conn->prepare("UPDATE slitting_product
-            SET coil_no=?, product=?, lot_no=?, roll_no=?, width=?, length=?
+            SET coil_no=?, product=?, lot_no=?, roll_no=?, width=?, length=?, actual_length=?
             WHERE id=?");
-        $stmt->bind_param("ssssssi", $coil_no, $product, $lot_no, $roll_no, $width, $length, $id);
+        $stmt->bind_param("sssssssi", $coil_no, $product, $lot_no, $roll_no, $width, $length, $actual_length, $id);
         $stmt->execute();
         $stmt->close();
+
+        // Trigger fields for QR regeneration — anything NOT in this list
+        // (e.g. product, remark, status) never resets the print flag.
+        // Compared as strings/loosely so "450" vs "450.0" etc. don't
+        // falsely trigger a reprint flag for a value that didn't really
+        // change; only a genuinely different value does.
+        if ($before) {
+            $qrFieldsChanged =
+                   (string)$before['lot_no']        !== (string)$lot_no
+                || (string)$before['coil_no']        !== (string)$coil_no
+                || (string)$before['roll_no']        !== (string)$roll_no
+                || (float)$before['width']           !== (float)$width
+                || (float)$before['length']          !== (float)$length
+                || (float)($before['actual_length'] ?? 0) !== (float)($actual_length !== '' ? $actual_length : 0);
+
+            if ($qrFieldsChanged) {
+                $resetStmt = $conn->prepare("
+                    UPDATE slitting_product SET is_printed = 0 WHERE id = ?
+                ");
+                $resetStmt->bind_param("i", $id);
+                $resetStmt->execute();
+                $resetStmt->close();
+            }
+        }
 
         header("Location: slitting_product.php?success=update");
         exit;
@@ -345,6 +388,13 @@ include 'header.php';
                         <label class="form-label fw-bold">Length</label>
                         <input type="text" name="length" class="form-control"
                                value="<?= htmlspecialchars($editData['length'] ?? '') ?>" required>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label fw-bold">Actual Length</label>
+                        <input type="text" name="actual_length" class="form-control"
+                               value="<?= htmlspecialchars($editData['actual_length'] ?? '') ?>"
+                               placeholder="Leave blank if not yet measured">
+                        <div class="form-text">Editing this (or Lot/Coil/Roll/Width/Length) flags the roll as needing a reprint.</div>
                     </div>
                 </div>
             </div>
