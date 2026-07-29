@@ -280,6 +280,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $rows = json_decode($_POST['rows_json'] ?? '[]', true);
         if (!is_array($rows)) $rows = [];
 
+        /* ── Shared Slitting Plan ────────────────────────────────
+           Entered once by the officer, applied to EVERY mother coil
+           successfully inserted from this batch. Blank/invalid rows
+           are skipped, same as the single-add plan. */
+        $planRowsRaw = json_decode($_POST['plan_rows_json'] ?? '[]', true);
+        $sharedPlanRows = [];
+        if (is_array($planRowsRaw)) {
+            $order = 0;
+            foreach ($planRowsRaw as $pr) {
+                $seq  = trim($pr['seq']   ?? '');
+                $wRaw = trim($pr['width'] ?? '');
+                if ($seq === '' || $wRaw === '' || !is_numeric($wRaw)) continue;
+                $order++;
+                $sharedPlanRows[] = ['seq' => $seq, 'width' => (float)$wRaw, 'order' => $order];
+            }
+        }
+
+        $planStmt = null;
+        if (!empty($sharedPlanRows)) {
+            $planStmt = $conn->prepare("
+                INSERT INTO slitting_plans (mother_coil_id, roll_seq, planned_width, sort_order)
+                VALUES (?, ?, ?, ?)
+            ");
+        }
+
         $inserted = 0;
         $skipped  = [];
 
@@ -313,9 +338,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ");
             $stmt->bind_param("ssssss", $r_product, $r_grade, $r_lot, $r_coil, $r_width, $r_length);
             $stmt->execute();
+            $newMotherId = $stmt->insert_id;
             $stmt->close();
             $inserted++;
+
+            // Apply the shared plan to this mother coil, if one was provided
+            if ($planStmt && !empty($sharedPlanRows)) {
+                foreach ($sharedPlanRows as $pr) {
+                    $planStmt->bind_param("isdi", $newMotherId, $pr['seq'], $pr['width'], $pr['order']);
+                    $planStmt->execute();
+                }
+            }
         }
+
+        if ($planStmt) $planStmt->close();
 
         echo json_encode(['ok' => true, 'inserted' => $inserted, 'skipped' => $skipped]);
         exit;
@@ -375,7 +411,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                typed rows manually or pasted from Excel — both funnel into
                the same inputs client-side. Empty/absent is not an error;
                the form must succeed either way. Blank or non-numeric rows
-               (e.g. a leftover empty row) are silently skipped. */
+               (e.g. a leftover empty row) are silently skipped.
+
+               The plan only stores roll widths — the operator picks Normal
+               vs. Cut Into 2 on the floor in add_slitting.php; whichever
+               they pick, the plan's roll count and widths are applied. */
             $planSeqs   = $_POST['plan_seq']   ?? [];
             $planWidths = $_POST['plan_width'] ?? [];
 
@@ -980,6 +1020,32 @@ include 'header.php';
             <tbody id="bulk_preview_tbody"></tbody>
           </table>
         </div>
+
+        <!-- Shared Slitting Plan: entered ONCE, applied to every mother coil
+             saved from this batch (same roll widths for all of them). -->
+        <hr>
+        <div class="mb-2">
+          <label class="form-label fw-semibold">
+            <i class="bi bi-list-ol me-1"></i>Slitting Plan
+            <span class="text-muted fw-normal">(optional — applies to ALL rows in this batch)</span>
+          </label>
+          <div class="form-text mb-2">
+            Enter the plan once here and every mother coil saved from this batch will share the same roll widths.
+            Leave blank to skip — operators will fill everything in manually as usual.
+          </div>
+
+          <textarea id="bulk_plan_paste_zone" class="form-control form-control-sm mb-2" rows="2"
+                    placeholder="Paste directly from Excel — Seq (tab) Width, one roll per line, e.g.&#10;R1&#9;415&#10;R2&#9;109.5"></textarea>
+          <div class="alert alert-warning py-1 px-2 small mt-1 mb-2 d-none" id="bulk_plan_paste_warning">
+            Couldn't read that as Seq + Width pairs — check the format.
+          </div>
+
+          <div id="bulkPlanRowsContainer" class="mb-2"></div>
+
+          <button type="button" class="btn btn-outline-secondary btn-sm" onclick="addBulkPlanRow()">
+            <i class="bi bi-plus-lg me-1"></i>Add Row Manually
+          </button>
+        </div>
       </div>
 
       <div class="modal-footer">
@@ -1249,6 +1315,29 @@ function planEsc(s) {
         c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+/* Shared by both the single-add plan and the bulk-add shared plan below.
+   Format: "R1 \t 415 \n R2 \t 109.5" — tab-separated seq+width per line.
+   Falls back to whitespace-splitting so a manually typed "R1 415" line
+   still works. */
+function parsePlanPasteText(text) {
+    const lines  = text.trim().split(/\r?\n/).filter(l => l.trim() !== '');
+    const parsed = [];
+
+    for (const line of lines) {
+        let cols = line.split('\t').map(c => c.trim()).filter(c => c !== '');
+        if (cols.length < 2) cols = line.trim().split(/\s+/);
+        if (cols.length < 2) continue;
+
+        const seq   = cols[0];
+        const width = parseFloat(cols[1]);
+        if (seq === '' || isNaN(width)) continue;
+
+        parsed.push({ seq, width });
+    }
+
+    return parsed;
+}
+
 function addPlanRow(seq = '', width = '') {
     const row = document.createElement('div');
     row.className = 'input-group input-group-sm mb-1 plan-row';
@@ -1268,34 +1357,67 @@ function clearPlanRows() {
     elPlanRows.innerHTML = '';
 }
 
-/* Excel paste → rebuilds the row list.
-   Format: "R1 \t 415 \n R2 \t 109.5" — tab-separated seq+width per line.
-   Falls back to whitespace-splitting so a manually typed "R1 415" line
-   still works. */
 elPlanPaste.addEventListener('input', function () {
     const text = this.value.trim();
     if (!text) { elPlanWarning.classList.add('d-none'); return; }
 
-    const lines  = text.split(/\r?\n/).filter(l => l.trim() !== '');
-    const parsed = [];
-
-    for (const line of lines) {
-        let cols = line.split('\t').map(c => c.trim()).filter(c => c !== '');
-        if (cols.length < 2) cols = line.trim().split(/\s+/);
-        if (cols.length < 2) continue;
-
-        const seq   = cols[0];
-        const width = parseFloat(cols[1]);
-        if (seq === '' || isNaN(width)) continue;
-
-        parsed.push({ seq, width });
-    }
-
+    const parsed = parsePlanPasteText(text);
     if (parsed.length === 0) { elPlanWarning.classList.remove('d-none'); return; }
 
     elPlanWarning.classList.add('d-none');
     clearPlanRows();
     parsed.forEach(p => addPlanRow(p.seq, p.width));
+});
+
+/* ════════════════════════════════════════════════════════════
+   BULK ADD — SHARED SLITTING PLAN
+   One plan entered once, applied to every mother coil saved in this
+   batch. Rows aren't submitted via name="[]" attributes (the bulk
+   save flow builds its own FormData in JS), so getBulkPlanRows()
+   reads the current values straight out of the DOM when saving.
+════════════════════════════════════════════════════════════ */
+const elBulkPlanPaste   = document.getElementById('bulk_plan_paste_zone');
+const elBulkPlanRows    = document.getElementById('bulkPlanRowsContainer');
+const elBulkPlanWarning = document.getElementById('bulk_plan_paste_warning');
+
+function addBulkPlanRow(seq = '', width = '') {
+    const row = document.createElement('div');
+    row.className = 'input-group input-group-sm mb-1 plan-row';
+    row.innerHTML = `
+        <span class="input-group-text">Seq</span>
+        <input type="text" class="form-control bulk-plan-seq" placeholder="R1" value="${planEsc(seq)}">
+        <span class="input-group-text">Width (mm)</span>
+        <input type="number" step="0.01" class="form-control bulk-plan-width" placeholder="e.g. 415" value="${planEsc(width)}">
+        <button type="button" class="btn btn-outline-danger" onclick="this.closest('.plan-row').remove()">
+            <i class="bi bi-x-lg"></i>
+        </button>
+    `;
+    elBulkPlanRows.appendChild(row);
+}
+
+function clearBulkPlanRows() {
+    elBulkPlanRows.innerHTML = '';
+}
+
+function getBulkPlanRows() {
+    return Array.from(elBulkPlanRows.querySelectorAll('.plan-row'))
+        .map(r => ({
+            seq:   r.querySelector('.bulk-plan-seq').value.trim(),
+            width: r.querySelector('.bulk-plan-width').value.trim()
+        }))
+        .filter(r => r.seq !== '' && r.width !== '' && !isNaN(parseFloat(r.width)));
+}
+
+elBulkPlanPaste.addEventListener('input', function () {
+    const text = this.value.trim();
+    if (!text) { elBulkPlanWarning.classList.add('d-none'); return; }
+
+    const parsed = parsePlanPasteText(text);
+    if (parsed.length === 0) { elBulkPlanWarning.classList.remove('d-none'); return; }
+
+    elBulkPlanWarning.classList.add('d-none');
+    clearBulkPlanRows();
+    parsed.forEach(p => addBulkPlanRow(p.seq, p.width));
 });
 
 /* Reset the whole product area */
@@ -1723,6 +1845,7 @@ bulkSaveBtn.addEventListener('click', async () => {
         const formData = new FormData();
         formData.append('action', 'bulk_add');
         formData.append('rows_json', JSON.stringify(validRows));
+        formData.append('plan_rows_json', JSON.stringify(getBulkPlanRows()));
 
         const res  = await fetch('mother_coil.php', { method: 'POST', body: formData });
         const data = await res.json();
@@ -1757,6 +1880,11 @@ document.getElementById('bulkAddMotherModal').addEventListener('show.bs.modal', 
     renderBulkTable();
     showBulkWarning('');
     bulkResultMsg.classList.add('d-none');
+
+    // Reset the shared batch plan too
+    elBulkPlanPaste.value = '';
+    elBulkPlanWarning.classList.add('d-none');
+    clearBulkPlanRows();
 });
 </script>
 

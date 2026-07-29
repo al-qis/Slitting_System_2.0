@@ -329,43 +329,62 @@ const sourceData = {
 };
 
 /* ════════════════════════════════════════════════════════════
-   OPTIONAL SLITTING PLAN — if the officer registered one at intake,
-   auto-drive the form (cut type, roll count, widths) but leave every
-   field fully editable so the operator can correct it on the floor.
-   Empty array (no plan) → this whole block is a no-op and the page
-   behaves exactly as it always has.
+   OPTIONAL SLITTING PLAN — the officer only plans roll widths, not
+   the cut type. So on load we just let the operator know a plan is
+   available; the moment they pick Normal or Cut Into 2 themselves
+   (their existing manual step, unchanged), the plan's roll count and
+   widths get applied automatically. For Cut Into 2 the slit quantity
+   (length to use) is still typed in by the operator — the plan has
+   no opinion on that, and your existing calculateStock() keeps
+   working out the leftover balance exactly as it does today.
+   No plan → this whole block is a no-op.
 ════════════════════════════════════════════════════════════ */
 const slittingPlan = <?= json_encode($slittingPlan, JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>;
 
-document.addEventListener('DOMContentLoaded', function () {
-    if (!slittingPlan || slittingPlan.length === 0) return; // no plan — load as-is
-
-    // 1. Auto-select cut type. A plan only carries per-roll widths (no
-    //    leftover/balance figure), so it always maps to Normal Slitting —
-    //    "Cut Into 2" stays a manual-only path since it needs a slit
-    //    quantity the plan doesn't capture.
-    document.getElementById('cutNormal').checked = true;
-    handleCutTypeChange();
-
-    // 2. Auto-select number of output rolls to match the plan.
-    document.getElementById('total').value = String(slittingPlan.length);
-
-    // 3. Build the roll table.
-    generateForm();
-
-    // 4. Pre-fill each width input with the officer's planned value.
-    //    Fields stay fully editable — this only sets a starting value.
+// Fills width inputs from the plan by roll position (R1 → row 0, R2 → row 1, ...).
+// If the operator later changes the roll count, this is re-run so rolls that
+// still have a plan value keep it (e.g. plan has R1/R2 → operator bumps to
+// 3 rolls → R1 and R2 keep their planned widths, R3 stays blank for manual entry).
+// Rolls beyond the plan's length are simply left untouched.
+function fillWidthsFromPlan() {
+    if (!slittingPlan || slittingPlan.length === 0) return;
     const widthInputs = document.querySelectorAll('.width-input');
     slittingPlan.forEach((row, i) => {
         if (widthInputs[i]) widthInputs[i].value = row.planned_width;
     });
+}
 
-    // Let the operator know a plan was auto-loaded.
+function applySlittingPlanToForm() {
+    if (!slittingPlan || slittingPlan.length === 0) return;
+
+    // Match the number of output rolls to the plan, then build the table.
+    document.getElementById('total').value = String(slittingPlan.length);
+    generateForm();
+    fillWidthsFromPlan();
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    if (!slittingPlan || slittingPlan.length === 0) return; // no plan — load as-is
+
+    // Let the operator know a plan is ready, without touching any field yet.
     const banner = document.createElement('div');
     banner.className = 'alert alert-info py-2 mb-3';
-    banner.innerHTML = `<i class="bi bi-clipboard-check me-2"></i>Slitting plan loaded — ${slittingPlan.length} roll(s) pre-filled. Adjust any width if the physical cut differs.`;
+    banner.innerHTML = `<i class="bi bi-clipboard-check me-2"></i>A slitting plan is available for this coil — ${slittingPlan.length} roll(s) planned. Choose Normal or Cut Into 2 below and it'll be applied automatically.`;
     const cutTypeCard = document.querySelector('form .card.shadow-sm.mb-4');
     if (cutTypeCard) cutTypeCard.parentNode.insertBefore(banner, cutTypeCard);
+
+    // Apply the plan the moment the operator picks a cut type themselves.
+    // These listeners run AFTER the existing inline onchange="handleCutTypeChange()"
+    // (registered earlier, during page parse), so the section is already
+    // shown/hidden correctly before we fill anything in.
+    document.getElementById('cutNormal').addEventListener('change', applySlittingPlanToForm);
+    document.getElementById('cutInto2').addEventListener('change', applySlittingPlanToForm);
+
+    // If the operator manually changes the roll count afterward, the total
+    // dropdown's own onchange="generateForm()" (inline, fires first) rebuilds
+    // the table from scratch and wipes every width. This listener runs right
+    // after and reapplies the plan's widths to whichever rolls still match it.
+    document.getElementById('total').addEventListener('change', fillWidthsFromPlan);
 });
 
 function calculateStock() {
