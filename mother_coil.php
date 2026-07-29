@@ -358,14 +358,57 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $check_stmt->close();
 
     if ($action === 'add') {
-        $stmt = $conn->prepare("
-            INSERT INTO mother_coil (product, grade, lot_no, coil_no, width, length, date_created, status)
-            VALUES (?,?,?,?,?,?,NOW(),'NEW')
-        ");
-        if (!$stmt) die("Prepare failed: " . $conn->error);
-        $stmt->bind_param("ssssss", $product, $grade, $lot_no, $coil_no, $width, $length);
-        $stmt->execute();
-        $stmt->close();
+        $conn->begin_transaction();
+        try {
+            $stmt = $conn->prepare("
+                INSERT INTO mother_coil (product, grade, lot_no, coil_no, width, length, date_created, status)
+                VALUES (?,?,?,?,?,?,NOW(),'NEW')
+            ");
+            if (!$stmt) throw new Exception("Prepare failed: " . $conn->error);
+            $stmt->bind_param("ssssss", $product, $grade, $lot_no, $coil_no, $width, $length);
+            if (!$stmt->execute()) throw new Exception("Failed to insert mother coil: " . $stmt->error);
+            $newMotherId = $stmt->insert_id;
+            $stmt->close();
+
+            /* ── Optional Slitting Plan ─────────────────────────────
+               plan_seq[] / plan_width[] arrive together whether the officer
+               typed rows manually or pasted from Excel — both funnel into
+               the same inputs client-side. Empty/absent is not an error;
+               the form must succeed either way. Blank or non-numeric rows
+               (e.g. a leftover empty row) are silently skipped. */
+            $planSeqs   = $_POST['plan_seq']   ?? [];
+            $planWidths = $_POST['plan_width'] ?? [];
+
+            if (is_array($planSeqs) && is_array($planWidths)) {
+                $planStmt = $conn->prepare("
+                    INSERT INTO slitting_plans (mother_coil_id, roll_seq, planned_width, sort_order)
+                    VALUES (?, ?, ?, ?)
+                ");
+                if (!$planStmt) throw new Exception("Prepare failed (plan): " . $conn->error);
+
+                $order = 0;
+                foreach ($planSeqs as $i => $seqRaw) {
+                    $seq  = trim($seqRaw);
+                    $wRaw = trim($planWidths[$i] ?? '');
+
+                    if ($seq === '' || $wRaw === '' || !is_numeric($wRaw)) continue;
+
+                    $order++;
+                    $widthVal = (float)$wRaw;
+                    $planStmt->bind_param("isdi", $newMotherId, $seq, $widthVal, $order);
+                    if (!$planStmt->execute()) {
+                        throw new Exception("Failed to insert slitting plan row: " . $planStmt->error);
+                    }
+                }
+                $planStmt->close();
+            }
+
+            $conn->commit();
+        } catch (Exception $e) {
+            $conn->rollback();
+            die("Registration failed: " . htmlspecialchars($e->getMessage()));
+        }
+
         header("Location: mother_coil.php?success=1");
         exit;
     }
@@ -799,6 +842,32 @@ include 'header.php';
                    disabled placeholder="e.g. 500">
           </div>
 
+          <!-- Optional Slitting Plan: manual rows and/or Excel paste both
+               feed the same plan_seq[]/plan_width[] inputs below, which
+               simply submit as-is (or stay empty) with the rest of the form. -->
+          <hr>
+          <div class="mb-3">
+            <label class="form-label fw-semibold">
+              <i class="bi bi-list-ol me-1"></i>Slitting Plan <span class="text-muted fw-normal">(optional)</span>
+            </label>
+            <div class="form-text mb-2">
+              Give the floor operator a head start by planning the cut widths now. Leave this blank to skip —
+              the operator will fill everything in manually, exactly as before.
+            </div>
+
+            <textarea id="plan_paste_zone" class="form-control form-control-sm mb-2" rows="2"
+                      placeholder="Paste directly from Excel — Seq (tab) Width, one roll per line, e.g.&#10;R1&#9;415&#10;R2&#9;109.5"></textarea>
+            <div class="alert alert-warning py-1 px-2 small mt-1 mb-2 d-none" id="plan_paste_warning">
+              Couldn't read that as Seq + Width pairs — check the format.
+            </div>
+
+            <div id="planRowsContainer" class="mb-2"></div>
+
+            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="addPlanRow()">
+              <i class="bi bi-plus-lg me-1"></i>Add Row Manually
+            </button>
+          </div>
+
         </div><!-- /modal-body -->
 
         <div class="modal-footer">
@@ -1166,6 +1235,69 @@ async function handlePasteAutofill(raw) {
     elSubmit.disabled = false;
 }
 
+/* ════════════════════════════════════════════════════════════
+   OPTIONAL SLITTING PLAN — manual rows + Excel paste both feed
+   the same plan_seq[]/plan_width[] inputs, which simply submit
+   as-is (or stay empty) with the rest of the Add form.
+════════════════════════════════════════════════════════════ */
+const elPlanPaste   = document.getElementById('plan_paste_zone');
+const elPlanRows    = document.getElementById('planRowsContainer');
+const elPlanWarning = document.getElementById('plan_paste_warning');
+
+function planEsc(s) {
+    return String(s ?? '').replace(/[&<>"']/g,
+        c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function addPlanRow(seq = '', width = '') {
+    const row = document.createElement('div');
+    row.className = 'input-group input-group-sm mb-1 plan-row';
+    row.innerHTML = `
+        <span class="input-group-text">Seq</span>
+        <input type="text" name="plan_seq[]" class="form-control" placeholder="R1" value="${planEsc(seq)}">
+        <span class="input-group-text">Width (mm)</span>
+        <input type="number" step="0.01" name="plan_width[]" class="form-control" placeholder="e.g. 415" value="${planEsc(width)}">
+        <button type="button" class="btn btn-outline-danger" onclick="this.closest('.plan-row').remove()">
+            <i class="bi bi-x-lg"></i>
+        </button>
+    `;
+    elPlanRows.appendChild(row);
+}
+
+function clearPlanRows() {
+    elPlanRows.innerHTML = '';
+}
+
+/* Excel paste → rebuilds the row list.
+   Format: "R1 \t 415 \n R2 \t 109.5" — tab-separated seq+width per line.
+   Falls back to whitespace-splitting so a manually typed "R1 415" line
+   still works. */
+elPlanPaste.addEventListener('input', function () {
+    const text = this.value.trim();
+    if (!text) { elPlanWarning.classList.add('d-none'); return; }
+
+    const lines  = text.split(/\r?\n/).filter(l => l.trim() !== '');
+    const parsed = [];
+
+    for (const line of lines) {
+        let cols = line.split('\t').map(c => c.trim()).filter(c => c !== '');
+        if (cols.length < 2) cols = line.trim().split(/\s+/);
+        if (cols.length < 2) continue;
+
+        const seq   = cols[0];
+        const width = parseFloat(cols[1]);
+        if (seq === '' || isNaN(width)) continue;
+
+        parsed.push({ seq, width });
+    }
+
+    if (parsed.length === 0) { elPlanWarning.classList.remove('d-none'); return; }
+
+    elPlanWarning.classList.add('d-none');
+    clearPlanRows();
+    parsed.forEach(p => addPlanRow(p.seq, p.width));
+});
+
 /* Reset the whole product area */
 function resetProduct() {
     elDisplay.value = '';
@@ -1305,6 +1437,11 @@ document.getElementById('addMotherModal').addEventListener('show.bs.modal', func
     elDisplay.style.borderColor = '';
     elPaste.value = '';
     showPasteWarning(false);
+
+    // Reset the optional slitting plan section too
+    elPlanPaste.value = '';
+    elPlanWarning.classList.add('d-none');
+    clearPlanRows();
 });
 
 document.getElementById('addMotherModal').addEventListener('shown.bs.modal', function () {

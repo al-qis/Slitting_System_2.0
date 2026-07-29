@@ -84,6 +84,28 @@ if ($from_stock) {
     // Use mother_data as source_data for display
     $source_data = $mother_data;
 }
+
+// ── Look up an officer-authored slitting plan for this mother coil ──
+// A plan's widths describe cuts of the ORIGINAL full mother coil, so it
+// only applies when we're slitting that original material — whether
+// scanned straight from mother_coil OR from raw material stock. A
+// leftover balance from a prior "Cut Into 2" is a different, smaller
+// piece the plan wasn't written for, so that specific case is excluded.
+$isLeftoverCut = $from_stock && (($source_data['source_type'] ?? '') === 'slitting_cut_into_2');
+
+$slittingPlan = [];
+if (!$isLeftoverCut && $mother_id) {
+    $planStmt = $conn->prepare("
+        SELECT roll_seq, planned_width
+        FROM slitting_plans
+        WHERE mother_coil_id = ?
+        ORDER BY sort_order ASC, id ASC
+    ");
+    $planStmt->bind_param("i", $mother_id);
+    $planStmt->execute();
+    $slittingPlan = $planStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $planStmt->close();
+}
 ?>
 <!DOCTYPE html>
 <html>
@@ -305,6 +327,46 @@ const sourceData = {
     fromStock: <?= $from_stock ? 'true' : 'false' ?>,
     product: '<?= htmlspecialchars($mother_data['product'] ?? '') ?>'
 };
+
+/* ════════════════════════════════════════════════════════════
+   OPTIONAL SLITTING PLAN — if the officer registered one at intake,
+   auto-drive the form (cut type, roll count, widths) but leave every
+   field fully editable so the operator can correct it on the floor.
+   Empty array (no plan) → this whole block is a no-op and the page
+   behaves exactly as it always has.
+════════════════════════════════════════════════════════════ */
+const slittingPlan = <?= json_encode($slittingPlan, JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>;
+
+document.addEventListener('DOMContentLoaded', function () {
+    if (!slittingPlan || slittingPlan.length === 0) return; // no plan — load as-is
+
+    // 1. Auto-select cut type. A plan only carries per-roll widths (no
+    //    leftover/balance figure), so it always maps to Normal Slitting —
+    //    "Cut Into 2" stays a manual-only path since it needs a slit
+    //    quantity the plan doesn't capture.
+    document.getElementById('cutNormal').checked = true;
+    handleCutTypeChange();
+
+    // 2. Auto-select number of output rolls to match the plan.
+    document.getElementById('total').value = String(slittingPlan.length);
+
+    // 3. Build the roll table.
+    generateForm();
+
+    // 4. Pre-fill each width input with the officer's planned value.
+    //    Fields stay fully editable — this only sets a starting value.
+    const widthInputs = document.querySelectorAll('.width-input');
+    slittingPlan.forEach((row, i) => {
+        if (widthInputs[i]) widthInputs[i].value = row.planned_width;
+    });
+
+    // Let the operator know a plan was auto-loaded.
+    const banner = document.createElement('div');
+    banner.className = 'alert alert-info py-2 mb-3';
+    banner.innerHTML = `<i class="bi bi-clipboard-check me-2"></i>Slitting plan loaded — ${slittingPlan.length} roll(s) pre-filled. Adjust any width if the physical cut differs.`;
+    const cutTypeCard = document.querySelector('form .card.shadow-sm.mb-4');
+    if (cutTypeCard) cutTypeCard.parentNode.insertBefore(banner, cutTypeCard);
+});
 
 function calculateStock() {
     const slitQty = parseFloat(document.getElementById('slitQuantity').value) || 0;
