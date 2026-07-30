@@ -47,15 +47,57 @@ if ($res = $mysqli->query($sql)) {
 <title>End-of-Month Stock Scan &amp; Export</title>
 <style>
   :root {
-    --navy:#1c2b3a; --blue:#2f6fed; --green:#1a9e5c; --red:#d64545;
-    --bg:#f4f6f9; --card:#ffffff; --border:#e1e6ec; --text:#28313c;
+    --navy:#0f1b2d;
+    --navy-2:#16283f;
+    --blue:#3b6ef6;
+    --blue-dark:#2a55d6;
+    --green:#137333;
+    --green-bg:#e6f4ea;
+    --green-border:#bfe3cb;
+    --amber:#b06000;
+    --amber-bg:#fef7e0;
+    --amber-border:#f5e2ab;
+    --red:#c5221f;
+    --red-bg:#fce8e6;
+    --red-border:#f5c6c3;
+    --bg:#eef1f6;
+    --card:#ffffff;
+    --border:#e6e9f0;
+    --text:#1f2937;
+    --text-muted:#64748b;
+    --radius:12px;
+    --shadow-sm:0 1px 2px rgba(15,23,42,.04);
+    --shadow-md:0 1px 2px rgba(15,23,42,.04), 0 10px 24px -8px rgba(15,23,42,.12);
   }
   * { box-sizing: border-box; }
-  body { margin:0; font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:var(--bg); color:var(--text); }
-  header { background:var(--navy); color:#fff; padding:18px 28px; }
-  header h1 { margin:0; font-size:20px; font-weight:600; }
-  header p { margin:4px 0 0; font-size:13px; color:#c3cede; }
-  main { max-width:1300px; margin:24px auto; padding:0 20px 60px; }
+  body {
+    margin:0;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    background:
+      radial-gradient(1200px 400px at 10% -10%, rgba(59,110,246,.06), transparent),
+      var(--bg);
+    color:var(--text);
+    line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  header {
+    background:linear-gradient(135deg, var(--navy) 0%, var(--navy-2) 100%);
+    color:#fff;
+    padding:22px 0;
+    box-shadow:0 2px 12px rgba(15,23,42,.15);
+  }
+  .header-inner { max-width:1300px; margin:0 auto; padding:0 20px; display:flex; align-items:center; gap:12px; }
+  .header-badge {
+    width:38px; height:38px; border-radius:10px; flex-shrink:0;
+    background:linear-gradient(135deg, var(--blue), #6b8cff);
+    display:flex; align-items:center; justify-content:center;
+    font-size:17px; box-shadow:var(--shadow-sm);
+  }
+  header h1 { margin:0; font-size:19px; font-weight:650; letter-spacing:-.01em; }
+  header p { margin:3px 0 0; font-size:12.5px; color:#a9b8d6; letter-spacing:.01em; }
+
+  main { max-width:1300px; margin:28px auto; padding:0 20px 60px; }
   .layout { display:flex; gap:22px; align-items:flex-start; }
   .main-col { flex:1; min-width:0; }
   .side-col { width:320px; flex-shrink:0; position:sticky; top:20px; }
@@ -63,42 +105,174 @@ if ($res = $mysqli->query($sql)) {
     .layout { flex-direction:column; }
     .side-col { width:100%; position:static; }
   }
-  .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:20px 22px; margin-bottom:22px; }
-  .card h2 { margin-top:0; font-size:16px; display:flex; align-items:center; gap:8px; }
-  .step-badge { background:var(--blue); color:#fff; width:24px; height:24px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-size:13px; }
-  #scanInput { width:100%; padding:14px 16px; font-size:16px; border:2px solid var(--blue); border-radius:8px; outline:none; }
-  #scanInput:focus { box-shadow:0 0 0 3px rgba(47,111,237,.2); }
-  .hint { font-size:12.5px; color:#6b7684; margin-top:6px; }
-  #warningBanner { display:none; margin-top:10px; padding:10px 14px; border-radius:6px; background:#fdeaea; color:var(--red); border:1px solid #f3c2c2; font-weight:600; }
-  #warningBanner.ok { background:#e8f8ef; color:var(--green); border-color:#bfe9d1; }
-  .counter { font-size:13px; color:#556; margin-top:10px; }
-  .counter b { color:var(--navy); font-size:15px; }
+
+  .card {
+    background:var(--card);
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    padding:22px 24px;
+    margin-bottom:22px;
+    box-shadow:var(--shadow-md);
+  }
+  .card h2 {
+    margin:0 0 16px;
+    padding-bottom:14px;
+    border-bottom:1px solid var(--border);
+    font-size:15.5px;
+    font-weight:650;
+    letter-spacing:-.01em;
+    display:flex;
+    align-items:center;
+    gap:10px;
+    color:#111827;
+  }
+  .step-badge {
+    background:linear-gradient(135deg, var(--blue), var(--blue-dark));
+    color:#fff;
+    width:26px; height:26px;
+    border-radius:50%;
+    display:inline-flex; align-items:center; justify-content:center;
+    font-size:12.5px; font-weight:700;
+    box-shadow:0 2px 6px rgba(59,110,246,.4);
+  }
+
+  #scanInput {
+    width:100%;
+    padding:15px 18px;
+    font-size:16px;
+    font-weight:500;
+    letter-spacing:.01em;
+    color:var(--text);
+    background:#f8faff;
+    border:1.5px solid var(--border);
+    border-radius:10px;
+    outline:none;
+    transition:border-color .15s ease, box-shadow .15s ease, background-color .15s ease;
+  }
+  #scanInput::placeholder { color:#9aa5b8; font-weight:400; }
+  #scanInput:focus {
+    border-color:var(--blue);
+    background:#fff;
+    box-shadow:0 0 0 4px rgba(59,110,246,.15);
+  }
+  .hint { font-size:12.5px; color:var(--text-muted); margin-top:8px; line-height:1.5; }
+
+  #warningBanner {
+    display:none;
+    margin-top:12px;
+    padding:11px 14px 11px 16px;
+    border-radius:9px;
+    background:var(--red-bg);
+    color:var(--red);
+    border:1px solid var(--red-border);
+    border-left:3px solid var(--red);
+    font-weight:600;
+    font-size:13.5px;
+    box-shadow:var(--shadow-sm);
+    transition:background-color .2s ease, color .2s ease, border-color .2s ease;
+  }
+  #warningBanner::before { content:"\26A0\FE0F  "; }
+  #warningBanner.ok {
+    background:var(--green-bg);
+    color:var(--green);
+    border-color:var(--green-border);
+    border-left-color:var(--green);
+  }
+  #warningBanner.ok::before { content:"\2705  "; }
+
+  .counter { font-size:13px; color:var(--text-muted); margin-top:12px; }
+  .counter b { color:var(--navy); font-size:16px; font-weight:700; }
+
+  .table-wrap { max-height:420px; overflow:auto; border:1px solid var(--border); border-radius:10px; margin-top:14px; }
+  .table-wrap table { margin-top:0; border:none; }
   table { width:100%; border-collapse:collapse; margin-top:14px; font-size:13px; }
-  th, td { padding:8px 10px; border-bottom:1px solid var(--border); text-align:left; }
-  th { background:#f0f3f7; font-weight:600; color:#3a4552; }
-  tr:hover td { background:#fafcff; }
-  .removeBtn { color:var(--red); cursor:pointer; font-size:12px; border:none; background:none; text-decoration:underline; }
-  .btn { border:none; padding:10px 18px; border-radius:7px; font-size:14px; font-weight:600; cursor:pointer; }
-  .btn-primary { background:var(--blue); color:#fff; }
-  .btn-primary:hover { background:#2359c9; }
-  .btn-ghost { background:#eef1f5; color:#333; }
-  .btn-ghost:hover { background:#e2e6ec; }
-  .actions { display:flex; gap:10px; margin-top:14px; }
-  .empty-note { color:#8a95a1; font-size:13px; padding:10px 0; }
+  thead th {
+    position:sticky; top:0; z-index:1;
+    background:#f4f6fb;
+    font-weight:650;
+    color:#3a4552;
+    text-transform:uppercase;
+    font-size:11px;
+    letter-spacing:.04em;
+  }
+  th, td { padding:10px 12px; border-bottom:1px solid var(--border); text-align:left; white-space:nowrap; }
+  tbody tr { transition:background-color .12s ease; }
+  tbody tr:hover td { background:#f7f9fd; }
+  tbody tr:last-child td { border-bottom:none; }
+
+  .removeBtn {
+    color:var(--red);
+    cursor:pointer;
+    font-size:11.5px;
+    font-weight:600;
+    border:none;
+    background:none;
+    padding:4px 8px;
+    border-radius:6px;
+    transition:background-color .12s ease;
+  }
+  .removeBtn:hover { background:var(--red-bg); }
+
+  .btn {
+    border:none;
+    padding:11px 20px;
+    border-radius:9px;
+    font-size:14px;
+    font-weight:650;
+    cursor:pointer;
+    transition:transform .08s ease, box-shadow .15s ease, background-color .15s ease;
+  }
+  .btn:active { transform:translateY(1px); }
+  .btn-primary {
+    background:linear-gradient(135deg, var(--blue), var(--blue-dark));
+    color:#fff;
+    box-shadow:0 4px 12px rgba(59,110,246,.35);
+  }
+  .btn-primary:hover { box-shadow:0 6px 16px rgba(59,110,246,.45); background:linear-gradient(135deg, var(--blue-dark), var(--blue-dark)); }
+  .btn-ghost {
+    background:#eef1f5;
+    color:#374151;
+    border:1px solid var(--border);
+  }
+  .btn-ghost:hover { background:#e5e9f0; }
+  .actions { display:flex; gap:10px; margin-top:16px; }
+
+  .empty-note { color:#9aa5b8; font-size:13px; padding:14px 0; text-align:center; }
+
+  .side-col .card { position:relative; }
   .side-col table { font-size:12px; }
-  .side-col th, .side-col td { padding:6px 6px; }
-  .summary-status-complete { color:var(--green); font-weight:600; }
-  .summary-status-remaining { color:#a9760f; font-weight:600; }
-  .summary-status-over { color:var(--red); font-weight:600; }
-  .summary-row-complete td { background:#f6fbf8; }
-  .summary-row-remaining td { background:#fffaf0; }
+  .side-col th, .side-col td { padding:8px 8px; white-space:normal; }
+  .side-col .table-wrap { max-height:480px; }
+
+  .summary-status-complete,
+  .summary-status-remaining,
+  .summary-status-over {
+    display:inline-block;
+    padding:3px 10px;
+    border-radius:999px;
+    font-weight:650;
+    font-size:11.5px;
+    border:1px solid transparent;
+    white-space:nowrap;
+  }
+  .summary-status-complete { background:#e6f4ea; color:#137333; border-color:#bfe3cb; }
+  .summary-status-remaining { background:#fef7e0; color:#b06000; border-color:#f5e2ab; }
+  .summary-status-over { background:#fce8e6; color:#c5221f; border-color:#f5c6c3; }
+
+  .summary-row-complete td { background:#fbfdfc; }
+  .summary-row-remaining td { background:#fffdf7; }
 </style>
 </head>
 <body>
 
 <header>
-  <h1>End-of-Month Stock Scan &amp; Export</h1>
-  <p>Slitting System &middot; Temporary physical stock scanning tool</p>
+  <div class="header-inner">
+    <div class="header-badge">📦</div>
+    <div>
+      <h1>End-of-Month Stock Scan &amp; Export</h1>
+      <p>Slitting System &middot; Temporary physical stock scanning tool</p>
+    </div>
+  </div>
 </header>
 
 <main>
@@ -114,6 +288,7 @@ if ($res = $mysqli->query($sql)) {
     <div id="warningBanner"></div>
     <div class="counter">Scanned: <b id="scanCount">0</b> item(s)</div>
 
+    <div class="table-wrap">
     <table id="scanTable">
       <thead>
         <tr>
@@ -123,6 +298,7 @@ if ($res = $mysqli->query($sql)) {
       </thead>
       <tbody id="scanTbody"></tbody>
     </table>
+    </div>
     <div id="scanEmptyNote" class="empty-note">No items scanned yet.</div>
 
     <div class="actions">
@@ -146,12 +322,14 @@ if ($res = $mysqli->query($sql)) {
     <!-- LIVE RECONCILIATION SUMMARY -->
     <div class="card">
       <h2>Live Reconciliation Summary</h2>
+      <div class="table-wrap">
       <table id="summaryTable">
         <thead>
           <tr><th>Product</th><th>System</th><th>Scanned</th><th>Left</th><th>Status</th></tr>
         </thead>
         <tbody id="summaryTbody"></tbody>
       </table>
+      </div>
       <div id="summaryEmptyNote" class="empty-note">No baseline stock data found.</div>
     </div>
   </div>

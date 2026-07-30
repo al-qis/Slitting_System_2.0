@@ -134,7 +134,7 @@ function formatCoil($coil) {
 $coilFormatted = formatCoil($coil);
 
 // ---- 6. Build D365 fields ---------------------------------------------------
-// Width decimal formatting depends on digit count:
+// Width decimal formatting depends on digit count (STANDARD products only):
 //   1-2 digit widths  -> 2 decimal places (e.g. 94  -> "94.00")
 //   3+  digit widths  -> 1 decimal place  (e.g. 118 -> "118.0", 914 -> "914.0")
 function formatWidthForItemNumber($width) {
@@ -143,10 +143,57 @@ function formatWidthForItemNumber($width) {
     $decimals = ($digits < 3) ? 2 : 1;
     return number_format((float)$width, $decimals, '.', '');
 }
-$widthForItem   = formatWidthForItemNumber($width);
-$d365ItemNumber = 'SF-' . $productCode . '-' . $widthForItem;
-$d365LotNo      = $lot . ' ' . $coilFormatted . ' ' . $roll;
-$mtr            = $length;
+
+$mtr       = $length;
+$d365LotNo = $lot . ' ' . $coilFormatted . ' ' . $roll; // always the standard format
+
+// ---- 6a. Special D365 ITEM NUMBER format - ONLY for Coil Family "ED" (L1N2) --
+// "ED" is the coil_code used to look up the product (not the product value
+// itself, which resolves to something like "L1N2-2520-02"). All other coil
+// families keep the standard "SF-{product code}-{width}" format.
+//
+// IMPORTANT: for this special case, the "2520" and "02" segments come from
+// the PRODUCT CODE itself (constant per product line), NOT from the scanned
+// physical Lot/Coil/Roll. Only the scanned Width feeds into this format.
+// Product code is expected in the form PREFIX-LOTPART-COILPART, e.g.
+// "L1N2-2520-02" -> prefix="L1N2", lotPart="2520", coilPart="02".
+//
+// Rules (width drives both the hyphen placement and decimal places):
+//   width >= 100          -> no hyphen between lotPart/coilPart, 1 decimal  (109.5, 156.0)
+//   width < 100, whole    -> no hyphen between lotPart/coilPart, 2 decimals (57.00)
+//   width < 100, .5 etc.  -> KEEP hyphen between lotPart/coilPart, 1 decimal (54.5)
+if (strtoupper($coilCode) === 'ED') {
+    $codeParts = explode('-', $productCode);
+    if (count($codeParts) >= 3) {
+        $prefix   = $codeParts[0];
+        $lotPart  = $codeParts[1];
+        $coilPart = $codeParts[2];
+    } else {
+        // Product code doesn't match the expected PREFIX-LOT-COIL pattern -
+        // fall back to using it as-is so nothing silently breaks.
+        $prefix = $productCode;
+        $lotPart = '';
+        $coilPart = '';
+    }
+
+    $widthNum = (float) $width;
+
+    if ($widthNum >= 100) {
+        $widthStr = number_format($widthNum, 1, '.', '');
+        $lotJoin  = $lotPart . $coilPart; // no hyphen
+    } elseif (fmod($widthNum, 1) == 0.0) {
+        $widthStr = number_format($widthNum, 2, '.', '');
+        $lotJoin  = $lotPart . $coilPart; // no hyphen
+    } else {
+        $widthStr = number_format($widthNum, 1, '.', '');
+        $lotJoin  = $lotPart . '-' . $coilPart; // keep hyphen
+    }
+
+    $d365ItemNumber = 'SF-' . $prefix . '-' . $lotJoin . '-' . $widthStr;
+} else {
+    $widthForItem   = formatWidthForItemNumber($width);
+    $d365ItemNumber = 'SF-' . $productCode . '-' . $widthForItem;
+}
 
 $record = [
     'raw'              => $raw,
