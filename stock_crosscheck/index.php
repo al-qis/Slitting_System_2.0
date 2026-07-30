@@ -99,11 +99,11 @@ if ($res = $mysqli->query($sql)) {
 
   main { max-width:1300px; margin:28px auto; padding:0 20px 60px; }
   .layout { display:flex; gap:22px; align-items:flex-start; }
-  .main-col { flex:1; min-width:0; }
-  .side-col { width:320px; flex-shrink:0; position:sticky; top:20px; }
+  .main-col { flex:1.4; min-width:0; }
+  .side-col { flex:1; min-width:420px; flex-shrink:0; position:sticky; top:20px; }
   @media (max-width: 900px) {
     .layout { flex-direction:column; }
-    .side-col { width:100%; position:static; }
+    .side-col { width:100%; min-width:0; position:static; }
   }
 
   .card {
@@ -241,8 +241,18 @@ if ($res = $mysqli->query($sql)) {
 
   .side-col .card { position:relative; }
   .side-col table { font-size:12px; }
-  .side-col th, .side-col td { padding:8px 8px; white-space:normal; }
-  .side-col .table-wrap { max-height:480px; }
+  .side-col th, .side-col td { padding:10px 8px; white-space:normal; word-break:break-word; }
+  .side-col .table-wrap { max-height:calc(100vh - 160px); }
+
+  /* Summary table: fixed layout + defined column widths so every column
+     fits without a horizontal scrollbar, no matter the content width. */
+  .summary-wrap { overflow-x:hidden; }
+  #summaryTable { table-layout:fixed; width:100%; }
+  #summaryTable th:nth-child(1), #summaryTable td:nth-child(1) { width:26%; }
+  #summaryTable th:nth-child(2), #summaryTable td:nth-child(2) { width:16%; text-align:center; }
+  #summaryTable th:nth-child(3), #summaryTable td:nth-child(3) { width:16%; text-align:center; }
+  #summaryTable th:nth-child(4), #summaryTable td:nth-child(4) { width:14%; text-align:center; }
+  #summaryTable th:nth-child(5), #summaryTable td:nth-child(5) { width:28%; text-align:center; }
 
   .summary-status-complete,
   .summary-status-remaining,
@@ -288,11 +298,16 @@ if ($res = $mysqli->query($sql)) {
     <div id="warningBanner"></div>
     <div class="counter">Scanned: <b id="scanCount">0</b> item(s)</div>
 
+    <div class="actions">
+      <button class="btn btn-ghost" id="clearAllBtn">Clear All Scans</button>
+      <button class="btn btn-primary" id="exportBtn">Export to Excel</button>
+    </div>
+
     <div class="table-wrap">
     <table id="scanTable">
       <thead>
         <tr>
-          <th>#</th><th>Lot</th><th>Coil</th><th>Roll</th><th>Width</th><th>Length</th>
+          <th>#</th><th>Lot</th><th>Coil</th>
           <th>Product Code</th><th>D365 Item Number</th><th>D365 Lot No</th><th>MTR</th><th>Time</th><th></th>
         </tr>
       </thead>
@@ -300,20 +315,6 @@ if ($res = $mysqli->query($sql)) {
     </table>
     </div>
     <div id="scanEmptyNote" class="empty-note">No items scanned yet.</div>
-
-    <div class="actions">
-      <button class="btn btn-ghost" id="clearAllBtn">Clear All Scans</button>
-    </div>
-  </div>
-
-  <!-- STEP 2: EXPORT TO EXCEL -->
-  <div class="card">
-    <h2><span class="step-badge">2</span> Export Scanned Stock</h2>
-    <p class="hint">Once scanning is finished, export the list below as an Excel file with columns
-    <b>D365 ITEM NUMBER</b>, <b>D365 LOT NO</b>, <b>MTR</b> &mdash; ready to compare against the D365 export.</p>
-    <div class="actions">
-      <button class="btn btn-primary" id="exportBtn">Export to Excel</button>
-    </div>
   </div>
 
   </div>
@@ -322,7 +323,7 @@ if ($res = $mysqli->query($sql)) {
     <!-- LIVE RECONCILIATION SUMMARY -->
     <div class="card">
       <h2>Live Reconciliation Summary</h2>
-      <div class="table-wrap">
+      <div class="table-wrap summary-wrap">
       <table id="summaryTable">
         <thead>
           <tr><th>Product</th><th>System</th><th>Scanned</th><th>Left</th><th>Status</th></tr>
@@ -359,7 +360,6 @@ function refreshScanTable() {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${i + 1}</td><td>${escapeHtml(r.lot)}</td><td>${escapeHtml(r.coil)}</td>
-      <td>${escapeHtml(r.roll)}</td><td>${escapeHtml(r.width)}</td><td>${escapeHtml(r.length)}</td>
       <td>${escapeHtml(r.product_code)}</td><td>${escapeHtml(r.d365_item_number)}</td>
       <td>${escapeHtml(r.d365_lot_no)}</td><td>${escapeHtml(r.mtr)}</td><td>${escapeHtml(r.scanned_at)}</td>
       <td><button class="removeBtn" data-raw="${encodeURIComponent(r.raw)}">remove</button></td>`;
