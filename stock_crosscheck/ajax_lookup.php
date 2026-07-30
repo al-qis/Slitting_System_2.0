@@ -60,9 +60,8 @@ if (isset($_SESSION['scanned'][$raw])) {
     respond(false, ['duplicate' => true], 'Already Scanned');
 }
 
-// ---- 4a. Product code comes from coil_product_map, keyed by coil PREFIX ---
-// The map only stores the coil family (e.g. "CH"), not the specific coil
-// number - so "CH-2" needs to become "CH" before looking it up.
+// ---- 4a. Coil prefix - still needed to trigger the ED special format ------
+// (e.g. "CH-2" -> "CH"). No longer used to determine the product code itself.
 function coilPrefix($coil) {
     if (preg_match('/^([A-Za-z]+)/', $coil, $m)) {
         return $m[1];
@@ -71,40 +70,25 @@ function coilPrefix($coil) {
 }
 $coilCode = coilPrefix($coil);
 
+// ---- 4b. Product code + Width/Length ALWAYS come from slitting_product ----
+// This is the ground-truth row for the EXACT physical item scanned (matched
+// on lot_no + coil_no + roll_no). A coil family alone (e.g. "HPM") can be
+// shared between multiple products, so we can no longer guess the product
+// from the coil - only this specific lot's own record knows for sure.
 $stmt = $mysqli->prepare(
-    'SELECT product FROM coil_product_map WHERE coil_code = ? LIMIT 1'
+    'SELECT product, width, actual_length FROM slitting_product
+     WHERE lot_no = ? AND coil_no = ? AND roll_no = ? LIMIT 1'
 );
-$stmt->bind_param('s', $coilCode);
+$stmt->bind_param('sss', $lot, $coil, $roll);
 $stmt->execute();
 $result = $stmt->get_result();
-$coilRow = $result->fetch_assoc();
+$row = $result->fetch_assoc();
 $stmt->close();
 
-if (!$coilRow) {
-    respond(false, [], "Coil \"$coilCode\" (from \"$coil\") not found in coil_product_map table.");
+if (!$row) {
+    respond(false, [], "No matching record for Lot \"$lot\", Coil \"$coil\", Roll \"$roll\" in slitting_product table.");
 }
-$productCode = $coilRow['product'];
-
-// ---- 4b. Width/Length (old QR format only) come from slitting_product -----
-// Matched on lot_no + coil_no + roll_no together, since lot_no alone can repeat
-// across multiple coils/rolls in this table (one row per individual roll).
-if ($width === null || $length === null) {
-    $stmt = $mysqli->prepare(
-        'SELECT width, actual_length FROM slitting_product
-         WHERE lot_no = ? AND coil_no = ? AND roll_no = ? LIMIT 1'
-    );
-    $stmt->bind_param('sss', $lot, $coil, $roll);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    $row = $result->fetch_assoc();
-    $stmt->close();
-
-    if (!$row) {
-        respond(false, [], "No matching record for Lot \"$lot\", Coil \"$coil\", Roll \"$roll\" in slitting_product table.");
-    }
-} else {
-    $row = [];
-}
+$productCode = $row['product']; // ground-truth raw product name, e.g. "MV-4020"
 
 // New format supplies width/length directly; old format falls back to DB.
 if ($width === null)  { $width  = $row['width']; }
@@ -123,6 +107,14 @@ function cleanNumber($val) {
 }
 $width  = cleanNumber($width);
 $length = cleanNumber($length);
+
+// ---- 4c. D365 alias for the Item Number only (raw product name stays as-is
+// in the "Product Code" column for traceability) - extend this list as new
+// aliased products come up.
+$d365ProductAliases = [
+    'MV-4020' => 'JPM',
+];
+$d365ProductCode = $d365ProductAliases[$productCode] ?? $productCode;
 
 // ---- 5. Format Coil to two digits (CH-2 -> CH-02) -------------------------
 function formatCoil($coil) {
@@ -192,7 +184,7 @@ if (strtoupper($coilCode) === 'ED') {
     $d365ItemNumber = 'SF-' . $prefix . '-' . $lotJoin . '-' . $widthStr;
 } else {
     $widthForItem   = formatWidthForItemNumber($width);
-    $d365ItemNumber = 'SF-' . $productCode . '-' . $widthForItem;
+    $d365ItemNumber = 'SF-' . $d365ProductCode . '-' . $widthForItem;
 }
 
 $record = [
