@@ -32,6 +32,7 @@ $filter_status   = trim($_GET['status']   ?? '');
 $filter_month    = intval($_GET['month']  ?? 0);
 $filter_year     = intval($_GET['year']   ?? date('Y'));
 $filter_customer = trim($_GET['customer'] ?? '');
+$filter_source   = trim($_GET['source']   ?? '');
 
 // ── Query ─────────────────────────────────────────────────────
 $sql = "
@@ -62,6 +63,14 @@ if ($filter_status !== '') {
 }
 if ($filter_customer !== '') {
     $sql .= " AND sp.customer_name LIKE ?"; $params[] = '%'.$filter_customer.'%'; $types .= 's';
+}
+if ($filter_source === 'sfc') {
+    $sql .= " AND LOWER(sp.original_source) = 'sfc'";
+} elseif ($filter_source === 'initial_stock') {
+    $sql .= " AND LOWER(sp.original_source) LIKE '%initial%'";
+} elseif ($filter_source === 'raw_material') {
+    $sql .= " AND (sp.original_source IS NULL OR sp.original_source = ''
+                OR (LOWER(sp.original_source) != 'sfc' AND LOWER(sp.original_source) NOT LIKE '%initial%'))";
 }
 if ($filter_month > 0) {
     $sql .= " AND ((sp.status='DELIVERED' AND MONTH(sp.delivered_at)=? AND YEAR(sp.delivered_at)=?)
@@ -94,6 +103,19 @@ function fmtDate(?string $dt): string {
     return date('d M Y', strtotime($dt));
 }
 
+// Mirrors sourceMeta() in tracking_product.php — keep these two in sync.
+// This is what fixes the export/UI mismatch: previously this file just
+// did strtoupper($row['original_source']) with no normalization, so it
+// showed whatever literal string was in the DB (e.g. "INITIAL_STOCK")
+// while the UI's old hardcoded ternary collapsed the same row to "Raw
+// Mat". Both views now go through the same classification.
+function sourceLabel(?string $raw): string {
+    $key = strtolower(trim((string)$raw));
+    if ($key === 'sfc') return 'SFC';
+    if ($key !== '' && str_contains($key, 'initial')) return 'INITIAL STOCK';
+    return 'RAW MAT';
+}
+
 $filename  = 'product_traceability_' . date('Ymd_His') . '.xlsx';
 $generated = date('d M Y, H:i');
 
@@ -112,7 +134,7 @@ if (!class_exists('\PhpOffice\PhpSpreadsheet\Spreadsheet')) {
                   'Width (mm)','Length (m)','Actual Length (m)','Customer','Ref No',
                   'Date Produced','QC Date','Delivered At']);
     foreach ($rows as $i => $row) {
-        fputcsv($out,[$i+1, statusLabel($row), strtoupper($row['original_source']??''),
+        fputcsv($out,[$i+1, statusLabel($row), sourceLabel($row['original_source']??null),
             $row['product']??'', $row['grade']??'', $row['lot_no']??'',
             $row['coil_no']??'', str_replace('R','R-',$row['roll_no']??''),
             (float)($row['width']??0),
@@ -147,6 +169,7 @@ $filterDesc = [];
 if ($search          !== '') $filterDesc[] = 'Search: '   . $search;
 if ($filter_status   !== '') $filterDesc[] = 'Status: '   . $filter_status;
 if ($filter_customer !== '') $filterDesc[] = 'Customer: ' . $filter_customer;
+if ($filter_source   !== '') $filterDesc[] = 'Source: ' . sourceLabel($filter_source);
 if ($filter_month     > 0)   $filterDesc[] = date('F', mktime(0,0,0,$filter_month,1)) . ' ' . $filter_year;
 
 $sheet->mergeCells("A2:{$totalCols}2");
@@ -196,7 +219,7 @@ foreach ($rows as $i => $row) {
     $data = [
         $i + 1,                                                    // A  #
         statusLabel($row),                                         // B  Status
-        strtoupper($row['original_source'] ?? 'RAW MAT'),         // C  Source
+        sourceLabel($row['original_source'] ?? null),              // C  Source
         $row['product']       ?? '',                               // D  Product
         $row['grade']         ?? '',                               // E  Grade
         $row['lot_no']        ?? '',                               // F  Lot No

@@ -274,6 +274,11 @@ $stmt->close();
                         <div class="text-muted nci-note mt-1" data-row="<?= $idx ?>" style="display:none;"></div>
                     </td>
                     <td>
+                        <div class="form-check mb-1">
+                            <input class="form-check-input row-stock-override" type="checkbox"
+                                   id="rowStock<?= $idx ?>" data-row="<?= $idx ?>">
+                            <label class="form-check-label small" for="rowStock<?= $idx ?>">Set to STOCK</label>
+                        </div>
                         <input type="text" class="form-control form-control-sm row-refno" data-row="<?= $idx ?>"
                                value="<?= htmlspecialchars(trim($r['ref_no'] ?? '')) ?>" placeholder="Ref No">
                     </td>
@@ -321,8 +326,65 @@ $stmt->close();
 </form>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://unpkg.com/imask"></script>
 <script>
 const NCI_CUSTOMERS = ['NCI MFG', 'NCI 2'];
+
+// ── Ref No dynamic masking (per row) ───────────────────────────────
+// Same rule as select_customer.php: SO-XX-XXXX by default, MS-XXXXXXX[ X]
+// for STAMPING, no masking for NCI MFG / NCI 2 (dedicated lookup logic)
+// or when that row's "Set to STOCK" checkbox is checked.
+const refNoMasks = {}; // rowIdx -> IMask instance
+
+function destroyRefMaskForRow(idx) {
+    if (refNoMasks[idx]) { refNoMasks[idx].destroy(); refNoMasks[idx] = null; }
+}
+
+function applyMaskForRow(idx, val) {
+    destroyRefMaskForRow(idx);
+
+    const refEl   = document.querySelector(`.row-refno[data-row="${idx}"]`);
+    const stockEl = document.querySelector(`.row-stock-override[data-row="${idx}"]`);
+    if (!refEl) return;
+
+    if (stockEl?.checked || NCI_CUSTOMERS.includes(val)) {
+        return; // STOCK override or NCI dedicated logic — no masking
+    }
+
+    if (val === 'STAMPING') {
+        // MS + 7 digits, optional trailing space + uppercase letter
+        refNoMasks[idx] = IMask(refEl, {
+            mask: 'MS-0000000[ a]',
+            blocks: { a: { mask: /[A-Z]/ } },
+            prepareChar: (str) => str.toUpperCase()
+        });
+        if (!refEl.value || refEl.value === 'STOCK') {
+            refNoMasks[idx].value = 'MS-';
+        }
+    } else {
+        // Default rule: SO-XX-XXXX (no spaces)
+        refNoMasks[idx] = IMask(refEl, { mask: 'SO-00-0000' });
+        if (!refEl.value || refEl.value === 'STOCK') {
+            refNoMasks[idx].value = 'SO-';
+        }
+    }
+}
+
+function refNoMatchesActiveRuleForRow(idx) {
+    const refEl   = document.querySelector(`.row-refno[data-row="${idx}"]`);
+    const custEl  = document.querySelector(`.row-customer[data-row="${idx}"]`);
+    const stockEl = document.querySelector(`.row-stock-override[data-row="${idx}"]`);
+    if (!refEl || !custEl) return true;
+
+    const val  = refEl.value.trim();
+    const cust = custEl.value;
+
+    if (stockEl?.checked) return val === 'STOCK';
+    if (NCI_CUSTOMERS.includes(cust)) return val !== ''; // dedicated logic, just require non-empty
+
+    if (cust === 'STAMPING') return /^MS-\d{7}( [A-Z])?$/.test(val);
+    return /^SO-\d{2}-\d{4}$/.test(val);
+}
 
 function escHtml(s) {
     return String(s ?? '').replace(/[&<>"']/g,
@@ -344,6 +406,7 @@ async function handleRowCustomerChange(rowIdx) {
     const val = sel.value;
 
     otherEl.style.display = (val === 'OTHER') ? 'block' : 'none';
+    applyMaskForRow(rowIdx, val);
 
     if (!NCI_CUSTOMERS.includes(val)) {
         noteEl.style.display = 'none';
@@ -374,6 +437,42 @@ document.getElementById('copyAllCustomer')?.addEventListener('change', function 
         (this.value === 'OTHER') ? 'block' : 'none';
 });
 
+// ── Per-row "Set to STOCK" checkbox ────────────────────────────────
+document.querySelectorAll('.row-stock-override').forEach((cb) => {
+    const idx = cb.dataset.row;
+    cb.addEventListener('change', () => {
+        const refEl  = document.querySelector(`.row-refno[data-row="${idx}"]`);
+        const custEl = document.querySelector(`.row-customer[data-row="${idx}"]`);
+        if (cb.checked) {
+            destroyRefMaskForRow(idx);
+            refEl.value = 'STOCK';
+            refEl.readOnly = true;
+        } else {
+            refEl.readOnly = false;
+            refEl.value = '';
+            applyMaskForRow(idx, custEl.value);
+        }
+    });
+});
+
+// ── On load: apply masking (or restore STOCK state) for every row ──
+(function initRowRefNoMasks() {
+    const rowCount = getRowCount();
+    for (let idx = 0; idx < rowCount; idx++) {
+        const custEl  = document.querySelector(`.row-customer[data-row="${idx}"]`);
+        const refEl   = document.querySelector(`.row-refno[data-row="${idx}"]`);
+        const stockEl = document.querySelector(`.row-stock-override[data-row="${idx}"]`);
+        if (!custEl || !refEl) continue;
+
+        if (custEl.value === 'STOCK' || refEl.value.trim() === 'STOCK') {
+            if (stockEl) stockEl.checked = true;
+            refEl.readOnly = true;
+        } else {
+            applyMaskForRow(idx, custEl.value);
+        }
+    }
+})();
+
 // ── Copy to All Rows ─────────────────────────────────────────────
 async function copyToAllRows() {
     const sel      = document.getElementById('copyAllCustomer');
@@ -382,7 +481,9 @@ async function copyToAllRows() {
     const copiesEl = document.getElementById('copyAllCopies');
 
     const customerVal = sel.value;
-    const refVal       = refEl.value.trim();
+    // Strip spaces so a pasted "SO - 26 - 1062" doesn't get copied as-is —
+    // same rule as select_customer.php / normalize_ref_no.php.
+    const refVal       = refEl.value.trim().replace(/\s+/g, '');
     const copiesVal    = copiesEl.value;
 
     if (!customerVal) { alert('Select a customer to copy to all rows first.'); return; }
@@ -394,16 +495,17 @@ async function copyToAllRows() {
         const rowOtherEl  = document.querySelector(`.row-custom-customer[data-row="${idx}"]`);
         const rowRefEl    = document.querySelector(`.row-refno[data-row="${idx}"]`);
         const rowCopiesEl = document.querySelector(`.row-copies[data-row="${idx}"]`);
+        const rowStockEl  = document.querySelector(`.row-stock-override[data-row="${idx}"]`);
 
         rowSel.value = customerVal;
-        rowOtherEl.style.display = (customerVal === 'OTHER') ? 'block' : 'none';
         if (customerVal === 'OTHER') rowOtherEl.value = otherEl.value.trim();
-        if (refVal !== '') rowRefEl.value = refVal;
+        // Don't stomp a row that's deliberately locked to STOCK.
+        if (refVal !== '' && !rowStockEl?.checked) rowRefEl.value = refVal;
         if (copiesVal) rowCopiesEl.value = copiesVal;
 
-        if (NCI_CUSTOMERS.includes(customerVal)) {
-            await handleRowCustomerChange(idx);
-        }
+        // Applies the same masking/validation + NCI auto-lookup used for
+        // single-row edits, instead of pasting the Ref No in raw.
+        await handleRowCustomerChange(idx);
     }
 }
 
@@ -439,6 +541,11 @@ function collectSelections() {
 
         if (!customer) { setRowStatus(idx, 'Select a customer', true); hasError = true; return; }
         if (!ref_no)   { setRowStatus(idx, 'Ref No required', true);   hasError = true; return; }
+        if (!refNoMatchesActiveRuleForRow(idx)) {
+            setRowStatus(idx, 'Ref No format invalid for this customer', true);
+            hasError = true;
+            return;
+        }
         if (isNaN(length) || length <= 0) { setRowStatus(idx, 'Length must be > 0', true); hasError = true; return; }
 
         setRowStatus(idx, copies === 0 ? 'Saved, print skipped' : 'OK', false);

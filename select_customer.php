@@ -423,24 +423,24 @@ function applyMaskForCustomer(val) {
     }
 
     if (val === 'STAMPING') {
-        // MS - 7 digits, optional trailing space + uppercase letter
+        // MS + 7 digits, optional trailing space + uppercase letter
         refNoMask = IMask(refNoInput, {
-            mask: 'MS - 0000000[ a]',
+            mask: 'MS-0000000[ a]',
             blocks: {
                 a: { mask: /[A-Z]/ }
             },
             prepareChar: (str) => str.toUpperCase()
         });
         if (!refNoInput.value || refNoInput.value === 'STOCK') {
-            refNoMask.value = 'MS - ';
+            refNoMask.value = 'MS-';
         }
     } else {
-        // Default rule: SO - XX - XXXX
+        // Default rule: SO-XX-XXXX (no spaces)
         refNoMask = IMask(refNoInput, {
-            mask: 'SO - 00 - 0000'
+            mask: 'SO-00-0000'
         });
         if (!refNoInput.value || refNoInput.value === 'STOCK') {
-            refNoMask.value = 'SO - ';
+            refNoMask.value = 'SO-';
         }
     }
 }
@@ -452,9 +452,23 @@ function refNoMatchesActiveRule() {
     if (stockOverride.checked) return val === 'STOCK';
     if (NCI_CUSTOMERS.includes(cust)) return val !== ''; // dedicated logic, just require non-empty
 
-    if (cust === 'STAMPING') return /^MS - \d{7}( [A-Z])?$/.test(val);
-    return /^SO - \d{2} - \d{4}$/.test(val);
+    if (cust === 'STAMPING') return /^MS-\d{7}( [A-Z])?$/.test(val);
+    return /^SO-\d{2}-\d{4}$/.test(val);
 }
+
+// Safety net: for customers where no IMask pattern is active (e.g. NCI MFG /
+// NCI 2, which use their own auto-fill logic), strip any spaces a user might
+// manually type or paste around the Ref No so it never ends up with the old
+// "SO - 26 - 1062" style spacing.
+refNoInput.addEventListener('input', () => {
+    if (refNoMask || stockOverride.checked) return; // IMask / STOCK already control formatting
+    const cleaned = refNoInput.value.replace(/\s+/g, '');
+    if (cleaned !== refNoInput.value) {
+        const pos = refNoInput.selectionStart;
+        refNoInput.value = cleaned;
+        refNoInput.setSelectionRange(pos, pos);
+    }
+});
 
 stockOverride.addEventListener('change', () => {
     if (stockOverride.checked) {

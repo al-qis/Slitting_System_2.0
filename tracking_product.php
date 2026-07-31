@@ -31,6 +31,7 @@ $filter_status   = trim($_GET['status']   ?? '');
 $filter_month    = intval($_GET['month']  ?? 0);
 $filter_year     = intval($_GET['year']   ?? date('Y'));
 $filter_customer = trim($_GET['customer'] ?? '');
+$filter_source   = trim($_GET['source']   ?? '');
 
 // ── Main query ────────────────────────────────────────────────
 $sql = "
@@ -117,6 +118,17 @@ if ($filter_customer !== '') {
     $types  .= 's';
 }
 
+// Source filter — mirrors the classification rule used by sourceMeta()
+// below, so "what you filter by" always matches "what the badge shows".
+if ($filter_source === 'sfc') {
+    $sql .= " AND LOWER(sp.original_source) = 'sfc'";
+} elseif ($filter_source === 'initial_stock') {
+    $sql .= " AND LOWER(sp.original_source) LIKE '%initial%'";
+} elseif ($filter_source === 'raw_material') {
+    $sql .= " AND (sp.original_source IS NULL OR sp.original_source = ''
+                OR (LOWER(sp.original_source) != 'sfc' AND LOWER(sp.original_source) NOT LIKE '%initial%'))";
+}
+
 if ($filter_month > 0) {
     $sql .= " AND (
         (sp.status = 'DELIVERED' AND MONTH(sp.delivered_at) = ? AND YEAR(sp.delivered_at) = ?)
@@ -193,6 +205,30 @@ function statusBadge(array $row): string
                         : '<span class="badge badge-pending">In Production</span>',
         default     => '<span class="badge badge-pending">' . htmlspecialchars($s) . '</span>',
     };
+}
+
+// Classifies sp.original_source into one of three buckets. This is the
+// single source of truth for the badge — the old inline ternary only
+// ever checked for 'sfc' and silently bucketed everything else
+// (including Initial Stock rows) as "Raw Mat". The export used the raw
+// DB value directly, which is why the two views disagreed.
+//
+// NOTE: matches on the substring "initial" (case-insensitive) so it
+// covers likely stored variants like 'initial_stock', 'INITIAL_STOCK',
+// or 'initial stock'. If your initial-stock rows use a different
+// original_source value, adjust the str_contains() check below (and
+// the matching one in tracking_product_export.php) to match exactly.
+function sourceMeta(?string $raw): array
+{
+    $key = strtolower(trim((string)$raw));
+
+    if ($key === 'sfc') {
+        return ['label' => 'SFC', 'class' => 'src-sfc'];
+    }
+    if ($key !== '' && str_contains($key, 'initial')) {
+        return ['label' => 'Initial Stock', 'class' => 'src-initial'];
+    }
+    return ['label' => 'Raw Mat', 'class' => 'src-raw'];
 }
 
 function fmtRoll(string $roll): string
@@ -356,8 +392,9 @@ include 'header.php';
     font-size:9px; font-weight:700; letter-spacing:.4px; text-transform:uppercase;
     padding:2px 6px; border-radius:10px; display:inline-block; margin-top:3px;
 }
-.src-raw { background:#f1f5f9; color:#475569; }
-.src-sfc { background:#ede9fe; color:#5b21b6; }
+.src-raw     { background:#f1f5f9; color:#475569; }
+.src-sfc     { background:#ede9fe; color:#5b21b6; }
+.src-initial { background:#fef3c7; color:#92400e; }
 
 /* ── Empty state ──────────────────────────────────────────── */
 .empty-state { padding:50px 20px; text-align:center; color:#9ca3af; }
@@ -449,6 +486,16 @@ include 'header.php';
     </div>
 
     <div>
+        <label>Source</label>
+        <select name="source">
+            <option value="">All sources</option>
+            <option value="raw_material"  <?= $filter_source==='raw_material'  ? 'selected':'' ?>>Raw Mat</option>
+            <option value="sfc"           <?= $filter_source==='sfc'           ? 'selected':'' ?>>SFC</option>
+            <option value="initial_stock" <?= $filter_source==='initial_stock' ? 'selected':'' ?>>Initial Stock</option>
+        </select>
+    </div>
+
+    <div>
         <label>Month</label>
         <select name="month">
             <option value="0">All months</option>
@@ -484,6 +531,7 @@ include 'header.php';
         <?php if ($search !== ''): ?> for <em>"<?= htmlspecialchars($search) ?>"</em><?php endif; ?>
         <?php if ($filter_status !== ''): ?> · Status: <strong><?= htmlspecialchars($filter_status) ?></strong><?php endif; ?>
         <?php if ($filter_customer !== ''): ?> · Customer: <strong><?= htmlspecialchars($filter_customer) ?></strong><?php endif; ?>
+        <?php if ($filter_source   !== ''): ?> · Source: <strong><?= htmlspecialchars(sourceMeta($filter_source)['label']) ?></strong><?php endif; ?>
     </div>
     <a href="tracking_product_export.php?<?= htmlspecialchars(http_build_query($_GET)) ?>"
        class="btn-export no-print">
@@ -525,8 +573,7 @@ include 'header.php';
             <?php foreach ($rows as $i => $row):
                 $dispLen  = $row['actual_length'] ?? $row['length'] ?? '—';
                 $isActual = !empty($row['actual_length']);
-                $srcClass = ($row['original_source'] ?? 'raw_material') === 'sfc' ? 'src-sfc' : 'src-raw';
-                $srcLabel = ($row['original_source'] ?? 'raw_material') === 'sfc' ? 'SFC' : 'Raw Mat';
+                $src = sourceMeta($row['original_source'] ?? null);
             ?>
             <tr>
                 <td style="color:#9ca3af; font-size:12px;"><?= $i + 1 ?></td>
@@ -534,7 +581,7 @@ include 'header.php';
                 <td>
                     <?= statusBadge($row) ?>
                     <br>
-                    <span class="src-badge <?= $srcClass ?>"><?= $srcLabel ?></span>
+                    <span class="src-badge <?= $src['class'] ?>"><?= htmlspecialchars($src['label']) ?></span>
                 </td>
 
                 <td>
