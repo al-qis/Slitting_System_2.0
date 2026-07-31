@@ -272,7 +272,6 @@ include 'header.php';
                     <th>Width (mm)</th>
                     <th>Length (m)</th>
                     <th>Print Status</th>
-                    <th>QR Code</th>
                     <th>Action</th>
                 </tr>
             </thead>
@@ -316,10 +315,6 @@ include 'header.php';
                                 <i class="bi bi-clock me-1"></i>Not Printed Yet
                             </span>
                         <?php endif; ?>
-                    </td>
-                    <td>
-                        <img src="generate_qr.php?id=<?= $row['id'] ?>&type=slitting"
-                             width="60" class="img-thumbnail" alt="QR">
                     </td>
                     <td>
                         <div class="btn-group shadow-sm">

@@ -727,7 +727,7 @@ include 'header.php';
         <tr>
             <th>ID</th><th>Product</th><th>Lot No.</th><th>Coil No.</th>
             <th>Grade</th><th>Width</th><th>Length (mtr)</th>
-            <th>Date Created</th><th>Print Status</th><th>QR Code</th><th>Action</th>
+            <th>Date Created</th><th>Print Status</th><th>Action</th>
         </tr>
     </thead>
     <tbody>
@@ -753,10 +753,6 @@ include 'header.php';
                                 <i class="bi bi-clock me-1"></i>Not Printed Yet
                             </span>
                         <?php endif; ?>
-                    </td>
-                    <td>
-                        <img src="generate_qr.php?product=<?= urlencode($row['product'] ?? '') ?>&lot=<?= urlencode($row['lot_no'] ?? '') ?>&coil=<?= urlencode($row['coil_no'] ?? '') ?>&width=<?= urlencode($row['width'] ?? '') ?>&length=<?= urlencode($row['length'] ?? '') ?>&type=mother"
-                             width="70" alt="QR">
                     </td>
                     <td>
                     <?php if (in_array($_SESSION['role'], ['mkl3', 'slitting'], true)): ?>
