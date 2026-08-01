@@ -9,13 +9,23 @@
  * anything already scanned.
  * -----------------------------------------------------------------------
  */
-session_start();
-require_once __DIR__ . '/db_config.php'; // read-only: baseline stock counts per product code
-if (!isset($_SESSION['scanned'])) {
-    $_SESSION['scanned'] = [];
+require_once dirname(__DIR__) . '/config.php';
+$mysqli = $conn;
+
+// Pre-load whatever has already been scanned, from the shared DB table -
+// this is what makes progress visible from ANY device (tablet or PC),
+// not just the browser that did the scanning.
+$existingScans = [];
+$sqlScans = "SELECT raw, lot, coil, roll, width, length, product_code,
+                    d365_item_number, d365_lot_no, mtr,
+                    DATE_FORMAT(scanned_at, '%H:%i:%s') AS scanned_at
+             FROM stock_crosscheck_scans
+             ORDER BY id ASC";
+if ($resScans = $mysqli->query($sqlScans)) {
+    while ($row = $resScans->fetch_assoc()) {
+        $existingScans[] = $row;
+    }
 }
-// Pre-load whatever has already been scanned this session into the page.
-$existingScans = array_values($_SESSION['scanned']);
 
 // -----------------------------------------------------------------------
 // System stock baseline per product code - "how many rolls should exist
@@ -528,6 +538,28 @@ document.getElementById('clearAllBtn').addEventListener('click', () => {
 });
 
 refreshScanTable();
+
+// ---------------------------------------------------------------------
+// Live sync: poll ajax_scans.php so a second device (e.g. supervisor's PC)
+// picks up scans made from the tablet without needing to refresh the page.
+// Skips a refresh while the scan input has pending text or right after a
+// local scan, to avoid visual flicker/race with the in-flight request.
+// ---------------------------------------------------------------------
+let syncInFlight = false;
+setInterval(() => {
+  if (syncInFlight) return;
+  syncInFlight = true;
+  fetch('ajax_scans.php')
+    .then(r => r.json())
+    .then(res => {
+      if (res.success && res.records.length !== scannedRecords.length) {
+        scannedRecords = res.records;
+        refreshScanTable();
+      }
+    })
+    .catch(() => { /* silent - next poll will retry */ })
+    .finally(() => { syncInFlight = false; });
+}, 4000);
 
 // ---------------------------------------------------------------------
 // STEP 2: Export scanned records to Excel (.xls, tab-separated - opens

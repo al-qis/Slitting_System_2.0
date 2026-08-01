@@ -5,7 +5,7 @@
  * Called once per QR scan (triggered by the scanner's Enter keypress).
  *
  * Input (POST, from the raw QR string already split client-side):
- *   raw     - the full raw QR text (used as the server-side dedupe key)
+ *   raw     - the full raw QR text (used as the dedupe key)
  *   lot     - LOT value
  *   coil    - COIL value
  *   roll    - ROLL value
@@ -13,25 +13,21 @@
  *   length  - LENGTH value (present only for the NEW 5-field QR format)
  *
  * Logic:
- *   1. Reject duplicate scans (server-side, session-based - authoritative
- *      even if the browser is refreshed mid-count).
+ *   1. Reject duplicate scans (DB-based - authoritative across ALL devices,
+ *      not just the current browser/session).
  *   2. Validate the Lot No format (4-7 mixed-case alphanumeric chars).
- *   3. Always look up the product code from coil_product_map by coil_code.
+ *   3. Always look up the product code from slitting_product.
  *   4. If width/length were not supplied (OLD 3-field QR format), fetch
  *      `width` and `actual_length` from slitting_product (matched on
  *      lot_no + coil_no + roll_no).
  *   5. Build the D365 ITEM NUMBER, D365 LOT NO, and MTR.
- *   6. Store the record in the session and return it as JSON.
+ *   6. Insert the record into stock_crosscheck_scans and return it as JSON.
  * -----------------------------------------------------------------------
  */
 
-session_start();
 header('Content-Type: application/json');
-require_once __DIR__ . '/db_config.php';
-
-if (!isset($_SESSION['scanned'])) {
-    $_SESSION['scanned'] = []; // keyed by raw QR string
-}
+require_once dirname(__DIR__) . '/config.php';
+$mysqli = $conn;
 
 function respond($ok, $data = [], $error = '') {
     echo json_encode(array_merge(['success' => $ok, 'error' => $error], $data));
@@ -55,8 +51,15 @@ if (!preg_match('/^[A-Za-z0-9]{4,7}$/', $lot)) {
     respond(false, [], "Invalid Lot No \"$lot\" - must be 4-7 alphanumeric characters.");
 }
 
-// ---- 3. Server-side dedupe (authoritative) --------------------------------
-if (isset($_SESSION['scanned'][$raw])) {
+// ---- 3. Server-side dedupe (authoritative, DB-wide across all devices) ----
+$stmt = $mysqli->prepare('SELECT id FROM stock_crosscheck_scans WHERE raw = ? LIMIT 1');
+$stmt->bind_param('s', $raw);
+$stmt->execute();
+$stmt->store_result();
+$alreadyScanned = $stmt->num_rows > 0;
+$stmt->close();
+
+if ($alreadyScanned) {
     respond(false, ['duplicate' => true], 'Already Scanned');
 }
 
@@ -187,6 +190,30 @@ if (strtoupper($coilCode) === 'ED') {
     $d365ItemNumber = 'SF-' . $d365ProductCode . '-' . $widthForItem;
 }
 
+// ---- 7. Insert into the shared scan table ----------------------------------
+// UNIQUE KEY uniq_raw(raw) is the final line of defense against a race where
+// two devices submit the same raw QR within milliseconds of each other.
+$stmt = $mysqli->prepare(
+    'INSERT INTO stock_crosscheck_scans
+        (raw, lot, coil, roll, width, length, product_code, d365_item_number, d365_lot_no, mtr, scanned_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())'
+);
+$stmt->bind_param(
+    'ssssssssss',
+    $raw, $lot, $coil, $roll, $width, $length, $productCode, $d365ItemNumber, $d365LotNo, $mtr
+);
+
+if (!$stmt->execute()) {
+    // 1062 = duplicate key (uniq_raw) - another device won the race first.
+    if ($mysqli->errno === 1062) {
+        $stmt->close();
+        respond(false, ['duplicate' => true], 'Already Scanned');
+    }
+    $stmt->close();
+    respond(false, [], 'Database error while saving scan.');
+}
+$stmt->close();
+
 $record = [
     'raw'              => $raw,
     'lot'              => $lot,
@@ -200,8 +227,5 @@ $record = [
     'mtr'              => $mtr,
     'scanned_at'       => date('H:i:s'),
 ];
-
-// Store in session so a page refresh does not lose progress.
-$_SESSION['scanned'][$raw] = $record;
 
 respond(true, ['record' => $record]);
