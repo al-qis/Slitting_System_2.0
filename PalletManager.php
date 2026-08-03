@@ -23,6 +23,18 @@ class PalletManager
     public const MIN_ROLLS = 1;
 
     /**
+     * Maps the 5 raw pallet statuses to the 3 tab groups used by the
+     * unified pallet sidebar UI ([Open/In Progress] [Full/QC] [Closed/Delivered]).
+     * 'rejected' is grouped with 'open' because it requires operator action
+     * (reopenRejectedPallet) before it can move forward again.
+     */
+    public const STATUS_GROUPS = [
+        'open'   => ['building', 'rejected'],
+        'qc'     => ['pending_qc', 'approved'],
+        'closed' => ['delivered'],
+    ];
+
+    /**
      * SFS-XXXX-XXX  or  SFS-XXXX-XXX (A)  … (ABC)
      */
     public const PALLET_NO_REGEX = '/^SFS-\d{4}-\d{3}(?: \([A-Z]{1,3}\))?$/';
@@ -118,6 +130,99 @@ class PalletManager
             'pallet_id' => $palletId,
             'pallet_no' => $palletNo,
         ];
+    }
+
+    // =========================================================
+    // 2b. RENAME PALLET NO                             ← NEW
+    //     Lets an operator fix a typo in the Pallet No without
+    //     deleting and recreating the pallet. Only allowed on
+    //     'building' or 'rejected' pallets — once a pallet is in
+    //     QC or later, its number is locked (matches the same
+    //     restriction used by deletePallet()).
+    // =========================================================
+
+    /**
+     * @return array{ok: bool, msg: string, pallet_id?: int, pallet_no?: string, old_pallet_no?: string, unchanged?: bool}
+     */
+    public function renamePallet(int $palletId, string $newPalletNo): array
+    {
+        $newPalletNo = trim($newPalletNo);
+        if ($newPalletNo === '') {
+            return ['ok' => false, 'msg' => 'Pallet No cannot be empty.'];
+        }
+        if (!preg_match(self::PALLET_NO_REGEX, $newPalletNo)) {
+            return [
+                'ok'  => false,
+                'msg' => "Invalid format. Expected SFS-XXXX-XXX or SFS-XXXX-XXX (A). Got: \"{$newPalletNo}\".",
+            ];
+        }
+
+        $this->conn->begin_transaction();
+        try {
+            $stmt = $this->conn->prepare("SELECT * FROM pallets WHERE id = ? FOR UPDATE");
+            $stmt->bind_param("i", $palletId);
+            $stmt->execute();
+            $pallet = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+
+            if (!$pallet) {
+                throw new RuntimeException("Pallet #{$palletId} not found.");
+            }
+
+            $oldPalletNo = $pallet['pallet_no'];
+
+            // No-op: saving the same value back is not an error.
+            if ($newPalletNo === $oldPalletNo) {
+                $this->conn->commit();
+                return [
+                    'ok' => true, 'msg' => 'No change.',
+                    'pallet_id' => $palletId, 'pallet_no' => $oldPalletNo, 'unchanged' => true,
+                ];
+            }
+
+            $editableStates = ['building', 'rejected'];
+            if (!in_array($pallet['status'], $editableStates, true)) {
+                throw new RuntimeException(
+                    "Pallet {$oldPalletNo} cannot be renamed (status: {$pallet['status']}). "
+                    . "Only 'building' or 'rejected' pallets can be renamed."
+                );
+            }
+
+            // Duplicate check — excludes this pallet's own row.
+            $dupStmt = $this->conn->prepare(
+                "SELECT id FROM pallets WHERE pallet_no = ? AND id != ? LIMIT 1"
+            );
+            $dupStmt->bind_param("si", $newPalletNo, $palletId);
+            $dupStmt->execute();
+            $dup = $dupStmt->get_result()->fetch_assoc();
+            $dupStmt->close();
+
+            if ($dup) {
+                throw new RuntimeException("Pallet No \"{$newPalletNo}\" already exists.");
+            }
+
+            $upd = $this->conn->prepare("UPDATE pallets SET pallet_no = ? WHERE id = ?");
+            $upd->bind_param("si", $newPalletNo, $palletId);
+            $upd->execute();
+            $upd->close();
+
+            $this->writeEditLog(
+                $palletId, $newPalletNo, 'rename_pallet', null, null,
+                "Renamed from \"{$oldPalletNo}\" to \"{$newPalletNo}\""
+            );
+
+            $this->conn->commit();
+            return [
+                'ok'            => true,
+                'msg'           => "Pallet renamed to {$newPalletNo}.",
+                'pallet_id'     => $palletId,
+                'pallet_no'     => $newPalletNo,
+                'old_pallet_no' => $oldPalletNo,
+            ];
+        } catch (Throwable $e) {
+            $this->conn->rollback();
+            return ['ok' => false, 'msg' => $e->getMessage()];
+        }
     }
 
     // =========================================================
@@ -914,6 +1019,118 @@ class PalletManager
         $row = $stmt->get_result()->fetch_assoc();
         $stmt->close();
         return $row ?: null;
+    }
+
+    // =========================================================
+    // LIST PALLETS (unified sidebar feed)              ← NEW
+    //   Powers the redesigned pallet list: one query returns
+    //   every pallet with its roll count, lot numbers (for
+    //   search), and last activity time — pre-filtered and
+    //   pre-sorted so the frontend can render it directly.
+    //
+    //   $statusGroup : 'all' | 'open' | 'qc' | 'closed'
+    //                  (see self::STATUS_GROUPS)
+    //   $search      : matches Pallet No, Customer, or Lot No
+    //   $sort        : 'updated' | 'capacity' | 'id'
+    // =========================================================
+    public function listPallets(string $statusGroup = 'all', string $search = '', string $sort = 'updated'): array
+    {
+        $search = trim($search);
+
+        $where  = [];
+        $types  = '';
+        $params = [];
+
+        if ($statusGroup !== 'all') {
+            $statuses = self::STATUS_GROUPS[$statusGroup] ?? null;
+            if ($statuses === null) {
+                return ['ok' => false, 'msg' => "Unknown status group \"{$statusGroup}\".", 'rows' => []];
+            }
+            $placeholders = implode(',', array_fill(0, count($statuses), '?'));
+            $where[]      = "status IN ({$placeholders})";
+            foreach ($statuses as $s) {
+                $types    .= 's';
+                $params[]  = $s;
+            }
+        }
+
+        if ($search !== '') {
+            $where[]  = "(pallet_no LIKE ? OR customer_name LIKE ? OR lot_nos LIKE ?)";
+            $like     = '%' . $search . '%';
+            $types   .= 'sss';
+            $params[] = $like;
+            $params[] = $like;
+            $params[] = $like;
+        }
+
+        $whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
+
+        $orderSql = match ($sort) {
+            'capacity' => 'roll_count DESC, last_activity DESC',
+            'id'       => 'pallet_no DESC',
+            default    => 'last_activity DESC, id DESC', // 'updated'
+        };
+
+        // Roll count + lot numbers are aggregated first, then filtered/sorted
+        // in the outer query so WHERE can reference the aggregated columns.
+        // last_activity uses the pallets table's own updated_at (falling back
+        // to created_at for rows that predate that column being populated).
+        $sql = "
+            SELECT * FROM (
+                SELECT
+                    p.id,
+                    p.pallet_no,
+                    p.customer_name,
+                    p.status,
+                    p.ref_no,
+                    p.product_type,
+                    p.width,
+                    COUNT(pi.id)                                    AS roll_count,
+                    COALESCE(p.updated_at, p.created_at)            AS last_activity,
+                    GROUP_CONCAT(DISTINCT sp.lot_no SEPARATOR ', ') AS lot_nos
+                FROM pallets p
+                LEFT JOIN pallet_items pi     ON pi.pallet_id = p.id
+                LEFT JOIN slitting_product sp ON sp.id = pi.slitting_product_id
+                GROUP BY p.id
+            ) t
+            {$whereSql}
+            ORDER BY {$orderSql}
+        ";
+
+        $stmt = $this->conn->prepare($sql);
+        if (!$stmt) {
+            return ['ok' => false, 'msg' => $this->conn->error, 'rows' => []];
+        }
+        if ($params) {
+            $stmt->bind_param($types, ...$params);
+        }
+        $stmt->execute();
+        $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+
+        // Attach the UI-facing fields the sidebar cards need directly,
+        // so the frontend doesn't have to re-derive status grouping/labels.
+        foreach ($rows as &$row) {
+            $row['roll_count']   = (int)$row['roll_count'];
+            $row['max_rolls']    = self::MAX_ROLLS;
+            $row['status_group'] = $this->statusGroupOf($row['status']);
+        }
+        unset($row);
+
+        return ['ok' => true, 'msg' => 'OK', 'rows' => $rows];
+    }
+
+    /**
+     * Small helper: which UI tab group a raw status belongs to.
+     */
+    private function statusGroupOf(string $status): string
+    {
+        foreach (self::STATUS_GROUPS as $group => $statuses) {
+            if (in_array($status, $statuses, true)) {
+                return $group;
+            }
+        }
+        return 'all';
     }
 
     public function getPalletItems(int $palletId): array

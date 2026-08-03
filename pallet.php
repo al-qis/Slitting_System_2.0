@@ -69,6 +69,34 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
     exit;
 }
 
+// ── AJAX: unified pallet sidebar feed ──────────────────────────
+// Powers the redesigned right-panel list: one call returns pallets
+// pre-filtered (status tab + search) and pre-sorted, ready to render.
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'list_pallets') {
+    header('Content-Type: application/json');
+    $group  = trim($_GET['group']  ?? 'all');
+    $search = trim($_GET['q']      ?? '');
+    $sort   = trim($_GET['sort']   ?? 'updated');
+    echo json_encode($pm->listPallets($group, $search, $sort));
+    exit;
+}
+
+// ── AJAX: rename pallet (inline header edit) ────────────────────
+// POST because it's a mutation, unlike the read-only GET ajax blocks
+// above. Returns the same shape as the other PalletManager calls so
+// the frontend can reuse one error-handling pattern.
+if (isset($_POST['ajax']) && $_POST['ajax'] === 'rename_pallet') {
+    header('Content-Type: application/json');
+    $palletId = (int)($_POST['pallet_id'] ?? 0);
+    $newNo    = trim($_POST['pallet_no'] ?? '');
+    if ($palletId <= 0) {
+        echo json_encode(['ok' => false, 'msg' => 'Missing or invalid pallet_id.']);
+        exit;
+    }
+    echo json_encode($pm->renamePallet($palletId, $newNo));
+    exit;
+}
+
 // ── Shared: build the flattened Summary Pallet dataset ─────────
 function buildSummaryPalletRows(mysqli $conn): array {
     $rows = $conn->query("
@@ -354,26 +382,16 @@ foreach ($activeItems as $item) {
     $totalEstWgt += calcEstWeight($len, (float)$item['width'], (float)$item['std_weight']);
 }
 
-// Pallets in 'building' state (open)
-$openPallets = $conn->query(
-    "SELECT p.*, COUNT(pi.id) AS item_count
-     FROM pallets p LEFT JOIN pallet_items pi ON pi.pallet_id = p.id
-     WHERE p.status = 'building'
-     GROUP BY p.id ORDER BY p.created_at DESC LIMIT 30"
-)->fetch_all(MYSQLI_ASSOC);
-
-// Pallets rejected by QC
+// Pallets rejected by QC — still queried server-side because the
+// "Need Attention" banner near the top of the page renders on first
+// paint, before any client-side fetch has a chance to run. The unified
+// sidebar list below gets its rejected pallets from ajax=list_pallets
+// (group=open) instead, so this is no longer duplicated into the sidebar.
 $rejectedPallets = $conn->query(
     "SELECT p.*, COUNT(pi.id) AS item_count
      FROM pallets p LEFT JOIN pallet_items pi ON pi.pallet_id = p.id
      WHERE p.status = 'rejected'
      GROUP BY p.id ORDER BY p.rejected_at DESC, p.updated_at DESC LIMIT 20"
-)->fetch_all(MYSQLI_ASSOC);
-
-$allPallets = $conn->query(
-    "SELECT p.*, COUNT(pi.id) AS item_count
-     FROM pallets p LEFT JOIN pallet_items pi ON pi.pallet_id = p.id
-     GROUP BY p.id ORDER BY p.created_at DESC LIMIT 60"
 )->fetch_all(MYSQLI_ASSOC);
 
 $page_title = 'Pallet Management';
@@ -388,6 +406,83 @@ $isReadOnly = $activePallet && !in_array($activePallet['status'], ['building', '
 <style>
 /* ── Layout ── */
 .pallet-sidebar   { position:sticky; top:20px; }
+
+/* ── Unified pallet list (redesigned sidebar) ── */
+.pallet-list-card   { display:flex; flex-direction:column; height:78vh; min-height:520px; max-height:860px; overflow:hidden; }
+.pallet-list-header  { flex:0 0 auto; }
+.pallet-list-header .form-control,
+.pallet-list-header .form-select {
+    background:#2b3035; border-color:#495057; color:#f8f9fa; font-size:12.5px;
+}
+.pallet-list-header .form-control::placeholder { color:#adb5bd; }
+.pallet-list-header .form-control:focus,
+.pallet-list-header .form-select:focus {
+    background:#2b3035; color:#fff; border-color:#6c757d; box-shadow:none;
+}
+
+.pallet-tab-group        { background:#212529; border-radius:6px; padding:2px; }
+.pallet-tab-group .pallet-tab {
+    color:#adb5bd; border:0; font-size:11.5px; font-weight:600; padding:4px 8px;
+    border-radius:4px; letter-spacing:.01em;
+}
+.pallet-tab-group .pallet-tab:hover  { color:#fff; }
+.pallet-tab-group .pallet-tab.active { background:#fff; color:#212529; }
+.pallet-tab-group .pallet-tab .tab-count { opacity:.65; font-weight:500; margin-left:2px; }
+
+.pallet-list-scroll {
+    flex:1 1 auto; overflow-y:auto; padding:10px; background:#f8f9fa;
+}
+
+.pallet-card {
+    display:block; background:#fff; border:1px solid var(--bs-border-color);
+    border-left:4px solid #adb5bd; border-radius:6px; padding:9px 11px;
+    margin-bottom:8px; text-decoration:none; color:inherit;
+    transition:box-shadow .12s, transform .12s;
+}
+.pallet-card:hover  { box-shadow:0 2px 10px rgba(0,0,0,.1); transform:translateY(-1px); color:inherit; }
+
+.pallet-card.border-building   { border-left-color:#0ea5e9; }
+.pallet-card.border-pending_qc { border-left-color:#f59e0b; }
+.pallet-card.border-approved   { border-left-color:#22c55e; }
+.pallet-card.border-rejected   { border-left-color:#ef4444; }
+.pallet-card.border-delivered  { border-left-color:#10b981; }
+
+/* .active is declared last so it wins the cascade over the status
+   border-color rules above, regardless of which status class is present */
+.pallet-card.active { background:#0d6efd; border-left-color:#fff; color:#fff; }
+.pallet-card.active .pallet-card-customer,
+.pallet-card.active .pallet-card-rolls,
+.pallet-card.active .pallet-card-lot { color:rgba(255,255,255,.75) !important; }
+.pallet-card.active .pallet-progress { background:rgba(255,255,255,.25); }
+
+.pallet-card-top      { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:5px; }
+.pallet-card-id        { font-family:'Courier New', monospace; font-weight:700; font-size:13px; }
+.pallet-card-lot        { font-family:'Courier New', monospace; font-size:10px; color:#adb5bd; margin-top:1px; }
+.pallet-card-customer  { font-size:12.5px; font-weight:600; margin-bottom:7px; }
+.pallet-card-rolls      { font-size:11px; font-weight:600; color:#6c757d; white-space:nowrap; }
+
+.pallet-list-empty, .pallet-list-loading { text-align:center; color:#adb5bd; font-size:13px; padding:36px 16px; }
+
+/* ── Inline pallet-no rename (header banner) ── */
+.pallet-rename-header { position:relative; }
+.pallet-rename-text    { font-size:15px; }
+.pallet-rename-edit-btn {
+    padding:2px 7px; opacity:.8; border:0; background:transparent; line-height:1;
+}
+.pallet-rename-edit-btn:hover { opacity:1; background:rgba(255,255,255,.18); border-radius:4px; }
+#palletRenameForm.d-flex { display:flex !important; }
+.pallet-rename-input {
+    width:230px; font-family:'Courier New', monospace; font-weight:700; font-size:14px;
+    border:0; box-shadow:0 0 0 2px rgba(255,255,255,.6) inset;
+}
+.pallet-rename-input:focus { box-shadow:0 0 0 2px #fff inset; }
+#palletRenameSaveBtn, #palletRenameCancelBtn { padding:3px 8px; line-height:1; }
+.pallet-rename-error {
+    position:absolute; top:100%; left:0; margin-top:6px;
+    background:#fff; color:#dc3545; border:1px solid #dc3545;
+    border-radius:4px; padding:4px 9px; font-size:11px; font-weight:600;
+    white-space:nowrap; z-index:20; box-shadow:0 2px 8px rgba(0,0,0,.18);
+}
 
 /* ── Slot cards ── */
 .slot-card {
@@ -594,10 +689,33 @@ if (isset($_GET['success'])): ?>
         <!-- BUILDING STATE -->
         <div class="card shadow-sm border-0 mb-4">
             <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
-                <div>
-                    <span class="fw-bold"><?= htmlspecialchars($activePallet['pallet_no']) ?></span>
+                <div class="d-flex align-items-center gap-2 pallet-rename-header">
+                    <!-- Display mode -->
+                    <span class="fw-bold pallet-rename-text" id="palletRenameDisplay"><?= htmlspecialchars($activePallet['pallet_no']) ?></span>
+                    <button type="button" class="btn btn-sm text-white pallet-rename-edit-btn" id="palletRenameEditBtn"
+                            title="Rename pallet" onclick="startEditPalletRename()">
+                        <i class="bi bi-pencil-square"></i>
+                    </button>
+
+                    <!-- Edit mode (hidden until the pencil is clicked) -->
+                    <div class="d-none align-items-center gap-1" id="palletRenameForm">
+                        <input type="text" class="form-control form-control-sm pallet-rename-input" id="palletRenameInput"
+                               value="<?= htmlspecialchars($activePallet['pallet_no']) ?>"
+                               maxlength="30" autocomplete="off"
+                               onkeydown="onPalletRenameKeydown(event)">
+                        <button type="button" class="btn btn-sm btn-light text-success" id="palletRenameSaveBtn"
+                                title="Save (Enter)" onclick="savePalletRename()">
+                            <i class="bi bi-check-lg"></i>
+                        </button>
+                        <button type="button" class="btn btn-sm btn-light text-danger" id="palletRenameCancelBtn"
+                                title="Cancel (Esc)" onclick="cancelEditPalletRename()">
+                            <i class="bi bi-x-lg"></i>
+                        </button>
+                        <span class="pallet-rename-error d-none" id="palletRenameError"></span>
+                    </div>
+
                     <?php if (($activePallet['edit_count'] ?? 0) > 0): ?>
-                    <span class="edit-mode-pill ms-2">
+                    <span class="edit-mode-pill ms-1">
                         <i class="bi bi-pencil-fill"></i>
                         EDIT #<?= $activePallet['edit_count'] ?>
                     </span>
@@ -780,7 +898,7 @@ if (isset($_GET['success'])): ?>
                 <div class="d-flex gap-2">
                     <a href="pallet.php" class="btn btn-outline-secondary btn-sm">Close panel</a>
                     <form method="post"
-                          onsubmit="return confirm('Delete pallet <?= htmlspecialchars($activePallet['pallet_no'], ENT_QUOTES) ?>?\n\nAll rolls will be returned to stock — the products themselves are NOT deleted.')">
+                          onsubmit="return confirm('Delete pallet ' + currentPalletNo + '?\n\nAll rolls will be returned to stock — the products themselves are NOT deleted.')">
                         <input type="hidden" name="action"    value="delete_pallet">
                         <input type="hidden" name="pallet_id" value="<?= $activePalletId ?>">
                         <button type="submit" class="btn btn-outline-danger btn-sm">
@@ -816,10 +934,31 @@ if (isset($_GET['success'])): ?>
         <div class="card shadow-sm border-0 mb-4 border-danger">
             <div class="card-header text-white d-flex justify-content-between align-items-center"
                  style="background:#991b1b;">
-                <div>
-                    <i class="bi bi-x-circle me-2"></i>
-                    <strong><?= htmlspecialchars($activePallet['pallet_no']) ?></strong>
-                    <span class="badge bg-white text-danger ms-2">QC REJECTED</span>
+                <div class="d-flex align-items-center gap-2 pallet-rename-header">
+                    <i class="bi bi-x-circle me-1"></i>
+                    <strong class="pallet-rename-text" id="palletRenameDisplay"><?= htmlspecialchars($activePallet['pallet_no']) ?></strong>
+                    <button type="button" class="btn btn-sm text-white pallet-rename-edit-btn" id="palletRenameEditBtn"
+                            title="Rename pallet" onclick="startEditPalletRename()">
+                        <i class="bi bi-pencil-square"></i>
+                    </button>
+
+                    <div class="d-none align-items-center gap-1" id="palletRenameForm">
+                        <input type="text" class="form-control form-control-sm pallet-rename-input" id="palletRenameInput"
+                               value="<?= htmlspecialchars($activePallet['pallet_no']) ?>"
+                               maxlength="30" autocomplete="off"
+                               onkeydown="onPalletRenameKeydown(event)">
+                        <button type="button" class="btn btn-sm btn-light text-success" id="palletRenameSaveBtn"
+                                title="Save (Enter)" onclick="savePalletRename()">
+                            <i class="bi bi-check-lg"></i>
+                        </button>
+                        <button type="button" class="btn btn-sm btn-light text-danger" id="palletRenameCancelBtn"
+                                title="Cancel (Esc)" onclick="cancelEditPalletRename()">
+                            <i class="bi bi-x-lg"></i>
+                        </button>
+                        <span class="pallet-rename-error d-none" id="palletRenameError"></span>
+                    </div>
+
+                    <span class="badge bg-white text-danger ms-1">QC REJECTED</span>
                 </div>
                 <span class="badge bg-white text-danger">
                     <?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?>
@@ -911,7 +1050,7 @@ if (isset($_GET['success'])): ?>
                     <input type="hidden" name="action"    value="reopen_pallet">
                     <input type="hidden" name="pallet_id" value="<?= $activePalletId ?>">
                     <button type="submit" class="btn btn-warning fw-bold"
-                            onclick="return confirm('Reopen pallet <?= htmlspecialchars($activePallet['pallet_no'], ENT_QUOTES) ?> for editing?\nAll rolls will be reset to IN so you can modify the pallet.')">
+                            onclick="return confirm('Reopen pallet ' + currentPalletNo + ' for editing?\nAll rolls will be reset to IN so you can modify the pallet.')">
                         <i class="bi bi-pencil-fill me-1"></i> Edit Pallet
                     </button>
                 </form>
@@ -948,125 +1087,50 @@ if (isset($_GET['success'])): ?>
     ═══════════════════════════════════════════════════════════ -->
     <div class="col-md-5 pallet-sidebar">
 
-        <?php if (!empty($rejectedPallets)): ?>
-        <div class="card shadow-sm border-0 mb-3 border-danger">
-            <div class="card-header fw-bold py-2" style="background:#fee2e2;color:#991b1b;">
-                <i class="bi bi-exclamation-triangle-fill me-2"></i>
-                Rejected by QC (<?= count($rejectedPallets) ?>)
-            </div>
-            <div class="list-group list-group-flush">
-                <?php foreach ($rejectedPallets as $rp): ?>
-                <a href="pallet.php?pallet_id=<?= $rp['id'] ?>"
-                   class="list-group-item list-group-item-action d-flex justify-content-between align-items-center
-                          <?= ($rp['id'] == $activePalletId) ? 'active' : '' ?>">
-                    <div>
-                        <div class="fw-bold small"><?= htmlspecialchars($rp['pallet_no']) ?></div>
-                        <div style="font-size:10px;" class="text-muted">
-                            <?= htmlspecialchars($rp['customer_name'] ?? '—') ?>
-                        </div>
+        <!-- Unified pallet list: replaces the old separate
+             Rejected / Open Pallets / All Pallets blocks.
+             Rendered client-side via ajax=list_pallets so the same
+             endpoint serves the All / Open / QC / Closed tabs, search,
+             and sort — see loadPalletList() near the bottom of the page. -->
+        <div class="card shadow-sm border-0 pallet-list-card">
+            <div class="card-header bg-dark text-white py-2 pallet-list-header">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span class="fw-bold"><i class="bi bi-boxes me-2"></i>Pallets</span>
+                    <span class="badge bg-secondary" id="palletListCount">—</span>
+                </div>
+                <div class="position-relative mb-2">
+                    <i class="bi bi-search position-absolute"
+                       style="left:10px; top:50%; transform:translateY(-50%); font-size:12px; color:#adb5bd;"></i>
+                    <input type="text" id="palletSearchInput"
+                           class="form-control form-control-sm ps-4"
+                           placeholder="Search Pallet No, Customer, or Lot No…">
+                </div>
+                <div class="d-flex gap-2 align-items-center">
+                    <div class="btn-group btn-group-sm pallet-tab-group flex-grow-1" id="palletTabGroup">
+                        <button type="button" class="btn pallet-tab active" data-group="all">
+                            All <span class="tab-count" data-count="all"></span>
+                        </button>
+                        <button type="button" class="btn pallet-tab" data-group="open">
+                            Open <span class="tab-count" data-count="open"></span>
+                        </button>
+                        <button type="button" class="btn pallet-tab" data-group="qc">
+                            QC <span class="tab-count" data-count="qc"></span>
+                        </button>
+                        <button type="button" class="btn pallet-tab" data-group="closed">
+                            Closed <span class="tab-count" data-count="closed"></span>
+                        </button>
                     </div>
-                    <span class="badge bg-danger"><?= $rp['item_count'] ?> rolls</span>
-                </a>
-                <?php endforeach; ?>
+                    <select id="palletSortSelect" class="form-select form-select-sm" style="width:auto;">
+                        <option value="updated">Recently Updated</option>
+                        <option value="capacity">Capacity</option>
+                        <option value="id">Pallet No</option>
+                    </select>
+                </div>
             </div>
-        </div>
-        <?php endif; ?>
-
-        <!-- Open pallets -->
-        <?php if (!empty($openPallets)): ?>
-        <div class="card shadow-sm border-0 mb-3">
-            <div class="card-header bg-dark text-white fw-bold py-2">
-                <i class="bi bi-list-task me-2"></i>Open Pallets (<?= count($openPallets) ?>)
-            </div>
-            <div class="list-group list-group-flush">
-                <?php foreach ($openPallets as $op): ?>
-                <a href="pallet.php?pallet_id=<?= $op['id'] ?>"
-                   class="list-group-item list-group-item-action d-flex justify-content-between align-items-center
-                          <?= ($op['id'] == $activePalletId) ? 'active' : '' ?>">
-                    <div>
-                        <div class="fw-bold small"><?= htmlspecialchars($op['pallet_no']) ?></div>
-                        <div style="font-size:10px;"
-                             class="<?= ($op['id'] == $activePalletId) ? 'text-white-50' : 'text-muted' ?>">
-                            <?= htmlspecialchars($op['customer_name'] ?: 'No constraint set yet') ?>
-                        </div>
-                    </div>
-                    <div class="d-flex align-items-center gap-2">
-                        <span style="font-size:11px;"><?= $op['item_count'] ?>/<?= $MAX ?></span>
-                        <div class="pallet-progress" style="width:60px;">
-                            <div class="pallet-progress-bar"
-                                 style="width:<?= ($op['item_count'] / $MAX * 100) ?>%;
-                                        <?= ($op['id'] == $activePalletId) ? 'background:#fff;' : '' ?>">
-                            </div>
-                        </div>
-                    </div>
-                </a>
-                <?php endforeach; ?>
-            </div>
-        </div>
-        <?php endif; ?>
-
-        <!-- All pallets table -->
-        <div class="card shadow-sm border-0">
-            <div class="card-header bg-dark text-white fw-bold py-2">
-                <i class="bi bi-table me-2"></i>All Pallets (Recent 60)
-            </div>
-            <div class="table-responsive">
-                <table class="table table-sm table-hover pallet-table mb-0">
-                    <thead class="table-light">
-                        <tr>
-                            <th>Pallet No</th>
-                            <th>Status</th>
-                            <th>Rolls</th>
-                            <th>Customer</th>
-                            <th></th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                    <?php foreach ($allPallets as $pal): ?>
-                    <tr>
-                        <td class="fw-bold" style="font-family:monospace;font-size:12px;">
-                            <?= htmlspecialchars($pal['pallet_no']) ?>
-                        </td>
-                        <td>
-                            <span class="badge badge-<?= $pal['status'] ?>">
-                                <?= strtoupper(str_replace('_', ' ', $pal['status'])) ?>
-                            </span>
-                        </td>
-                        <td><?= $pal['item_count'] ?>/<?= $MAX ?></td>
-                        <td class="text-muted" style="font-size:11px;">
-                            <?= htmlspecialchars($pal['customer_name'] ?: '—') ?>
-                        </td>
-                        <td>
-                            <div class="d-flex gap-1 flex-wrap">
-                            <?php if ($pal['status'] === 'building'): ?>
-                            <a href="pallet.php?pallet_id=<?= $pal['id'] ?>"
-                               class="btn btn-outline-primary btn-sm">Open</a>
-                            <?php elseif ($pal['status'] === 'rejected'): ?>
-                            <a href="pallet.php?pallet_id=<?= $pal['id'] ?>"
-                               class="btn btn-danger btn-sm">Edit</a>
-                            <?php elseif ($pal['status'] === 'approved'): ?>
-                            <form method="post" class="d-inline"
-                                  onsubmit="return confirm('Mark entire pallet as DELIVERED?')">
-                                <input type="hidden" name="action"    value="deliver_pallet">
-                                <input type="hidden" name="pallet_id" value="<?= $pal['id'] ?>">
-                                <button class="btn btn-success btn-sm">
-                                    <i class="bi bi-truck me-1"></i>Deliver
-                                </button>
-                            </form>
-                            <?php else: ?>
-                            <span class="text-muted small">—</span>
-                            <?php endif; ?>
-                            <a href="print_slip.php?pallet_no=<?= urlencode($pal['pallet_no']) ?>"
-                               target="_blank" class="btn btn-outline-secondary btn-sm"
-                               title="Print Warehousing Slip">
-                                <i class="bi bi-printer"></i>
-                            </a>
-                            </div>
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
+            <div class="pallet-list-scroll" id="palletListScroll">
+                <div class="pallet-list-loading" id="palletListLoading">
+                    <div class="spinner-border spinner-border-sm me-2"></div>Loading pallets…
+                </div>
             </div>
         </div>
     </div><!-- /col-md-5 sidebar -->
@@ -1196,6 +1260,7 @@ if (isset($_GET['success'])): ?>
 // ─────────────────────────────────────────────────────────────
 const PALLET_ID = <?= $activePalletId ?: 'null' ?>;
 const MAX_ROLLS = <?= $MAX ?>;
+let currentPalletNo = <?= json_encode($activePallet['pallet_no'] ?? '') ?>;
 let   rollCount = <?= count($activeItems) ?>;
 
 // Guard against overlapping/duplicate scan submissions. While a
@@ -1894,6 +1959,206 @@ function clearSummaryFilter() {
     document.getElementById('summaryFilterValueSelect').classList.add('d-none');
     renderSummaryTable(summaryData);
 }
+
+// ─────────────────────────────────────────────────────────────
+// INLINE PALLET NO RENAME (header banner)
+// ─────────────────────────────────────────────────────────────
+let palletRenameSaving = false;
+
+function startEditPalletRename() {
+    document.getElementById('palletRenameDisplay').classList.add('d-none');
+    document.getElementById('palletRenameEditBtn').classList.add('d-none');
+    const form = document.getElementById('palletRenameForm');
+    form.classList.remove('d-none');
+    form.classList.add('d-flex');
+    hidePalletRenameError();
+
+    const input = document.getElementById('palletRenameInput');
+    input.value = currentPalletNo;
+    input.focus();
+    input.select();
+}
+
+function cancelEditPalletRename() {
+    const form = document.getElementById('palletRenameForm');
+    form.classList.add('d-none');
+    form.classList.remove('d-flex');
+    document.getElementById('palletRenameDisplay').classList.remove('d-none');
+    document.getElementById('palletRenameEditBtn').classList.remove('d-none');
+    document.getElementById('palletRenameInput').value = currentPalletNo;
+    hidePalletRenameError();
+}
+
+function onPalletRenameKeydown(event) {
+    if (event.key === 'Enter')  { event.preventDefault(); savePalletRename(); }
+    if (event.key === 'Escape') { event.preventDefault(); cancelEditPalletRename(); }
+}
+
+function showPalletRenameError(msg) {
+    const el = document.getElementById('palletRenameError');
+    el.textContent = msg;
+    el.classList.remove('d-none');
+}
+function hidePalletRenameError() {
+    document.getElementById('palletRenameError').classList.add('d-none');
+}
+
+async function savePalletRename() {
+    if (palletRenameSaving) return;
+
+    const input    = document.getElementById('palletRenameInput');
+    const newValue = input.value.trim();
+
+    if (newValue === '') {
+        showPalletRenameError('Pallet No cannot be empty.');
+        input.focus();
+        return;
+    }
+    if (newValue === currentPalletNo) {
+        cancelEditPalletRename();
+        return;
+    }
+
+    palletRenameSaving = true;
+    document.getElementById('palletRenameSaveBtn').disabled = true;
+    document.getElementById('palletRenameCancelBtn').disabled = true;
+    hidePalletRenameError();
+
+    try {
+        const res = await fetch('pallet.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                ajax:      'rename_pallet',
+                pallet_id: PALLET_ID,
+                pallet_no: newValue,
+            }),
+        });
+        const data = await res.json();
+
+        if (!data.ok) {
+            showPalletRenameError(data.msg || 'Could not rename pallet.');
+            input.focus();
+            return;
+        }
+
+        // Success — update the header in place and drop out of edit mode.
+        currentPalletNo = data.pallet_no;
+        document.getElementById('palletRenameDisplay').textContent = currentPalletNo;
+        cancelEditPalletRename();
+
+        // Refresh the right-side Pallets list so the renamed card shows
+        // immediately, without a full page reload.
+        if (typeof loadPalletList === 'function') loadPalletList();
+
+    } catch (e) {
+        showPalletRenameError('Network error — please try again.');
+        input.focus();
+    } finally {
+        palletRenameSaving = false;
+        document.getElementById('palletRenameSaveBtn').disabled = false;
+        document.getElementById('palletRenameCancelBtn').disabled = false;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// UNIFIED PALLET LIST (redesigned sidebar)
+// Fetches the search-filtered set once from ajax=list_pallets,
+// then filters by tab and re-sorts entirely client-side — tab
+// clicks are instant, only the search box and sort dropdown
+// trigger a re-fetch. Reuses SUMMARY_STATUS_BADGE / summaryStatusLabel
+// so status colors/labels stay identical to the Summary Pallet modal.
+// ─────────────────────────────────────────────────────────────
+let palletListData  = [];
+let palletActiveTab = 'all';
+let palletSearchDebounce = null;
+
+async function loadPalletList() {
+    const q    = document.getElementById('palletSearchInput').value.trim();
+    const sort = document.getElementById('palletSortSelect').value;
+
+    document.getElementById('palletListScroll').innerHTML =
+        `<div class="pallet-list-loading"><div class="spinner-border spinner-border-sm me-2"></div>Loading pallets…</div>`;
+
+    try {
+        const params = new URLSearchParams({ ajax: 'list_pallets', group: 'all', q, sort });
+        const res  = await fetch('pallet.php?' + params.toString());
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.msg || 'Failed to load pallets.');
+        palletListData = data.rows;
+    } catch (e) {
+        document.getElementById('palletListScroll').innerHTML =
+            `<div class="alert alert-danger py-2 m-2 mb-0">Failed to load pallets: ${escHtml(e.message)}</div>`;
+        return;
+    }
+
+    renderPalletList();
+}
+
+function renderPalletList() {
+    const counts = { all: palletListData.length, open: 0, qc: 0, closed: 0 };
+    palletListData.forEach(p => { if (counts[p.status_group] !== undefined) counts[p.status_group]++; });
+    document.querySelectorAll('.tab-count').forEach(el => {
+        el.textContent = counts[el.dataset.count] ?? 0;
+    });
+
+    const rows = palletActiveTab === 'all'
+        ? palletListData
+        : palletListData.filter(p => p.status_group === palletActiveTab);
+
+    document.getElementById('palletListCount').textContent =
+        rows.length + (rows.length === 1 ? ' pallet' : ' pallets');
+
+    const scroll = document.getElementById('palletListScroll');
+
+    if (!rows.length) {
+        scroll.innerHTML = `<div class="pallet-list-empty">No pallets match your filters.</div>`;
+        return;
+    }
+
+    scroll.innerHTML = rows.map(p => {
+        const badgeClass = SUMMARY_STATUS_BADGE[p.status] || 'badge-building';
+        const isActive   = PALLET_ID && Number(p.id) === Number(PALLET_ID);
+        const pct        = Math.min(100, Math.round((p.roll_count / p.max_rolls) * 100));
+        return `
+            <a href="pallet.php?pallet_id=${p.id}"
+               class="pallet-card border-${escHtml(p.status)} ${isActive ? 'active' : ''}">
+                <div class="pallet-card-top">
+                    <div>
+                        <div class="pallet-card-id">${escHtml(p.pallet_no)}</div>
+                        ${p.lot_nos ? `<div class="pallet-card-lot">${escHtml(p.lot_nos)}</div>` : ''}
+                    </div>
+                    <span class="badge ${badgeClass}">${escHtml(summaryStatusLabel(p.status))}</span>
+                </div>
+                <div class="pallet-card-customer">${escHtml(p.customer_name || 'No constraint set yet')}</div>
+                <div class="d-flex align-items-center gap-2">
+                    <div class="pallet-progress flex-grow-1">
+                        <div class="pallet-progress-bar" style="width:${pct}%;"></div>
+                    </div>
+                    <span class="pallet-card-rolls">${p.roll_count}/${p.max_rolls}</span>
+                </div>
+            </a>
+        `;
+    }).join('');
+}
+
+document.getElementById('palletTabGroup').addEventListener('click', e => {
+    const btn = e.target.closest('.pallet-tab');
+    if (!btn) return;
+    document.querySelectorAll('.pallet-tab').forEach(t => t.classList.remove('active'));
+    btn.classList.add('active');
+    palletActiveTab = btn.dataset.group;
+    renderPalletList();
+});
+
+document.getElementById('palletSearchInput').addEventListener('input', () => {
+    clearTimeout(palletSearchDebounce);
+    palletSearchDebounce = setTimeout(loadPalletList, 300);
+});
+
+document.getElementById('palletSortSelect').addEventListener('change', loadPalletList);
+
+loadPalletList();
 
 function exportSummaryPallet() {
     const cat = document.getElementById('summaryFilterCategory').value;

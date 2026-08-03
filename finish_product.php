@@ -2137,6 +2137,8 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
         productDisplay.value = '';
         productDisplay.placeholder = 'Will auto-fill after Coil No is entered';
         productSelectWrap.classList.add('d-none');
+        productSelect.disabled = true;   // FIX: hidden required <select> must be disabled
+                                          // or it silently blocks native form submission
         productAutoWrap.classList.remove('d-none');
     }
 
@@ -2178,6 +2180,7 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                     // Single match — auto-fill, readonly
                     productAutoWrap.classList.remove('d-none');
                     productSelectWrap.classList.add('d-none');
+                    productSelect.disabled = true;  // FIX
                     productDisplay.value = data.products[0];
                     productHidden.value  = data.products[0];
                     coilHint.textContent = 'Product matched automatically.';
@@ -2186,6 +2189,7 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                     // Multiple matches — show dropdown, wait for user choice
                     productAutoWrap.classList.add('d-none');
                     productSelectWrap.classList.remove('d-none');
+                    productSelect.disabled = false;  // FIX: re-enable, it's now in use
                     productSelect.innerHTML = '<option value="">-- Select Product --</option>' +
                         data.products.map(p => `<option value="${p}">${p}</option>`).join('');
                     coilHint.textContent = 'Multiple products found — please select one above.';

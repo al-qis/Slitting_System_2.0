@@ -269,12 +269,21 @@ try {
         $length          = (float)$row['length'];
         $actual_length   = (float)$row['actual_length'];
 
-        $stmt->bind_param(
-            "isssssssddss",
-            $mother_id, $source, $original_source, $row['product'],
-            $row['lot_no'], $row['coil_no'], $row['roll_no'],
-            $width, $length, $actual_length, $status, $date_in
-        );
+       $stmt->bind_param(
+        "isssssdddss",
+        $mother_id,
+        $source,
+        $original_source,
+        $product,
+        $lot_no,
+        $coil_no,
+        $roll_no,
+        $width,
+        $length,
+        $actual_length,
+        $status,
+        $date_in
+    );
 
         if (!$stmt->execute()) {
             throw new Exception("Row {$row['_excel_row']}: " . $stmt->error);
@@ -317,4 +326,6 @@ $reportHtml .= "<a href='finish_product.php?success=bulk_import&count={$successC
 $reportHtml .= "</div>";
 
 die($reportHtml);
+
+
 
