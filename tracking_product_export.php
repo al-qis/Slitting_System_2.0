@@ -40,7 +40,8 @@ $sql = "
            sp.width, sp.actual_length, sp.length, sp.status, sp.stock_counted,
            sp.is_reslitted, sp.is_recoiled, sp.date_in, sp.date_out,
            sp.delivered_at, sp.original_source, sp.customer_name, sp.ref_no,
-           mc.grade
+           mc.grade,
+           mc.lot_no AS mother_lot_no
     FROM slitting_product sp
     LEFT JOIN mother_coil mc ON mc.id = sp.mother_id
     WHERE sp.is_voided = 0
@@ -130,11 +131,14 @@ if (!class_exists('\PhpOffice\PhpSpreadsheet\Spreadsheet')) {
     header('Content-Disposition: attachment; filename="'.str_replace('.xlsx','.csv',$filename).'"');
     $out = fopen('php://output','w');
     fwrite($out,"\xEF\xBB\xBF");
-    fputcsv($out,['#','Status','Source','Product','Grade','Lot No','Coil No','Roll No',
+    fputcsv($out,['Parents',
+                  '#','Status','Source','Product','Grade','Lot No','Coil No','Roll No',
                   'Width (mm)','Length (m)','Actual Length (m)','Customer','Ref No',
                   'Date Produced','QC Date','Delivered At']);
     foreach ($rows as $i => $row) {
-        fputcsv($out,[$i+1, statusLabel($row), sourceLabel($row['original_source']??null),
+        fputcsv($out,[
+            $row['mother_lot_no']??'',
+            $i+1, statusLabel($row), sourceLabel($row['original_source']??null),
             $row['product']??'', $row['grade']??'', $row['lot_no']??'',
             $row['coil_no']??'', str_replace('R','R-',$row['roll_no']??''),
             (float)($row['width']??0),
@@ -151,7 +155,7 @@ $spreadsheet = new Spreadsheet();
 $sheet = $spreadsheet->getActiveSheet();
 $sheet->setTitle('Product Traceability');
 
-$totalCols = 'P'; // 16 columns A–P
+$totalCols = 'Q'; // 17 columns A–Q (Parents + original 16, # column hidden below)
 
 // Row 1 — Title
 $sheet->mergeCells("A1:{$totalCols}1");
@@ -190,7 +194,8 @@ $sheet->mergeCells("A3:{$totalCols}3");
 $sheet->getRowDimension(3)->setRowHeight(6);
 
 // Row 4 — Column headers
-$headers = ['#','Status','Source','Product','Grade',
+$headers = ['Parents',
+            '#','Status','Source','Product','Grade',
             'Lot No','Coil No','Roll No',
             'Width (mm)','Length (m)','Actual Length (m)',
             'Customer','Ref No',
@@ -217,22 +222,23 @@ foreach ($rows as $i => $row) {
     $dispLen = $row['actual_length'] ?? $row['length'] ?? '';
 
     $data = [
-        $i + 1,                                                    // A  #
-        statusLabel($row),                                         // B  Status
-        sourceLabel($row['original_source'] ?? null),              // C  Source
-        $row['product']       ?? '',                               // D  Product
-        $row['grade']         ?? '',                               // E  Grade
-        $row['lot_no']        ?? '',                               // F  Lot No
-        $row['coil_no']       ?? '',                               // G  Coil No
-        str_replace('R','R-',$row['roll_no'] ?? ''),               // H  Roll No
-        (float)($row['width'] ?? 0),                               // I  Width
-        is_numeric($row['length'])        ? (float)$row['length']        : '', // J
-        is_numeric($row['actual_length']) ? (float)$row['actual_length'] : '', // K
-        $row['customer_name'] ?? '',                               // L  Customer
-        $row['ref_no']        ?? '',                               // M  Ref No
-        fmtDate($row['date_in']),                                  // N
-        fmtDate($row['date_out']),                                 // O
-        fmtDate($row['delivered_at']),                             // P
+        $row['mother_lot_no']  ?? '',                              // A  Parents
+        $i + 1,                                                    // B  #  (hidden column)
+        statusLabel($row),                                         // C  Status
+        sourceLabel($row['original_source'] ?? null),              // D  Source
+        $row['product']       ?? '',                               // E  Product
+        $row['grade']         ?? '',                               // F  Grade
+        $row['lot_no']        ?? '',                               // G  Lot No
+        $row['coil_no']       ?? '',                               // H  Coil No
+        str_replace('R','R-',$row['roll_no'] ?? ''),               // I  Roll No
+        (float)($row['width'] ?? 0),                               // J  Width
+        is_numeric($row['length'])        ? (float)$row['length']        : '', // K
+        is_numeric($row['actual_length']) ? (float)$row['actual_length'] : '', // L
+        $row['customer_name'] ?? '',                               // M  Customer
+        $row['ref_no']        ?? '',                               // N  Ref No
+        fmtDate($row['date_in']),                                  // O
+        fmtDate($row['date_out']),                                 // P
+        fmtDate($row['delivered_at']),                             // Q
     ];
 
     $col = 'A';
@@ -269,13 +275,17 @@ $sheet->getStyle('A'.$rowNum)->getFont()->setBold(true);
 
 // ── Column widths ─────────────────────────────────────────────
 $colWidths = [
-    'A'=>5,  'B'=>14, 'C'=>10, 'D'=>16, 'E'=>10,
-    'F'=>18, 'G'=>14, 'H'=>10, 'I'=>11, 'J'=>12,
-    'K'=>15, 'L'=>20, 'M'=>16, 'N'=>14, 'O'=>12, 'P'=>14,
+    'A'=>18, 'B'=>5,  'C'=>14, 'D'=>10, 'E'=>16, 'F'=>10,
+    'G'=>18, 'H'=>14, 'I'=>10, 'J'=>11, 'K'=>12,
+    'L'=>15, 'M'=>20, 'N'=>16, 'O'=>14, 'P'=>12, 'Q'=>14,
 ];
 foreach ($colWidths as $c => $w) {
     $sheet->getColumnDimension($c)->setWidth($w);
 }
+
+// The # column is kept in the data model (for row numbering / any
+// downstream formulas) but hidden from view per request.
+$sheet->getColumnDimension('B')->setVisible(false);
 
 // Outer border around data table
 if ($rowNum > 5) {
