@@ -32,17 +32,39 @@ Langkah 2.4: Import Database (.sql)
 Langkah 2.5: Tetapan Fail Connection (config.php)
 Create file config. Pastikan tetapan seperti berikut:
 <?php
-$host = "localhost";
-$user = "root";
-$pass = ""; // Kosongkan secara default di Laragon
-$db   = "slitting_db";
+/**
+ * Main System Configuration
+ * Location: /slitting_system/config.php
+ * -----------------------------------------------------------------------
+ * Single source of truth for database connection, timezones, and base URL.
+ * -----------------------------------------------------------------------
+ */
 
-$conn = mysqli_connect($host, $user, $pass, $db);
+// Database Credentials
+$host   = 'localhost'; 
+$user   = '';
+$pass   = ''; 
+$dbname = 'slitting_db'; 
 
-if (!$conn) {
-    die("Connection failed: " . mysqli_connect_error());
-}
+// Initialize MySQLi Connection
+$conn = new mysqli($host, $user, $pass, $dbname);
+
+// Handle Connection Failures
+if ($conn->connect_error) { 
+    die("Database Connection Failed: " . $conn->connect_error); 
+} 
+
+// Set Character Set and Timezone
+$conn->set_charset('utf8mb4');
+date_default_timezone_set('Asia/Kuala_Lumpur');
+
+// Dynamic Base URL Configuration
+$protocol    = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? "https" : "http";
+$host_header = $_SERVER['HTTP_HOST'] ?? 'localhost';
+$BASE_URL    = "{$protocol}://{$host_header}/slitting_system";
+
 ?>
+
 
 3. Menguji & Melancarkan Sistem
 Selepas semua langkah di atas selesai, buka pelayar web (Google Chrome / Edge) dan taip salah satu URL berikut:
