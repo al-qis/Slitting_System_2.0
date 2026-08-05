@@ -76,7 +76,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'list_pallets') {
     header('Content-Type: application/json');
     $group  = trim($_GET['group']  ?? 'all');
     $search = trim($_GET['q']      ?? '');
-    $sort   = trim($_GET['sort']   ?? 'updated');
+    $sort   = trim($_GET['sort']   ?? 'id');
     echo json_encode($pm->listPallets($group, $search, $sort));
     exit;
 }
@@ -94,6 +94,22 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === 'rename_pallet') {
         exit;
     }
     echo json_encode($pm->renamePallet($palletId, $newNo));
+    exit;
+}
+
+// ── AJAX: update Customer & Ref No (inline header edit) ─────────
+// Propagates the new values down to every slitting_product row on
+// this pallet, so pallet and roll data never drift apart.
+if (isset($_POST['ajax']) && $_POST['ajax'] === 'update_customer_ref') {
+    header('Content-Type: application/json');
+    $palletId    = (int)($_POST['pallet_id'] ?? 0);
+    $newCustomer = trim($_POST['customer_name'] ?? '');
+    $newRefNo    = trim($_POST['ref_no'] ?? '');
+    if ($palletId <= 0) {
+        echo json_encode(['ok' => false, 'msg' => 'Missing or invalid pallet_id.']);
+        exit;
+    }
+    echo json_encode($pm->updatePalletCustomerRef($palletId, $newCustomer, $newRefNo));
     exit;
 }
 
@@ -457,6 +473,13 @@ $isReadOnly = $activePallet && !in_array($activePallet['status'], ['building', '
 
 .pallet-card-top      { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:5px; }
 .pallet-card-id        { font-family:'Courier New', monospace; font-weight:700; font-size:13px; }
+.pallet-card-open-pill {
+    display:inline-flex; align-items:center; gap:3px;
+    font-family:'Segoe UI', Arial, sans-serif; font-weight:700; font-size:9px;
+    text-transform:uppercase; letter-spacing:.3px;
+    background:rgba(255,255,255,.25); color:#fff;
+    border-radius:8px; padding:1px 6px; margin-left:6px; vertical-align:middle;
+}
 .pallet-card-lot        { font-family:'Courier New', monospace; font-size:10px; color:#adb5bd; margin-top:1px; }
 .pallet-card-customer  { font-size:12.5px; font-weight:600; margin-bottom:7px; }
 .pallet-card-rolls      { font-size:11px; font-weight:600; color:#6c757d; white-space:nowrap; }
@@ -482,6 +505,31 @@ $isReadOnly = $activePallet && !in_array($activePallet['status'], ['building', '
     background:#fff; color:#dc3545; border:1px solid #dc3545;
     border-radius:4px; padding:4px 9px; font-size:11px; font-weight:600;
     white-space:nowrap; z-index:20; box-shadow:0 2px 8px rgba(0,0,0,.18);
+}
+
+/* ── Inline Customer / Ref No edit (constraint badge header) ── */
+.constraint-edit-btn { font-size:11px; opacity:.7; line-height:1; }
+.constraint-edit-btn:hover { opacity:1; }
+#constraintEditForm.d-flex { display:flex !important; }
+.constraint-edit-input { width:120px; font-size:11px; padding:2px 6px; height:auto; }
+.constraint-edit-error {
+    position:absolute; top:100%; left:12px; margin-top:2px;
+    background:#fff; color:#dc3545; border:1px solid #dc3545;
+    border-radius:4px; padding:3px 8px; font-size:11px; font-weight:600;
+    white-space:nowrap; z-index:20; box-shadow:0 2px 8px rgba(0,0,0,.18);
+}
+
+/* ── Manual entry — now the single/primary way to add a roll by hand ── */
+.manual-entry-input {
+    font-family:'Courier New', monospace;
+    font-size:16px;
+    font-weight:600;
+    padding:.55rem .75rem;
+    letter-spacing:.01em;
+}
+.manual-entry-input:focus {
+    border-color:#0d6efd;
+    box-shadow:0 0 0 .2rem rgba(13,110,253,.18);
 }
 
 /* ── Slot cards ── */
@@ -731,12 +779,41 @@ if (isset($_GET['success'])): ?>
                  fill it live after the first roll, removing the need for a
                  full page reload before scanning the second roll. -->
             <?php if (!empty(trim($activePallet['customer_name'] ?? ''))): ?>
-            <div id="constraintHeader" class="px-3 pt-2 pb-1 border-bottom d-flex flex-wrap gap-2 align-items-center">
-                <span class="constraint-badge"><i class="bi bi-person-check me-1"></i><?= htmlspecialchars($activePallet['customer_name']) ?></span>
-                <span class="constraint-badge"><i class="bi bi-hash me-1"></i><?= htmlspecialchars($activePallet['ref_no']) ?></span>
-                <span class="constraint-badge"><i class="bi bi-tag me-1"></i><?= htmlspecialchars($activePallet['product_type']) ?></span>
-                <span class="constraint-badge"><i class="bi bi-arrows-expand me-1"></i><?= number_format((float)$activePallet['width']) ?> mm</span>
-                <small class="text-muted align-self-center" style="font-size:10px;">All rolls must match</small>
+            <div id="constraintHeader" class="px-3 pt-2 pb-1 border-bottom d-flex flex-wrap gap-2 align-items-center position-relative">
+                <!-- Display mode -->
+                <span class="d-flex flex-wrap gap-2 align-items-center" id="constraintDisplayGroup">
+                    <span class="constraint-badge"><i class="bi bi-person-check me-1"></i><span id="constraintCustomerText"><?= htmlspecialchars($activePallet['customer_name']) ?></span></span>
+                    <span class="constraint-badge"><i class="bi bi-hash me-1"></i><span id="constraintRefNoText"><?= htmlspecialchars($activePallet['ref_no']) ?></span></span>
+                    <span class="constraint-badge"><i class="bi bi-tag me-1"></i><?= htmlspecialchars($activePallet['product_type']) ?></span>
+                    <span class="constraint-badge"><i class="bi bi-arrows-expand me-1"></i><?= number_format((float)$activePallet['width']) ?> mm</span>
+                    <button type="button" class="btn btn-sm btn-link p-0 text-primary constraint-edit-btn" id="constraintEditBtn"
+                            title="Edit Customer / Ref No" onclick="startEditConstraint()">
+                        <i class="bi bi-pencil-square"></i>
+                    </button>
+                </span>
+
+                <!-- Edit mode (hidden until the pencil is clicked) -->
+                <div class="d-none align-items-center gap-1 flex-wrap" id="constraintEditForm">
+                    <input type="text" class="form-control form-control-sm constraint-edit-input" id="constraintCustomerInput"
+                           value="<?= htmlspecialchars($activePallet['customer_name']) ?>"
+                           placeholder="Customer" maxlength="120" autocomplete="off"
+                           onkeydown="onConstraintEditKeydown(event)">
+                    <input type="text" class="form-control form-control-sm constraint-edit-input" id="constraintRefNoInput"
+                           value="<?= htmlspecialchars($activePallet['ref_no']) ?>"
+                           placeholder="Ref No" maxlength="80" autocomplete="off"
+                           onkeydown="onConstraintEditKeydown(event)">
+                    <button type="button" class="btn btn-sm btn-success" id="constraintSaveBtn"
+                            title="Save (Enter)" onclick="saveConstraintEdit()">
+                        <i class="bi bi-check-lg"></i>
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-danger" id="constraintCancelBtn"
+                            title="Cancel (Esc)" onclick="cancelEditConstraint()">
+                        <i class="bi bi-x-lg"></i>
+                    </button>
+                </div>
+
+                <span class="constraint-edit-error d-none" id="constraintEditError"></span>
+                <small class="text-muted align-self-center" id="constraintHintText" style="font-size:10px;">All rolls must match</small>
             </div>
             <?php else: ?>
             <div id="constraintHeader" class="px-3 py-2 border-bottom">
@@ -776,44 +853,30 @@ if (isset($_GET['success'])): ?>
 
                 <div class="alert alert-info py-2 mb-3">
                     <i class="bi bi-qr-code-scan me-1"></i>
-                    Scan a product QR, or type Lot + Coil + Roll below.
+                    Scan a product QR, or type the item below.
                 </div>
 
-                <!-- Manual entry row -->
-                <div class="row g-2 mb-3">
-                    <div class="col-md-3">
-                        <input type="text" id="manLot"  class="form-control form-control-sm"
-                               placeholder="Lot No" autocomplete="off">
-                    </div>
-                    <div class="col-md-3">
-                        <input type="text" id="manCoil" class="form-control form-control-sm"
-                               placeholder="Coil No" autocomplete="off">
-                    </div>
-                    <div class="col-md-3">
-                        <input type="text" id="manRoll" class="form-control form-control-sm"
-                               placeholder="Roll No" autocomplete="off">
-                    </div>
-                    <div class="col-md-3">
-                        <button type="button" class="btn btn-primary btn-sm w-100"
-                                onclick="manualLookup()">
-                            <i class="bi bi-search me-1"></i> Find & Add
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Combined single-line manual entry (space-separated) -->
-                <div class="row g-2 mb-3">
-                    <div class="col-md-9">
-                        <input type="text" id="manCombined" class="form-control form-control-sm"
-                               placeholder="Or type all-in-one:  826277 FK-1 R1"
-                               autocomplete="off" autocorrect="off" spellcheck="false"
-                               style="font-family:monospace;">
-                    </div>
-                    <div class="col-md-3">
-                        <button type="button" class="btn btn-outline-primary btn-sm w-100"
-                                onclick="combinedLookup()">
-                            <i class="bi bi-box-arrow-in-down me-1"></i> Add
-                        </button>
+                <!-- Single manual-entry input — replaces the old 3-box
+                     (Lot/Coil/Roll) + separate all-in-one row. Accepts
+                     both "826277 FK-1 R1" (space-separated) and
+                     "LOT=826277;COIL=FK-1;ROLL=R1" (scanner format);
+                     see parseQR(). -->
+                <div class="mb-3">
+                    <label for="manCombined" class="form-label fw-bold mb-1" style="font-size:12.5px;">
+                        Scan or Type Item <span class="text-muted fw-normal">(e.g. 826277 FK-1 R1 or Lot;Coil;Roll)</span>
+                    </label>
+                    <div class="row g-2">
+                        <div class="col-9">
+                            <input type="text" id="manCombined" class="form-control manual-entry-input"
+                                   placeholder="826277 FK-1 R1"
+                                   autocomplete="off" autocorrect="off" spellcheck="false">
+                        </div>
+                        <div class="col-3">
+                            <button type="button" class="btn btn-primary w-100 h-100"
+                                    onclick="combinedLookup()">
+                                <i class="bi bi-box-arrow-in-down me-1"></i> Add
+                            </button>
+                        </div>
                     </div>
                 </div>
 
@@ -1121,9 +1184,9 @@ if (isset($_GET['success'])): ?>
                         </button>
                     </div>
                     <select id="palletSortSelect" class="form-select form-select-sm" style="width:auto;">
+                        <option value="id" selected>Pallet No (A–Z)</option>
                         <option value="updated">Recently Updated</option>
                         <option value="capacity">Capacity</option>
-                        <option value="id">Pallet No</option>
                     </select>
                 </div>
             </div>
@@ -1317,18 +1380,65 @@ function recalcTotalWeight() {
 // After the FIRST roll seeds the pallet constraints, fill the
 // header badges live. This replaces the old location.reload(),
 // which created a window where the next scan failed.
+// Mirrors the PHP-rendered markup exactly (including the inline
+// Customer/Ref No edit controls) so the pencil-edit feature works
+// immediately, without needing a page reload first.
 // ─────────────────────────────────────────────────────────────
 function updateConstraintBadges(p) {
     const header = document.getElementById('constraintHeader');
     if (!header) return;
-    header.className = 'px-3 pt-2 pb-1 border-bottom d-flex flex-wrap gap-2 align-items-center';
+    header.className = 'px-3 pt-2 pb-1 border-bottom d-flex flex-wrap gap-2 align-items-center position-relative';
     header.innerHTML = `
-        <span class="constraint-badge"><i class="bi bi-person-check me-1"></i>${escHtml(p.customer_name || '')}</span>
-        <span class="constraint-badge"><i class="bi bi-hash me-1"></i>${escHtml(p.ref_no || '')}</span>
-        <span class="constraint-badge"><i class="bi bi-tag me-1"></i>${escHtml(p.product || '')}</span>
-        <span class="constraint-badge"><i class="bi bi-arrows-expand me-1"></i>${(+p.width).toFixed(0)} mm</span>
-        <small class="text-muted align-self-center" style="font-size:10px;">All rolls must match</small>
+        <span class="d-flex flex-wrap gap-2 align-items-center" id="constraintDisplayGroup">
+            <span class="constraint-badge"><i class="bi bi-person-check me-1"></i><span id="constraintCustomerText">${escHtml(p.customer_name || '')}</span></span>
+            <span class="constraint-badge"><i class="bi bi-hash me-1"></i><span id="constraintRefNoText">${escHtml(p.ref_no || '')}</span></span>
+            <span class="constraint-badge"><i class="bi bi-tag me-1"></i>${escHtml(p.product || '')}</span>
+            <span class="constraint-badge"><i class="bi bi-arrows-expand me-1"></i>${(+p.width).toFixed(0)} mm</span>
+            <button type="button" class="btn btn-sm btn-link p-0 text-primary constraint-edit-btn" id="constraintEditBtn"
+                    title="Edit Customer / Ref No" onclick="startEditConstraint()">
+                <i class="bi bi-pencil-square"></i>
+            </button>
+        </span>
+        <div class="d-none align-items-center gap-1 flex-wrap" id="constraintEditForm">
+            <input type="text" class="form-control form-control-sm constraint-edit-input" id="constraintCustomerInput"
+                   value="${escHtml(p.customer_name || '')}" placeholder="Customer" maxlength="120" autocomplete="off"
+                   onkeydown="onConstraintEditKeydown(event)">
+            <input type="text" class="form-control form-control-sm constraint-edit-input" id="constraintRefNoInput"
+                   value="${escHtml(p.ref_no || '')}" placeholder="Ref No" maxlength="80" autocomplete="off"
+                   onkeydown="onConstraintEditKeydown(event)">
+            <button type="button" class="btn btn-sm btn-success" id="constraintSaveBtn"
+                    title="Save (Enter)" onclick="saveConstraintEdit()">
+                <i class="bi bi-check-lg"></i>
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-danger" id="constraintCancelBtn"
+                    title="Cancel (Esc)" onclick="cancelEditConstraint()">
+                <i class="bi bi-x-lg"></i>
+            </button>
+        </div>
+        <span class="constraint-edit-error d-none" id="constraintEditError"></span>
+        <small class="text-muted align-self-center" id="constraintHintText" style="font-size:10px;">All rolls must match</small>
     `;
+    // Keep the inline-edit feature's state in sync with the freshly
+    // seeded values, so opening the editor right after the first
+    // scan (no reload) shows the correct starting values.
+    currentConstraintCustomer = p.customer_name || '';
+    currentConstraintRefNo    = p.ref_no || '';
+}
+
+// ─────────────────────────────────────────────────────────────
+// refreshConstraintRefBadge(refNo)
+// For rolls AFTER the first: the pallet's Ref No can silently
+// auto-upgrade server-side (STOCK → a real SO number, the first
+// time a non-STOCK roll is added — see PalletManager::addRollToPallet).
+// This just re-syncs the visible badge + edit-form state so the UI
+// reflects that without a page reload.
+// ─────────────────────────────────────────────────────────────
+function refreshConstraintRefBadge(refNo) {
+    const el = document.getElementById('constraintRefNoText');
+    if (el && refNo !== undefined && refNo !== currentConstraintRefNo) {
+        el.textContent = refNo;
+        currentConstraintRefNo = refNo;
+    }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1373,23 +1483,9 @@ async function processQR(raw) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// MANUAL ENTRY — three separate boxes (Lot / Coil / Roll)
-// ─────────────────────────────────────────────────────────────
-async function manualLookup() {
-    const lot  = document.getElementById('manLot').value.trim();
-    const coil = document.getElementById('manCoil').value.trim();
-    const roll = document.getElementById('manRoll').value.trim();
-    if (!lot || !coil || !roll) {
-        showFeedback('Enter Lot, Coil and Roll No.', false);
-        return;
-    }
-    await lookupAndAdd(lot, coil, roll);
-    ['manLot', 'manCoil', 'manRoll'].forEach(id => document.getElementById(id).value = '');
-}
-
-// ─────────────────────────────────────────────────────────────
-// MANUAL ENTRY — single combined box (space-separated)
-//   e.g. "826277 FK-1 R1"
+// MANUAL ENTRY — single combined box (the sole manual entry
+// method now — replaces the old 3-box Lot/Coil/Roll row)
+//   e.g. "826277 FK-1 R1"  or  "LOT=826277;COIL=FK-1;ROLL=R1"
 // ─────────────────────────────────────────────────────────────
 async function combinedLookup() {
     const el  = document.getElementById('manCombined');
@@ -1473,11 +1569,9 @@ async function lookupAndAdd(lot, coil, roll) {
         fillSlot(ad.seq, p);
         updateProgress(rollCount);
 
-        // Clear manual entry fields after ANY successful add
-        ['manLot', 'manCoil', 'manRoll', 'manCombined'].forEach(id => {
-            const el = document.getElementById(id);
-            if (el) el.value = '';
-        });
+        // Clear the manual entry field after ANY successful add
+        const manCombinedEl = document.getElementById('manCombined');
+        if (manCombinedEl) manCombinedEl.value = '';
 
         showFeedback(
             `✓ Added: ${escHtml(lot)} ${escHtml(coil)} – R-${escHtml(roll)} (slot ${ad.seq})`,
@@ -1489,7 +1583,18 @@ async function lookupAndAdd(lot, coil, roll) {
         // a window where scanning the 2nd roll failed with a stale
         // "already on pallet" error and forced a manual refresh.
         if (ad.seq === 1) {
-            updateConstraintBadges(p);
+            updateConstraintBadges({
+                customer_name: ad.customer_name,
+                ref_no:        ad.ref_no,
+                product:       ad.product_type,
+                width:         ad.width,
+            });
+        } else {
+            // Later rolls don't reseed the header, but the pallet's Ref
+            // No can auto-upgrade server-side (STOCK → a real SO number
+            // the first time a non-STOCK roll is added) — re-sync the
+            // badge text in that case.
+            refreshConstraintRefBadge(ad.ref_no);
         }
     } finally {
         // Always release the lock so the next legitimate scan works.
@@ -2062,6 +2167,126 @@ async function savePalletRename() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// INLINE CUSTOMER / REF NO EDIT (constraint badge header)
+// Same pattern as the pallet-no rename above: click pencil → edit
+// two fields → save via AJAX → PalletManager::updatePalletCustomerRef()
+// propagates the new values to every roll (slitting_product) on
+// this pallet so nothing drifts out of sync.
+// ─────────────────────────────────────────────────────────────
+let constraintEditSaving = false;
+let currentConstraintCustomer = <?= json_encode($activePallet['customer_name'] ?? '') ?>;
+let currentConstraintRefNo    = <?= json_encode($activePallet['ref_no'] ?? '') ?>;
+
+function startEditConstraint() {
+    document.getElementById('constraintDisplayGroup').classList.add('d-none');
+    const form = document.getElementById('constraintEditForm');
+    form.classList.remove('d-none');
+    form.classList.add('d-flex');
+    document.getElementById('constraintHintText').classList.add('d-none');
+    hideConstraintEditError();
+
+    const customerInput = document.getElementById('constraintCustomerInput');
+    const refNoInput     = document.getElementById('constraintRefNoInput');
+    customerInput.value = currentConstraintCustomer;
+    refNoInput.value    = currentConstraintRefNo;
+    customerInput.focus();
+    customerInput.select();
+}
+
+function cancelEditConstraint() {
+    const form = document.getElementById('constraintEditForm');
+    form.classList.add('d-none');
+    form.classList.remove('d-flex');
+    document.getElementById('constraintDisplayGroup').classList.remove('d-none');
+    document.getElementById('constraintHintText').classList.remove('d-none');
+    document.getElementById('constraintCustomerInput').value = currentConstraintCustomer;
+    document.getElementById('constraintRefNoInput').value    = currentConstraintRefNo;
+    hideConstraintEditError();
+}
+
+function onConstraintEditKeydown(event) {
+    if (event.key === 'Enter')  { event.preventDefault(); saveConstraintEdit(); }
+    if (event.key === 'Escape') { event.preventDefault(); cancelEditConstraint(); }
+}
+
+function showConstraintEditError(msg) {
+    const el = document.getElementById('constraintEditError');
+    el.textContent = msg;
+    el.classList.remove('d-none');
+}
+function hideConstraintEditError() {
+    document.getElementById('constraintEditError').classList.add('d-none');
+}
+
+async function saveConstraintEdit() {
+    if (constraintEditSaving) return;
+
+    const customerInput = document.getElementById('constraintCustomerInput');
+    const refNoInput     = document.getElementById('constraintRefNoInput');
+    const newCustomer    = customerInput.value.trim();
+    const newRefNo       = refNoInput.value.trim();
+
+    if (newCustomer === '') {
+        showConstraintEditError('Customer cannot be empty.');
+        customerInput.focus();
+        return;
+    }
+    if (newRefNo === '') {
+        showConstraintEditError('Ref No cannot be empty.');
+        refNoInput.focus();
+        return;
+    }
+    if (newCustomer === currentConstraintCustomer && newRefNo === currentConstraintRefNo) {
+        cancelEditConstraint();
+        return;
+    }
+
+    constraintEditSaving = true;
+    document.getElementById('constraintSaveBtn').disabled = true;
+    document.getElementById('constraintCancelBtn').disabled = true;
+    hideConstraintEditError();
+
+    try {
+        const res = await fetch('pallet.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                ajax:          'update_customer_ref',
+                pallet_id:     PALLET_ID,
+                customer_name: newCustomer,
+                ref_no:        newRefNo,
+            }),
+        });
+        const data = await res.json();
+
+        if (!data.ok) {
+            showConstraintEditError(data.msg || 'Could not update Customer / Ref No.');
+            customerInput.focus();
+            return;
+        }
+
+        // Success — update the badges in place and drop out of edit mode.
+        currentConstraintCustomer = data.customer_name;
+        currentConstraintRefNo    = data.ref_no;
+        document.getElementById('constraintCustomerText').textContent = currentConstraintCustomer;
+        document.getElementById('constraintRefNoText').textContent    = currentConstraintRefNo;
+        cancelEditConstraint();
+
+        // Refresh the right-side Pallets list so the updated card shows
+        // immediately, without a full page reload.
+        if (typeof loadPalletList === 'function') loadPalletList();
+
+    } catch (e) {
+        showConstraintEditError('Network error — please try again.');
+        customerInput.focus();
+    } finally {
+        constraintEditSaving = false;
+        document.getElementById('constraintSaveBtn').disabled = false;
+        document.getElementById('constraintCancelBtn').disabled = false;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
 // UNIFIED PALLET LIST (redesigned sidebar)
 // Fetches the search-filtered set once from ajax=list_pallets,
 // then filters by tab and re-sorts entirely client-side — tab
@@ -2103,8 +2328,18 @@ function renderPalletList() {
     });
 
     const rows = palletActiveTab === 'all'
-        ? palletListData
+        ? [...palletListData]
         : palletListData.filter(p => p.status_group === palletActiveTab);
+
+    // Pin the pallet the user currently has open to the very top of the
+    // list, regardless of sort order, so it's always easy to find.
+    if (PALLET_ID) {
+        const activeIdx = rows.findIndex(p => Number(p.id) === Number(PALLET_ID));
+        if (activeIdx > 0) {
+            const [activeRow] = rows.splice(activeIdx, 1);
+            rows.unshift(activeRow);
+        }
+    }
 
     document.getElementById('palletListCount').textContent =
         rows.length + (rows.length === 1 ? ' pallet' : ' pallets');
@@ -2125,7 +2360,10 @@ function renderPalletList() {
                class="pallet-card border-${escHtml(p.status)} ${isActive ? 'active' : ''}">
                 <div class="pallet-card-top">
                     <div>
-                        <div class="pallet-card-id">${escHtml(p.pallet_no)}</div>
+                        <div class="pallet-card-id">
+                            ${escHtml(p.pallet_no)}
+                            ${isActive ? '<span class="pallet-card-open-pill"><i class="bi bi-eye-fill"></i> Open</span>' : ''}
+                        </div>
                         ${p.lot_nos ? `<div class="pallet-card-lot">${escHtml(p.lot_nos)}</div>` : ''}
                     </div>
                     <span class="badge ${badgeClass}">${escHtml(summaryStatusLabel(p.status))}</span>

@@ -642,7 +642,7 @@ $sql = 'SELECT * FROM mother_coil';
 if ($where) {
     $sql .= ' WHERE ' . implode(' AND ', $where);
 }
-$sql .= ' ORDER BY id ASC';
+$sql .= ' ORDER BY id DESC';
 
 $stmt = $conn->prepare($sql);
 if ($types !== '') {

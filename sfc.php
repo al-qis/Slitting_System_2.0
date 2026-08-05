@@ -12,6 +12,91 @@ if (!in_array($_SESSION['role'], ['slitting','mkl3'], true)) {
 
 include 'config.php';
 
+// ── Handle: Add Initial Stock (manual bulk entry) ────────────
+// Used for onboarding this department onto the system — lets a
+// supervisor key in SFC stock that already physically exists on the
+// floor but was never produced through slitting/reslit/recoiling in
+// this app. No mother_id, since there's no real mother coil behind
+// these rows (mother_id is nullable in `sfc`, same as process_log's
+// mother_id elsewhere in this codebase). Rows start life exactly like
+// a normal active SFC entry (date_out IS NULL, action IS NULL), so
+// every existing Process/Delete/QR-scan flow on this page works on
+// them unmodified.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_initial_stock'])) {
+    $products = $_POST['init_product'] ?? [];
+    $lots     = $_POST['init_lot_no']  ?? [];
+    $coils    = $_POST['init_coil_no'] ?? [];
+    $rolls    = $_POST['init_roll_no'] ?? [];
+    $widths   = $_POST['init_width']   ?? [];
+    $lengths  = $_POST['init_length']  ?? [];
+
+    $conn->begin_transaction();
+    try {
+        $insertStmt = $conn->prepare("
+            INSERT INTO sfc (mother_id, product, lot_no, coil_no, roll_no, width, length, action, date_created)
+            VALUES (NULL, ?, ?, ?, ?, ?, ?, NULL, NOW())
+        ");
+        if (!$insertStmt) {
+            throw new Exception("Prepare failed: " . $conn->error);
+        }
+
+        $insertedCount = 0;
+
+        foreach ($products as $i => $productRaw) {
+            $product = trim($productRaw);
+            $lot     = trim($lots[$i]    ?? '');
+            $coil    = trim($coils[$i]   ?? '');
+            $roll    = trim($rolls[$i]   ?? '');
+            $width   = trim($widths[$i]  ?? '');
+            $length  = trim($lengths[$i] ?? '');
+
+            // Skip rows the user left completely blank (extra unused
+            // rows in the table are expected, not an error).
+            if ($product === '' && $lot === '' && $coil === '' && $width === '' && $length === '') {
+                continue;
+            }
+
+            if ($product === '' || $lot === '' || $coil === '' || $width === '' || $length === '') {
+                throw new Exception(
+                    "Row " . ($i + 1) . ": Product, Lot No, Coil No, Width, and Length are all required."
+                );
+            }
+            if (!is_numeric($width) || !is_numeric($length)) {
+                throw new Exception("Row " . ($i + 1) . ": Width and Length must be numbers.");
+            }
+
+            $widthVal  = (float)$width;
+            $lengthVal = (float)$length;
+
+            $insertStmt->bind_param("ssssdd", $product, $lot, $coil, $roll, $widthVal, $lengthVal);
+            if (!$insertStmt->execute()) {
+                throw new Exception("Row " . ($i + 1) . ": " . $insertStmt->error);
+            }
+
+            $newSfcId = $conn->insert_id;
+            log_source_tracking($conn, $newSfcId, 'sfc', 'manual_initial_stock', 'sfc', 'INITIAL_STOCK_ADDED');
+            $insertedCount++;
+        }
+        $insertStmt->close();
+
+        if ($insertedCount === 0) {
+            throw new Exception("No rows to add — fill in at least one row before submitting.");
+        }
+
+        $conn->commit();
+        header("Location: sfc.php?success=1&msg=initial_stock&count=" . $insertedCount);
+        exit;
+
+    } catch (Exception $e) {
+        $conn->rollback();
+        die("<div style='color:red; font-family:sans-serif; padding:20px; border:1px solid red; background:#fff5f5;'>
+                <h2>Could not add initial stock</h2>
+                <p><strong>Reason:</strong> " . htmlspecialchars($e->getMessage()) . "</p>
+                <button onclick='history.back()' style='padding:8px 16px; margin-top:10px;'>Go Back and Correct</button>
+             </div>");
+    }
+}
+
 // ── Handle Action ────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_POST['action'])) {
     $sfcId  = (int)$_POST['sfc_id'];
@@ -66,13 +151,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
                 log_source_tracking($conn, 0, 'recoiling_product', $original_source, 'sfc', 'RECOIL_FROM_SFC');
 
             } elseif ($action === 'RESLIT') {
+                // source_sfc_id records exactly which sfc row this reslit_product
+                // entry was created from, so "Send Back" can restore precisely
+                // that row later instead of guessing by lot/coil/roll match.
                 $stmt = $conn->prepare("INSERT INTO reslit_product
-                    (mother_id, product, lot_no, coil_no, roll_no, width, length, status, date_in, original_source)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NOW(), ?)");
-                $stmt->bind_param("issssdds",
+                    (mother_id, product, lot_no, coil_no, roll_no, width, length, status, date_in, original_source, source_sfc_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NOW(), ?, ?)");
+                $stmt->bind_param("issssddsi",
                     $sfc['mother_id'],
                     $sfc['product'], $sfc['lot_no'], $sfc['coil_no'],
-                    $sfc['roll_no'], $sfc['width'],  $sfc['length'], $original_source);
+                    $sfc['roll_no'], $sfc['width'],  $sfc['length'], $original_source, $sfcId);
                 $stmt->execute();
                 $stmt->close();
                 log_source_tracking($conn, 0, 'reslit_product', $original_source, 'sfc', 'RESLIT_FROM_SFC');
@@ -274,7 +362,17 @@ include 'header.php';
     <?php if (isset($_GET['success'])): ?>
         <div class="alert alert-success py-2 mb-0 shadow-sm">
             <i class="bi bi-check-circle me-2"></i>
-            <?= ($_GET['msg'] ?? '') === 'deleted' ? 'Item deleted from SFC Inventory.' : 'Action processed successfully!' ?>
+            <?php
+            $msg = $_GET['msg'] ?? '';
+            if ($msg === 'deleted') {
+                echo 'Item deleted from SFC Inventory.';
+            } elseif ($msg === 'initial_stock') {
+                $cnt = (int)($_GET['count'] ?? 0);
+                echo $cnt . ' initial stock item' . ($cnt === 1 ? '' : 's') . ' added to SFC Inventory.';
+            } else {
+                echo 'Action processed successfully!';
+            }
+            ?>
         </div>
     <?php endif; ?>
 </div>
@@ -321,6 +419,11 @@ include 'header.php';
             <?= $show_used ? 'Hide Used' : 'Show Used / Out' ?>
         </a>
     </div>
+    <div class="col-md-auto">
+        <button type="button" class="btn btn-success btn-sm" data-bs-toggle="modal" data-bs-target="#initStockModal">
+            <i class="bi bi-plus-circle me-1"></i> Add Initial Stock
+        </button>
+    </div>
     <div class="col-md-auto ms-auto">
         <a href="sfc_tracking.php" class="btn btn-info btn-sm">
             <i class="bi bi-graph-up me-1"></i> SFC Tracking Report
@@ -328,15 +431,20 @@ include 'header.php';
     </div>
 </div>
 
+<form id="bulkPrintForm" method="post" action="bulk_print_sfc.php" target="_blank">
 <div class="card shadow-sm border-0">
-    <div class="card-header bg-dark text-white fw-bold py-3">
-        <i class="bi bi-list-task me-2"></i>SFC Material
-        <?= $show_used ? '(All — including used)' : '(Active only)' ?>
+    <div class="card-header bg-dark text-white fw-bold py-3 d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-list-task me-2"></i>SFC Material
+        <?= $show_used ? '(All — including used)' : '(Active only)' ?></span>
+        <button type="submit" id="bulkPrintBtn" class="btn btn-light btn-sm fw-bold" disabled>
+            <i class="bi bi-printer-fill me-1"></i> Bulk Print Selected (<span id="selCount">0</span>)
+        </button>
     </div>
     <div class="table-responsive">
         <table class="table table-hover align-middle mb-0">
             <thead class="table-light">
                 <tr>
+                    <th><input type="checkbox" id="selectAllRows" class="form-check-input"></th>
                     <th>Print</th>
                     <th>Product</th>
                     <th>Lot No · Coil · Roll</th>
@@ -356,6 +464,10 @@ include 'header.php';
             ?>
                 <tr class="<?= $rowClass ?>" style="vertical-align:top">
                     <td>
+                        <input type="checkbox" name="sfc_ids[]" value="<?= (int)$row['sfc_id'] ?>"
+                               class="form-check-input rowCheck">
+                    </td>
+                    <td>
                         <a href="print_sfc.php?id=<?= (int)$row['sfc_id'] ?>"
                            target="_blank" class="btn btn-outline-dark btn-sm">
                             <i class="bi bi-printer-fill"></i>
@@ -363,6 +475,7 @@ include 'header.php';
                     </td>
                     <td><span class="badge bg-secondary"><?= htmlspecialchars($row['product']) ?></span></td>
                     <td class="fw-bold" style="font-family:monospace; font-size:.88rem;">
+
                         <?= htmlspecialchars($row['lot_no']) ?>
                         <?= htmlspecialchars($row['coil_no']) ?>
                         <?php if ($row['roll_no'] && strtoupper($row['roll_no']) !== 'BALANCE'): ?>
@@ -513,7 +626,7 @@ include 'header.php';
             <?php endwhile;
             else: ?>
                 <tr>
-                    <td colspan="8" class="py-5 text-muted text-center">
+                    <td colspan="9" class="py-5 text-muted text-center">
                         <i class="bi bi-inbox fs-3 d-block mb-2"></i>
                         No SFC inventory found.
                     </td>
@@ -523,6 +636,7 @@ include 'header.php';
         </table>
     </div>
 </div>
+</form>
 
 <!-- PIN Modal -->
 <div class="modal fade" id="pinModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
@@ -587,6 +701,70 @@ include 'header.php';
   </div>
 </div>
 
+<!-- Add Initial Stock Modal (legacy SFC stock — no mother coil behind it) -->
+<div class="modal fade" id="initStockModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-xl">
+    <div class="modal-content border-0 shadow">
+      <div class="modal-header bg-success text-white">
+        <h5 class="modal-title"><i class="bi bi-plus-circle me-2"></i>Add Initial Stock (Legacy SFC)</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <form id="initStockForm" method="post" action="sfc.php">
+      <input type="hidden" name="add_initial_stock" value="1">
+      <div class="modal-body p-4">
+
+        <div class="alert alert-secondary small mb-3">
+            <i class="bi bi-info-circle me-1"></i>
+            Use this to enter SFC stock that's already physically on the floor but was never
+            produced through this system (e.g. this department is new here). Each row becomes
+            a normal active SFC entry — Process / Delete / QR scan all work on it exactly like
+            any other SFC item afterwards.
+        </div>
+
+        <div class="mb-3">
+            <label class="form-label small fw-bold">Paste from Excel (optional)</label>
+            <textarea id="initPasteArea" class="form-control" rows="3"
+                placeholder="Paste tab-separated columns — Product, Lot No, Coil No, Roll No, Width, Length — one row per line, e.g.&#10;RS-3020&#9;826709a&#9;FK-25&#9;R2&#9;915&#9;120.5"></textarea>
+            <button type="button" class="btn btn-outline-secondary btn-sm mt-2" onclick="parseInitPaste()">
+                <i class="bi bi-clipboard-check me-1"></i> Parse & Fill Rows Below
+            </button>
+        </div>
+
+        <div class="table-responsive">
+            <table class="table table-sm align-middle" id="initStockTable">
+                <thead class="table-light">
+                    <tr>
+                        <th style="min-width:130px">Product</th>
+                        <th style="min-width:110px">Lot No</th>
+                        <th style="min-width:100px">Coil No</th>
+                        <th style="min-width:90px">Roll No</th>
+                        <th style="min-width:100px">Width (mm)</th>
+                        <th style="min-width:100px">Length (m)</th>
+                        <th style="width:40px"></th>
+                    </tr>
+                </thead>
+                <tbody id="initStockRows">
+                    <!-- rows injected by JS; 5 blank rows to start -->
+                </tbody>
+            </table>
+        </div>
+
+        <button type="button" class="btn btn-outline-primary btn-sm" onclick="addInitRow()">
+            <i class="bi bi-plus-lg me-1"></i> Add Row
+        </button>
+
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-success fw-bold px-4">
+            <i class="bi bi-check-circle me-1"></i> Save Initial Stock
+        </button>
+      </div>
+      </form>
+    </div>
+  </div>
+</div>
+
 <!-- Delete Confirmation Modal -->
 <div class="modal fade" id="deleteModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
@@ -616,7 +794,102 @@ include 'header.php';
 
 <script src="camera_scanner.js"></script>
 <script>
+// ── Add Initial Stock: row helpers ───────────────────────────
+// Declared at top level (NOT inside the DOMContentLoaded closure below)
+// because they're invoked from inline onclick="" attributes in the modal
+// markup — same rule this file already follows for the scanner code.
+function addInitRow(prefill) {
+    prefill = prefill || {};
+    var tbody = document.getElementById('initStockRows');
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+        '<td><input type="text" name="init_product[]" class="form-control form-control-sm" value="' + (prefill.product || '') + '"></td>' +
+        '<td><input type="text" name="init_lot_no[]" class="form-control form-control-sm" value="' + (prefill.lot || '') + '"></td>' +
+        '<td><input type="text" name="init_coil_no[]" class="form-control form-control-sm" value="' + (prefill.coil || '') + '"></td>' +
+        '<td><input type="text" name="init_roll_no[]" class="form-control form-control-sm" value="' + (prefill.roll || '') + '"></td>' +
+        '<td><input type="number" step="0.01" name="init_width[]" class="form-control form-control-sm" value="' + (prefill.width || '') + '"></td>' +
+        '<td><input type="number" step="0.01" name="init_length[]" class="form-control form-control-sm" value="' + (prefill.length || '') + '"></td>' +
+        '<td><button type="button" class="btn btn-outline-danger btn-sm" onclick="removeInitRow(this)"><i class="bi bi-x-lg"></i></button></td>';
+    tbody.appendChild(tr);
+}
+
+function removeInitRow(btn) {
+    var tbody = document.getElementById('initStockRows');
+    if (tbody.rows.length <= 1) {
+        // Keep at least one row visible — clear it instead of removing it.
+        btn.closest('tr').querySelectorAll('input').forEach(function (i) { i.value = ''; });
+        return;
+    }
+    btn.closest('tr').remove();
+}
+
+function parseInitPaste() {
+    var text  = document.getElementById('initPasteArea').value;
+    var lines = text.split(/\r?\n/).map(function (l) { return l.trim(); }).filter(function (l) { return l !== ''; });
+    if (lines.length === 0) return;
+
+    var tbody = document.getElementById('initStockRows');
+    tbody.innerHTML = ''; // pasted data replaces whatever rows are currently there
+
+    lines.forEach(function (line) {
+        var cols = line.split('\t');
+        addInitRow({
+            product: (cols[0] || '').trim(),
+            lot:     (cols[1] || '').trim(),
+            coil:    (cols[2] || '').trim(),
+            roll:    (cols[3] || '').trim(),
+            width:   (cols[4] || '').trim(),
+            length:  (cols[5] || '').trim()
+        });
+    });
+
+    document.getElementById('initPasteArea').value = '';
+}
+
 document.addEventListener('DOMContentLoaded', function () {
+    // Start the Add Initial Stock table with 5 blank rows.
+    for (let i = 0; i < 5; i++) addInitRow();
+
+    // ── Bulk Print: select-all + live count ──────────────────
+    const selectAllRows = document.getElementById('selectAllRows');
+    const bulkPrintBtn  = document.getElementById('bulkPrintBtn');
+    const selCountEl    = document.getElementById('selCount');
+    const rowChecks     = () => document.querySelectorAll('.rowCheck');
+
+    function updateBulkPrintState() {
+        const checked = document.querySelectorAll('.rowCheck:checked').length;
+        selCountEl.textContent  = checked;
+        bulkPrintBtn.disabled   = checked === 0;
+        if (selectAllRows) {
+            selectAllRows.checked = checked > 0 && checked === rowChecks().length;
+        }
+    }
+
+    if (selectAllRows) {
+        selectAllRows.addEventListener('change', function () {
+            rowChecks().forEach(cb => cb.checked = selectAllRows.checked);
+            updateBulkPrintState();
+        });
+    }
+
+    document.querySelectorAll('.rowCheck').forEach(cb => {
+        cb.addEventListener('change', updateBulkPrintState);
+    });
+
+    const bulkPrintForm = document.getElementById('bulkPrintForm');
+    if (bulkPrintForm) {
+        bulkPrintForm.addEventListener('submit', function (e) {
+            const checked = document.querySelectorAll('.rowCheck:checked').length;
+            if (checked === 0) {
+                e.preventDefault();
+                return;
+            }
+            if (!confirm('Print ' + checked + ' selected SFC label' + (checked > 1 ? 's' : '') + '?')) {
+                e.preventDefault();
+            }
+        });
+    }
+
     const pinModal     = new bootstrap.Modal(document.getElementById('pinModal'));
     const actionModal  = new bootstrap.Modal(document.getElementById('actionModal'));
     const deleteModal  = new bootstrap.Modal(document.getElementById('deleteModal'));

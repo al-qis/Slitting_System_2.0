@@ -39,6 +39,20 @@ class PalletManager
      */
     public const PALLET_NO_REGEX = '/^SFS-\d{4}-\d{3}(?: \([A-Z]{1,3}\))?$/';
 
+    /**
+     * Special Ref No value meaning "not tied to a specific SO" — a
+     * roll (or a whole pallet) with this Ref No is allowed to combine
+     * with ANY other Ref No, in either direction. Only two genuine,
+     * differing SO numbers (e.g. SO-26-0119 vs SO-26-0123) are treated
+     * as a real mismatch. Compared case-insensitively.
+     */
+    public const STOCK_REF_NO = 'STOCK';
+
+    private static function isStockRefNo(?string $refNo): bool
+    {
+        return strcasecmp(trim((string)$refNo), self::STOCK_REF_NO) === 0;
+    }
+
     // =========================================================
     // STOCK CODE
     // Format: SFS-{Coil No}-{Width}-{Length}  e.g. SFS-FK-357-796
@@ -226,6 +240,139 @@ class PalletManager
     }
 
     // =========================================================
+    // 2c. UPDATE CUSTOMER & REF NO                      ← NEW
+    //     Lets an operator fix the Customer / Ref No on a pallet
+    //     after rolls have already been scanned onto it, WITHOUT
+    //     deleting and rebuilding the pallet.
+    //     Propagates the new values down to every slitting_product
+    //     row currently attached to this pallet (via pallet_items),
+    //     so the pallet and its rolls never drift apart.
+    //     Only allowed on 'building' or 'rejected' pallets — same
+    //     restriction as renamePallet(), since once a pallet is in
+    //     QC or later its identity is locked.
+    // =========================================================
+
+    /**
+     * @return array{ok: bool, msg: string, pallet_id?: int, customer_name?: string, ref_no?: string, rolls_updated?: int, unchanged?: bool}
+     */
+    public function updatePalletCustomerRef(int $palletId, string $newCustomer, string $newRefNo): array
+    {
+        $newCustomer = trim($newCustomer);
+        $newRefNo    = trim($newRefNo);
+
+        if ($newCustomer === '') {
+            return ['ok' => false, 'msg' => 'Customer cannot be empty.'];
+        }
+        if ($newRefNo === '') {
+            return ['ok' => false, 'msg' => 'Ref No cannot be empty.'];
+        }
+
+        $this->conn->begin_transaction();
+        try {
+            $stmt = $this->conn->prepare("SELECT * FROM pallets WHERE id = ? FOR UPDATE");
+            $stmt->bind_param("i", $palletId);
+            $stmt->execute();
+            $pallet = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+
+            if (!$pallet) {
+                throw new RuntimeException("Pallet #{$palletId} not found.");
+            }
+
+            $oldCustomer = $pallet['customer_name'];
+            $oldRefNo    = $pallet['ref_no'];
+
+            // No-op: saving the same values back is not an error.
+            if ($newCustomer === $oldCustomer && $newRefNo === $oldRefNo) {
+                $this->conn->commit();
+                return [
+                    'ok' => true, 'msg' => 'No change.',
+                    'pallet_id'     => $palletId,
+                    'customer_name' => $oldCustomer,
+                    'ref_no'        => $oldRefNo,
+                    'unchanged'     => true,
+                ];
+            }
+
+            $editableStates = ['building', 'rejected'];
+            if (!in_array($pallet['status'], $editableStates, true)) {
+                throw new RuntimeException(
+                    "Pallet {$pallet['pallet_no']} cannot be edited (status: {$pallet['status']}). "
+                    . "Only 'building' or 'rejected' pallets can have their Customer / Ref No changed."
+                );
+            }
+
+            // Update the pallet's own constraint fields.
+            $upd = $this->conn->prepare("
+                UPDATE pallets
+                SET customer_name = ?, ref_no = ?
+                WHERE id = ?
+            ");
+            $upd->bind_param("ssi", $newCustomer, $newRefNo, $palletId);
+            $upd->execute();
+            $upd->close();
+
+            // Propagate to every roll currently on this pallet, so
+            // slitting_product never drifts out of sync with the pallet.
+            // Customer always propagates (a pallet has exactly one
+            // Customer). Ref No only propagates to rolls that carry a
+            // real SO number — rolls flagged "STOCK" keep their Ref No
+            // untouched, since STOCK isn't tied to any specific SO.
+            $stockRef = self::STOCK_REF_NO;
+            $propagate = $this->conn->prepare("
+                UPDATE slitting_product sp
+                JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+                SET sp.customer_name = ?,
+                    sp.ref_no = CASE
+                        WHEN UPPER(TRIM(sp.ref_no)) = UPPER(?) THEN sp.ref_no
+                        ELSE ?
+                    END
+                WHERE pi.pallet_id = ?
+            ");
+            $propagate->bind_param("sssi", $newCustomer, $stockRef, $newRefNo, $palletId);
+            $propagate->execute();
+            $affectedRolls = $propagate->affected_rows;
+            $propagate->close();
+
+            // How many of those rolls were STOCK and therefore kept
+            // their own Ref No — purely for a clearer log/message.
+            $stockCountStmt = $this->conn->prepare("
+                SELECT COUNT(*) AS cnt
+                FROM slitting_product sp
+                JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+                WHERE pi.pallet_id = ? AND UPPER(TRIM(sp.ref_no)) = UPPER(?)
+            ");
+            $stockCountStmt->bind_param("is", $palletId, $stockRef);
+            $stockCountStmt->execute();
+            $stockPreserved = (int)$stockCountStmt->get_result()->fetch_assoc()['cnt'];
+            $stockCountStmt->close();
+
+            $this->writeEditLog(
+                $palletId, $pallet['pallet_no'], 'update_customer_ref', null, null,
+                "Customer/Ref changed from \"{$oldCustomer}\" / \"{$oldRefNo}\" "
+                . "to \"{$newCustomer}\" / \"{$newRefNo}\" ({$affectedRolls} roll(s) synced"
+                . ($stockPreserved > 0 ? "; {$stockPreserved} STOCK roll(s) kept their own Ref No" : '')
+                . ")"
+            );
+
+            $this->conn->commit();
+            return [
+                'ok'              => true,
+                'msg'             => "Customer/Ref updated. {$affectedRolls} roll(s) synced"
+                    . ($stockPreserved > 0 ? " ({$stockPreserved} STOCK roll(s) kept their own Ref No)." : '.'),
+                'pallet_id'       => $palletId,
+                'customer_name'   => $newCustomer,
+                'ref_no'          => $newRefNo,
+                'rolls_updated'   => $affectedRolls,
+                'stock_preserved' => $stockPreserved,
+            ];
+        } catch (Throwable $e) {
+            $this->conn->rollback();
+            return ['ok' => false, 'msg' => $e->getMessage()];
+        }
+    }
+
+    // =========================================================
     // 3. ADD ROLL TO PALLET
     //    — first roll seeds constraints
     //    — subsequent rolls are validated against them
@@ -319,6 +466,35 @@ class PalletManager
                         . "All rolls must share the same Customer, Ref No, Product Type, and Width."
                     );
                 }
+
+                // ── Auto-upgrade: STOCK → real SO number ──────
+                // If the pallet's Ref No is still the generic "STOCK"
+                // placeholder and this roll carries a real SO number,
+                // promote the pallet's Ref No to that SO number so the
+                // header shows something useful instead of "STOCK"
+                // forever. Only the pallet-level constraint value
+                // changes — rolls already on the pallet keep whatever
+                // ref_no they individually had (STOCK rolls stay STOCK).
+                $incomingRef = trim($product['ref_no'] ?? '');
+                if (
+                    self::isStockRefNo($pallet['ref_no'])
+                    && !self::isStockRefNo($incomingRef)
+                    && $incomingRef !== ''
+                ) {
+                    $oldPalletRef = $pallet['ref_no'];
+                    $updRef = $this->conn->prepare("UPDATE pallets SET ref_no = ? WHERE id = ?");
+                    $updRef->bind_param("si", $incomingRef, $palletId);
+                    $updRef->execute();
+                    $updRef->close();
+                    $pallet['ref_no'] = $incomingRef;
+
+                    $this->writeEditLog(
+                        $palletId, $pallet['pallet_no'], 'auto_upgrade_ref_no', $productId,
+                        $this->makeProductRef($product),
+                        "Pallet Ref No auto-upgraded from \"{$oldPalletRef}\" to \"{$incomingRef}\" "
+                        . "(first non-STOCK roll added)."
+                    );
+                }
             }
 
             $seq = $currentCount + 1;
@@ -338,10 +514,14 @@ class PalletManager
 
             $this->conn->commit();
             return [
-                'ok'         => true,
-                'msg'        => "Roll #{$productId} added at position {$seq}.",
-                'seq'        => $seq,
-                'roll_count' => $seq,
+                'ok'            => true,
+                'msg'           => "Roll #{$productId} added at position {$seq}.",
+                'seq'           => $seq,
+                'roll_count'    => $seq,
+                'customer_name' => $pallet['customer_name'],
+                'ref_no'        => $pallet['ref_no'],
+                'product_type'  => $pallet['product_type'],
+                'width'         => $pallet['width'],
             ];
         } catch (Throwable $e) {
             $this->conn->rollback();
@@ -795,7 +975,16 @@ class PalletManager
             );
         }
 
-        if (trim($product['ref_no'] ?? '') !== trim($pallet['ref_no'])) {
+        // Ref No: STOCK is a wildcard. If either side is "STOCK", it's
+        // allowed to combine with anything — only two genuine, DIFFERENT
+        // SO numbers count as a real mismatch.
+        $productRef = trim($product['ref_no'] ?? '');
+        $palletRef  = trim($pallet['ref_no']);
+        if (
+            !self::isStockRefNo($productRef)
+            && !self::isStockRefNo($palletRef)
+            && $productRef !== $palletRef
+        ) {
             $mismatches[] = sprintf(
                 'Ref No (pallet: "%s", roll: "%s")',
                 $pallet['ref_no'], $product['ref_no'] ?? '—'
@@ -1067,7 +1256,7 @@ class PalletManager
 
         $orderSql = match ($sort) {
             'capacity' => 'roll_count DESC, last_activity DESC',
-            'id'       => 'pallet_no DESC',
+            'id'       => 'pallet_no ASC',
             default    => 'last_activity DESC, id DESC', // 'updated'
         };
 

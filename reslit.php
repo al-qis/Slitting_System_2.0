@@ -298,7 +298,9 @@ include 'header.php';
             if($_GET['success'] === 'added') echo "Product successfully added to reslit list!";
             elseif($_GET['success'] === 'started') echo "Reslit process started!";
             elseif($_GET['success'] === 'completed') echo "Reslit completed! Product added to stock.";
-            elseif($_GET['success'] === 'returned') echo "<strong>Sent back to Finished Product.</strong> This item has been removed from the Reslit queue.";
+            elseif($_GET['success'] === 'returned_fp') echo "<strong>Sent back to Finished Product.</strong> This item has been removed from the Reslit queue.";
+            elseif($_GET['success'] === 'returned_sfc') echo "<strong>Sent back to SFC Inventory.</strong> This item has been removed from the Reslit queue.";
+            elseif($_GET['success'] === 'returned') echo "<strong>Sent back.</strong> This item has been removed from the Reslit queue.";
         ?>
         <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
     </div>
@@ -310,7 +312,7 @@ include 'header.php';
         <?php
             switch ($_GET['error']) {
                 case 'not_pending':
-                    echo "Only pending reslit records can be sent back to Finished Product.";
+                    echo "Only pending reslit records can be sent back.";
                     break;
                 case 'not_found':
                     echo "Record not found.";
@@ -319,7 +321,7 @@ include 'header.php';
                     echo "Invalid record ID.";
                     break;
                 case 'return_failed':
-                    echo "Could not send this item back to Finished Product: " . htmlspecialchars(urldecode($_GET['msg'] ?? ''));
+                    echo "Could not send this item back: " . htmlspecialchars(urldecode($_GET['msg'] ?? ''));
                     break;
                 default:
                     echo "An unknown error occurred.";
@@ -375,11 +377,21 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
             </thead>
             <tbody id="reslitTableBody">
                 <?php if ($result && $result->num_rows > 0): ?>
-                    <?php $rowNum = 0; ?>
+                    <?php $pendingNum = 0; $completedNum = 0; ?>
                     <?php while ($row = $result->fetch_assoc()): ?>
                         <?php
-                            $rowNum++;
                             $parentStatusGroup = ($row['status'] === 'completed') ? 'completed' : 'pending';
+                            // Number each status group on its own, starting at 1 —
+                            // Pending and Completed are shown one at a time via the
+                            // status-card filter, so each should read 1, 2, 3...
+                            // independent of how many rows are in the other group.
+                            if ($parentStatusGroup === 'completed') {
+                                $completedNum++;
+                                $rowNum = $completedNum;
+                            } else {
+                                $pendingNum++;
+                                $rowNum = $pendingNum;
+                            }
                             $parentSearchBlob = strtolower(trim(
                                 ($row['product'] ?? '') . ' ' . ($row['lot_no'] ?? '') . ' ' .
                                 ($row['coil_no'] ?? '') . ' ' . ($row['roll_no'] ?? '')
@@ -415,11 +427,17 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
                                         <i class="bi bi-play-circle"></i> Reslit
                                     </button>
                                     <a href="edit_reslit.php?id=<?= $row['id'] ?>" class="btn btn-warning btn-sm mb-1"><i class="bi bi-pencil"></i></a>
+                                    <?php
+                                        // Route label mirrors reslit_send_back.php's own routing rule:
+                                        // slitting_product_id set -> Finish Product, otherwise -> SFC Inventory.
+                                        $sendBackOrigin = !empty($row['slitting_product_id']) ? 'Finished Product' : 'SFC Inventory';
+                                    ?>
                                     <button type="button"
                                             class="btn btn-outline-danger btn-sm mb-1 btn-send-back-reslit"
                                             data-rid="<?= (int)$row['id'] ?>"
+                                            data-origin="<?= htmlspecialchars($sendBackOrigin, ENT_QUOTES) ?>"
                                             data-label="<?= htmlspecialchars(($row['lot_no'] ?? '-') . ' ' . ($row['coil_no'] ?? '') . ' / Roll ' . ($row['roll_no'] ?? '-')) ?>"
-                                            title="Send this item back to Finished Product">
+                                            title="Send this item back to <?= htmlspecialchars($sendBackOrigin) ?>">
                                         <i class="bi bi-arrow-return-left"></i> Send Back
                                     </button>
                                 <?php else: ?>
@@ -1103,8 +1121,9 @@ document.addEventListener('DOMContentLoaded', function () {
     // ── Send Back to Finished Product (with confirmation) ──────
     document.querySelectorAll('.btn-send-back-reslit').forEach(function (btn) {
         btn.addEventListener('click', function () {
-            const rid   = btn.dataset.rid;
-            const label = btn.dataset.label || 'this item';
+            const rid    = btn.dataset.rid;
+            const label  = btn.dataset.label || 'this item';
+            const origin = btn.dataset.origin || 'its original source';
 
             function doSubmit() {
                 document.getElementById('sendBackReslitId').value = rid;
@@ -1114,8 +1133,8 @@ document.addEventListener('DOMContentLoaded', function () {
             if (typeof Swal !== 'undefined') {
                 Swal.fire({
                     icon: 'warning',
-                    title: 'Send back to Finished Product?',
-                    html: `Are you sure you want to send <strong>${label}</strong> back to Finished Product?<br><span class="text-muted small">It will be removed from the Reslit queue.</span>`,
+                    title: `Send back to ${origin}?`,
+                    html: `Are you sure you want to send <strong>${label}</strong> back to ${origin}?<br><span class="text-muted small">It will be removed from the Reslit queue.</span>`,
                     showCancelButton: true,
                     confirmButtonText: 'Yes, send it back',
                     cancelButtonText: 'Cancel',
@@ -1124,7 +1143,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     if (result.isConfirmed) doSubmit();
                 });
             } else {
-                if (confirm('Are you sure you want to send this product back to Finished Products?')) {
+                if (confirm(`Are you sure you want to send this item back to ${origin}?`)) {
                     doSubmit();
                 }
             }
