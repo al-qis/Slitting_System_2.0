@@ -415,9 +415,11 @@ include 'header.php';
 
 $MAX = PalletManager::MAX_ROLLS;
 
-$isBuilding = $activePallet && $activePallet['status'] === 'building';
-$isRejected = $activePallet && $activePallet['status'] === 'rejected';
-$isReadOnly = $activePallet && !in_array($activePallet['status'], ['building', 'rejected']);
+$isBuilding  = $activePallet && $activePallet['status'] === 'building';
+$isRejected  = $activePallet && $activePallet['status'] === 'rejected';
+$isApproved  = $activePallet && $activePallet['status'] === 'approved';
+$isPendingQc = $activePallet && $activePallet['status'] === 'pending_qc';
+$isDelivered = $activePallet && $activePallet['status'] === 'delivered';
 ?>
 <style>
 /* ── Layout ── */
@@ -1120,15 +1122,251 @@ if (isset($_GET['success'])): ?>
             </div>
         </div>
 
-        <?php elseif ($activePallet): ?>
-        <!-- READ-ONLY (approved / delivered / pending_qc) -->
-        <div class="alert alert-secondary">
-            <strong><?= htmlspecialchars($activePallet['pallet_no']) ?></strong> —
-            <span class="badge badge-<?= $activePallet['status'] ?>">
-                <?= strtoupper(str_replace('_', ' ', $activePallet['status'])) ?>
-            </span>
-            — read-only.
-            <a href="pallet.php" class="ms-2">← Back to list</a>
+        <?php elseif ($isApproved): ?>
+        <!-- APPROVED STATE (Ready for Delivery) -->
+        <div class="card shadow-sm border-0 mb-4 border-success">
+            <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
+                <div class="d-flex align-items-center gap-2">
+                    <i class="bi bi-check-circle-fill me-1"></i>
+                    <strong class="pallet-rename-text"><?= htmlspecialchars($activePallet['pallet_no']) ?></strong>
+                    <span class="badge bg-white text-success ms-1">APPROVED</span>
+                </div>
+                <span class="badge bg-white text-success">
+                    <?= count($activeItems) ?> / <?= $MAX ?> rolls
+                </span>
+            </div>
+
+            <?php if (!empty(trim($activePallet['customer_name'] ?? ''))): ?>
+            <div class="px-3 py-2 border-bottom d-flex flex-wrap gap-2 align-items-center bg-light">
+                <span class="constraint-badge"><i class="bi bi-person-check me-1"></i><?= htmlspecialchars($activePallet['customer_name']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-hash me-1"></i><?= htmlspecialchars($activePallet['ref_no']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-tag me-1"></i><?= htmlspecialchars($activePallet['product_type']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-arrows-expand me-1"></i><?= number_format((float)$activePallet['width']) ?> mm</span>
+            </div>
+            <?php endif; ?>
+
+            <div class="card-body p-4">
+                <?php if ($totalEstWgt > 0): ?>
+                <div class="weight-summary-bar mb-3">
+                    <div class="wgt-label"><i class="bi bi-speedometer2"></i> Est. Total Weight</div>
+                    <div style="display:flex; align-items:baseline; gap:6px;">
+                        <span class="wgt-total"><?= number_format($totalEstWgt, 2) ?></span>
+                        <span class="wgt-unit">kg</span>
+                    </div>
+                    <div class="wgt-avg"><?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?></div>
+                </div>
+                <?php endif; ?>
+
+                <div class="alert alert-success py-2 mb-3">
+                    <i class="bi bi-check-circle me-1"></i>
+                    <strong>QC Approved!</strong> Click <strong>Deliver Pallet</strong> below to confirm delivery of all <?= count($activeItems) ?> roll(s).
+                </div>
+
+                <?php foreach ($activeItems as $item):
+                    $itemLen = (float)($item['actual_length'] ?: $item['length']);
+                    $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                ?>
+                <div class="slot-card">
+                    <span class="roll-seq bg-success text-white"><?= $item['seq'] ?></span>
+                    <div class="flex-grow-1">
+                        <div class="fw-bold small">
+                            <?= htmlspecialchars($item['lot_no']) ?>
+                            <?= htmlspecialchars($item['coil_no']) ?>
+                            &ndash; <?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?>
+                        </div>
+                        <div class="text-muted" style="font-size:11px;">
+                            <?= htmlspecialchars($item['product']) ?> |
+                            <?= number_format((float)$item['width']) ?>mm |
+                            <?= number_format($itemLen, 1) ?>m
+                        </div>
+                        <?php if (!empty($item['stock_code'])): ?>
+                        <div class="text-muted" style="font-size:11px;font-family:monospace;">
+                            <?= htmlspecialchars($item['stock_code']) ?>
+                        </div>
+                        <?php endif; ?>
+                    </div>
+                    <?php if ($itemWgt > 0): ?>
+                    <span class="wgt-chip">
+                        <i class="bi bi-speedometer2"></i>
+                        <?= number_format($itemWgt, 2) ?> kg
+                    </span>
+                    <?php endif; ?>
+                </div>
+                <?php endforeach; ?>
+            </div>
+
+            <div class="card-footer bg-light d-flex justify-content-between align-items-center">
+                <a href="pallet.php" class="btn btn-outline-secondary btn-sm">← Back to list</a>
+                <form method="post">
+                    <input type="hidden" name="action" value="deliver_pallet">
+                    <input type="hidden" name="pallet_id" value="<?= $activePalletId ?>">
+                    <button type="submit" class="btn btn-success btn-lg fw-bold px-4"
+                            onclick="return confirm('Deliver pallet <?= htmlspecialchars($activePallet['pallet_no']) ?>?\nAll <?= count($activeItems) ?> roll(s) will be marked as DELIVERED.')">
+                        <i class="bi bi-truck me-2"></i> Deliver Pallet
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <?php elseif ($isPendingQc): ?>
+        <!-- PENDING QC STATE -->
+        <div class="card shadow-sm border-0 mb-4 border-warning">
+            <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center">
+                <div class="d-flex align-items-center gap-2">
+                    <i class="bi bi-clock-history me-1"></i>
+                    <strong class="pallet-rename-text"><?= htmlspecialchars($activePallet['pallet_no']) ?></strong>
+                    <span class="badge bg-dark text-warning ms-1">PENDING QC</span>
+                </div>
+                <span class="badge bg-dark text-warning">
+                    <?= count($activeItems) ?> / <?= $MAX ?> rolls
+                </span>
+            </div>
+
+            <?php if (!empty(trim($activePallet['customer_name'] ?? ''))): ?>
+            <div class="px-3 py-2 border-bottom d-flex flex-wrap gap-2 align-items-center bg-light">
+                <span class="constraint-badge"><i class="bi bi-person-check me-1"></i><?= htmlspecialchars($activePallet['customer_name']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-hash me-1"></i><?= htmlspecialchars($activePallet['ref_no']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-tag me-1"></i><?= htmlspecialchars($activePallet['product_type']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-arrows-expand me-1"></i><?= number_format((float)$activePallet['width']) ?> mm</span>
+            </div>
+            <?php endif; ?>
+
+            <div class="card-body p-4">
+                <?php if ($totalEstWgt > 0): ?>
+                <div class="weight-summary-bar mb-3">
+                    <div class="wgt-label"><i class="bi bi-speedometer2"></i> Est. Total Weight</div>
+                    <div style="display:flex; align-items:baseline; gap:6px;">
+                        <span class="wgt-total"><?= number_format($totalEstWgt, 2) ?></span>
+                        <span class="wgt-unit">kg</span>
+                    </div>
+                    <div class="wgt-avg"><?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?></div>
+                </div>
+                <?php endif; ?>
+
+                <div class="alert alert-warning py-2 mb-3">
+                    <i class="bi bi-hourglass-split me-1"></i>
+                    <strong>Waiting for QC Inspection!</strong> This pallet is pending inspection in the QC Dashboard.
+                </div>
+
+                <?php foreach ($activeItems as $item):
+                    $itemLen = (float)($item['actual_length'] ?: $item['length']);
+                    $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                ?>
+                <div class="slot-card">
+                    <span class="roll-seq bg-warning text-dark"><?= $item['seq'] ?></span>
+                    <div class="flex-grow-1">
+                        <div class="fw-bold small">
+                            <?= htmlspecialchars($item['lot_no']) ?>
+                            <?= htmlspecialchars($item['coil_no']) ?>
+                            &ndash; <?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?>
+                        </div>
+                        <div class="text-muted" style="font-size:11px;">
+                            <?= htmlspecialchars($item['product']) ?> |
+                            <?= number_format((float)$item['width']) ?>mm |
+                            <?= number_format($itemLen, 1) ?>m
+                        </div>
+                        <?php if (!empty($item['stock_code'])): ?>
+                        <div class="text-muted" style="font-size:11px;font-family:monospace;">
+                            <?= htmlspecialchars($item['stock_code']) ?>
+                        </div>
+                        <?php endif; ?>
+                    </div>
+                    <?php if ($itemWgt > 0): ?>
+                    <span class="wgt-chip">
+                        <i class="bi bi-speedometer2"></i>
+                        <?= number_format($itemWgt, 2) ?> kg
+                    </span>
+                    <?php endif; ?>
+                </div>
+                <?php endforeach; ?>
+            </div>
+
+            <div class="card-footer bg-light d-flex justify-content-between align-items-center">
+                <a href="pallet.php" class="btn btn-outline-secondary btn-sm">← Back to list</a>
+                <span class="text-muted small"><i class="bi bi-lock me-1"></i>Pending QC Inspection</span>
+            </div>
+        </div>
+
+        <?php elseif ($isDelivered): ?>
+        <!-- DELIVERED STATE -->
+        <div class="card shadow-sm border-0 mb-4 border-info">
+            <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+                <div class="d-flex align-items-center gap-2">
+                    <i class="bi bi-truck me-1"></i>
+                    <strong class="pallet-rename-text"><?= htmlspecialchars($activePallet['pallet_no']) ?></strong>
+                    <span class="badge bg-info text-dark ms-1">DELIVERED</span>
+                </div>
+                <span class="badge bg-secondary">
+                    <?= count($activeItems) ?> / <?= $MAX ?> rolls
+                </span>
+            </div>
+
+            <?php if (!empty(trim($activePallet['customer_name'] ?? ''))): ?>
+            <div class="px-3 py-2 border-bottom d-flex flex-wrap gap-2 align-items-center bg-light">
+                <span class="constraint-badge"><i class="bi bi-person-check me-1"></i><?= htmlspecialchars($activePallet['customer_name']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-hash me-1"></i><?= htmlspecialchars($activePallet['ref_no']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-tag me-1"></i><?= htmlspecialchars($activePallet['product_type']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-arrows-expand me-1"></i><?= number_format((float)$activePallet['width']) ?> mm</span>
+            </div>
+            <?php endif; ?>
+
+            <div class="card-body p-4">
+                <?php if ($totalEstWgt > 0): ?>
+                <div class="weight-summary-bar mb-3">
+                    <div class="wgt-label"><i class="bi bi-speedometer2"></i> Est. Total Weight</div>
+                    <div style="display:flex; align-items:baseline; gap:6px;">
+                        <span class="wgt-total"><?= number_format($totalEstWgt, 2) ?></span>
+                        <span class="wgt-unit">kg</span>
+                    </div>
+                    <div class="wgt-avg"><?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?></div>
+                </div>
+                <?php endif; ?>
+
+                <div class="alert alert-info py-2 mb-3">
+                    <i class="bi bi-truck me-1"></i>
+                    <strong>Delivered</strong>
+                    <?php if (!empty($activePallet['delivered_at'])): ?>
+                        on <?= date('d M Y, H:i', strtotime($activePallet['delivered_at'])) ?>
+                    <?php endif; ?>
+                </div>
+
+                <?php foreach ($activeItems as $item):
+                    $itemLen = (float)($item['actual_length'] ?: $item['length']);
+                    $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                ?>
+                <div class="slot-card">
+                    <span class="roll-seq bg-secondary text-white"><?= $item['seq'] ?></span>
+                    <div class="flex-grow-1">
+                        <div class="fw-bold small">
+                            <?= htmlspecialchars($item['lot_no']) ?>
+                            <?= htmlspecialchars($item['coil_no']) ?>
+                            &ndash; <?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?>
+                        </div>
+                        <div class="text-muted" style="font-size:11px;">
+                            <?= htmlspecialchars($item['product']) ?> |
+                            <?= number_format((float)$item['width']) ?>mm |
+                            <?= number_format($itemLen, 1) ?>m
+                        </div>
+                        <?php if (!empty($item['stock_code'])): ?>
+                        <div class="text-muted" style="font-size:11px;font-family:monospace;">
+                            <?= htmlspecialchars($item['stock_code']) ?>
+                        </div>
+                        <?php endif; ?>
+                    </div>
+                    <?php if ($itemWgt > 0): ?>
+                    <span class="wgt-chip">
+                        <i class="bi bi-speedometer2"></i>
+                        <?= number_format($itemWgt, 2) ?> kg
+                    </span>
+                    <?php endif; ?>
+                </div>
+                <?php endforeach; ?>
+            </div>
+
+            <div class="card-footer bg-light d-flex justify-content-between align-items-center">
+                <a href="pallet.php" class="btn btn-outline-secondary btn-sm">← Back to list</a>
+                <span class="badge bg-secondary">Closed Record</span>
+            </div>
         </div>
 
         <?php else: ?>
