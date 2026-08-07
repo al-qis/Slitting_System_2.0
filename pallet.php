@@ -113,10 +113,147 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === 'update_customer_ref') {
     exit;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// AJAX: DELIVER BY SCAN  (Method 2 — global scan-to-deliver)
+//
+// The operator scans ANY roll's QR from anywhere on pallet.php —
+// no need to open/select a specific pallet first. We resolve the
+// scanned roll → its pallet → bundleDeliver() in a single call.
+//
+// POST (mutation): { ajax: 'deliver_by_scan', raw: '<scanned string>' }
+//
+// Accepts the same two formats as everywhere else in the system:
+//   A) KEY=value pairs (camera QR / hardware scanner):
+//        LOT=826277;COIL=FK-1;ROLL=R1
+//   B) Plain space-separated values (typed by hand):
+//        826277 FK-1 R1
+//
+// Response codes (mirror PalletManager::bundleDeliver()):
+//   DELIVERED         → pallet approved, now delivered (this call did it)
+//   ALREADY_DELIVERED → pallet was already delivered (not an error)
+//   WRONG_STATE       → pallet is building / pending_qc / rejected
+//   NO_PALLET         → scanned roll isn't assigned to any pallet
+//   NOT_FOUND         → scanned roll doesn't exist / bad scan
+//   VOIDED            → scanned roll was voided
+//   PARSE_ERROR       → couldn't read lot/coil from the scanned text
+// ═══════════════════════════════════════════════════════════════
+if (isset($_POST['ajax']) && $_POST['ajax'] === 'deliver_by_scan') {
+    header('Content-Type: application/json');
+
+    $raw = trim($_POST['raw'] ?? '');
+
+    // Strip control characters a hardware scanner gun may inject
+    // (Enter/CR-LF at end-of-scan, null-byte padding, etc.)
+    $raw = trim(preg_replace('/[[:cntrl:]]/', '', $raw));
+
+    if ($raw === '') {
+        echo json_encode(['ok' => false, 'code' => 'PARSE_ERROR', 'msg' => 'Nothing scanned.']);
+        exit;
+    }
+
+    $lot = $coil = $roll = '';
+
+    if (strpos($raw, '=') !== false) {
+        // Format A — KEY=value;KEY=value
+        foreach (explode(';', $raw) as $segment) {
+            $segment = trim($segment);
+            if (strpos($segment, '=') === false) continue;
+            [$k, $v] = explode('=', $segment, 2);
+            $k = strtoupper(trim($k));
+            $v = trim($v);
+            if ($k === 'LOT')  $lot  = $v;
+            if ($k === 'COIL') $coil = $v;
+            if ($k === 'ROLL') $roll = $v;
+        }
+    } else {
+        // Format B — space-separated "826277 FK-1 R1"
+        $tokens = preg_split('/\s+/', $raw, 3);
+        $lot    = trim($tokens[0] ?? '');
+        $coil   = trim($tokens[1] ?? '');
+        $roll   = trim($tokens[2] ?? '');
+    }
+
+    if ($lot === '' || $coil === '') {
+        echo json_encode(['ok' => false, 'code' => 'PARSE_ERROR',
+            'msg' => "Could not read that scan: {$raw}"]);
+        exit;
+    }
+
+    // ── Resolve the scanned roll → its pallet (if any) ─────────
+    $stmt = $conn->prepare("
+        SELECT sp.id, sp.is_voided,
+               pi.pallet_id,
+               p.status AS pallet_status, p.pallet_no
+        FROM slitting_product sp
+        LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+        LEFT JOIN pallets p       ON p.id = pi.pallet_id
+        WHERE sp.lot_no = ? AND sp.coil_no = ? AND sp.roll_no = ?
+        ORDER BY sp.id DESC
+        LIMIT 1
+    ");
+    $stmt->bind_param("sss", $lot, $coil, $roll);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    if (!$row) {
+        echo json_encode(['ok' => false, 'code' => 'NOT_FOUND',
+            'msg' => "Roll not found: {$lot} {$coil} {$roll}"]);
+        exit;
+    }
+
+    if ((int)$row['is_voided'] === 1) {
+        echo json_encode(['ok' => false, 'code' => 'VOIDED',
+            'msg' => 'This roll has been voided.']);
+        exit;
+    }
+
+    if (!$row['pallet_id']) {
+        echo json_encode(['ok' => false, 'code' => 'NO_PALLET',
+            'msg' => "Product not assigned to any pallet ({$lot} {$coil} {$roll})."]);
+        exit;
+    }
+
+    $palletId     = (int)$row['pallet_id'];
+    $palletStatus = $row['pallet_status'];
+    $palletNo     = $row['pallet_no'];
+
+    // Already delivered → friendly notice, not an error
+    if ($palletStatus === 'delivered') {
+        echo json_encode([
+            'ok' => true, 'code' => 'ALREADY_DELIVERED',
+            'msg' => "Pallet {$palletNo} was already delivered.",
+            'pallet_no' => $palletNo, 'pallet_id' => $palletId,
+        ]);
+        exit;
+    }
+
+    // building / pending_qc / rejected → block, explain why
+    if ($palletStatus !== 'approved') {
+        $friendly = match ($palletStatus) {
+            'building'   => 'still being built (not yet sent to QC)',
+            'pending_qc' => 'waiting for QC approval',
+            'rejected'   => 'rejected by QC',
+            default      => "in state: {$palletStatus}",
+        };
+        echo json_encode([
+            'ok' => false, 'code' => 'WRONG_STATE',
+            'msg' => "Cannot deliver: Pallet {$palletNo} is currently {$friendly}.",
+            'status' => $palletStatus, 'pallet_no' => $palletNo, 'pallet_id' => $palletId,
+        ]);
+        exit;
+    }
+
+    // Approved → bundle-deliver every roll on the pallet at once
+    $result = $pm->bundleDeliver($palletId, (int)$row['id']);
+    echo json_encode($result);
+    exit;
+}
+
 // ── Shared: build the flattened Summary Pallet dataset ─────────
 function buildSummaryPalletRows(mysqli $conn): array {
     $rows = $conn->query("
-        SELECT p.pallet_no, p.status, pi.stock_code AS pi_stock_code,
+        SELECT p.id AS pallet_id, p.pallet_no, p.status, pi.stock_code AS pi_stock_code,
                sp.roll_no, sp.lot_no, sp.coil_no, sp.product,
                sp.customer_name, sp.ref_no, sp.width, sp.length, sp.actual_length
         FROM pallets p
@@ -138,6 +275,7 @@ function buildSummaryPalletRows(mysqli $conn): array {
         }
 
         return [
+            'pallet_id'  => $r['pallet_id'],
             'pallet_no'  => $r['pallet_no'],
             'status'     => $r['status'],
             'stock_code' => $stockCode,
@@ -415,9 +553,12 @@ include 'header.php';
 
 $MAX = PalletManager::MAX_ROLLS;
 
-$isBuilding = $activePallet && $activePallet['status'] === 'building';
-$isRejected = $activePallet && $activePallet['status'] === 'rejected';
-$isReadOnly = $activePallet && !in_array($activePallet['status'], ['building', 'rejected']);
+$isBuilding  = $activePallet && $activePallet['status'] === 'building';
+$isRejected  = $activePallet && $activePallet['status'] === 'rejected';
+$isApproved  = $activePallet && $activePallet['status'] === 'approved';
+$isPendingQc = $activePallet && $activePallet['status'] === 'pending_qc';
+$isDelivered = $activePallet && $activePallet['status'] === 'delivered';
+$isReadOnly  = $activePallet && !in_array($activePallet['status'], ['building', 'rejected']);
 ?>
 <style>
 /* ── Layout ── */
@@ -705,6 +846,37 @@ if (isset($_GET['success'])): ?>
     <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
 </div>
 <?php endif; ?>
+
+<!-- ═══════════════════════════════════════════════════════════
+     METHOD 2 — Global "Scan to Deliver" panel
+     Always visible on pallet.php, regardless of whether a pallet
+     is selected. Scanning (camera or hardware scanner gun) or
+     typing any roll here resolves it → its pallet → delivers the
+     whole pallet in one shot via ajax=deliver_by_scan below.
+     No need to open the pallet first.
+═══════════════════════════════════════════════════════════════ -->
+<div class="card shadow-sm border-0 mb-3" id="deliverScanCard" style="border-left:4px solid #16a34a;">
+    <div class="card-body py-3 d-flex align-items-center gap-3 flex-wrap">
+        <div class="flex-grow-1" style="min-width:240px;">
+            <div class="fw-bold" style="font-size:13px;">
+                <i class="bi bi-truck me-1 text-success"></i> Scan to Deliver
+            </div>
+            <div class="text-muted" style="font-size:12px;">
+                Scan any roll on an <strong>approved</strong> pallet — the whole pallet delivers instantly.
+                Works from anywhere on this page (camera or hardware scanner).
+            </div>
+        </div>
+        <div class="d-flex gap-2" style="min-width:300px;">
+            <input type="text" id="deliverScanInput" class="form-control form-control-sm"
+                   placeholder="Scan, or type: 826277 FK-1 R1"
+                   autocomplete="off" autocorrect="off" spellcheck="false">
+            <button type="button" class="btn btn-success btn-sm" onclick="triggerDeliverScan()">
+                <i class="bi bi-truck me-1"></i> Deliver
+            </button>
+        </div>
+    </div>
+    <div id="deliverScanFeedback" class="px-3 pb-2" style="font-size:12.5px; min-height:18px;"></div>
+</div>
 
 <!-- Rejected pallets notification strip -->
 <?php if (!empty($rejectedPallets) && !$activePalletId): ?>
@@ -1028,6 +1200,15 @@ if (isset($_GET['success'])): ?>
                 </span>
             </div>
 
+            <?php if (!empty(trim($activePallet['customer_name'] ?? ''))): ?>
+            <div class="px-3 py-2 border-bottom d-flex flex-wrap gap-2 align-items-center">
+                <span class="constraint-badge"><i class="bi bi-person-check me-1"></i><?= htmlspecialchars($activePallet['customer_name']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-hash me-1"></i><?= htmlspecialchars($activePallet['ref_no']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-tag me-1"></i><?= htmlspecialchars($activePallet['product_type']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-arrows-expand me-1"></i><?= number_format((float)$activePallet['width']) ?> mm</span>
+            </div>
+            <?php endif; ?>
+
             <?php if (!empty($activePallet['qc_comment'])): ?>
             <div class="px-4 py-3 border-bottom" style="background:#fff5f5;">
                 <div class="d-flex align-items-start gap-2">
@@ -1067,6 +1248,9 @@ if (isset($_GET['success'])): ?>
                 <?php foreach ($activeItems as $item):
                     $itemLen = (float)($item['actual_length'] ?: $item['length']);
                     $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                    $itemNod = (float)($item['nod_length'] ?? 0);
+                    $hasNod  = $itemNod > 0;
+                    $netLen  = $itemLen - $itemNod;
                 ?>
                 <div class="slot-card">
                     <span class="roll-seq" style="background:#991b1b;"><?= $item['seq'] ?></span>
@@ -1087,6 +1271,12 @@ if (isset($_GET['success'])): ?>
                         </div>
                         <?php endif; ?>
                     </div>
+                    <?php if ($hasNod): ?>
+                    <span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m">
+                        <i class="bi bi-exclamation-triangle-fill"></i>
+                        NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m
+                    </span>
+                    <?php endif; ?>
                     <?php if ($itemWgt > 0): ?>
                     <span class="wgt-chip">
                         <i class="bi bi-speedometer2"></i>
@@ -1120,11 +1310,321 @@ if (isset($_GET['success'])): ?>
             </div>
         </div>
 
+        <?php elseif ($isPendingQc): ?>
+        <!-- ═══════════════════════════════════════════════════════
+             PENDING QC STATE — Submitted to QC, awaiting review
+        ═══════════════════════════════════════════════════════════ -->
+        <div class="card shadow-sm border-0 mb-4" style="border-left:4px solid #f59e0b !important;">
+            <div class="card-header text-white d-flex justify-content-between align-items-center"
+                 style="background:#d97706;">
+                <div class="d-flex align-items-center gap-2">
+                    <i class="bi bi-clock-history me-1"></i>
+                    <strong><?= htmlspecialchars($activePallet['pallet_no']) ?></strong>
+                    <span class="badge bg-white text-warning ms-1" style="color:#b45309 !important;">PENDING QC — AWAITING QC APPROVAL</span>
+                </div>
+                <span class="badge bg-white text-warning" style="color:#b45309 !important;">
+                    <?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?>
+                </span>
+            </div>
+
+            <?php if (!empty(trim($activePallet['customer_name'] ?? ''))): ?>
+            <div class="px-3 py-2 border-bottom d-flex flex-wrap gap-2 align-items-center">
+                <span class="constraint-badge"><i class="bi bi-person-check me-1"></i><?= htmlspecialchars($activePallet['customer_name']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-hash me-1"></i><?= htmlspecialchars($activePallet['ref_no']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-tag me-1"></i><?= htmlspecialchars($activePallet['product_type']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-arrows-expand me-1"></i><?= number_format((float)$activePallet['width']) ?> mm</span>
+            </div>
+            <?php endif; ?>
+
+            <div class="card-body p-4">
+                <?php
+                $pendingTotalWgt = 0.0;
+                foreach ($activeItems as $item) {
+                    $len = (float)($item['actual_length'] ?: $item['length']);
+                    $pendingTotalWgt += calcEstWeight($len, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                }
+                ?>
+                <?php if ($pendingTotalWgt > 0): ?>
+                <div class="weight-summary-bar mb-3">
+                    <div class="wgt-label"><i class="bi bi-speedometer2"></i> Est. Total Weight</div>
+                    <div style="display:flex; align-items:baseline; gap:6px;">
+                        <span class="wgt-total"><?= number_format($pendingTotalWgt, 2) ?></span>
+                        <span class="wgt-unit">kg</span>
+                    </div>
+                    <div class="wgt-avg"><?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?></div>
+                </div>
+                <?php endif; ?>
+
+                <div class="alert alert-warning py-2 mb-3" style="font-size:13px; background:#fffbe8; border-color:#fde68a; color:#92400e;">
+                    <i class="bi bi-clock-history me-1"></i>
+                    This pallet has been submitted to QC and is currently awaiting approval.
+                </div>
+
+                <?php foreach ($activeItems as $item):
+                    $itemLen = (float)($item['actual_length'] ?: $item['length']);
+                    $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                    $itemNod = (float)($item['nod_length'] ?? 0);
+                    $hasNod  = $itemNod > 0;
+                    $netLen  = $itemLen - $itemNod;
+                ?>
+                <div class="slot-card">
+                    <span class="roll-seq" style="background:#d97706;"><?= $item['seq'] ?></span>
+                    <div class="flex-grow-1">
+                        <div class="fw-bold small">
+                            <?= htmlspecialchars($item['lot_no']) ?>
+                            <?= htmlspecialchars($item['coil_no']) ?>
+                            &ndash; <?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?>
+                        </div>
+                        <div class="text-muted" style="font-size:11px;">
+                            <?= htmlspecialchars($item['product']) ?> |
+                            <?= number_format((float)$item['width']) ?>mm |
+                            <?= number_format($itemLen, 1) ?>m
+                        </div>
+                        <?php if (!empty($item['stock_code'])): ?>
+                        <div class="text-muted" style="font-size:11px;font-family:monospace;">
+                            <?= htmlspecialchars($item['stock_code']) ?>
+                        </div>
+                        <?php endif; ?>
+                    </div>
+                    <?php if ($hasNod): ?>
+                    <span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m">
+                        <i class="bi bi-exclamation-triangle-fill"></i>
+                        NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m
+                    </span>
+                    <?php endif; ?>
+                    <?php if ($itemWgt > 0): ?>
+                    <span class="wgt-chip">
+                        <i class="bi bi-speedometer2"></i>
+                        <?= number_format($itemWgt, 2) ?> kg
+                    </span>
+                    <?php endif; ?>
+                </div>
+                <?php endforeach; ?>
+            </div>
+
+            <div class="card-footer bg-light d-flex justify-content-between align-items-center">
+                <a href="pallet.php" class="btn btn-outline-secondary btn-sm">← Back</a>
+                <span class="text-muted small"><i class="bi bi-lock-fill me-1"></i>Read-Only (Pending QC)</span>
+            </div>
+        </div>
+
+        <?php elseif ($isApproved): ?>
+        <!-- ═══════════════════════════════════════════════════════
+             APPROVED STATE — Method 1: Manual "Deliver Pallet" button
+             Ready to ship. Every roll goes out together via
+             PalletManager::bundleDeliver() (server-side action
+             already wired at the top of this file: action=deliver_pallet).
+        ═══════════════════════════════════════════════════════════ -->
+        <div class="card shadow-sm border-0 mb-4" style="border-left:4px solid #16a34a !important;">
+            <div class="card-header text-white d-flex justify-content-between align-items-center"
+                 style="background:#166534;">
+                <div class="d-flex align-items-center gap-2">
+                    <i class="bi bi-check-circle-fill me-1"></i>
+                    <strong><?= htmlspecialchars($activePallet['pallet_no']) ?></strong>
+                    <span class="badge bg-white text-success ms-1">APPROVED — READY TO DELIVER</span>
+                </div>
+                <span class="badge bg-white text-success">
+                    <?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?>
+                </span>
+            </div>
+
+            <?php if (!empty(trim($activePallet['customer_name'] ?? ''))): ?>
+            <div class="px-3 py-2 border-bottom d-flex flex-wrap gap-2 align-items-center">
+                <span class="constraint-badge"><i class="bi bi-person-check me-1"></i><?= htmlspecialchars($activePallet['customer_name']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-hash me-1"></i><?= htmlspecialchars($activePallet['ref_no']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-tag me-1"></i><?= htmlspecialchars($activePallet['product_type']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-arrows-expand me-1"></i><?= number_format((float)$activePallet['width']) ?> mm</span>
+            </div>
+            <?php endif; ?>
+
+            <div class="card-body p-4">
+                <?php
+                $approvedTotalWgt = 0.0;
+                foreach ($activeItems as $item) {
+                    $len = (float)($item['actual_length'] ?: $item['length']);
+                    $approvedTotalWgt += calcEstWeight($len, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                }
+                ?>
+                <?php if ($approvedTotalWgt > 0): ?>
+                <div class="weight-summary-bar mb-3">
+                    <div class="wgt-label"><i class="bi bi-speedometer2"></i> Est. Total Weight</div>
+                    <div style="display:flex; align-items:baseline; gap:6px;">
+                        <span class="wgt-total"><?= number_format($approvedTotalWgt, 2) ?></span>
+                        <span class="wgt-unit">kg</span>
+                    </div>
+                    <div class="wgt-avg"><?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?></div>
+                </div>
+                <?php endif; ?>
+
+                <p class="text-muted mb-3" style="font-size:13px;">
+                    <i class="bi bi-info-circle me-1"></i>
+                    QC has approved this pallet. Click <strong>Deliver Pallet</strong> below, or scan any
+                    roll on this pallet from anywhere on this page — all <?= count($activeItems) ?> roll(s)
+                    will be marked <strong>DELIVERED</strong> together.
+                </p>
+
+                <?php foreach ($activeItems as $item):
+                    $itemLen = (float)($item['actual_length'] ?: $item['length']);
+                    $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                    $itemNod = (float)($item['nod_length'] ?? 0);
+                    $hasNod  = $itemNod > 0;
+                    $netLen  = $itemLen - $itemNod;
+                ?>
+                <div class="slot-card">
+                    <span class="roll-seq" style="background:#166534;"><?= $item['seq'] ?></span>
+                    <div class="flex-grow-1">
+                        <div class="fw-bold small">
+                            <?= htmlspecialchars($item['lot_no']) ?>
+                            <?= htmlspecialchars($item['coil_no']) ?>
+                            &ndash; <?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?>
+                        </div>
+                        <div class="text-muted" style="font-size:11px;">
+                            <?= htmlspecialchars($item['product']) ?> |
+                            <?= number_format((float)$item['width']) ?>mm |
+                            <?= number_format($itemLen, 1) ?>m
+                        </div>
+                        <?php if (!empty($item['stock_code'])): ?>
+                        <div class="text-muted" style="font-size:11px;font-family:monospace;">
+                            <?= htmlspecialchars($item['stock_code']) ?>
+                        </div>
+                        <?php endif; ?>
+                    </div>
+                    <?php if ($hasNod): ?>
+                    <span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m">
+                        <i class="bi bi-exclamation-triangle-fill"></i>
+                        NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m
+                    </span>
+                    <?php endif; ?>
+                    <?php if ($itemWgt > 0): ?>
+                    <span class="wgt-chip">
+                        <i class="bi bi-speedometer2"></i>
+                        <?= number_format($itemWgt, 2) ?> kg
+                    </span>
+                    <?php endif; ?>
+                </div>
+                <?php endforeach; ?>
+            </div>
+
+            <div class="card-footer bg-light d-flex justify-content-between align-items-center">
+                <a href="pallet.php" class="btn btn-outline-secondary btn-sm">← Back</a>
+
+                <!-- Method 1: manual Deliver Pallet button.
+                     Posts action=deliver_pallet → PalletManager::bundleDeliver()
+                     (handler already sits at the top of this file). -->
+                <form method="post"
+                      onsubmit="return confirm('Deliver pallet ' + currentPalletNo + '?\n\nAll <?= count($activeItems) ?> roll(s) will be marked DELIVERED.')">
+                    <input type="hidden" name="action"    value="deliver_pallet">
+                    <input type="hidden" name="pallet_id" value="<?= $activePalletId ?>">
+                    <button type="submit" class="btn btn-success fw-bold">
+                        <i class="bi bi-truck me-1"></i> Deliver Pallet
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <?php elseif ($isDelivered): ?>
+        <!-- ═══════════════════════════════════════════════════════
+             DELIVERED STATE — Historical record of delivered pallet
+        ═══════════════════════════════════════════════════════════ -->
+        <div class="card shadow-sm border-0 mb-4" style="border-left:4px solid #10b981 !important;">
+            <div class="card-header text-white d-flex justify-content-between align-items-center"
+                 style="background:#065f46;">
+                <div class="d-flex align-items-center gap-2">
+                    <i class="bi bi-truck me-1"></i>
+                    <strong><?= htmlspecialchars($activePallet['pallet_no']) ?></strong>
+                    <span class="badge bg-white text-success ms-1">DELIVERED</span>
+                </div>
+                <span class="badge bg-white text-success">
+                    <?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?>
+                </span>
+            </div>
+
+            <?php if (!empty(trim($activePallet['customer_name'] ?? ''))): ?>
+            <div class="px-3 py-2 border-bottom d-flex flex-wrap gap-2 align-items-center">
+                <span class="constraint-badge"><i class="bi bi-person-check me-1"></i><?= htmlspecialchars($activePallet['customer_name']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-hash me-1"></i><?= htmlspecialchars($activePallet['ref_no']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-tag me-1"></i><?= htmlspecialchars($activePallet['product_type']) ?></span>
+                <span class="constraint-badge"><i class="bi bi-arrows-expand me-1"></i><?= number_format((float)$activePallet['width']) ?> mm</span>
+            </div>
+            <?php endif; ?>
+
+            <div class="card-body p-4">
+                <?php
+                $deliveredTotalWgt = 0.0;
+                foreach ($activeItems as $item) {
+                    $len = (float)($item['actual_length'] ?: $item['length']);
+                    $deliveredTotalWgt += calcEstWeight($len, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                }
+                ?>
+                <?php if ($deliveredTotalWgt > 0): ?>
+                <div class="weight-summary-bar mb-3">
+                    <div class="wgt-label"><i class="bi bi-speedometer2"></i> Est. Total Weight</div>
+                    <div style="display:flex; align-items:baseline; gap:6px;">
+                        <span class="wgt-total"><?= number_format($deliveredTotalWgt, 2) ?></span>
+                        <span class="wgt-unit">kg</span>
+                    </div>
+                    <div class="wgt-avg"><?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?></div>
+                </div>
+                <?php endif; ?>
+
+                <div class="alert alert-success py-2 mb-3" style="font-size:13px; background:#d1fae5; border-color:#a7f3d0; color:#065f46;">
+                    <i class="bi bi-check-circle-fill me-1"></i>
+                    This pallet has been delivered.
+                </div>
+
+                <?php foreach ($activeItems as $item):
+                    $itemLen = (float)($item['actual_length'] ?: $item['length']);
+                    $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                    $itemNod = (float)($item['nod_length'] ?? 0);
+                    $hasNod  = $itemNod > 0;
+                    $netLen  = $itemLen - $itemNod;
+                ?>
+                <div class="slot-card">
+                    <span class="roll-seq" style="background:#065f46;"><?= $item['seq'] ?></span>
+                    <div class="flex-grow-1">
+                        <div class="fw-bold small">
+                            <?= htmlspecialchars($item['lot_no']) ?>
+                            <?= htmlspecialchars($item['coil_no']) ?>
+                            &ndash; <?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?>
+                        </div>
+                        <div class="text-muted" style="font-size:11px;">
+                            <?= htmlspecialchars($item['product']) ?> |
+                            <?= number_format((float)$item['width']) ?>mm |
+                            <?= number_format($itemLen, 1) ?>m
+                        </div>
+                        <?php if (!empty($item['stock_code'])): ?>
+                        <div class="text-muted" style="font-size:11px;font-family:monospace;">
+                            <?= htmlspecialchars($item['stock_code']) ?>
+                        </div>
+                        <?php endif; ?>
+                    </div>
+                    <?php if ($hasNod): ?>
+                    <span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m">
+                        <i class="bi bi-exclamation-triangle-fill"></i>
+                        NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m
+                    </span>
+                    <?php endif; ?>
+                    <?php if ($itemWgt > 0): ?>
+                    <span class="wgt-chip">
+                        <i class="bi bi-speedometer2"></i>
+                        <?= number_format($itemWgt, 2) ?> kg
+                    </span>
+                    <?php endif; ?>
+                </div>
+                <?php endforeach; ?>
+            </div>
+
+            <div class="card-footer bg-light d-flex justify-content-between align-items-center">
+                <a href="pallet.php" class="btn btn-outline-secondary btn-sm">← Back</a>
+                <span class="text-muted small"><i class="bi bi-lock-fill me-1"></i>Read-Only (Delivered)</span>
+            </div>
+        </div>
+
         <?php elseif ($activePallet): ?>
-        <!-- READ-ONLY (approved / delivered / pending_qc) -->
+        <!-- READ-ONLY FALLBACK -->
         <div class="alert alert-secondary">
             <strong><?= htmlspecialchars($activePallet['pallet_no']) ?></strong> —
-            <span class="badge badge-<?= $activePallet['status'] ?>">
+            <span class="badge badge-<?= htmlspecialchars($activePallet['status']) ?>">
                 <?= strtoupper(str_replace('_', ' ', $activePallet['status'])) ?>
             </span>
             — read-only.
@@ -1321,8 +1821,9 @@ if (isset($_GET['success'])): ?>
 // ─────────────────────────────────────────────────────────────
 // CONSTANTS
 // ─────────────────────────────────────────────────────────────
-const PALLET_ID = <?= $activePalletId ?: 'null' ?>;
-const MAX_ROLLS = <?= $MAX ?>;
+const PALLET_ID   = <?= $activePalletId ?: 'null' ?>;
+const MAX_ROLLS   = <?= $MAX ?>;
+const IS_BUILDING = <?= json_encode($isBuilding) ?>;
 let currentPalletNo = <?= json_encode($activePallet['pallet_no'] ?? '') ?>;
 let   rollCount = <?= count($activeItems) ?>;
 
@@ -1481,6 +1982,112 @@ async function processQR(raw) {
     if (!lot || !coil) { showFeedback('Could not parse input: ' + escHtml(raw), false); return; }
     await lookupAndAdd(lot, coil, roll);
 }
+
+// ─────────────────────────────────────────────────────────────
+// METHOD 2 — SCAN TO DELIVER
+// Routes a scan (camera or hardware gun) to the right behaviour:
+//   • Actively building a pallet → add the roll to it (existing
+//     Method-building flow, processQR/lookupAndAdd above).
+//   • Anywhere else on this page → resolve the scanned roll to
+//     its pallet and, if approved, deliver the whole pallet.
+// ─────────────────────────────────────────────────────────────
+function routeScan(raw) {
+    if (PALLET_ID && IS_BUILDING) {
+        processQR(raw);
+    } else {
+        processDeliveryScan(raw);
+    }
+}
+
+let isDelivering = false;
+
+async function processDeliveryScan(raw) {
+    raw = (raw || '').trim();
+    if (!raw) return;
+
+    // Drop overlapping scans (e.g. camera double-decode, or a
+    // hardware scanner burst landing while a request is in flight).
+    if (isDelivering) return;
+    isDelivering = true;
+
+    showDeliverFeedback('Looking up pallet…', null);
+    try {
+        const fd = new FormData();
+        fd.append('ajax', 'deliver_by_scan');
+        fd.append('raw', raw);
+
+        let res;
+        try {
+            res = await fetch('pallet.php', { method: 'POST', body: fd }).then(r => r.json());
+        } catch {
+            showDeliverFeedback('Network error while delivering.', false);
+            return;
+        }
+
+        switch (res.code) {
+            case 'DELIVERED':
+                showDeliverFeedback(
+                    `✓ Pallet ${escHtml(res.pallet_no)} and all ${res.rolls_delivered} roll(s) marked as DELIVERED.`,
+                    true
+                );
+                setTimeout(() => window.location.reload(), 1200);
+                break;
+            case 'ALREADY_DELIVERED':
+                showDeliverFeedback(`Pallet ${escHtml(res.pallet_no)} was already delivered.`, null);
+                break;
+            case 'WRONG_STATE':
+                showDeliverFeedback(res.msg, false);
+                break;
+            case 'NO_PALLET':
+                showDeliverFeedback(res.msg || 'Product not assigned to any pallet.', false);
+                break;
+            case 'NOT_FOUND':
+                showDeliverFeedback(res.msg || 'Roll not found.', false);
+                break;
+            case 'VOIDED':
+                showDeliverFeedback(res.msg || 'This roll has been voided.', false);
+                break;
+            default:
+                showDeliverFeedback(res.msg || 'Could not deliver.', false);
+        }
+    } finally {
+        isDelivering = false;
+    }
+}
+
+function triggerDeliverScan() {
+    const el = document.getElementById('deliverScanInput');
+    if (!el) return;
+    const val = el.value.trim();
+    if (!val) { showDeliverFeedback('Scan or type a roll first, e.g. 826277 FK-1 R1', false); el.focus(); return; }
+    processDeliveryScan(val);
+    el.value = '';
+    el.focus();
+}
+
+function showDeliverFeedback(msg, ok) {
+    const el = document.getElementById('deliverScanFeedback');
+    if (!el) return;
+    const cls = ok === true ? 'text-success fw-bold' : (ok === false ? 'text-danger fw-bold' : 'text-muted');
+    el.innerHTML = `<span class="${cls}">${escHtml(msg)}</span>`;
+}
+
+document.getElementById('deliverScanInput')?.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        triggerDeliverScan();
+    }
+});
+
+// Hardware scanner guns behave as a keyboard — auto-focus the
+// delivery input on load (unless a pallet is actively being built,
+// where manCombined should keep focus instead) so a gun scan lands
+// straight in the box without the operator clicking into it first.
+window.addEventListener('load', function () {
+    if (!IS_BUILDING) {
+        document.getElementById('deliverScanInput')?.focus();
+    }
+});
 
 // ─────────────────────────────────────────────────────────────
 // MANUAL ENTRY — single combined box (the sole manual entry
@@ -1982,7 +2589,7 @@ function renderSummaryTable(rows) {
             : '<span class="text-muted">&mdash; no rolls &mdash;</span>';
         return `
             <tr>
-                <td class="fw-bold">${escHtml(r.pallet_no)}</td>
+                <td class="fw-bold">${r.pallet_id ? `<a href="pallet.php?pallet_id=${r.pallet_id}" class="text-decoration-none">${escHtml(r.pallet_no)}</a>` : escHtml(r.pallet_no)}</td>
                 <td><span class="badge ${badgeClass}">${escHtml(summaryStatusLabel(r.status))}</span></td>
                 <td style="font-family:monospace;font-size:12px;">${r.stock_code ? escHtml(r.stock_code) : '<span class="text-muted">&mdash;</span>'}</td>
                 <td>${rollsCell}</td>
@@ -2420,16 +3027,18 @@ function exportSummaryPallet() {
 
 </script>
 
-<!-- Cache-busted (?v=7) so the browser always loads the latest scanner. -->
-<script src="camera_scanner.js?v=7"></script>
+<!-- Cache-busted (?v=8) so the browser always loads the latest scanner.
+     Always initialized now (not gated on PALLET_ID) so Method 2
+     "Scan to Deliver" works from the pallet list view too — routeScan()
+     decides whether a scan adds a roll (mid-build) or delivers a
+     pallet (everywhere else). -->
+<script src="camera_scanner.js?v=8"></script>
 <script>
-if (PALLET_ID) {
-    initCameraScanner({
-        onScan: function(decodedText) {
-            processQR(decodedText);
-        }
-    });
-}
+initCameraScanner({
+    onScan: function(decodedText) {
+        routeScan(decodedText);
+    }
+});
 </script>
 
 <?php include 'footer.php'; ?>

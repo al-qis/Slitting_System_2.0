@@ -10,7 +10,7 @@
 // Database Credentials
 $host   = 'localhost'; 
 $user   = 'root';
-$pass   = 'MIS_1990'; 
+$pass   = ''; 
 $dbname = 'slitting_db'; 
 
 // Initialize MySQLi Connection
