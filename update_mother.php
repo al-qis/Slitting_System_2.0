@@ -1,12 +1,5 @@
 <?php
-// update_mother.php — fixed version
-// Bugs fixed from original:
-//   1. int($_POST['id']) → intval($_POST['id'])
-//   2. die() statement had ":" instead of ";"
-//   3. bind_param was called before execute (was correct in original but
-//      the column list in the UPDATE was wrong — now matches actual schema)
-//   4. prepare() result checked before bind_param
-
+// update_mother.php — updates mother coil details and slitting plan
 include 'config.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -18,7 +11,7 @@ if (empty($_POST['id'])) {
     die("Invalid request: missing ID");
 }
 
-$id      = intval($_POST['id']);                 // FIX: was int() which doesn't exist
+$id      = intval($_POST['id']);
 $coil_no = trim($_POST['coil_no'] ?? '');
 $product = trim($_POST['product'] ?? '');
 $lot_no  = trim($_POST['lot_no']  ?? '');
@@ -27,7 +20,7 @@ $width   = trim($_POST['width']   ?? '');
 $length  = trim($_POST['length']  ?? '');
 
 if ($coil_no === '' || $product === '' || $lot_no === '' || $width === '' || $length === '') {
-    die("Required fields missing");  // FIX: was "missing"): with colon instead of semicolon
+    die("Required fields missing");
 }
 
 $grade = ($grade === '') ? null : $grade;
@@ -43,22 +36,58 @@ if ($check->get_result()->num_rows > 0) {
 }
 $check->close();
 
-// FIX: column list now matches actual mother_coil schema (no 'size', 'nominal', 'effective')
-$stmt = $conn->prepare("
-    UPDATE mother_coil
-    SET product=?, lot_no=?, coil_no=?, grade=?, width=?, length=?
-    WHERE id=?
-");
-if (!$stmt) { die("Prepare failed: " . $conn->error); }
+$conn->begin_transaction();
 
-// FIX: bind_param must come BEFORE execute, and types must match column order above
-$stmt->bind_param("sssssdi", $product, $lot_no, $coil_no, $grade, $width, $length, $id);
+try {
+    // 1. Update mother_coil
+    $stmt = $conn->prepare("
+        UPDATE mother_coil
+        SET product=?, lot_no=?, coil_no=?, grade=?, width=?, length=?
+        WHERE id=?
+    ");
+    if (!$stmt) { throw new Exception("Prepare failed: " . $conn->error); }
+    $stmt->bind_param("sssssdi", $product, $lot_no, $coil_no, $grade, $width, $length, $id);
+    if (!$stmt->execute()) {
+        throw new Exception("SQL Error: " . $stmt->error);
+    }
+    $stmt->close();
 
-if (!$stmt->execute()) {
-    die("SQL Error: " . $stmt->error);
+    // 2. Update slitting_plans (delete old and re-insert updated plan rows)
+    $delPlan = $conn->prepare("DELETE FROM slitting_plans WHERE mother_coil_id = ?");
+    if ($delPlan) {
+        $delPlan->bind_param("i", $id);
+        $delPlan->execute();
+        $delPlan->close();
+    }
+
+    $planSeqs   = $_POST['plan_seq']   ?? [];
+    $planWidths = $_POST['plan_width'] ?? [];
+
+    if (is_array($planSeqs) && is_array($planWidths)) {
+        $insPlan = $conn->prepare("
+            INSERT INTO slitting_plans (mother_coil_id, roll_seq, planned_width, sort_order)
+            VALUES (?, ?, ?, ?)
+        ");
+        if ($insPlan) {
+            $order = 0;
+            foreach ($planSeqs as $i => $seqRaw) {
+                $seq  = trim($seqRaw);
+                $wRaw = trim($planWidths[$i] ?? '');
+                if ($seq === '' || $wRaw === '' || !is_numeric($wRaw)) continue;
+                $order++;
+                $widthVal = (float)$wRaw;
+                $insPlan->bind_param("isdi", $id, $seq, $widthVal, $order);
+                $insPlan->execute();
+            }
+            $insPlan->close();
+        }
+    }
+
+    $conn->commit();
+} catch (Exception $e) {
+    $conn->rollback();
+    die("Update failed: " . htmlspecialchars($e->getMessage()));
 }
-
-$stmt->close();
 
 header("Location: mother_coil.php?success=update");
 exit;
