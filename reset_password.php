@@ -2,7 +2,7 @@
 session_start();
 include 'config.php';
 
-if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') {
+if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'slitting') {
     die("Access denied");
 }
 
