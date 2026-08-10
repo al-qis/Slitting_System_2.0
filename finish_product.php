@@ -1706,7 +1706,7 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                 <?php else: ?>
                     <span class="badge bg-secondary w-100 mb-1">Not Printed</span>
                 <?php endif; ?>
-                <a href="select_customer.php?id=<?= $row['id'] ?>" class="btn btn-secondary btn-sm w-100">Print Only</a>
+                <a href="select_customer.php?id=<?= $row['id'] ?>" class="btn btn-secondary btn-sm w-100">Set Customer</a>
             <?php endif; ?>
 
         </div>
