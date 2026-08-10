@@ -2072,7 +2072,7 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
 
             <div class="col-md-4">
               <label class="form-label">Roll No <span class="text-danger">*</span></label>
-              <input type="text" name="roll_no" id="isu_roll_no" class="form-control" required disabled>
+              <input type="text" name="roll_no" id="isu_roll_no" class="form-control" required disabled placeholder="e.g. R1">
             </div>
 
             <div class="col-md-4">
