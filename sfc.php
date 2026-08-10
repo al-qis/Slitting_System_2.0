@@ -47,6 +47,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_initial_stock']))
             $lot     = trim($lots[$i]    ?? '');
             $coil    = trim($coils[$i]   ?? '');
             $roll    = trim($rolls[$i]   ?? '');
+            if ($roll === '') {
+                $roll = 'BALANCE';
+            }
             $width   = trim($widths[$i]  ?? '');
             $length  = trim($lengths[$i] ?? '');
 
