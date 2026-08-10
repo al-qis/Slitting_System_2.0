@@ -180,12 +180,9 @@ if ($status === 'APPROVED' && $palletId && $palletStatus === 'approved') {
     if ($result['ok']) {
         $code = $result['code'];
         if ($code === 'DELIVERED') {
-            header("Location: {$back}"
-                . "&scan=pallet_delivered"
-                . "&pallet_no="   . urlencode($result['pallet_no'])
-                . "&roll_count="  . $result['rolls_delivered']);
+            header("Location: pallet.php?pallet_id={$palletId}&success=delivered&pallet_no=" . urlencode($result['pallet_no']));
         } else {
-            header("Location: {$back}&scan=already_delivered_pallet&pallet_no=".urlencode($result['pallet_no'] ?? ''));
+            header("Location: pallet.php?pallet_id={$palletId}");
         }
     } else {
         header("Location: {$back}"
