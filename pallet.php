@@ -868,7 +868,7 @@ if (isset($_GET['success'])): ?>
         </div>
         <div class="d-flex gap-2" style="min-width:300px;">
             <input type="text" id="deliverScanInput" class="form-control form-control-sm"
-                   placeholder="Scan, or type: 826277 FK-1 R1"
+                   placeholder="Scan roll, or type 7 numbers (e.g. 8888888)"
                    autocomplete="off" autocorrect="off" spellcheck="false">
             <button type="button" class="btn btn-success btn-sm" onclick="triggerDeliverScan()">
                 <i class="bi bi-truck me-1"></i> Deliver
@@ -1666,7 +1666,7 @@ if (isset($_GET['success'])): ?>
                        style="left:10px; top:50%; transform:translateY(-50%); font-size:12px; color:#adb5bd;"></i>
                     <input type="text" id="palletSearchInput"
                            class="form-control form-control-sm ps-4"
-                           placeholder="Search Pallet No, Customer, or Lot No…">
+                           placeholder="Type 7 numbers (e.g. 8888888), Pallet No, or Customer…">
                 </div>
                 <div class="d-flex gap-2 align-items-center">
                     <div class="btn-group btn-group-sm pallet-tab-group flex-grow-1" id="palletTabGroup">
@@ -2410,16 +2410,19 @@ const PALLET_NO_PREFIX = 'SFS-';
 
 function formatPalletNo(raw) {
     if (!raw) return '';
-    // Strip an already-formatted "SFS-" prefix (case-insensitive) so
-    // reformatting an already-formatted value is a no-op, not a doubling.
+    const hasTrailingSpace = raw.endsWith(' ') || raw.endsWith(' (');
     const cleaned = raw.replace(/^\s*SFS-?\s*/i, '');
     const digits  = cleaned.replace(/[^0-9]/g, '').slice(0, 7);   // XXXX + XXX
-    const letters = cleaned.replace(/[^A-Za-z]/g, '').toUpperCase().slice(0, 3); // optional (A)/(AB)/(ABC)
+    const letters = cleaned.replace(/[^A-Za-z]/g, '').toUpperCase().slice(0, 3); // optional (B)/(BN)/(A)
 
-    if (!digits && !letters) return '';
+    if (!digits && !letters) return raw;
 
     let out = PALLET_NO_PREFIX + (digits.length <= 4 ? digits : digits.slice(0, 4) + '-' + digits.slice(4));
-    if (letters) out += ` (${letters})`;
+    if (letters) {
+        out += ` (${letters})`;
+    } else if (hasTrailingSpace && digits.length === 7) {
+        out += ' ';
+    }
     return out;
 }
 
@@ -2996,9 +2999,30 @@ document.getElementById('palletTabGroup').addEventListener('click', e => {
     renderPalletList();
 });
 
-document.getElementById('palletSearchInput').addEventListener('input', () => {
+document.getElementById('palletSearchInput')?.addEventListener('input', function() {
+    let val = this.value;
+    let cleaned = val.replace(/^\s*SFS-?\s*/i, '');
+    let digits = cleaned.replace(/[^0-9]/g, '');
+    if (digits.length >= 4 && !val.endsWith(' ')) {
+        let formatted = formatPalletNo(val);
+        if (formatted && formatted !== val) {
+            this.value = formatted;
+        }
+    }
     clearTimeout(palletSearchDebounce);
-    palletSearchDebounce = setTimeout(loadPalletList, 300);
+    palletSearchDebounce = setTimeout(loadPalletList, 250);
+});
+
+document.getElementById('deliverScanInput')?.addEventListener('input', function() {
+    let val = this.value;
+    let cleaned = val.replace(/^\s*SFS-?\s*/i, '');
+    let digits = cleaned.replace(/[^0-9]/g, '');
+    if (digits.length >= 4 && !val.endsWith(' ')) {
+        let formatted = formatPalletNo(val);
+        if (formatted && formatted !== val) {
+            this.value = formatted;
+        }
+    }
 });
 
 document.getElementById('palletSortSelect').addEventListener('change', loadPalletList);
