@@ -166,14 +166,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
                 log_source_tracking($conn, 0, 'reslit_product', $original_source, 'sfc', 'RESLIT_FROM_SFC');
 
             } elseif ($action === 'SELL') {
+                $isBalance = (strtoupper(trim($sfc['roll_no'] ?? '')) === 'BALANCE' || strtoupper(trim($sfc['status'] ?? '')) === 'BALANCE');
+                if ($isBalance) {
+                    $conn->rollback();
+                    die("<div style='color:red; font-family:sans-serif; padding:20px; border:1px solid red; background:#fff5f5;'>
+                            <h2>Action Denied</h2>
+                            <p><strong>Reason:</strong> Balance coils cannot be sold directly. They must be sent to Recoil or Reslit.</p>
+                            <button onclick='history.back()' style='padding:8px 16px; margin-top:10px;'>Go Back</button>
+                         </div>");
+                }
+                $actLen = (float)($sfc['length'] ?? 0);
                 $stmt = $conn->prepare("INSERT INTO slitting_product
-                    (mother_id, product, lot_no, coil_no, roll_no, width, length,
-                     status, date_in, date_out, cut_type, source, original_source)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'WAITING', NOW(), NOW(), 'sfc_sell', 'sfc', ?)");
-                $stmt->bind_param("issssdds",
+                    (mother_id, product, lot_no, coil_no, roll_no, width, length, actual_length,
+                     status, is_completed, stock_counted, date_in, date_out, cut_type, source, original_source)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, NOW(), NULL, 'sfc_sell', 'sfc', ?)");
+                $stmt->bind_param("issssddds",
                     $sfc['mother_id'],
                     $sfc['product'], $sfc['lot_no'], $sfc['coil_no'],
-                    $sfc['roll_no'], $sfc['width'],  $sfc['length'], $original_source);
+                    $sfc['roll_no'], $sfc['width'],  $sfc['length'], $actLen, $original_source);
                 $stmt->execute();
                 $stmt->close();
                 log_source_tracking($conn, 0, 'slitting_product', $original_source, 'sfc', 'SELL_FROM_SFC');
@@ -187,7 +197,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
             $conn->commit();
 
             if ($action === 'SELL') {
-                header("Location: finish_product.php?success=1&msg=sfc_sold");
+                header("Location: finish_product.php?filter=stock&success=sfc_sold");
             } else {
                 header("Location: sfc.php?success=1");
             }
@@ -499,7 +509,7 @@ include 'header.php';
                             $actionLabel = match(strtoupper($row['action'] ?? '')) {
                                 'RESLIT'  => ['RESLIT',   'bg-warning text-dark'],
                                 'RECOIL'  => ['RECOIL',   'bg-primary'],
-                                'SELL'    => ['SELL → QC','bg-success'],
+                                'SELL'    => ['SELL → FINISH PRODUCT','bg-success'],
                                 default   => [htmlspecialchars($row['action'] ?? 'USED'), 'bg-secondary'],
                             };
                             ?>
@@ -599,7 +609,9 @@ include 'header.php';
                     </td>
 
                     <td class="no-print">
-                        <?php if (!$isUsed): ?>
+                        <?php if (!$isUsed):
+                            $isBalanceRow = (strtoupper(trim($row['roll_no'] ?? '')) === 'BALANCE' || strtoupper(trim($row['status'] ?? '')) === 'BALANCE');
+                        ?>
                             <div class="d-flex gap-1">
                                 <button type="button"
                                         class="btn btn-primary btn-sm px-3 rounded-pill actionBtn shadow-sm"
@@ -607,6 +619,7 @@ include 'header.php';
                                         data-sfc-lot="<?= htmlspecialchars($row['lot_no']) ?>"
                                         data-sfc-coil="<?= htmlspecialchars($row['coil_no']) ?>"
                                         data-sfc-roll="<?= htmlspecialchars($row['roll_no'] ?? '') ?>"
+                                        data-sfc-is-balance="<?= $isBalanceRow ? '1' : '0' ?>"
                                         data-sfc-details="<?= htmlspecialchars($row['product']) ?> | <?= htmlspecialchars($row['lot_no']) ?> <?= htmlspecialchars($row['coil_no']) ?> | <?= number_format($row['length'], 2) ?>m">
                                     <i class="bi bi-gear-fill me-1"></i> Process
                                 </button>
@@ -678,21 +691,25 @@ include 'header.php';
         <p class="text-muted small mb-4">SFC ID: <span id="sfcIdDisplay" class="fw-bold text-dark"></span></p>
         <form id="actionForm" method="post" action="sfc.php">
             <input type="hidden" name="sfc_id" id="sfc_id_input">
+            <div id="balanceNotice" class="alert alert-warning py-2 mb-3 small d-none" style="font-size:12px;">
+                <i class="bi bi-exclamation-triangle-fill me-1"></i>
+                <strong>Balance Coil:</strong> Can only be sent to <strong>RECOIL</strong> or <strong>RESLIT</strong>.
+            </div>
             <div class="d-grid gap-3">
-                <button type="submit" name="action" value="RECOIL"
+                <button type="submit" name="action" value="RECOIL" id="sfcRecoilBtn"
                         class="btn btn-warning py-2 fw-bold shadow-sm"
                         onclick="return confirm('Send to Recoiling?')">
                     <i class="bi bi-arrow-repeat me-2"></i> RECOIL
                 </button>
-                <button type="submit" name="action" value="RESLIT"
+                <button type="submit" name="action" value="RESLIT" id="sfcReslitBtn"
                         class="btn btn-info py-2 fw-bold text-white shadow-sm"
                         onclick="return confirm('Send to Reslit?')">
                     <i class="bi bi-intersect me-2"></i> RESLIT
                 </button>
-                <button type="submit" name="action" value="SELL"
+                <button type="submit" name="action" value="SELL" id="sfcSellBtn"
                         class="btn btn-success py-2 fw-bold shadow-sm"
-                        onclick="return confirm('Send to QC / Finish Product?')">
-                    <i class="bi bi-cart-check me-2"></i> SELL (To QC)
+                        onclick="return confirm('Send to Finish Product (Status: IN)?')">
+                    <i class="bi bi-cart-check me-2"></i> SELL (To Finish Product)
                 </button>
             </div>
         </form>
@@ -901,15 +918,23 @@ document.addEventListener('DOMContentLoaded', function () {
 
     let pendingSfcId = null, pendingSfcDetails = null;
 
-    function openActionModal(sfcId, details) {
+    function openActionModal(sfcId, details, isBalance) {
         document.getElementById('sfc_id_input').value      = sfcId;
         document.getElementById('sfcIdDisplay').textContent = sfcId;
         document.getElementById('sfcDetails').textContent   = details;
+
+        const sellBtn = document.getElementById('sfcSellBtn');
+        const notice  = document.getElementById('balanceNotice');
+
+        if (String(isBalance) === '1' || isBalance === true) {
+            if (sellBtn) sellBtn.classList.add('d-none');
+            if (notice)  notice.classList.remove('d-none');
+        } else {
+            if (sellBtn) sellBtn.classList.remove('d-none');
+            if (notice)  notice.classList.add('d-none');
+        }
         actionModal.show();
     }
-    // Scanning intentionally skips the Supervisor PIN gate entirely and
-    // calls this directly (see initCameraScanner's onScan below, which
-    // now lives in this same closure) — unlike the manual PROCESS button.
 
     function openDeleteModal(sfcId, details) {
         document.getElementById('delete_sfc_id_input').value = sfcId;
@@ -919,8 +944,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     document.querySelectorAll('.actionBtn').forEach(btn => {
         btn.addEventListener('click', function () {
-            // PIN gate removed — anyone can open Select Next Process directly.
-            openActionModal(this.dataset.sfcId, this.dataset.sfcDetails);
+            openActionModal(this.dataset.sfcId, this.dataset.sfcDetails, this.dataset.sfcIsBalance);
         });
     });
 
@@ -1063,7 +1087,7 @@ document.addEventListener('DOMContentLoaded', function () {
             // straight to Select Next Process. Called directly (no window.
             // prefix needed) since this now lives in the SAME closure as
             // openActionModal, showAlert, and hideAlert.
-            openActionModal(btn.dataset.sfcId, btn.dataset.sfcDetails);
+            openActionModal(btn.dataset.sfcId, btn.dataset.sfcDetails, btn.dataset.sfcIsBalance);
         } else {
             showAlert('danger', 'No matching active SFC found for: <strong>' + scanned + '</strong>');
         }

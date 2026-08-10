@@ -1115,6 +1115,7 @@ table td.lot-coil-cell {
         'reslit'      => 'Roll sent to Reslit successfully.',
         'stock'       => 'Actual length saved. Roll is now in Finish Good stock.',
         'palletised'  => 'Roll added to pallet successfully.',
+        'sfc_sold'    => 'SFC roll sent to Finish Product (Status: IN).',
     ];
     echo htmlspecialchars($successMessages[$_GET['success']] ?? 'Action completed successfully.');
     ?>
