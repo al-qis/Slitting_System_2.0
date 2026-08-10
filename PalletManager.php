@@ -1244,10 +1244,29 @@ class PalletManager
         }
 
         if ($search !== '') {
-            $where[]  = "(pallet_no LIKE ? OR customer_name LIKE ? OR lot_nos LIKE ?)";
+            $rawClean     = trim($search);
+            $cleanDigits  = substr(preg_replace('/[^0-9]/', '', $rawClean), 0, 7);
+            $cleanLetters = strtoupper(substr(preg_replace('/[^A-Za-z]/', '', preg_replace('/^\s*SFS-?\s*/i', '', $rawClean)), 0, 3));
+
+            $sfsFormatted = '';
+            if (strlen($cleanDigits) === 7) {
+                $sfsFormatted = 'SFS-' . substr($cleanDigits, 0, 4) . '-' . substr($cleanDigits, 4);
+                if ($cleanLetters !== '') {
+                    $sfsFormatted .= " ({$cleanLetters})";
+                }
+            } elseif (strlen($cleanDigits) > 0 && !str_starts_with(strtoupper($search), 'SFS-')) {
+                $sfsFormatted = 'SFS-' . $search;
+            }
+
+            $where[]  = "(pallet_no LIKE ? OR pallet_no LIKE ? OR REPLACE(pallet_no, '-', '') LIKE ? OR customer_name LIKE ? OR lot_nos LIKE ?)";
             $like     = '%' . $search . '%';
-            $types   .= 'sss';
+            $sfsLike  = $sfsFormatted !== '' ? '%' . $sfsFormatted . '%' : $like;
+            $digLike  = '%' . ($cleanDigits !== '' ? $cleanDigits : $search) . '%';
+
+            $types   .= 'sssss';
             $params[] = $like;
+            $params[] = $sfsLike;
+            $params[] = $digLike;
             $params[] = $like;
             $params[] = $like;
         }
