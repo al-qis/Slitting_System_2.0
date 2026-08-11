@@ -2525,6 +2525,45 @@ function resequenceSlots() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// removeRoll(palletId, productId, seq, btnEl)
+// Removes a single roll from the active pallet
+// ─────────────────────────────────────────────────────────────
+async function removeRoll(palletId, productId, seq, btnEl) {
+    if (!confirm('Remove this roll from the pallet?')) return;
+
+    if (btnEl) btnEl.disabled = true;
+
+    const fd = new FormData();
+    fd.append('action', 'remove_roll');
+    fd.append('pallet_id', palletId);
+    fd.append('product_id', productId);
+
+    try {
+        const res = await fetch('pallet.php', { method: 'POST', body: fd }).then(r => r.json());
+        if (!res.ok) {
+            showFeedback(res.msg || 'Failed to remove roll.', false);
+            if (btnEl) btnEl.disabled = false;
+            return;
+        }
+
+        clearSlot(seq);
+        resequenceSlots();
+        recalcTotalWeight();
+        rollCount = res.new_count;
+        updateProgress(rollCount);
+
+        if (res.new_count === 0) {
+            window.location.reload();
+        } else {
+            showFeedback(res.msg, true);
+        }
+    } catch (e) {
+        showFeedback('Network error while removing roll.', false);
+        if (btnEl) btnEl.disabled = false;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
 // UI HELPERS
 // ─────────────────────────────────────────────────────────────
 function updateProgress(count) {
