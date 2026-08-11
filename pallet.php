@@ -625,7 +625,7 @@ $isReadOnly  = $activePallet && !in_array($activePallet['status'], ['building', 
 
 .pallet-tab-group        { background:#212529; border-radius:6px; padding:2px; }
 .pallet-tab-group .pallet-tab {
-    color:#adb5bd; border:0; font-size:11.5px; font-weight:600; padding:4px 8px;
+    color:#adb5bd; border:0; font-size:10.5px; font-weight:600; padding:3px 4px;
     border-radius:4px; letter-spacing:.01em;
 }
 .pallet-tab-group .pallet-tab:hover  { color:#fff; }
@@ -1034,11 +1034,46 @@ if (isset($_GET['success'])): ?>
                 </div>
 
                 <!-- Edit mode (hidden until pencil clicked) -->
+                <?php
+                    $PALLET_CUSTOMERS = [
+                        'NAE'      => 'NICHIAS AUTOPARTS EUROPE (NAE)',
+                        'NAX'      => 'NAX MFG, SA.DE C.V',
+                        'NCI MFG'  => 'NCI MFG., INC.',
+                        'TAIHO'    => 'TAIHO MFG OF TN. INC',
+                        'NRI'      => 'PT NICHIAS ROCKWOOL IND.',
+                        'ASHUKA'   => 'ASHUKA TECHNOLOGIES SDN. BHD.',
+                        'NIPPON'   => 'NTC(NIPPON GASKET)',
+                        'NTC'      => 'NICHIAS THAILAND',
+                        'SGC'      => 'SHANGHAI XINGSHENG',
+                        'STAMPING' => 'MK STAMPING',
+                        'YANTAI'   => 'NICHIAS (SHANGHAI) AUTOPARTS TRADING',
+                        'NIP'      => 'NICHIAS IND.PRODUCTS PVT. LTD.',
+                        'NVC'      => 'NICHIAS VIETNAM CO., LTD',
+                        'NCS'      => 'NC-PT NICHIAS SUNIJAYA',
+                        'SNP'      => 'SUZHOU NICHIAS IND. PRODUCTS',
+                        'YTEC'     => 'YTEC CO., LTD.',
+                        'NSEA'     => 'NICHIAS SOUTH EAST ASIA (UP PACKING)',
+                        'NCI 2'    => 'NCI 2',
+                        'STOCK'    => 'STOCK',
+                        'TRIAL'    => 'TRIAL',
+                    ];
+                    $curCust = trim($activePallet['customer_name'] ?? '');
+                    $isOtherCustomer = ($curCust !== '' && !isset($PALLET_CUSTOMERS[$curCust]) && !in_array($curCust, $PALLET_CUSTOMERS, true));
+                ?>
                 <div class="d-none align-items-center gap-1 flex-wrap mt-2" id="constraintEditForm">
-                    <input type="text" class="form-control form-control-sm constraint-edit-input" id="constraintCustomerInput"
-                           value="<?= htmlspecialchars($activePallet['customer_name']) ?>"
-                           placeholder="Customer" maxlength="120" autocomplete="off"
-                           onkeydown="onConstraintEditKeydown(event)">
+                    <select class="form-select form-select-sm constraint-edit-input" id="constraintCustomerInput"
+                            onchange="handleConstraintCustomerChange()" onkeydown="onConstraintEditKeydown(event)" style="min-width:180px;">
+                        <option value="">-- Select Customer --</option>
+                        <?php foreach ($PALLET_CUSTOMERS as $code => $fullName): ?>
+                            <option value="<?= htmlspecialchars($code) ?>" <?= ($curCust === $code || $curCust === $fullName) ? 'selected' : '' ?>>
+                                <?= htmlspecialchars($code) ?> — <?= htmlspecialchars($fullName) ?>
+                            </option>
+                        <?php endforeach; ?>
+                        <option value="OTHER" <?= $isOtherCustomer ? 'selected' : '' ?>>OTHER (type below)</option>
+                    </select>
+                    <input type="text" class="form-control form-control-sm constraint-edit-input mt-1" id="constraintCustomCustomerInput"
+                           placeholder="Enter customer name" style="display:<?= $isOtherCustomer ? 'block' : 'none' ?>;"
+                           value="<?= $isOtherCustomer ? htmlspecialchars($curCust) : '' ?>" onkeydown="onConstraintEditKeydown(event)">
                     <input type="text" class="form-control form-control-sm constraint-edit-input" id="constraintRefNoInput"
                            value="<?= htmlspecialchars($activePallet['ref_no']) ?>"
                            placeholder="Ref No" maxlength="80" autocomplete="off"
@@ -1852,7 +1887,6 @@ if (isset($_GET['success'])): ?>
                            class="form-control form-control-sm ps-4"
                            placeholder="Type 7 numbers (e.g. 8888888), Pallet No, or Customer…">
                 </div>
-                <div class="d-flex gap-2 align-items-center">
                     <div class="btn-group btn-group-sm pallet-tab-group flex-grow-1" id="palletTabGroup">
                         <button type="button" class="btn pallet-tab active" data-group="all">
                             All <span class="tab-count" data-count="all"></span>
@@ -1863,16 +1897,16 @@ if (isset($_GET['success'])): ?>
                         <button type="button" class="btn pallet-tab" data-group="qc">
                             QC <span class="tab-count" data-count="qc"></span>
                         </button>
-                        <button type="button" class="btn pallet-tab" data-group="closed">
-                            Closed <span class="tab-count" data-count="closed"></span>
+                        <button type="button" class="btn pallet-tab" data-group="approved">
+                            Approve <span class="tab-count" data-count="approved"></span>
+                        </button>
+                        <button type="button" class="btn pallet-tab" data-group="rejected">
+                            Reject <span class="tab-count" data-count="rejected"></span>
+                        </button>
+                        <button type="button" class="btn pallet-tab" data-group="delivered">
+                            Delivered <span class="tab-count" data-count="delivered"></span>
                         </button>
                     </div>
-                    <select id="palletSortSelect" class="form-select form-select-sm" style="width:auto;">
-                        <option value="id" selected>Pallet No (A–Z)</option>
-                        <option value="updated">Recently Updated</option>
-                        <option value="capacity">Capacity</option>
-                    </select>
-                </div>
             </div>
             <div class="pallet-list-scroll" id="palletListScroll">
                 <div class="pallet-list-loading" id="palletListLoading">
@@ -2115,9 +2149,17 @@ function updateConstraintBadges(p) {
         </div>
 
         <div class="d-none align-items-center gap-1 flex-wrap mt-2" id="constraintEditForm">
-            <input type="text" class="form-control form-control-sm constraint-edit-input" id="constraintCustomerInput"
-                   value="${escHtml(p.customer_name || '')}" placeholder="Customer" maxlength="120" autocomplete="off"
-                   onkeydown="onConstraintEditKeydown(event)">
+            <select class="form-select form-select-sm constraint-edit-input" id="constraintCustomerInput"
+                    onchange="handleConstraintCustomerChange()" onkeydown="onConstraintEditKeydown(event)" style="min-width:180px;">
+                <option value="">-- Select Customer --</option>
+                ${Object.entries(PALLET_CUSTOMERS_MAP).map(([code, fullName]) => {
+                    const isSel = (p.customer_name === code || p.customer_name === fullName);
+                    return `<option value="${escHtml(code)}" ${isSel ? 'selected' : ''}>${escHtml(code)} &mdash; ${escHtml(fullName)}</option>`;
+                }).join('')}
+                <option value="OTHER">OTHER (type below)</option>
+            </select>
+            <input type="text" class="form-control form-control-sm constraint-edit-input mt-1" id="constraintCustomCustomerInput"
+                   placeholder="Enter customer name" style="display:none;" value="" onkeydown="onConstraintEditKeydown(event)">
             <input type="text" class="form-control form-control-sm constraint-edit-input" id="constraintRefNoInput"
                    value="${escHtml(p.ref_no || '')}" placeholder="Ref No" maxlength="80" autocomplete="off"
                    onkeydown="onConstraintEditKeydown(event)">
@@ -2987,14 +3029,55 @@ async function savePalletRename() {
 
 // ─────────────────────────────────────────────────────────────
 // INLINE CUSTOMER / REF NO EDIT (constraint badge header)
-// Same pattern as the pallet-no rename above: click pencil → edit
-// two fields → save via AJAX → PalletManager::updatePalletCustomerRef()
-// propagates the new values to every roll (slitting_product) on
-// this pallet so nothing drifts out of sync.
+// Standardized Customer selection component + auto-population
 // ─────────────────────────────────────────────────────────────
+const PALLET_CUSTOMERS_MAP = {
+    'NAE':      'NICHIAS AUTOPARTS EUROPE (NAE)',
+    'NAX':      'NAX MFG, SA.DE C.V',
+    'NCI MFG':  'NCI MFG., INC.',
+    'TAIHO':    'TAIHO MFG OF TN. INC',
+    'NRI':      'PT NICHIAS ROCKWOOL IND.',
+    'ASHUKA':   'ASHUKA TECHNOLOGIES SDN. BHD.',
+    'NIPPON':   'NTC(NIPPON GASKET)',
+    'NTC':      'NICHIAS THAILAND',
+    'SGC':      'SHANGHAI XINGSHENG',
+    'STAMPING': 'MK STAMPING',
+    'YANTAI':   'NICHIAS (SHANGHAI) AUTOPARTS TRADING',
+    'NIP':      'NICHIAS IND.PRODUCTS PVT. LTD.',
+    'NVC':      'NICHIAS VIETNAM CO., LTD',
+    'NCS':      'NC-PT NICHIAS SUNIJAYA',
+    'SNP':      'SUZHOU NICHIAS IND. PRODUCTS',
+    'YTEC':     'YTEC CO., LTD.',
+    'NSEA':     'NICHIAS SOUTH EAST ASIA (UP PACKING)',
+    'NCI 2':    'NCI 2',
+    'STOCK':    'STOCK',
+    'TRIAL':    'TRIAL'
+};
+
 let constraintEditSaving = false;
 let currentConstraintCustomer = <?= json_encode($activePallet['customer_name'] ?? '') ?>;
 let currentConstraintRefNo    = <?= json_encode($activePallet['ref_no'] ?? '') ?>;
+
+function handleConstraintCustomerChange() {
+    const sel = document.getElementById('constraintCustomerInput');
+    const customEl = document.getElementById('constraintCustomCustomerInput');
+    const refNoEl = document.getElementById('constraintRefNoInput');
+    if (!sel) return;
+
+    const val = sel.value;
+    if (customEl) {
+        customEl.style.display = (val === 'OTHER') ? 'block' : 'none';
+        if (val === 'OTHER') customEl.focus();
+    }
+
+    if (refNoEl) {
+        if (val === 'STOCK') {
+            refNoEl.value = 'STOCK';
+        } else if (refNoEl.value === 'STOCK' || !refNoEl.value.trim()) {
+            refNoEl.value = 'SO-';
+        }
+    }
+}
 
 function startEditConstraint() {
     document.getElementById('constraintDisplayGroup').classList.add('d-none');
@@ -3004,12 +3087,40 @@ function startEditConstraint() {
     document.getElementById('constraintHintText').classList.add('d-none');
     hideConstraintEditError();
 
-    const customerInput = document.getElementById('constraintCustomerInput');
+    const customerSelect = document.getElementById('constraintCustomerInput');
+    const customInput    = document.getElementById('constraintCustomCustomerInput');
     const refNoInput     = document.getElementById('constraintRefNoInput');
-    customerInput.value = currentConstraintCustomer;
-    refNoInput.value    = currentConstraintRefNo;
-    customerInput.focus();
-    customerInput.select();
+
+    let matchedCode = '';
+    if (currentConstraintCustomer) {
+        if (PALLET_CUSTOMERS_MAP[currentConstraintCustomer]) {
+            matchedCode = currentConstraintCustomer;
+        } else {
+            for (const [code, fullName] of Object.entries(PALLET_CUSTOMERS_MAP)) {
+                if (fullName === currentConstraintCustomer) {
+                    matchedCode = code;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (matchedCode) {
+        customerSelect.value = matchedCode;
+        if (customInput) customInput.style.display = 'none';
+    } else if (currentConstraintCustomer) {
+        customerSelect.value = 'OTHER';
+        if (customInput) {
+            customInput.value = currentConstraintCustomer;
+            customInput.style.display = 'block';
+        }
+    } else {
+        customerSelect.value = '';
+        if (customInput) customInput.style.display = 'none';
+    }
+
+    refNoInput.value = currentConstraintRefNo;
+    customerSelect.focus();
 }
 
 function cancelEditConstraint() {
@@ -3018,8 +3129,12 @@ function cancelEditConstraint() {
     form.classList.remove('d-flex');
     document.getElementById('constraintDisplayGroup').classList.remove('d-none');
     document.getElementById('constraintHintText').classList.remove('d-none');
-    document.getElementById('constraintCustomerInput').value = currentConstraintCustomer;
-    document.getElementById('constraintRefNoInput').value    = currentConstraintRefNo;
+
+    const customerSelect = document.getElementById('constraintCustomerInput');
+    const customInput    = document.getElementById('constraintCustomCustomerInput');
+    if (customerSelect) customerSelect.value = '';
+    if (customInput) { customInput.value = ''; customInput.style.display = 'none'; }
+    document.getElementById('constraintRefNoInput').value = currentConstraintRefNo;
     hideConstraintEditError();
 }
 
@@ -3034,25 +3149,31 @@ function showConstraintEditError(msg) {
     el.classList.remove('d-none');
 }
 function hideConstraintEditError() {
-    document.getElementById('constraintEditError').classList.add('d-none');
+    const el = document.getElementById('constraintEditError');
+    if (el) el.classList.add('d-none');
 }
 
 async function saveConstraintEdit() {
     if (constraintEditSaving) return;
 
-    const customerInput = document.getElementById('constraintCustomerInput');
+    const customerSelect = document.getElementById('constraintCustomerInput');
+    const customInput    = document.getElementById('constraintCustomCustomerInput');
     const refNoInput     = document.getElementById('constraintRefNoInput');
-    const newCustomer    = customerInput.value.trim();
-    const newRefNo       = refNoInput.value.trim();
+
+    let newCustomer = customerSelect ? customerSelect.value.trim() : '';
+    if (newCustomer === 'OTHER' && customInput) {
+        newCustomer = customInput.value.trim();
+    }
+    const newRefNo = refNoInput.value.trim();
 
     if (newCustomer === '') {
-        showConstraintEditError('Customer cannot be empty.');
-        customerInput.focus();
+        showConstraintEditError('Please select a Customer.');
+        if (customerSelect) customerSelect.focus();
         return;
     }
     if (newRefNo === '') {
         showConstraintEditError('Ref No cannot be empty.');
-        refNoInput.focus();
+        if (refNoInput) refNoInput.focus();
         return;
     }
     if (newCustomer === currentConstraintCustomer && newRefNo === currentConstraintRefNo) {
@@ -3080,15 +3201,20 @@ async function saveConstraintEdit() {
 
         if (!data.ok) {
             showConstraintEditError(data.msg || 'Could not update Customer / Ref No.');
-            customerInput.focus();
+            if (customerSelect) customerSelect.focus();
             return;
         }
 
         // Success — update the badges in place and drop out of edit mode.
-        currentConstraintCustomer = data.customer_name;
-        currentConstraintRefNo    = data.ref_no;
-        document.getElementById('constraintCustomerText').textContent = currentConstraintCustomer;
-        document.getElementById('constraintRefNoText').textContent    = currentConstraintRefNo;
+        currentConstraintCustomer = data.customer_name || newCustomer;
+        currentConstraintRefNo    = data.ref_no || newRefNo;
+
+        const custTextEl = document.getElementById('constraintCustomerText');
+        if (custTextEl) custTextEl.textContent = currentConstraintCustomer;
+
+        const refTextEl = document.getElementById('constraintRefNoText');
+        if (refTextEl) refTextEl.textContent = currentConstraintRefNo;
+
         cancelEditConstraint();
 
         // Refresh the right-side Pallets list so the updated card shows
@@ -3096,8 +3222,9 @@ async function saveConstraintEdit() {
         if (typeof loadPalletList === 'function') loadPalletList();
 
     } catch (e) {
-        showConstraintEditError('Network error — please try again.');
-        customerInput.focus();
+        console.error('saveConstraintEdit error:', e);
+        showConstraintEditError((e && e.message) ? e.message : 'Network error — please try again.');
+        if (customerSelect) customerSelect.focus();
     } finally {
         constraintEditSaving = false;
         document.getElementById('constraintSaveBtn').disabled = false;
@@ -3113,13 +3240,31 @@ async function saveConstraintEdit() {
 // trigger a re-fetch. Reuses SUMMARY_STATUS_BADGE / summaryStatusLabel
 // so status colors/labels stay identical to the Summary Pallet modal.
 // ─────────────────────────────────────────────────────────────
+const VALID_PALLET_TABS = ['all', 'open', 'qc', 'approved', 'rejected', 'delivered'];
 let palletListData  = [];
-let palletActiveTab = 'all';
+
+// Initialize active tab from URL query parameter 'tab', falling back to localStorage
+const urlParams   = new URLSearchParams(window.location.search);
+const initialTab  = urlParams.get('tab') || localStorage.getItem('palletActiveTab') || 'all';
+let palletActiveTab = VALID_PALLET_TABS.includes(initialTab) ? initialTab : 'all';
+
+// Sync initial UI state for tab buttons
+function syncTabButtonsUI() {
+    document.querySelectorAll('#palletTabGroup .pallet-tab').forEach(btn => {
+        if (btn.dataset.group === palletActiveTab) {
+            btn.classList.add('active');
+        } else {
+            btn.classList.remove('active');
+        }
+    });
+}
+syncTabButtonsUI();
+
 let palletSearchDebounce = null;
 
 async function loadPalletList() {
     const q    = document.getElementById('palletSearchInput').value.trim();
-    const sort = document.getElementById('palletSortSelect').value;
+    const sort = 'id';
 
     document.getElementById('palletListScroll').innerHTML =
         `<div class="pallet-list-loading"><div class="spinner-border spinner-border-sm me-2"></div>Loading pallets…</div>`;
@@ -3140,7 +3285,8 @@ async function loadPalletList() {
 }
 
 function renderPalletList() {
-    const counts = { all: palletListData.length, open: 0, qc: 0, closed: 0 };
+    syncTabButtonsUI();
+    const counts = { all: palletListData.length, open: 0, qc: 0, approved: 0, rejected: 0, delivered: 0, closed: 0 };
     palletListData.forEach(p => { if (counts[p.status_group] !== undefined) counts[p.status_group]++; });
     document.querySelectorAll('.tab-count').forEach(el => {
         el.textContent = counts[el.dataset.count] ?? 0;
@@ -3170,12 +3316,14 @@ function renderPalletList() {
         return;
     }
 
+    const tabParam = palletActiveTab && palletActiveTab !== 'all' ? `&tab=${encodeURIComponent(palletActiveTab)}` : '';
+
     scroll.innerHTML = rows.map(p => {
         const badgeClass = SUMMARY_STATUS_BADGE[p.status] || 'badge-building';
         const isActive   = PALLET_ID && Number(p.id) === Number(PALLET_ID);
         const pct        = Math.min(100, Math.round((p.roll_count / p.max_rolls) * 100));
         return `
-            <a href="pallet.php?pallet_id=${p.id}"
+            <a href="pallet.php?pallet_id=${p.id}${tabParam}"
                class="pallet-card border-${escHtml(p.status)} ${isActive ? 'active' : ''}">
                 <div class="pallet-card-top">
                     <div>
@@ -3202,9 +3350,20 @@ function renderPalletList() {
 document.getElementById('palletTabGroup').addEventListener('click', e => {
     const btn = e.target.closest('.pallet-tab');
     if (!btn) return;
-    document.querySelectorAll('.pallet-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('#palletTabGroup .pallet-tab').forEach(t => t.classList.remove('active'));
     btn.classList.add('active');
     palletActiveTab = btn.dataset.group;
+    localStorage.setItem('palletActiveTab', palletActiveTab);
+
+    // Update URL query parameter without full reload
+    const url = new URL(window.location.href);
+    if (palletActiveTab && palletActiveTab !== 'all') {
+        url.searchParams.set('tab', palletActiveTab);
+    } else {
+        url.searchParams.delete('tab');
+    }
+    window.history.replaceState({}, '', url);
+
     renderPalletList();
 });
 
@@ -3221,8 +3380,6 @@ document.getElementById('palletSearchInput')?.addEventListener('input', function
     clearTimeout(palletSearchDebounce);
     palletSearchDebounce = setTimeout(loadPalletList, 250);
 });
-
-document.getElementById('palletSortSelect').addEventListener('change', loadPalletList);
 
 loadPalletList();
 

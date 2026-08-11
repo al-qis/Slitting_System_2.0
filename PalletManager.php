@@ -29,9 +29,12 @@ class PalletManager
      * (reopenRejectedPallet) before it can move forward again.
      */
     public const STATUS_GROUPS = [
-        'open'   => ['building', 'rejected'],
-        'qc'     => ['pending_qc', 'approved'],
-        'closed' => ['delivered'],
+        'open'      => ['building'],
+        'qc'        => ['pending_qc'],
+        'approved'  => ['approved'],
+        'rejected'  => ['rejected'],
+        'delivered' => ['delivered'],
+        'closed'    => ['delivered'],
     ];
 
     /**
@@ -302,7 +305,7 @@ class PalletManager
                 ];
             }
 
-            $editableStates = ['building', 'rejected'];
+            $editableStates = ['building', 'pending_qc', 'approved', 'rejected'];
             if (!in_array($pallet['status'], $editableStates, true)) {
                 throw new RuntimeException(
                     "Pallet {$pallet['pallet_no']} cannot be edited (status: {$pallet['status']}). "
