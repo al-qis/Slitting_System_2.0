@@ -625,7 +625,7 @@ $isReadOnly  = $activePallet && !in_array($activePallet['status'], ['building', 
 
 .pallet-tab-group        { background:#212529; border-radius:6px; padding:2px; }
 .pallet-tab-group .pallet-tab {
-    color:#adb5bd; border:0; font-size:11.5px; font-weight:600; padding:4px 8px;
+    color:#adb5bd; border:0; font-size:10.5px; font-weight:600; padding:3px 4px;
     border-radius:4px; letter-spacing:.01em;
 }
 .pallet-tab-group .pallet-tab:hover  { color:#fff; }
@@ -1887,7 +1887,6 @@ if (isset($_GET['success'])): ?>
                            class="form-control form-control-sm ps-4"
                            placeholder="Type 7 numbers (e.g. 8888888), Pallet No, or Customer…">
                 </div>
-                <div class="d-flex gap-2 align-items-center">
                     <div class="btn-group btn-group-sm pallet-tab-group flex-grow-1" id="palletTabGroup">
                         <button type="button" class="btn pallet-tab active" data-group="all">
                             All <span class="tab-count" data-count="all"></span>
@@ -1898,16 +1897,16 @@ if (isset($_GET['success'])): ?>
                         <button type="button" class="btn pallet-tab" data-group="qc">
                             QC <span class="tab-count" data-count="qc"></span>
                         </button>
-                        <button type="button" class="btn pallet-tab" data-group="closed">
-                            Closed <span class="tab-count" data-count="closed"></span>
+                        <button type="button" class="btn pallet-tab" data-group="approved">
+                            Approve <span class="tab-count" data-count="approved"></span>
+                        </button>
+                        <button type="button" class="btn pallet-tab" data-group="rejected">
+                            Reject <span class="tab-count" data-count="rejected"></span>
+                        </button>
+                        <button type="button" class="btn pallet-tab" data-group="delivered">
+                            Delivered <span class="tab-count" data-count="delivered"></span>
                         </button>
                     </div>
-                    <select id="palletSortSelect" class="form-select form-select-sm" style="width:auto;">
-                        <option value="id" selected>Pallet No (A–Z)</option>
-                        <option value="updated">Recently Updated</option>
-                        <option value="capacity">Capacity</option>
-                    </select>
-                </div>
             </div>
             <div class="pallet-list-scroll" id="palletListScroll">
                 <div class="pallet-list-loading" id="palletListLoading">
@@ -3150,7 +3149,8 @@ function showConstraintEditError(msg) {
     el.classList.remove('d-none');
 }
 function hideConstraintEditError() {
-    document.getElementById('constraintEditError').classList.add('d-none');
+    const el = document.getElementById('constraintEditError');
+    if (el) el.classList.add('d-none');
 }
 
 async function saveConstraintEdit() {
@@ -3240,13 +3240,31 @@ async function saveConstraintEdit() {
 // trigger a re-fetch. Reuses SUMMARY_STATUS_BADGE / summaryStatusLabel
 // so status colors/labels stay identical to the Summary Pallet modal.
 // ─────────────────────────────────────────────────────────────
+const VALID_PALLET_TABS = ['all', 'open', 'qc', 'approved', 'rejected', 'delivered'];
 let palletListData  = [];
-let palletActiveTab = 'all';
+
+// Initialize active tab from URL query parameter 'tab', falling back to localStorage
+const urlParams   = new URLSearchParams(window.location.search);
+const initialTab  = urlParams.get('tab') || localStorage.getItem('palletActiveTab') || 'all';
+let palletActiveTab = VALID_PALLET_TABS.includes(initialTab) ? initialTab : 'all';
+
+// Sync initial UI state for tab buttons
+function syncTabButtonsUI() {
+    document.querySelectorAll('#palletTabGroup .pallet-tab').forEach(btn => {
+        if (btn.dataset.group === palletActiveTab) {
+            btn.classList.add('active');
+        } else {
+            btn.classList.remove('active');
+        }
+    });
+}
+syncTabButtonsUI();
+
 let palletSearchDebounce = null;
 
 async function loadPalletList() {
     const q    = document.getElementById('palletSearchInput').value.trim();
-    const sort = document.getElementById('palletSortSelect').value;
+    const sort = 'id';
 
     document.getElementById('palletListScroll').innerHTML =
         `<div class="pallet-list-loading"><div class="spinner-border spinner-border-sm me-2"></div>Loading pallets…</div>`;
@@ -3267,7 +3285,8 @@ async function loadPalletList() {
 }
 
 function renderPalletList() {
-    const counts = { all: palletListData.length, open: 0, qc: 0, closed: 0 };
+    syncTabButtonsUI();
+    const counts = { all: palletListData.length, open: 0, qc: 0, approved: 0, rejected: 0, delivered: 0, closed: 0 };
     palletListData.forEach(p => { if (counts[p.status_group] !== undefined) counts[p.status_group]++; });
     document.querySelectorAll('.tab-count').forEach(el => {
         el.textContent = counts[el.dataset.count] ?? 0;
@@ -3297,12 +3316,14 @@ function renderPalletList() {
         return;
     }
 
+    const tabParam = palletActiveTab && palletActiveTab !== 'all' ? `&tab=${encodeURIComponent(palletActiveTab)}` : '';
+
     scroll.innerHTML = rows.map(p => {
         const badgeClass = SUMMARY_STATUS_BADGE[p.status] || 'badge-building';
         const isActive   = PALLET_ID && Number(p.id) === Number(PALLET_ID);
         const pct        = Math.min(100, Math.round((p.roll_count / p.max_rolls) * 100));
         return `
-            <a href="pallet.php?pallet_id=${p.id}"
+            <a href="pallet.php?pallet_id=${p.id}${tabParam}"
                class="pallet-card border-${escHtml(p.status)} ${isActive ? 'active' : ''}">
                 <div class="pallet-card-top">
                     <div>
@@ -3329,9 +3350,20 @@ function renderPalletList() {
 document.getElementById('palletTabGroup').addEventListener('click', e => {
     const btn = e.target.closest('.pallet-tab');
     if (!btn) return;
-    document.querySelectorAll('.pallet-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('#palletTabGroup .pallet-tab').forEach(t => t.classList.remove('active'));
     btn.classList.add('active');
     palletActiveTab = btn.dataset.group;
+    localStorage.setItem('palletActiveTab', palletActiveTab);
+
+    // Update URL query parameter without full reload
+    const url = new URL(window.location.href);
+    if (palletActiveTab && palletActiveTab !== 'all') {
+        url.searchParams.set('tab', palletActiveTab);
+    } else {
+        url.searchParams.delete('tab');
+    }
+    window.history.replaceState({}, '', url);
+
     renderPalletList();
 });
 
@@ -3348,8 +3380,6 @@ document.getElementById('palletSearchInput')?.addEventListener('input', function
     clearTimeout(palletSearchDebounce);
     palletSearchDebounce = setTimeout(loadPalletList, 250);
 });
-
-document.getElementById('palletSortSelect').addEventListener('change', loadPalletList);
 
 loadPalletList();
 
