@@ -1330,12 +1330,12 @@ class PalletManager
                     p.ref_no,
                     p.product_type,
                     p.width,
-                    COUNT(pi.id)                                    AS roll_count,
+                    COUNT(sp.id)                                    AS roll_count,
                     COALESCE(p.updated_at, p.created_at)            AS last_activity,
                     GROUP_CONCAT(DISTINCT sp.lot_no SEPARATOR ', ') AS lot_nos
                 FROM pallets p
                 LEFT JOIN pallet_items pi     ON pi.pallet_id = p.id
-                LEFT JOIN slitting_product sp ON sp.id = pi.slitting_product_id
+                LEFT JOIN slitting_product sp ON sp.id = pi.slitting_product_id AND (sp.is_voided = 0 OR sp.is_voided IS NULL)
                 GROUP BY p.id
             ) t
             {$whereSql}

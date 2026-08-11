@@ -225,7 +225,7 @@ usort($rolls, function ($a, $b) {
                 </div>
                 <div class="col-8 col-md-4">
                     <label class="small fw-bold mb-1">Ref No</label>
-                    <input type="text" class="form-control form-control-sm" id="copyAllRefNo" placeholder="Ref No">
+                    <input type="text" class="form-control form-control-sm" id="copyAllRefNo" value="SO-" placeholder="SO-00-0000">
                 </div>
                 <div class="col-4 col-md-1">
                     <label class="small fw-bold mb-1">Copies</label>
@@ -292,10 +292,14 @@ usort($rolls, function ($a, $b) {
                             $saved = trim($r['customer_name'] ?? '');
                             $knownCustomers = ['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA','NIPPON','NTC','SGC','STAMPING','YANTAI','NIP','NVC','NCS','SNP','YTEC','NSEA','NCI 2','STOCK','TRIAL'];
                             $isOther = ($saved !== '' && !in_array($saved, $knownCustomers, true));
+
+                            $rawRefNo = trim($r['ref_no'] ?? '');
+                            $isStock = ($saved === 'STOCK' || $rawRefNo === 'STOCK');
+                            $displayRefNo = $isStock ? 'STOCK' : ($rawRefNo !== '' ? $rawRefNo : 'SO-');
                         ?>
                         <select class="form-select form-select-sm row-customer" data-row="<?= $idx ?>"
                                 onchange="handleRowCustomerChange(<?= $idx ?>)">
-                            <option value="">-- Select Customer --</option>
+                            <option value=""         <?= $saved===''         ?'selected':'' ?>>-- Select Customer --</option>
                             <option value="NAE"      <?= $saved==='NAE'      ?'selected':'' ?>>NICHIAS AUTOPARTS EUROPE (NAE)</option>
                             <option value="NAX"      <?= $saved==='NAX'      ?'selected':'' ?>>NAX MFG, SA.DE C.V</option>
                             <option value="NCI MFG"  <?= $saved==='NCI MFG'  ?'selected':'' ?>>NCI MFG., INC.</option>
@@ -314,9 +318,9 @@ usort($rolls, function ($a, $b) {
                             <option value="YTEC"     <?= $saved==='YTEC'     ?'selected':'' ?>>YTEC CO., LTD.</option>
                             <option value="NSEA"     <?= $saved==='NSEA'     ?'selected':'' ?>>NICHIAS SOUTH EAST ASIA (UP PACKING)</option>
                             <option value="NCI 2"    <?= $saved==='NCI 2'    ?'selected':'' ?>>NCI 2</option>
-                            <option value="STOCK"    <?= ($saved===''||$saved==='STOCK')?'selected':'' ?>>STOCK</option>
+                            <option value="STOCK"    <?= $saved==='STOCK'    ?'selected':'' ?>>STOCK</option>
                             <option value="TRIAL"    <?= $saved==='TRIAL'    ?'selected':'' ?>>TRIAL</option>
-                            <option value="OTHER"    <?= $isOther ?'selected':'' ?>>OTHER (type below)</option>
+                            <option value="OTHER"    <?= $isOther            ?'selected':'' ?>>OTHER (type below)</option>
                         </select>
                         <input type="text" class="form-control form-control-sm row-custom-customer mt-1" data-row="<?= $idx ?>"
                                placeholder="Enter customer name" style="display:<?= $isOther?'block':'none' ?>;"
@@ -325,7 +329,7 @@ usort($rolls, function ($a, $b) {
                     </td>
                     <td>
                         <input type="text" class="form-control form-control-sm row-refno" data-row="<?= $idx ?>"
-                               value="<?= htmlspecialchars(trim($r['ref_no'] ?? '')) ?>" placeholder="Ref No">
+                               value="<?= htmlspecialchars($displayRefNo) ?>" placeholder="SO-00-0000">
                     </td>
                     <td>
                         <select class="form-select form-select-sm row-copies" data-row="<?= $idx ?>">
@@ -391,6 +395,17 @@ async function handleRowCustomerChange(rowIdx) {
     const val = sel.value;
 
     otherEl.style.display = (val === 'OTHER') ? 'block' : 'none';
+
+    if (val === 'STOCK') {
+        refEl.value = 'STOCK';
+        noteEl.style.display = 'none';
+        noteEl.innerHTML = '';
+        return;
+    }
+
+    if (refEl.value === 'STOCK' || !refEl.value.trim()) {
+        refEl.value = 'SO-';
+    }
 
     if (!NCI_CUSTOMERS.includes(val)) {
         noteEl.style.display = 'none';
