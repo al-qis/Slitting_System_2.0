@@ -42,7 +42,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
     $lot  = trim($_GET['lot']  ?? '');
     $coil = trim($_GET['coil'] ?? '');
     $roll = trim($_GET['roll'] ?? '');
-    if (!$lot || !$coil) { echo json_encode(['ok' => false, 'msg' => 'Incomplete data.']); exit; }
+    if (!$lot || !$coil || !$roll) { echo json_encode(['ok' => false, 'msg' => 'Please specify full Lot No, Coil No, and Roll No.']); exit; }
     $stmt = $conn->prepare("
         SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
                sp.width, sp.actual_length, sp.length, sp.nod_length,
@@ -141,9 +141,9 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === 'deliver_by_scan') {
     header('Content-Type: application/json');
 
     $raw = trim($_POST['raw'] ?? '');
+    $activePalletId = (int)($_POST['active_pallet_id'] ?? 0);
 
     // Strip control characters a hardware scanner gun may inject
-    // (Enter/CR-LF at end-of-scan, null-byte padding, etc.)
     $raw = trim(preg_replace('/[[:cntrl:]]/', '', $raw));
 
     if ($raw === '') {
@@ -151,102 +151,137 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === 'deliver_by_scan') {
         exit;
     }
 
-    $lot = $coil = $roll = '';
+    $targetPalletId = 0;
+    $targetPalletNo = '';
+    $targetStatus   = '';
 
-    if (strpos($raw, '=') !== false) {
-        // Format A — KEY=value;KEY=value
-        foreach (explode(';', $raw) as $segment) {
-            $segment = trim($segment);
-            if (strpos($segment, '=') === false) continue;
-            [$k, $v] = explode('=', $segment, 2);
-            $k = strtoupper(trim($k));
-            $v = trim($v);
-            if ($k === 'LOT')  $lot  = $v;
-            if ($k === 'COIL') $coil = $v;
-            if ($k === 'ROLL') $roll = $v;
-        }
-    } else {
-        // Format B — space-separated "826277 FK-1 R1"
-        $tokens = preg_split('/\s+/', $raw, 3);
-        $lot    = trim($tokens[0] ?? '');
-        $coil   = trim($tokens[1] ?? '');
-        $roll   = trim($tokens[2] ?? '');
-    }
-
-    if ($lot === '' || $coil === '') {
-        echo json_encode(['ok' => false, 'code' => 'PARSE_ERROR',
-            'msg' => "Could not read that scan: {$raw}"]);
-        exit;
-    }
-
-    // ── Resolve the scanned roll → its pallet (if any) ─────────
-    $stmt = $conn->prepare("
-        SELECT sp.id, sp.is_voided,
-               pi.pallet_id,
-               p.status AS pallet_status, p.pallet_no
-        FROM slitting_product sp
-        LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
-        LEFT JOIN pallets p       ON p.id = pi.pallet_id
-        WHERE sp.lot_no = ? AND sp.coil_no = ? AND sp.roll_no = ?
-        ORDER BY sp.id DESC
+    // ── Check if scanned value is a Pallet Serial No directly ──────
+    $formattedPalletNo = PalletManager::formatPalletNo($raw);
+    $stmtPallet = $conn->prepare("
+        SELECT id, pallet_no, status, delivered_at
+        FROM pallets
+        WHERE pallet_no = ? OR pallet_no = ?
         LIMIT 1
     ");
-    $stmt->bind_param("sss", $lot, $coil, $roll);
-    $stmt->execute();
-    $row = $stmt->get_result()->fetch_assoc();
-    $stmt->close();
+    $stmtPallet->bind_param("ss", $raw, $formattedPalletNo);
+    $stmtPallet->execute();
+    $palletRow = $stmtPallet->get_result()->fetch_assoc();
+    $stmtPallet->close();
 
-    if (!$row) {
-        echo json_encode(['ok' => false, 'code' => 'NOT_FOUND',
-            'msg' => "Roll not found: {$lot} {$coil} {$roll}"]);
-        exit;
+    if ($palletRow) {
+        $targetPalletId = (int)$palletRow['id'];
+        $targetPalletNo = $palletRow['pallet_no'];
+        $targetStatus   = $palletRow['status'];
+    } else {
+        $lot = $coil = $roll = '';
+
+        if (strpos($raw, '=') !== false) {
+            // Format A — KEY=value;KEY=value
+            foreach (explode(';', $raw) as $segment) {
+                $segment = trim($segment);
+                if (strpos($segment, '=') === false) continue;
+                [$k, $v] = explode('=', $segment, 2);
+                $k = strtoupper(trim($k));
+                $v = trim($v);
+                if ($k === 'LOT')  $lot  = $v;
+                if ($k === 'COIL') $coil = $v;
+                if ($k === 'ROLL') $roll = $v;
+            }
+        } else {
+            // Format B — space-separated "826277 FK-1 R1"
+            $tokens = preg_split('/\s+/', $raw, 3);
+            $lot    = trim($tokens[0] ?? '');
+            $coil   = trim($tokens[1] ?? '');
+            $roll   = trim($tokens[2] ?? '');
+        }
+
+        // ── REQUIREMENT 1: Restrict Search to Full Identifiers ──────
+        // Searching by Lot No alone is disabled. Must specify Lot, Coil, and Roll!
+        if ($lot === '' || $coil === '' || $roll === '') {
+            echo json_encode([
+                'ok'   => false,
+                'code' => 'INCOMPLETE_IDENTIFIER',
+                'msg'  => 'Please specify full Lot No, Coil No, and Roll No (e.g. 826277 FK-1 R1) or a Pallet Serial No (e.g. SFS-2607-001).'
+            ]);
+            exit;
+        }
+
+        $cleanRoll = ltrim(strtoupper($roll), 'R-');
+        $cleanRoll = 'R' . ltrim($cleanRoll, 'R');
+
+        $stmt = $conn->prepare("
+            SELECT sp.id, sp.is_voided,
+                   pi.pallet_id,
+                   p.status AS pallet_status, p.pallet_no
+            FROM slitting_product sp
+            LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+            LEFT JOIN pallets p       ON p.id = pi.pallet_id
+            WHERE sp.lot_no = ? AND sp.coil_no = ? AND (sp.roll_no = ? OR sp.roll_no = ?)
+            ORDER BY sp.id DESC
+            LIMIT 1
+        ");
+        $stmt->bind_param("ssss", $lot, $coil, $roll, $cleanRoll);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        if (!$row) {
+            echo json_encode([
+                'ok'   => false,
+                'code' => 'NOT_FOUND',
+                'msg'  => "No product found matching: {$lot} {$coil} {$roll}"
+            ]);
+            exit;
+        }
+
+        if ((int)$row['is_voided'] === 1) {
+            echo json_encode([
+                'ok'   => false,
+                'code' => 'VOIDED',
+                'msg'  => "Product {$lot} {$coil} {$roll} has been voided."
+            ]);
+            exit;
+        }
+
+        if (!$row['pallet_id']) {
+            echo json_encode([
+                'ok'   => false,
+                'code' => 'NO_PALLET',
+                'msg'  => "Product {$lot} {$coil} {$roll} is not assigned to any pallet."
+            ]);
+            exit;
+        }
+
+        $targetPalletId = (int)$row['pallet_id'];
+        $targetPalletNo = $row['pallet_no'];
+        $targetStatus   = $row['pallet_status'];
     }
 
-    if ((int)$row['is_voided'] === 1) {
-        echo json_encode(['ok' => false, 'code' => 'VOIDED',
-            'msg' => 'This roll has been voided.']);
-        exit;
+    // ── REQUIREMENT 2: Approved Pallet Transition & Auto-Delivery ──
+    // If the previous open pallet in user's session was APPROVED,
+    // scanning a product for a new pallet automatically bundle-delivers the previous approved pallet!
+    $prevDelivered = false;
+    $prevPalletNo  = '';
+
+    if ($activePalletId > 0 && $activePalletId !== $targetPalletId) {
+        $prevPallet = $pm->getPallet($activePalletId);
+        if ($prevPallet && $prevPallet['status'] === 'approved') {
+            $deliverRes = $pm->bundleDeliver($activePalletId);
+            if ($deliverRes['ok']) {
+                $prevDelivered = true;
+                $prevPalletNo  = $prevPallet['pallet_no'];
+            }
+        }
     }
 
-    if (!$row['pallet_id']) {
-        echo json_encode(['ok' => false, 'code' => 'NO_PALLET',
-            'msg' => "Product not assigned to any pallet ({$lot} {$coil} {$roll})."]);
-        exit;
-    }
-
-    $palletId     = (int)$row['pallet_id'];
-    $palletStatus = $row['pallet_status'];
-    $palletNo     = $row['pallet_no'];
-
-    // Already delivered → friendly notice, not an error
-    if ($palletStatus === 'delivered') {
-        echo json_encode([
-            'ok' => true, 'code' => 'ALREADY_DELIVERED',
-            'msg' => "Pallet {$palletNo} was already delivered.",
-            'pallet_no' => $palletNo, 'pallet_id' => $palletId,
-        ]);
-        exit;
-    }
-
-    // building / pending_qc / rejected → block, explain why
-    if ($palletStatus !== 'approved') {
-        $friendly = match ($palletStatus) {
-            'building'   => 'still being built (not yet sent to QC)',
-            'pending_qc' => 'waiting for QC approval',
-            'rejected'   => 'rejected by QC',
-            default      => "in state: {$palletStatus}",
-        };
-        echo json_encode([
-            'ok' => false, 'code' => 'WRONG_STATE',
-            'msg' => "Cannot deliver: Pallet {$palletNo} is currently {$friendly}.",
-            'status' => $palletStatus, 'pallet_no' => $palletNo, 'pallet_id' => $palletId,
-        ]);
-        exit;
-    }
-
-    // Approved → bundle-deliver every roll on the pallet at once
-    $result = $pm->bundleDeliver($palletId, (int)$row['id']);
-    echo json_encode($result);
+    echo json_encode([
+        'ok'             => true,
+        'pallet_id'      => $targetPalletId,
+        'pallet_no'      => $targetPalletNo,
+        'status'         => $targetStatus,
+        'prev_delivered' => $prevDelivered,
+        'prev_pallet_no' => $prevPalletNo,
+    ]);
     exit;
 }
 
@@ -390,7 +425,7 @@ if (isset($_GET['export']) && $_GET['export'] === 'summary_pallet') {
             echo '<tr>';
             echo '<td ' . $td  . '><b>' . htmlspecialchars($r['pallet_no'] ?? '-') . '</b></td>';
             echo '<td ' . $td  . '>' . htmlspecialchars($statusLbl) . '</td>';
-            echo '<td ' . $td  . '>' . htmlspecialchars($r['stock_code'] ?: '-') . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars(($r['stock_code'] ?? '') ?: '-') . '</td>';
             echo '<td ' . $td  . '>' . htmlspecialchars($rollsCell) . '</td>';
             echo '<td ' . $td  . '>' . htmlspecialchars($r['customer'] ?: '-') . '</td>';
             echo '<td ' . $td  . '>' . htmlspecialchars($r['ref_no']   ?: '-') . '</td>';
@@ -459,10 +494,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'send_
     exit;
 }
 
-// ── POST: Reopen rejected pallet for editing ──────────────────
+// ── POST: Reopen pallet for editing / corrections ───────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'reopen_pallet') {
     $palletId = intval($_POST['pallet_id'] ?? 0);
-    $result   = $pm->reopenRejectedPallet($palletId);
+    $result   = $pm->reopenApprovedOrDeliveredPallet($palletId);
     if ($result['ok']) {
         header("Location: pallet.php?pallet_id={$palletId}&success=reopened");
     } else {
@@ -496,7 +531,7 @@ $activePallet   = $activePalletId ? $pm->getPallet($activePalletId) : null;
 // Extended getPalletItems with std_weight for weight calculation
 function getPalletItemsWithWeight(mysqli $conn, int $pallet_id): array {
     $stmt = $conn->prepare("
-        SELECT pi.seq, pi.added_at,
+        SELECT pi.seq, pi.added_at, pi.stock_code,
                sp.id AS product_id,
                sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
                sp.width, sp.length, sp.actual_length, sp.nod_length, sp.status,
@@ -512,6 +547,17 @@ function getPalletItemsWithWeight(mysqli $conn, int $pallet_id): array {
     $stmt->execute();
     $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     $stmt->close();
+
+    foreach ($rows as &$row) {
+        $lenVal = (float)($row['actual_length'] ?: $row['length']);
+        if (empty($row['stock_code'])) {
+            $row['stock_code'] = PalletManager::formatStockCode($row['coil_no'], $row['width'], $lenVal);
+        } else {
+            // Re-format to ensure latest SFS-coil_alpha-length-width standard is reflected
+            $row['stock_code'] = PalletManager::formatStockCode($row['coil_no'], $row['width'], $lenVal);
+        }
+    }
+    unset($row);
     return $rows;
 }
 
@@ -828,8 +874,9 @@ $successMsgs = [
     'created'        => 'Pallet created. Scan the first roll to lock its constraints.',
     'sent_to_qc'     => 'Pallet submitted to QC successfully.',
     'resubmitted'    => 'Pallet re-submitted to QC after editing.',
-    'reopened'       => 'Pallet reopened for editing — remove defective rolls and add replacements.',
+    'reopened'       => 'Pallet returned to edit mode — make necessary corrections, then re-submit to QC.',
     'delivered'      => 'Pallet ' . htmlspecialchars($_GET['pallet_no'] ?? '') . ' delivered.',
+    'prev_delivered' => 'Previous approved Pallet ' . htmlspecialchars($_GET['prev_no'] ?? '') . ' was automatically delivered as you transitioned to a new pallet.',
     'pallet_deleted' => 'Pallet ' . htmlspecialchars($_GET['pallet_no'] ?? '') . ' deleted. Rolls returned to stock.',
 ];
 if (isset($_GET['success'])): ?>
@@ -855,23 +902,22 @@ if (isset($_GET['success'])): ?>
      whole pallet in one shot via ajax=deliver_by_scan below.
      No need to open the pallet first.
 ═══════════════════════════════════════════════════════════════ -->
-<div class="card shadow-sm border-0 mb-3" id="deliverScanCard" style="border-left:4px solid #16a34a;">
+<div class="card shadow-sm border-0 mb-3" id="deliverScanCard" style="border-left:4px solid #0284c7;">
     <div class="card-body py-3 d-flex align-items-center gap-3 flex-wrap">
         <div class="flex-grow-1" style="min-width:240px;">
             <div class="fw-bold" style="font-size:13px;">
-                <i class="bi bi-truck me-1 text-success"></i> Scan to Deliver
+                <i class="bi bi-search me-1 text-primary"></i> Find Pallet by Roll / Pallet QR
             </div>
             <div class="text-muted" style="font-size:12px;">
-                Scan any roll on an <strong>approved</strong> pallet — the whole pallet delivers instantly.
-                Works from anywhere on this page (camera or hardware scanner).
+                Type <strong>Lot No + Coil No + Roll No</strong> (e.g. <code>826277 FK-1 R1</code>), scan QR code, or type Pallet No to view its pallet details.
             </div>
         </div>
-        <div class="d-flex gap-2" style="min-width:300px;">
+        <div class="d-flex gap-2" style="min-width:320px;">
             <input type="text" id="deliverScanInput" class="form-control form-control-sm"
-                   placeholder="Scan roll, or type 7 numbers (e.g. 8888888)"
+                   placeholder="Lot + Coil + Roll (e.g. 826277 FK-1 R1) or 7-digit Pallet No"
                    autocomplete="off" autocorrect="off" spellcheck="false">
-            <button type="button" class="btn btn-success btn-sm" onclick="triggerDeliverScan()">
-                <i class="bi bi-truck me-1"></i> Deliver
+            <button type="button" class="btn btn-primary btn-sm px-3 shadow-sm" onclick="triggerDeliverScan()">
+                <i class="bi bi-search me-1"></i> Search
             </button>
         </div>
     </div>
@@ -946,26 +992,49 @@ if (isset($_GET['success'])): ?>
                 </span>
             </div>
 
-            <!-- Constraint badges -->
-            <!-- NOTE: this header carries id="constraintHeader" so JS can
-                 fill it live after the first roll, removing the need for a
-                 full page reload before scanning the second roll. -->
+            <!-- Warehousing Slip Header Grid -->
             <?php if (!empty(trim($activePallet['customer_name'] ?? ''))): ?>
-            <div id="constraintHeader" class="px-3 pt-2 pb-1 border-bottom d-flex flex-wrap gap-2 align-items-center position-relative">
-                <!-- Display mode -->
-                <span class="d-flex flex-wrap gap-2 align-items-center" id="constraintDisplayGroup">
-                    <span class="constraint-badge"><i class="bi bi-person-check me-1"></i><span id="constraintCustomerText"><?= htmlspecialchars($activePallet['customer_name']) ?></span></span>
-                    <span class="constraint-badge"><i class="bi bi-hash me-1"></i><span id="constraintRefNoText"><?= htmlspecialchars($activePallet['ref_no']) ?></span></span>
-                    <span class="constraint-badge"><i class="bi bi-tag me-1"></i><?= htmlspecialchars($activePallet['product_type']) ?></span>
-                    <span class="constraint-badge"><i class="bi bi-arrows-expand me-1"></i><?= number_format((float)$activePallet['width']) ?> mm</span>
-                    <button type="button" class="btn btn-sm btn-link p-0 text-primary constraint-edit-btn" id="constraintEditBtn"
-                            title="Edit Customer / Ref No" onclick="startEditConstraint()">
-                        <i class="bi bi-pencil-square"></i>
-                    </button>
-                </span>
+            <div id="constraintHeader" class="table-responsive mb-0 p-3 border-bottom bg-light position-relative">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span class="fw-bold text-secondary" style="font-size:12px;">
+                        <i class="bi bi-file-text me-1"></i> WAREHOUSING SLIP HEADER
+                    </span>
+                    <span class="badge bg-secondary">MS-WH-01(QR)</span>
+                </div>
 
-                <!-- Edit mode (hidden until the pencil is clicked) -->
-                <div class="d-none align-items-center gap-1 flex-wrap" id="constraintEditForm">
+                <div id="constraintDisplayGroup">
+                    <table class="table table-sm table-bordered align-middle mb-0" style="font-size:13px; background:#fff; border-color:#cbd5e1;">
+                        <tbody>
+                            <tr>
+                                <td class="bg-light fw-bold text-muted" style="width:15%;">Customer</td>
+                                <td class="fw-bold text-dark" style="width:35%;">
+                                    <span id="constraintCustomerText"><?= htmlspecialchars($activePallet['customer_name']) ?></span>
+                                    <button type="button" class="btn btn-sm btn-link p-0 text-primary ms-1 constraint-edit-btn" id="constraintEditBtn"
+                                            title="Edit Customer / Ref No" onclick="startEditConstraint()">
+                                        <i class="bi bi-pencil-square"></i>
+                                    </button>
+                                </td>
+                                <td class="bg-light fw-bold text-muted" style="width:15%;">Date</td>
+                                <td class="fw-bold text-dark" style="width:35%;"><?= date('d/m/Y', strtotime($activePallet['created_at'] ?? 'now')) ?></td>
+                            </tr>
+                            <tr>
+                                <td class="bg-light fw-bold text-muted">SOS No.</td>
+                                <td class="fw-bold text-dark"><span id="constraintRefNoText"><?= htmlspecialchars($activePallet['ref_no']) ?></span></td>
+                                <td class="bg-light fw-bold text-muted">Serial No.</td>
+                                <td class="fw-bold text-primary"><?= htmlspecialchars($activePallet['pallet_no']) ?></td>
+                            </tr>
+                            <tr>
+                                <td class="bg-light fw-bold text-muted">Product Type :</td>
+                                <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['product_type']) ?></td>
+                                <td class="bg-light fw-bold text-muted">Width (mm)</td>
+                                <td class="fw-bold text-dark"><?= number_format((float)$activePallet['width']) ?> mm</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Edit mode (hidden until pencil clicked) -->
+                <div class="d-none align-items-center gap-1 flex-wrap mt-2" id="constraintEditForm">
                     <input type="text" class="form-control form-control-sm constraint-edit-input" id="constraintCustomerInput"
                            value="<?= htmlspecialchars($activePallet['customer_name']) ?>"
                            placeholder="Customer" maxlength="120" autocomplete="off"
@@ -976,22 +1045,21 @@ if (isset($_GET['success'])): ?>
                            onkeydown="onConstraintEditKeydown(event)">
                     <button type="button" class="btn btn-sm btn-success" id="constraintSaveBtn"
                             title="Save (Enter)" onclick="saveConstraintEdit()">
-                        <i class="bi bi-check-lg"></i>
+                        <i class="bi bi-check-lg me-1"></i> Save
                     </button>
                     <button type="button" class="btn btn-sm btn-outline-danger" id="constraintCancelBtn"
                             title="Cancel (Esc)" onclick="cancelEditConstraint()">
-                        <i class="bi bi-x-lg"></i>
+                        <i class="bi bi-x-lg me-1"></i> Cancel
                     </button>
                 </div>
 
                 <span class="constraint-edit-error d-none" id="constraintEditError"></span>
-                <small class="text-muted align-self-center" id="constraintHintText" style="font-size:10px;">All rolls must match</small>
             </div>
             <?php else: ?>
-            <div id="constraintHeader" class="px-3 py-2 border-bottom">
+            <div id="constraintHeader" class="px-3 py-2 border-bottom bg-light">
                 <small class="text-muted">
                     <i class="bi bi-qr-code-scan me-1"></i>
-                    Scan the first roll — its Customer, Ref No, Product Type and Width will lock as constraints.
+                    Scan the first roll — its Customer, Ref No, Product Type and Width will lock as constraints in Warehousing Slip format.
                 </small>
             </div>
             <?php endif; ?>
@@ -1055,83 +1123,79 @@ if (isset($_GET['success'])): ?>
                 <div id="scanFeedback" class="mb-3" style="min-height:40px;"></div>
 
                 <!-- =====================================================
-                     SLOT LIST — PHP renders ALL 8 slots in order.
-                     Each filled slot now shows a weight chip.
+                     SLOT LIST — Table grid matching Warehousing Slip format.
                 ===================================================== -->
-                <div id="rollList">
-                    <?php for ($s = 1; $s <= $MAX; $s++):
-                        $item = $itemsBySeq[$s] ?? null;
-                    ?>
-                    <?php if ($item):
-                        $itemLen = (float)($item['actual_length'] ?: $item['length']);
-                        $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)$item['std_weight']);
-                        $itemNod = (float)($item['nod_length'] ?? 0);
-                        $hasNod  = $itemNod > 0;
-                        $netLen  = $itemLen - $itemNod;
-                    ?>
-                    <!-- FILLED SLOT -->
-                    <div class="slot-card"
-                         id="slot<?= $s ?>"
-                         data-slot="<?= $s ?>"
-                         data-filled="1"
-                         data-weight="<?= number_format($itemWgt, 4) ?>">
-                        <span class="roll-seq"><?= $s ?></span>
-                        <div class="flex-grow-1">
-                            <div class="fw-bold small">
-                                <?= htmlspecialchars($item['lot_no']) ?>
-                                <?= htmlspecialchars($item['coil_no']) ?>
-                                &ndash; <?= str_replace('R', 'R-', htmlspecialchars($item['roll_no'])) ?>
-                            </div>
-                            <div class="text-muted" style="font-size:11px;">
-                                <?= htmlspecialchars($item['product']) ?> |
-                                <?= number_format((float)$item['width']) ?>mm |
-                                <?= number_format($itemLen, 1) ?>m
-                            </div>
-                            <?php if (!empty($item['stock_code'])): ?>
-                            <div class="text-muted" style="font-size:11px;font-family:monospace;">
-                                <?= htmlspecialchars($item['stock_code']) ?>
-                            </div>
-                            <?php endif; ?>
-                        </div>
-                        <?php if ($hasNod): ?>
-                        <!-- NOD chip -->
-                        <span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m">
-                            <i class="bi bi-exclamation-triangle-fill"></i>
-                            NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m
-                        </span>
+                <div class="table-responsive">
+                    <table class="table table-sm table-bordered table-hover align-middle text-center mb-0" style="font-size:13px; border-color:#cbd5e1;">
+                        <thead class="table-light border-bottom border-secondary" style="font-size:12px;">
+                            <tr>
+                                <th rowspan="2" class="align-middle" style="width: 25%;">Stock Code :</th>
+                                <th rowspan="2" class="align-middle" style="width: 22%;">Lot No.</th>
+                                <th colspan="2" class="align-middle">Size</th>
+                                <th rowspan="2" class="align-middle" style="width: 8%;">Coils</th>
+                                <th rowspan="2" class="align-middle" style="width: 12%;">Roll No.</th>
+                                <th rowspan="2" class="align-middle" style="width: 15%;">Nett Wgt (kg)</th>
+                                <th rowspan="2" class="align-middle" style="width: 8%;">Action</th>
+                            </tr>
+                            <tr>
+                                <th style="width: 12%;">Length (mtr)</th>
+                                <th style="width: 12%;">width (mm)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="rollList">
+                        <?php for ($s = 1; $s <= $MAX; $s++):
+                            $item = $itemsBySeq[$s] ?? null;
+                        ?>
+                        <?php if ($item):
+                            $itemLen = (float)($item['actual_length'] ?: $item['length']);
+                            $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)$item['std_weight']);
+                            $itemNod = (float)($item['nod_length'] ?? 0);
+                            $hasNod  = $itemNod > 0;
+                            $netLen  = $itemLen - $itemNod;
+                        ?>
+                        <tr id="slot<?= $s ?>" data-slot="<?= $s ?>" data-filled="1" data-product-id="<?= $item['product_id'] ?>" data-weight="<?= number_format($itemWgt, 4) ?>">
+                            <td class="fw-bold text-start ps-3" style="font-family:monospace; font-size:12px;"><?= htmlspecialchars(($item['stock_code'] ?? '') ?: '-') ?></td>
+                            <td><?= htmlspecialchars($item['lot_no']) ?> <?= htmlspecialchars($item['coil_no']) ?></td>
+                            <td>
+                                <?= number_format($itemLen, 1) ?>
+                                <?php if ($hasNod): ?>
+                                <br><span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m"><i class="bi bi-exclamation-triangle-fill"></i> NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m</span>
+                                <?php endif; ?>
+                            </td>
+                            <td><?= number_format((float)$item['width']) ?></td>
+                            <td>1</td>
+                            <td class="fw-bold"><?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?></td>
+                            <td class="fw-bold text-end pe-3 text-primary"><?= $itemWgt > 0 ? number_format($itemWgt, 2) : '-' ?></td>
+                            <td>
+                                <button type="button" class="btn btn-outline-danger btn-sm py-0 px-2" title="Remove this roll" data-product-id="<?= $item['product_id'] ?>" onclick="removeRoll(<?= $activePalletId ?>, <?= $item['product_id'] ?>, <?= $s ?>, this)">
+                                    <i class="bi bi-x-lg"></i>
+                                </button>
+                            </td>
+                        </tr>
+                        <?php else: ?>
+                        <tr id="slot<?= $s ?>" data-slot="<?= $s ?>" data-filled="0" data-weight="0" class="table-light text-muted">
+                            <td class="text-start ps-3 text-muted">&mdash; Empty Slot <?= $s ?> &mdash;</td>
+                            <td>&mdash;</td>
+                            <td>&mdash;</td>
+                            <td>&mdash;</td>
+                            <td>&mdash;</td>
+                            <td>&mdash;</td>
+                            <td>&mdash;</td>
+                            <td>&mdash;</td>
+                        </tr>
                         <?php endif; ?>
-                        <!-- Weight chip -->
-                        <span class="wgt-chip" title="Est. Weight = (<?= number_format($itemLen,1) ?>m × <?= number_format((float)$item['width']) ?>mm / 1000) × <?= $item['std_weight'] ?>">
-                            <i class="bi bi-speedometer2"></i>
-                            <?= $itemWgt > 0 ? number_format($itemWgt, 2) . ' kg' : 'N/A' ?>
-                        </span>
-                        <button type="button"
-                                class="btn btn-outline-danger btn-sm"
-                                title="Remove this roll from the pallet"
-                                data-product-id="<?= $item['product_id'] ?>"
-                                onclick="removeRoll(<?= $activePalletId ?>, <?= $item['product_id'] ?>, <?= $s ?>, this)">
-                            <i class="bi bi-x-lg"></i>
-                        </button>
-                    </div>
-
-                    <?php else: ?>
-                    <!-- EMPTY SLOT -->
-                    <div class="slot-card slot-empty"
-                         id="slot<?= $s ?>"
-                         data-slot="<?= $s ?>"
-                         data-filled="0"
-                         data-weight="0">
-                        <span class="roll-seq"><?= $s ?></span>
-                        <span style="font-size:13px;">Empty slot <?= $s ?></span>
-                    </div>
-                    <?php endif; ?>
-                    <?php endfor; ?>
-                </div><!-- #rollList -->
+                        <?php endfor; ?>
+                        </tbody>
+                    </table>
+                </div><!-- .table-responsive -->
             </div>
 
             <div class="card-footer bg-light d-flex justify-content-between align-items-center flex-wrap gap-2">
                 <div class="d-flex gap-2">
                     <a href="pallet.php" class="btn btn-outline-secondary btn-sm">Close panel</a>
+                    <a href="print_slip.php?pallet_no=<?= urlencode($activePallet['pallet_no']) ?>" target="_blank" class="btn btn-outline-primary btn-sm">
+                        <i class="bi bi-printer me-1"></i> Print Slip
+                    </a>
                     <form method="post"
                           onsubmit="return confirm('Delete pallet ' + currentPalletNo + '?\n\nAll rolls will be returned to stock — the products themselves are NOT deleted.')">
                         <input type="hidden" name="action"    value="delete_pallet">
@@ -1200,12 +1264,31 @@ if (isset($_GET['success'])): ?>
                 </span>
             </div>
 
+            <!-- Warehousing Slip Header Grid -->
             <?php if (!empty(trim($activePallet['customer_name'] ?? ''))): ?>
-            <div class="px-3 py-2 border-bottom d-flex flex-wrap gap-2 align-items-center">
-                <span class="constraint-badge"><i class="bi bi-person-check me-1"></i><?= htmlspecialchars($activePallet['customer_name']) ?></span>
-                <span class="constraint-badge"><i class="bi bi-hash me-1"></i><?= htmlspecialchars($activePallet['ref_no']) ?></span>
-                <span class="constraint-badge"><i class="bi bi-tag me-1"></i><?= htmlspecialchars($activePallet['product_type']) ?></span>
-                <span class="constraint-badge"><i class="bi bi-arrows-expand me-1"></i><?= number_format((float)$activePallet['width']) ?> mm</span>
+            <div class="table-responsive mb-0 p-3 border-bottom bg-light">
+                <table class="table table-sm table-bordered align-middle mb-0" style="font-size:13px; background:#fff; border-color:#cbd5e1;">
+                    <tbody>
+                        <tr>
+                            <td class="bg-light fw-bold text-muted" style="width:15%;">Customer</td>
+                            <td class="fw-bold text-dark" style="width:35%;"><?= htmlspecialchars($activePallet['customer_name'] ?: '-') ?></td>
+                            <td class="bg-light fw-bold text-muted" style="width:15%;">Date</td>
+                            <td class="fw-bold text-dark" style="width:35%;"><?= date('d/m/Y', strtotime($activePallet['created_at'] ?? 'now')) ?></td>
+                        </tr>
+                        <tr>
+                            <td class="bg-light fw-bold text-muted">SOS No.</td>
+                            <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['ref_no'] ?: '-') ?></td>
+                            <td class="bg-light fw-bold text-muted">Serial No.</td>
+                            <td class="fw-bold text-primary"><?= htmlspecialchars($activePallet['pallet_no'] ?: '-') ?></td>
+                        </tr>
+                        <tr>
+                            <td class="bg-light fw-bold text-muted">Product Type :</td>
+                            <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['product_type'] ?: '-') ?></td>
+                            <td class="bg-light fw-bold text-muted">Width (mm)</td>
+                            <td class="fw-bold text-dark"><?= $activePallet['width'] ? number_format((float)$activePallet['width']) . ' mm' : '-' ?></td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
             <?php endif; ?>
 
@@ -1245,51 +1328,58 @@ if (isset($_GET['success'])): ?>
                     Click <strong>Edit Pallet</strong> to reopen it. You can then remove the defective roll(s),
                     add replacement rolls, and re-submit to QC.
                 </p>
-                <?php foreach ($activeItems as $item):
-                    $itemLen = (float)($item['actual_length'] ?: $item['length']);
-                    $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
-                    $itemNod = (float)($item['nod_length'] ?? 0);
-                    $hasNod  = $itemNod > 0;
-                    $netLen  = $itemLen - $itemNod;
-                ?>
-                <div class="slot-card">
-                    <span class="roll-seq" style="background:#991b1b;"><?= $item['seq'] ?></span>
-                    <div class="flex-grow-1">
-                        <div class="fw-bold small">
-                            <?= htmlspecialchars($item['lot_no']) ?>
-                            <?= htmlspecialchars($item['coil_no']) ?>
-                            &ndash; <?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?>
-                        </div>
-                        <div class="text-muted" style="font-size:11px;">
-                            <?= htmlspecialchars($item['product']) ?> |
-                            <?= number_format((float)$item['width']) ?>mm |
-                            <?= number_format($itemLen, 1) ?>m
-                        </div>
-                        <?php if (!empty($item['stock_code'])): ?>
-                        <div class="text-muted" style="font-size:11px;font-family:monospace;">
-                            <?= htmlspecialchars($item['stock_code']) ?>
-                        </div>
-                        <?php endif; ?>
-                    </div>
-                    <?php if ($hasNod): ?>
-                    <span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m">
-                        <i class="bi bi-exclamation-triangle-fill"></i>
-                        NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m
-                    </span>
-                    <?php endif; ?>
-                    <?php if ($itemWgt > 0): ?>
-                    <span class="wgt-chip">
-                        <i class="bi bi-speedometer2"></i>
-                        <?= number_format($itemWgt, 2) ?> kg
-                    </span>
-                    <?php endif; ?>
+
+                <!-- Warehousing Slip Roll Items Table -->
+                <div class="table-responsive">
+                    <table class="table table-sm table-bordered table-hover align-middle text-center mb-0" style="font-size:13px; border-color:#cbd5e1;">
+                        <thead class="table-light border-bottom border-secondary" style="font-size:12px;">
+                            <tr>
+                                <th rowspan="2" class="align-middle" style="width: 25%;">Stock Code :</th>
+                                <th rowspan="2" class="align-middle" style="width: 25%;">Lot No.</th>
+                                <th colspan="2" class="align-middle">Size</th>
+                                <th rowspan="2" class="align-middle" style="width: 8%;">Coils</th>
+                                <th rowspan="2" class="align-middle" style="width: 12%;">Roll No.</th>
+                                <th rowspan="2" class="align-middle" style="width: 18%;">Nett Wgt (kg)</th>
+                            </tr>
+                            <tr>
+                                <th style="width: 12%;">Length (mtr)</th>
+                                <th style="width: 12%;">width (mm)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        <?php foreach ($activeItems as $item):
+                            $itemLen = (float)($item['actual_length'] ?: $item['length']);
+                            $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                            $itemNod = (float)($item['nod_length'] ?? 0);
+                            $hasNod  = $itemNod > 0;
+                            $netLen  = $itemLen - $itemNod;
+                        ?>
+                        <tr>
+                            <td class="fw-bold text-start ps-3" style="font-family:monospace; font-size:12px;"><?= htmlspecialchars(($item['stock_code'] ?? '') ?: '-') ?></td>
+                            <td><?= htmlspecialchars($item['lot_no']) ?> <?= htmlspecialchars($item['coil_no']) ?></td>
+                            <td>
+                                <?= number_format($itemLen, 1) ?>
+                                <?php if ($hasNod): ?>
+                                <br><span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m"><i class="bi bi-exclamation-triangle-fill"></i> NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m</span>
+                                <?php endif; ?>
+                            </td>
+                            <td><?= number_format((float)$item['width']) ?></td>
+                            <td>1</td>
+                            <td class="fw-bold"><?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?></td>
+                            <td class="fw-bold text-end pe-3 text-primary"><?= $itemWgt > 0 ? number_format($itemWgt, 2) : '-' ?></td>
+                        </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
                 </div>
-                <?php endforeach; ?>
             </div>
 
             <div class="card-footer bg-light d-flex justify-content-between align-items-center">
                 <div class="d-flex gap-2">
                     <a href="pallet.php" class="btn btn-outline-secondary btn-sm">← Back</a>
+                    <a href="print_slip.php?pallet_no=<?= urlencode($activePallet['pallet_no']) ?>" target="_blank" class="btn btn-outline-primary btn-sm">
+                        <i class="bi bi-printer me-1"></i> Print Slip
+                    </a>
                     <form method="post"
                           onsubmit="return confirm('Delete this rejected pallet?\nRolls will be returned to stock.')">
                         <input type="hidden" name="action"    value="delete_pallet">
@@ -1327,12 +1417,31 @@ if (isset($_GET['success'])): ?>
                 </span>
             </div>
 
+            <!-- Warehousing Slip Header Grid -->
             <?php if (!empty(trim($activePallet['customer_name'] ?? ''))): ?>
-            <div class="px-3 py-2 border-bottom d-flex flex-wrap gap-2 align-items-center">
-                <span class="constraint-badge"><i class="bi bi-person-check me-1"></i><?= htmlspecialchars($activePallet['customer_name']) ?></span>
-                <span class="constraint-badge"><i class="bi bi-hash me-1"></i><?= htmlspecialchars($activePallet['ref_no']) ?></span>
-                <span class="constraint-badge"><i class="bi bi-tag me-1"></i><?= htmlspecialchars($activePallet['product_type']) ?></span>
-                <span class="constraint-badge"><i class="bi bi-arrows-expand me-1"></i><?= number_format((float)$activePallet['width']) ?> mm</span>
+            <div class="table-responsive mb-0 p-3 border-bottom bg-light">
+                <table class="table table-sm table-bordered align-middle mb-0" style="font-size:13px; background:#fff; border-color:#cbd5e1;">
+                    <tbody>
+                        <tr>
+                            <td class="bg-light fw-bold text-muted" style="width:15%;">Customer</td>
+                            <td class="fw-bold text-dark" style="width:35%;"><?= htmlspecialchars($activePallet['customer_name'] ?: '-') ?></td>
+                            <td class="bg-light fw-bold text-muted" style="width:15%;">Date</td>
+                            <td class="fw-bold text-dark" style="width:35%;"><?= date('d/m/Y', strtotime($activePallet['created_at'] ?? 'now')) ?></td>
+                        </tr>
+                        <tr>
+                            <td class="bg-light fw-bold text-muted">SOS No.</td>
+                            <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['ref_no'] ?: '-') ?></td>
+                            <td class="bg-light fw-bold text-muted">Serial No.</td>
+                            <td class="fw-bold text-primary"><?= htmlspecialchars($activePallet['pallet_no'] ?: '-') ?></td>
+                        </tr>
+                        <tr>
+                            <td class="bg-light fw-bold text-muted">Product Type :</td>
+                            <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['product_type'] ?: '-') ?></td>
+                            <td class="bg-light fw-bold text-muted">Width (mm)</td>
+                            <td class="fw-bold text-dark"><?= $activePallet['width'] ? number_format((float)$activePallet['width']) . ' mm' : '-' ?></td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
             <?php endif; ?>
 
@@ -1360,50 +1469,58 @@ if (isset($_GET['success'])): ?>
                     This pallet has been submitted to QC and is currently awaiting approval.
                 </div>
 
-                <?php foreach ($activeItems as $item):
-                    $itemLen = (float)($item['actual_length'] ?: $item['length']);
-                    $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
-                    $itemNod = (float)($item['nod_length'] ?? 0);
-                    $hasNod  = $itemNod > 0;
-                    $netLen  = $itemLen - $itemNod;
-                ?>
-                <div class="slot-card">
-                    <span class="roll-seq" style="background:#d97706;"><?= $item['seq'] ?></span>
-                    <div class="flex-grow-1">
-                        <div class="fw-bold small">
-                            <?= htmlspecialchars($item['lot_no']) ?>
-                            <?= htmlspecialchars($item['coil_no']) ?>
-                            &ndash; <?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?>
-                        </div>
-                        <div class="text-muted" style="font-size:11px;">
-                            <?= htmlspecialchars($item['product']) ?> |
-                            <?= number_format((float)$item['width']) ?>mm |
-                            <?= number_format($itemLen, 1) ?>m
-                        </div>
-                        <?php if (!empty($item['stock_code'])): ?>
-                        <div class="text-muted" style="font-size:11px;font-family:monospace;">
-                            <?= htmlspecialchars($item['stock_code']) ?>
-                        </div>
-                        <?php endif; ?>
-                    </div>
-                    <?php if ($hasNod): ?>
-                    <span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m">
-                        <i class="bi bi-exclamation-triangle-fill"></i>
-                        NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m
-                    </span>
-                    <?php endif; ?>
-                    <?php if ($itemWgt > 0): ?>
-                    <span class="wgt-chip">
-                        <i class="bi bi-speedometer2"></i>
-                        <?= number_format($itemWgt, 2) ?> kg
-                    </span>
-                    <?php endif; ?>
+                <!-- Warehousing Slip Roll Items Table -->
+                <div class="table-responsive">
+                    <table class="table table-sm table-bordered table-hover align-middle text-center mb-0" style="font-size:13px; border-color:#cbd5e1;">
+                        <thead class="table-light border-bottom border-secondary" style="font-size:12px;">
+                            <tr>
+                                <th rowspan="2" class="align-middle" style="width: 25%;">Stock Code :</th>
+                                <th rowspan="2" class="align-middle" style="width: 25%;">Lot No.</th>
+                                <th colspan="2" class="align-middle">Size</th>
+                                <th rowspan="2" class="align-middle" style="width: 8%;">Coils</th>
+                                <th rowspan="2" class="align-middle" style="width: 12%;">Roll No.</th>
+                                <th rowspan="2" class="align-middle" style="width: 18%;">Nett Wgt (kg)</th>
+                            </tr>
+                            <tr>
+                                <th style="width: 12%;">Length (mtr)</th>
+                                <th style="width: 12%;">width (mm)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        <?php foreach ($activeItems as $item):
+                            $itemLen = (float)($item['actual_length'] ?: $item['length']);
+                            $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                            $itemNod = (float)($item['nod_length'] ?? 0);
+                            $hasNod  = $itemNod > 0;
+                            $netLen  = $itemLen - $itemNod;
+                        ?>
+                        <tr>
+                            <td class="fw-bold text-start ps-3" style="font-family:monospace; font-size:12px;"><?= htmlspecialchars(($item['stock_code'] ?? '') ?: '-') ?></td>
+                            <td><?= htmlspecialchars($item['lot_no']) ?> <?= htmlspecialchars($item['coil_no']) ?></td>
+                            <td>
+                                <?= number_format($itemLen, 1) ?>
+                                <?php if ($hasNod): ?>
+                                <br><span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m"><i class="bi bi-exclamation-triangle-fill"></i> NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m</span>
+                                <?php endif; ?>
+                            </td>
+                            <td><?= number_format((float)$item['width']) ?></td>
+                            <td>1</td>
+                            <td class="fw-bold"><?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?></td>
+                            <td class="fw-bold text-end pe-3 text-primary"><?= $itemWgt > 0 ? number_format($itemWgt, 2) : '-' ?></td>
+                        </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
                 </div>
-                <?php endforeach; ?>
             </div>
 
             <div class="card-footer bg-light d-flex justify-content-between align-items-center">
-                <a href="pallet.php" class="btn btn-outline-secondary btn-sm">← Back</a>
+                <div class="d-flex gap-2">
+                    <a href="pallet.php" class="btn btn-outline-secondary btn-sm">← Back</a>
+                    <a href="print_slip.php?pallet_no=<?= urlencode($activePallet['pallet_no']) ?>" target="_blank" class="btn btn-outline-primary btn-sm">
+                        <i class="bi bi-printer me-1"></i> Print Slip
+                    </a>
+                </div>
                 <span class="text-muted small"><i class="bi bi-lock-fill me-1"></i>Read-Only (Pending QC)</span>
             </div>
         </div>
@@ -1428,12 +1545,31 @@ if (isset($_GET['success'])): ?>
                 </span>
             </div>
 
+            <!-- Warehousing Slip Header Grid -->
             <?php if (!empty(trim($activePallet['customer_name'] ?? ''))): ?>
-            <div class="px-3 py-2 border-bottom d-flex flex-wrap gap-2 align-items-center">
-                <span class="constraint-badge"><i class="bi bi-person-check me-1"></i><?= htmlspecialchars($activePallet['customer_name']) ?></span>
-                <span class="constraint-badge"><i class="bi bi-hash me-1"></i><?= htmlspecialchars($activePallet['ref_no']) ?></span>
-                <span class="constraint-badge"><i class="bi bi-tag me-1"></i><?= htmlspecialchars($activePallet['product_type']) ?></span>
-                <span class="constraint-badge"><i class="bi bi-arrows-expand me-1"></i><?= number_format((float)$activePallet['width']) ?> mm</span>
+            <div class="table-responsive mb-0 p-3 border-bottom bg-light">
+                <table class="table table-sm table-bordered align-middle mb-0" style="font-size:13px; background:#fff; border-color:#cbd5e1;">
+                    <tbody>
+                        <tr>
+                            <td class="bg-light fw-bold text-muted" style="width:15%;">Customer</td>
+                            <td class="fw-bold text-dark" style="width:35%;"><?= htmlspecialchars($activePallet['customer_name'] ?: '-') ?></td>
+                            <td class="bg-light fw-bold text-muted" style="width:15%;">Date</td>
+                            <td class="fw-bold text-dark" style="width:35%;"><?= date('d/m/Y', strtotime($activePallet['created_at'] ?? 'now')) ?></td>
+                        </tr>
+                        <tr>
+                            <td class="bg-light fw-bold text-muted">SOS No.</td>
+                            <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['ref_no'] ?: '-') ?></td>
+                            <td class="bg-light fw-bold text-muted">Serial No.</td>
+                            <td class="fw-bold text-primary"><?= htmlspecialchars($activePallet['pallet_no'] ?: '-') ?></td>
+                        </tr>
+                        <tr>
+                            <td class="bg-light fw-bold text-muted">Product Type :</td>
+                            <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['product_type'] ?: '-') ?></td>
+                            <td class="bg-light fw-bold text-muted">Width (mm)</td>
+                            <td class="fw-bold text-dark"><?= $activePallet['width'] ? number_format((float)$activePallet['width']) . ' mm' : '-' ?></td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
             <?php endif; ?>
 
@@ -1463,54 +1599,67 @@ if (isset($_GET['success'])): ?>
                     will be marked <strong>DELIVERED</strong> together.
                 </p>
 
-                <?php foreach ($activeItems as $item):
-                    $itemLen = (float)($item['actual_length'] ?: $item['length']);
-                    $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
-                    $itemNod = (float)($item['nod_length'] ?? 0);
-                    $hasNod  = $itemNod > 0;
-                    $netLen  = $itemLen - $itemNod;
-                ?>
-                <div class="slot-card">
-                    <span class="roll-seq" style="background:#166534;"><?= $item['seq'] ?></span>
-                    <div class="flex-grow-1">
-                        <div class="fw-bold small">
-                            <?= htmlspecialchars($item['lot_no']) ?>
-                            <?= htmlspecialchars($item['coil_no']) ?>
-                            &ndash; <?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?>
-                        </div>
-                        <div class="text-muted" style="font-size:11px;">
-                            <?= htmlspecialchars($item['product']) ?> |
-                            <?= number_format((float)$item['width']) ?>mm |
-                            <?= number_format($itemLen, 1) ?>m
-                        </div>
-                        <?php if (!empty($item['stock_code'])): ?>
-                        <div class="text-muted" style="font-size:11px;font-family:monospace;">
-                            <?= htmlspecialchars($item['stock_code']) ?>
-                        </div>
-                        <?php endif; ?>
-                    </div>
-                    <?php if ($hasNod): ?>
-                    <span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m">
-                        <i class="bi bi-exclamation-triangle-fill"></i>
-                        NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m
-                    </span>
-                    <?php endif; ?>
-                    <?php if ($itemWgt > 0): ?>
-                    <span class="wgt-chip">
-                        <i class="bi bi-speedometer2"></i>
-                        <?= number_format($itemWgt, 2) ?> kg
-                    </span>
-                    <?php endif; ?>
+                <!-- Warehousing Slip Roll Items Table -->
+                <div class="table-responsive">
+                    <table class="table table-sm table-bordered table-hover align-middle text-center mb-0" style="font-size:13px; border-color:#cbd5e1;">
+                        <thead class="table-light border-bottom border-secondary" style="font-size:12px;">
+                            <tr>
+                                <th rowspan="2" class="align-middle" style="width: 25%;">Stock Code :</th>
+                                <th rowspan="2" class="align-middle" style="width: 25%;">Lot No.</th>
+                                <th colspan="2" class="align-middle">Size</th>
+                                <th rowspan="2" class="align-middle" style="width: 8%;">Coils</th>
+                                <th rowspan="2" class="align-middle" style="width: 12%;">Roll No.</th>
+                                <th rowspan="2" class="align-middle" style="width: 18%;">Nett Wgt (kg)</th>
+                            </tr>
+                            <tr>
+                                <th style="width: 12%;">Length (mtr)</th>
+                                <th style="width: 12%;">width (mm)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        <?php foreach ($activeItems as $item):
+                            $itemLen = (float)($item['actual_length'] ?: $item['length']);
+                            $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                            $itemNod = (float)($item['nod_length'] ?? 0);
+                            $hasNod  = $itemNod > 0;
+                            $netLen  = $itemLen - $itemNod;
+                        ?>
+                        <tr>
+                            <td class="fw-bold text-start ps-3" style="font-family:monospace; font-size:12px;"><?= htmlspecialchars(($item['stock_code'] ?? '') ?: '-') ?></td>
+                            <td><?= htmlspecialchars($item['lot_no']) ?> <?= htmlspecialchars($item['coil_no']) ?></td>
+                            <td>
+                                <?= number_format($itemLen, 1) ?>
+                                <?php if ($hasNod): ?>
+                                <br><span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m"><i class="bi bi-exclamation-triangle-fill"></i> NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m</span>
+                                <?php endif; ?>
+                            </td>
+                            <td><?= number_format((float)$item['width']) ?></td>
+                            <td>1</td>
+                            <td class="fw-bold"><?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?></td>
+                            <td class="fw-bold text-end pe-3 text-primary"><?= $itemWgt > 0 ? number_format($itemWgt, 2) : '-' ?></td>
+                        </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
                 </div>
-                <?php endforeach; ?>
             </div>
 
-            <div class="card-footer bg-light d-flex justify-content-between align-items-center">
-                <a href="pallet.php" class="btn btn-outline-secondary btn-sm">← Back</a>
+            <div class="card-footer bg-light d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <div class="d-flex gap-2">
+                    <a href="pallet.php" class="btn btn-outline-secondary btn-sm">← Back</a>
+                    <a href="print_slip.php?pallet_no=<?= urlencode($activePallet['pallet_no']) ?>" target="_blank" class="btn btn-outline-primary btn-sm">
+                        <i class="bi bi-printer me-1"></i> Print Slip
+                    </a>
+                    <form method="post" class="d-inline"
+                          onsubmit="return confirm('Return approved pallet ' + currentPalletNo + ' to edit mode for corrections?\n\nThis will reset the pallet to BUILDING state and require re-submitting to QC once corrections are completed.')">
+                        <input type="hidden" name="action"    value="reopen_pallet">
+                        <input type="hidden" name="pallet_id" value="<?= $activePalletId ?>">
+                        <button type="submit" class="btn btn-outline-warning btn-sm fw-bold">
+                            <i class="bi bi-arrow-counterclockwise me-1"></i> Return to Edit
+                        </button>
+                    </form>
+                </div>
 
-                <!-- Method 1: manual Deliver Pallet button.
-                     Posts action=deliver_pallet → PalletManager::bundleDeliver()
-                     (handler already sits at the top of this file). -->
                 <form method="post"
                       onsubmit="return confirm('Deliver pallet ' + currentPalletNo + '?\n\nAll <?= count($activeItems) ?> roll(s) will be marked DELIVERED.')">
                     <input type="hidden" name="action"    value="deliver_pallet">
@@ -1539,12 +1688,31 @@ if (isset($_GET['success'])): ?>
                 </span>
             </div>
 
+            <!-- Warehousing Slip Header Grid -->
             <?php if (!empty(trim($activePallet['customer_name'] ?? ''))): ?>
-            <div class="px-3 py-2 border-bottom d-flex flex-wrap gap-2 align-items-center">
-                <span class="constraint-badge"><i class="bi bi-person-check me-1"></i><?= htmlspecialchars($activePallet['customer_name']) ?></span>
-                <span class="constraint-badge"><i class="bi bi-hash me-1"></i><?= htmlspecialchars($activePallet['ref_no']) ?></span>
-                <span class="constraint-badge"><i class="bi bi-tag me-1"></i><?= htmlspecialchars($activePallet['product_type']) ?></span>
-                <span class="constraint-badge"><i class="bi bi-arrows-expand me-1"></i><?= number_format((float)$activePallet['width']) ?> mm</span>
+            <div class="table-responsive mb-0 p-3 border-bottom bg-light">
+                <table class="table table-sm table-bordered align-middle mb-0" style="font-size:13px; background:#fff; border-color:#cbd5e1;">
+                    <tbody>
+                        <tr>
+                            <td class="bg-light fw-bold text-muted" style="width:15%;">Customer</td>
+                            <td class="fw-bold text-dark" style="width:35%;"><?= htmlspecialchars($activePallet['customer_name'] ?: '-') ?></td>
+                            <td class="bg-light fw-bold text-muted" style="width:15%;">Date</td>
+                            <td class="fw-bold text-dark" style="width:35%;"><?= date('d/m/Y', strtotime($activePallet['created_at'] ?? 'now')) ?></td>
+                        </tr>
+                        <tr>
+                            <td class="bg-light fw-bold text-muted">SOS No.</td>
+                            <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['ref_no'] ?: '-') ?></td>
+                            <td class="bg-light fw-bold text-muted">Serial No.</td>
+                            <td class="fw-bold text-primary"><?= htmlspecialchars($activePallet['pallet_no'] ?: '-') ?></td>
+                        </tr>
+                        <tr>
+                            <td class="bg-light fw-bold text-muted">Product Type :</td>
+                            <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['product_type'] ?: '-') ?></td>
+                            <td class="bg-light fw-bold text-muted">Width (mm)</td>
+                            <td class="fw-bold text-dark"><?= $activePallet['width'] ? number_format((float)$activePallet['width']) . ' mm' : '-' ?></td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
             <?php endif; ?>
 
@@ -1572,50 +1740,66 @@ if (isset($_GET['success'])): ?>
                     This pallet has been delivered.
                 </div>
 
-                <?php foreach ($activeItems as $item):
-                    $itemLen = (float)($item['actual_length'] ?: $item['length']);
-                    $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
-                    $itemNod = (float)($item['nod_length'] ?? 0);
-                    $hasNod  = $itemNod > 0;
-                    $netLen  = $itemLen - $itemNod;
-                ?>
-                <div class="slot-card">
-                    <span class="roll-seq" style="background:#065f46;"><?= $item['seq'] ?></span>
-                    <div class="flex-grow-1">
-                        <div class="fw-bold small">
-                            <?= htmlspecialchars($item['lot_no']) ?>
-                            <?= htmlspecialchars($item['coil_no']) ?>
-                            &ndash; <?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?>
-                        </div>
-                        <div class="text-muted" style="font-size:11px;">
-                            <?= htmlspecialchars($item['product']) ?> |
-                            <?= number_format((float)$item['width']) ?>mm |
-                            <?= number_format($itemLen, 1) ?>m
-                        </div>
-                        <?php if (!empty($item['stock_code'])): ?>
-                        <div class="text-muted" style="font-size:11px;font-family:monospace;">
-                            <?= htmlspecialchars($item['stock_code']) ?>
-                        </div>
-                        <?php endif; ?>
-                    </div>
-                    <?php if ($hasNod): ?>
-                    <span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m">
-                        <i class="bi bi-exclamation-triangle-fill"></i>
-                        NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m
-                    </span>
-                    <?php endif; ?>
-                    <?php if ($itemWgt > 0): ?>
-                    <span class="wgt-chip">
-                        <i class="bi bi-speedometer2"></i>
-                        <?= number_format($itemWgt, 2) ?> kg
-                    </span>
-                    <?php endif; ?>
+                <!-- Warehousing Slip Roll Items Table -->
+                <div class="table-responsive">
+                    <table class="table table-sm table-bordered table-hover align-middle text-center mb-0" style="font-size:13px; border-color:#cbd5e1;">
+                        <thead class="table-light border-bottom border-secondary" style="font-size:12px;">
+                            <tr>
+                                <th rowspan="2" class="align-middle" style="width: 25%;">Stock Code :</th>
+                                <th rowspan="2" class="align-middle" style="width: 25%;">Lot No.</th>
+                                <th colspan="2" class="align-middle">Size</th>
+                                <th rowspan="2" class="align-middle" style="width: 8%;">Coils</th>
+                                <th rowspan="2" class="align-middle" style="width: 12%;">Roll No.</th>
+                                <th rowspan="2" class="align-middle" style="width: 18%;">Nett Wgt (kg)</th>
+                            </tr>
+                            <tr>
+                                <th style="width: 12%;">Length (mtr)</th>
+                                <th style="width: 12%;">width (mm)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        <?php foreach ($activeItems as $item):
+                            $itemLen = (float)($item['actual_length'] ?: $item['length']);
+                            $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                            $itemNod = (float)($item['nod_length'] ?? 0);
+                            $hasNod  = $itemNod > 0;
+                            $netLen  = $itemLen - $itemNod;
+                        ?>
+                        <tr>
+                            <td class="fw-bold text-start ps-3" style="font-family:monospace; font-size:12px;"><?= htmlspecialchars(($item['stock_code'] ?? '') ?: '-') ?></td>
+                            <td><?= htmlspecialchars($item['lot_no']) ?> <?= htmlspecialchars($item['coil_no']) ?></td>
+                            <td>
+                                <?= number_format($itemLen, 1) ?>
+                                <?php if ($hasNod): ?>
+                                <br><span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m"><i class="bi bi-exclamation-triangle-fill"></i> NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m</span>
+                                <?php endif; ?>
+                            </td>
+                            <td><?= number_format((float)$item['width']) ?></td>
+                            <td>1</td>
+                            <td class="fw-bold"><?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?></td>
+                            <td class="fw-bold text-end pe-3 text-primary"><?= $itemWgt > 0 ? number_format($itemWgt, 2) : '-' ?></td>
+                        </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
                 </div>
-                <?php endforeach; ?>
             </div>
 
-            <div class="card-footer bg-light d-flex justify-content-between align-items-center">
-                <a href="pallet.php" class="btn btn-outline-secondary btn-sm">← Back</a>
+            <div class="card-footer bg-light d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <div class="d-flex gap-2">
+                    <a href="pallet.php" class="btn btn-outline-secondary btn-sm">← Back</a>
+                    <a href="print_slip.php?pallet_no=<?= urlencode($activePallet['pallet_no']) ?>" target="_blank" class="btn btn-outline-primary btn-sm">
+                        <i class="bi bi-printer me-1"></i> Print Slip
+                    </a>
+                    <form method="post" class="d-inline"
+                          onsubmit="return confirm('Return delivered pallet ' + currentPalletNo + ' to edit mode for corrections?\n\nThis will reset the pallet to BUILDING state, reset all rolls to IN, and require re-submitting to QC once corrections are completed.')">
+                        <input type="hidden" name="action"    value="reopen_pallet">
+                        <input type="hidden" name="pallet_id" value="<?= $activePalletId ?>">
+                        <button type="submit" class="btn btn-outline-warning btn-sm fw-bold">
+                            <i class="bi bi-arrow-counterclockwise me-1"></i> Return to Edit
+                        </button>
+                    </form>
+                </div>
                 <span class="text-muted small"><i class="bi bi-lock-fill me-1"></i>Read-Only (Delivered)</span>
             </div>
         </div>
@@ -1888,19 +2072,49 @@ function recalcTotalWeight() {
 function updateConstraintBadges(p) {
     const header = document.getElementById('constraintHeader');
     if (!header) return;
-    header.className = 'px-3 pt-2 pb-1 border-bottom d-flex flex-wrap gap-2 align-items-center position-relative';
+    header.className = 'table-responsive mb-0 p-3 border-bottom bg-light position-relative';
+    const palletNoText = typeof currentPalletNo !== 'undefined' ? currentPalletNo : '';
+    const todayStr = new Date().toLocaleDateString('en-GB');
+
     header.innerHTML = `
-        <span class="d-flex flex-wrap gap-2 align-items-center" id="constraintDisplayGroup">
-            <span class="constraint-badge"><i class="bi bi-person-check me-1"></i><span id="constraintCustomerText">${escHtml(p.customer_name || '')}</span></span>
-            <span class="constraint-badge"><i class="bi bi-hash me-1"></i><span id="constraintRefNoText">${escHtml(p.ref_no || '')}</span></span>
-            <span class="constraint-badge"><i class="bi bi-tag me-1"></i>${escHtml(p.product || '')}</span>
-            <span class="constraint-badge"><i class="bi bi-arrows-expand me-1"></i>${(+p.width).toFixed(0)} mm</span>
-            <button type="button" class="btn btn-sm btn-link p-0 text-primary constraint-edit-btn" id="constraintEditBtn"
-                    title="Edit Customer / Ref No" onclick="startEditConstraint()">
-                <i class="bi bi-pencil-square"></i>
-            </button>
-        </span>
-        <div class="d-none align-items-center gap-1 flex-wrap" id="constraintEditForm">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <span class="fw-bold text-secondary" style="font-size:12px;">
+                <i class="bi bi-file-text me-1"></i> WAREHOUSING SLIP HEADER
+            </span>
+            <span class="badge bg-secondary">MS-WH-01(QR)</span>
+        </div>
+
+        <div id="constraintDisplayGroup">
+            <table class="table table-sm table-bordered align-middle mb-0" style="font-size:13px; background:#fff; border-color:#cbd5e1;">
+                <tbody>
+                    <tr>
+                        <td class="bg-light fw-bold text-muted" style="width:15%;">Customer</td>
+                        <td class="fw-bold text-dark" style="width:35%;">
+                            <span id="constraintCustomerText">${escHtml(p.customer_name || '-')}</span>
+                            <button type="button" class="btn btn-sm btn-link p-0 text-primary ms-1 constraint-edit-btn" id="constraintEditBtn" title="Edit Customer / Ref No" onclick="startEditConstraint()">
+                                <i class="bi bi-pencil-square"></i>
+                            </button>
+                        </td>
+                        <td class="bg-light fw-bold text-muted" style="width:15%;">Date</td>
+                        <td class="fw-bold text-dark" style="width:35%;">${todayStr}</td>
+                    </tr>
+                    <tr>
+                        <td class="bg-light fw-bold text-muted">SOS No.</td>
+                        <td class="fw-bold text-dark"><span id="constraintRefNoText">${escHtml(p.ref_no || '-')}</span></td>
+                        <td class="bg-light fw-bold text-muted">Serial No.</td>
+                        <td class="fw-bold text-primary">${escHtml(palletNoText)}</td>
+                    </tr>
+                    <tr>
+                        <td class="bg-light fw-bold text-muted">Product Type :</td>
+                        <td class="fw-bold text-dark">${escHtml(p.product || '-')}</td>
+                        <td class="bg-light fw-bold text-muted">Width (mm)</td>
+                        <td class="fw-bold text-dark">${(+p.width).toFixed(0)} mm</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="d-none align-items-center gap-1 flex-wrap mt-2" id="constraintEditForm">
             <input type="text" class="form-control form-control-sm constraint-edit-input" id="constraintCustomerInput"
                    value="${escHtml(p.customer_name || '')}" placeholder="Customer" maxlength="120" autocomplete="off"
                    onkeydown="onConstraintEditKeydown(event)">
@@ -1909,19 +2123,15 @@ function updateConstraintBadges(p) {
                    onkeydown="onConstraintEditKeydown(event)">
             <button type="button" class="btn btn-sm btn-success" id="constraintSaveBtn"
                     title="Save (Enter)" onclick="saveConstraintEdit()">
-                <i class="bi bi-check-lg"></i>
+                <i class="bi bi-check-lg me-1"></i> Save
             </button>
             <button type="button" class="btn btn-sm btn-outline-danger" id="constraintCancelBtn"
                     title="Cancel (Esc)" onclick="cancelEditConstraint()">
-                <i class="bi bi-x-lg"></i>
+                <i class="bi bi-x-lg me-1"></i> Cancel
             </button>
         </div>
         <span class="constraint-edit-error d-none" id="constraintEditError"></span>
-        <small class="text-muted align-self-center" id="constraintHintText" style="font-size:10px;">All rolls must match</small>
     `;
-    // Keep the inline-edit feature's state in sync with the freshly
-    // seeded values, so opening the editor right after the first
-    // scan (no reload) shows the correct starting values.
     currentConstraintCustomer = p.customer_name || '';
     currentConstraintRefNo    = p.ref_no || '';
 }
@@ -2015,40 +2225,41 @@ async function processDeliveryScan(raw) {
         const fd = new FormData();
         fd.append('ajax', 'deliver_by_scan');
         fd.append('raw', raw);
+        if (typeof PALLET_ID !== 'undefined' && PALLET_ID) {
+            fd.append('active_pallet_id', PALLET_ID);
+        }
 
         let res;
         try {
-            res = await fetch('pallet.php', { method: 'POST', body: fd }).then(r => r.json());
-        } catch {
+            const resp = await fetch('pallet.php', { method: 'POST', body: fd });
+            const text = await resp.text();
+            try {
+                res = JSON.parse(text);
+            } catch (jsonErr) {
+                console.error("Server non-JSON response:", text);
+                showDeliverFeedback('Server error: ' + (text.substring(0, 100) || 'Invalid response'), false);
+                return;
+            }
+        } catch (fetchErr) {
             showDeliverFeedback('Network error while delivering.', false);
             return;
         }
 
-        switch (res.code) {
-            case 'DELIVERED':
-                showDeliverFeedback(
-                    `✓ Pallet ${escHtml(res.pallet_no)} and all ${res.rolls_delivered} roll(s) marked as DELIVERED.`,
-                    true
-                );
-                setTimeout(() => window.location.reload(), 1200);
-                break;
-            case 'ALREADY_DELIVERED':
-                showDeliverFeedback(`Pallet ${escHtml(res.pallet_no)} was already delivered.`, null);
-                break;
-            case 'WRONG_STATE':
-                showDeliverFeedback(res.msg, false);
-                break;
-            case 'NO_PALLET':
-                showDeliverFeedback(res.msg || 'Product not assigned to any pallet.', false);
-                break;
-            case 'NOT_FOUND':
-                showDeliverFeedback(res.msg || 'Roll not found.', false);
-                break;
-            case 'VOIDED':
-                showDeliverFeedback(res.msg || 'This roll has been voided.', false);
-                break;
-            default:
-                showDeliverFeedback(res.msg || 'Could not deliver.', false);
+        if (res.ok && res.pallet_id) {
+            if (res.prev_delivered && res.prev_pallet_no) {
+                showDeliverFeedback(`✓ Previous approved Pallet ${escHtml(res.prev_pallet_no)} delivered! Opening Pallet ${escHtml(res.pallet_no)}...`, true);
+            } else {
+                showDeliverFeedback(`✓ Found Pallet ${escHtml(res.pallet_no || '')}. Opening pallet information...`, true);
+            }
+            setTimeout(() => {
+                let url = `pallet.php?pallet_id=${res.pallet_id}`;
+                if (res.prev_delivered && res.prev_pallet_no) {
+                    url += `&success=prev_delivered&prev_no=${encodeURIComponent(res.prev_pallet_no)}`;
+                }
+                window.location.href = url;
+            }, 350);
+        } else {
+            showDeliverFeedback(res.msg || 'Pallet not found for that search query.', false);
         }
     } finally {
         isDelivering = false;
@@ -2220,107 +2431,66 @@ function fillSlot(seq, p) {
     const len       = parseFloat(p.actual_length) > 0 ? parseFloat(p.actual_length) : parseFloat(p.length);
     const stdWeight = parseFloat(p.std_weight) || 0;
     const wgt       = calcWeight(len, p.width, stdWeight);
-    const wgtStr    = wgt > 0 ? wgt.toFixed(2) + ' kg' : 'N/A';
+    const wgtStr    = wgt > 0 ? wgt.toFixed(2) : '-';
 
     const nod       = parseFloat(p.nod_length) || 0;
     const hasNod    = nod > 0;
     const netLen    = len - nod;
     const nodChip   = hasNod
-        ? `<span class="nod-chip" title="Actual ${len.toFixed(2)}m − NOD ${nod.toFixed(2)}m = ${netLen.toFixed(2)}m">
-               <i class="bi bi-exclamation-triangle-fill"></i>
-               NOD −${nod.toFixed(2)} → ${netLen.toFixed(2)}m
+        ? `<br><span class="nod-chip" title="Actual ${len.toFixed(2)}m − NOD ${nod.toFixed(2)}m = ${netLen.toFixed(2)}m">
+               <i class="bi bi-exclamation-triangle-fill"></i> NOD −${nod.toFixed(2)} → ${netLen.toFixed(2)}m
            </span>`
         : '';
 
-    slotEl.classList.remove('slot-empty');
+    slotEl.classList.remove('table-light', 'text-muted');
     slotEl.setAttribute('data-filled', '1');
+    slotEl.setAttribute('data-product-id', p.id);
     slotEl.setAttribute('data-weight', wgt.toFixed(4));
 
     slotEl.innerHTML = `
-        <span class="roll-seq">${seq}</span>
-        <div class="flex-grow-1">
-            <div class="fw-bold small">
-                ${escHtml(p.lot_no)} ${escHtml(p.coil_no)}
-                &ndash; ${escHtml(p.roll_no.replace(/^R/, 'R-'))}
-            </div>
-            <div class="text-muted" style="font-size:11px;">
-                ${escHtml(p.product)} |
-                ${(+p.width).toFixed(0)}mm |
-                ${len.toFixed(1)}m
-            </div>
-            ${p.stock_code ? `<div class="text-muted" style="font-size:11px;font-family:monospace;">${escHtml(p.stock_code)}</div>` : ''}
-        </div>
-        ${nodChip}
-        <span class="wgt-chip" title="Est. Weight = (${len.toFixed(1)}m × ${(+p.width).toFixed(0)}mm / 1000) × ${stdWeight}">
-            <i class="bi bi-speedometer2"></i>
-            ${wgtStr}
-        </span>
-        <button type="button"
-                class="btn btn-outline-danger btn-sm"
-                title="Remove this roll from the pallet"
-                data-product-id="${p.id}"
-                onclick="removeRoll(${PALLET_ID}, ${p.id}, ${seq}, this)">
-            <i class="bi bi-x-lg"></i>
-        </button>
+        <td class="fw-bold text-start ps-3" style="font-family:monospace; font-size:12px;">
+            ${p.stock_code ? escHtml(p.stock_code) : '-'}
+        </td>
+        <td>
+            ${escHtml(p.lot_no)} ${escHtml(p.coil_no)}
+        </td>
+        <td>${len.toFixed(1)}${nodChip}</td>
+        <td>${(+p.width).toFixed(0)}</td>
+        <td>1</td>
+        <td class="fw-bold">${escHtml(p.roll_no.replace(/^R/, 'R-'))}</td>
+        <td class="fw-bold text-end pe-3 text-primary">${wgtStr}</td>
+        <td>
+            <button type="button"
+                    class="btn btn-outline-danger btn-sm py-0 px-2"
+                    title="Remove this roll from the pallet"
+                    data-product-id="${p.id}"
+                    onclick="removeRoll(${PALLET_ID}, ${p.id}, ${seq}, this)">
+                <i class="bi bi-x-lg"></i>
+            </button>
+        </td>
     `;
 
-    // Flash animation
     slotEl.classList.add('scan-flash');
     slotEl.addEventListener('animationend', () => slotEl.classList.remove('scan-flash'), { once: true });
-
-    // Update total weight
     recalcTotalWeight();
 }
 
-// ─────────────────────────────────────────────────────────────
-// removeRoll(palletId, productId, seq, btn)
-// ─────────────────────────────────────────────────────────────
-async function removeRoll(palletId, productId, seq, btn) {
-    if (!confirm('Remove this roll from the pallet?\nThe roll will return to Finish Good stock.')) return;
-    btn.disabled = true;
-
-    const fd = new FormData();
-    fd.append('action',     'remove_roll');
-    fd.append('pallet_id',  palletId);
-    fd.append('product_id', productId);
-
-    let d;
-    try {
-        d = await fetch('pallet.php', { method: 'POST', body: fd }).then(r => r.json());
-    } catch {
-        showFeedback('Network error while removing roll.', false);
-        btn.disabled = false;
-        return;
-    }
-
-    if (!d.ok) {
-        showFeedback(d.msg, false);
-        btn.disabled = false;
-        return;
-    }
-
-    rollCount = d.new_count;
-    updateProgress(rollCount);
-    clearSlot(seq);
-    resequenceSlots();
-    recalcTotalWeight();   // ← update weight after removal
-    showFeedback(d.msg, true);
-
-    if (rollCount === 0) setTimeout(() => location.reload(), 1000);
-}
-
-// ─────────────────────────────────────────────────────────────
-// clearSlot(seq)
-// ─────────────────────────────────────────────────────────────
 function clearSlot(seq) {
     const slotEl = document.getElementById('slot' + seq);
     if (!slotEl) return;
-    slotEl.classList.add('slot-empty');
+    slotEl.classList.add('table-light', 'text-muted');
     slotEl.setAttribute('data-filled', '0');
+    slotEl.removeAttribute('data-product-id');
     slotEl.setAttribute('data-weight', '0');
     slotEl.innerHTML = `
-        <span class="roll-seq">${seq}</span>
-        <span style="font-size:13px;">Empty slot ${seq}</span>
+        <td class="text-start ps-3 text-muted">&mdash; Empty Slot ${seq} &mdash;</td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
     `;
 }
 
@@ -3011,18 +3181,6 @@ document.getElementById('palletSearchInput')?.addEventListener('input', function
     }
     clearTimeout(palletSearchDebounce);
     palletSearchDebounce = setTimeout(loadPalletList, 250);
-});
-
-document.getElementById('deliverScanInput')?.addEventListener('input', function() {
-    let val = this.value;
-    let cleaned = val.replace(/^\s*SFS-?\s*/i, '');
-    let digits = cleaned.replace(/[^0-9]/g, '');
-    if (digits.length >= 4 && !val.endsWith(' ')) {
-        let formatted = formatPalletNo(val);
-        if (formatted && formatted !== val) {
-            this.value = formatted;
-        }
-    }
 });
 
 document.getElementById('palletSortSelect').addEventListener('change', loadPalletList);

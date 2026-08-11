@@ -69,10 +69,18 @@ class PalletManager
         if ($coilNo === null || trim($coilNo) === '') {
             return null;
         }
-        $coilPart = explode('-', trim($coilNo), 2)[0];
+        // Extract only alphabetic prefix (e.g. "a-7" -> "a", "FK-1" -> "FK")
+        if (preg_match('/^([a-zA-Z]+)/', trim($coilNo), $m)) {
+            $coilPart = $m[1];
+        } else {
+            $coilPart = preg_replace('/[^a-zA-Z]/', '', $coilNo);
+            if ($coilPart === '') {
+                $coilPart = explode('-', trim($coilNo), 2)[0];
+            }
+        }
         return 'SFS-' . $coilPart
-            . '-' . self::formatStockCodeNumber($width)
-            . '-' . self::formatStockCodeNumber($length);
+            . '-' . self::formatStockCodeNumber($length)
+            . '-' . self::formatStockCodeNumber($width);
     }
 
     private static function formatStockCodeNumber($value): string
@@ -762,17 +770,18 @@ class PalletManager
     }
 
     // =========================================================
-    // 6. REOPEN REJECTED PALLET                       ← NEW
-    //    QC rejected → building  (operator can now edit)
+    // 6. REOPEN PALLET FOR CORRECTIONS / REJECTION EDIT
+    //    (approved / delivered / rejected -> building)
     //    Rolls are kept on the pallet but their status is reset
-    //    to 'IN' so they don't show as REJECTED in other views.
+    //    to 'IN' so they can be modified, removed, or replaced.
     //    edit_count is incremented for the audit trail.
+    //    Audit entries are written to pallet_edit_log & process_log.
     // =========================================================
 
     /**
      * @return array{ok: bool, msg: string}
      */
-    public function reopenRejectedPallet(int $palletId): array
+    public function reopenApprovedOrDeliveredPallet(int $palletId): array
     {
         $this->conn->begin_transaction();
         try {
@@ -787,23 +796,24 @@ class PalletManager
             if (!$pallet) {
                 throw new RuntimeException("Pallet #{$palletId} not found.");
             }
-            if ($pallet['status'] !== 'rejected') {
+
+            $allowedStatuses = ['approved', 'delivered', 'rejected'];
+            if (!in_array($pallet['status'], $allowedStatuses, true)) {
                 throw new RuntimeException(
-                    "Pallet {$pallet['pallet_no']} is not in rejected state "
-                    . "(current: {$pallet['status']})."
+                    "Pallet {$pallet['pallet_no']} cannot be reopened from current state '{$pallet['status']}'."
                 );
             }
 
-            $palletNo = $pallet['pallet_no'];
+            $oldStatus = $pallet['status'];
+            $palletNo  = $pallet['pallet_no'];
 
-            // ── Reopen the pallet ─────────────────────────────
+            // ── Reopen the pallet to building ─────────────────
             $stmt = $this->conn->prepare("
                 UPDATE pallets
                 SET status      = 'building',
                     qc_comment  = NULL,
                     edit_count  = edit_count + 1
-                WHERE id     = ?
-                  AND status = 'rejected'
+                WHERE id = ?
             ");
             $stmt->bind_param("i", $palletId);
             $stmt->execute();
@@ -812,9 +822,19 @@ class PalletManager
             }
             $stmt->close();
 
+            // ── Fetch attached roll details for process_log ───
+            $stmt = $this->conn->prepare("
+                SELECT sp.id, sp.status, sp.mother_id
+                FROM slitting_product sp
+                JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+                WHERE pi.pallet_id = ?
+            ");
+            $stmt->bind_param("i", $palletId);
+            $stmt->execute();
+            $rolls = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+
             // ── Reset roll statuses to IN ─────────────────────
-            // They were set to REJECTED by QC. Resetting to IN
-            // makes them editable and visible again in finish_product.
             $stmt = $this->conn->prepare("
                 UPDATE slitting_product sp
                 JOIN pallet_items pi ON pi.slitting_product_id = sp.id
@@ -828,23 +848,40 @@ class PalletManager
             $rollsReset = (int)$stmt->affected_rows;
             $stmt->close();
 
-            // ── Audit ─────────────────────────────────────────
+            // ── Audit: pallet_edit_log ────────────────────────
             $this->writeEditLog(
                 $palletId, $palletNo,
                 'reopen', null, null,
-                "Pallet reopened for editing after QC rejection. "
+                "Pallet returned to edit mode from '{$oldStatus}' for corrections. "
                 . "{$rollsReset} roll(s) reset to IN."
             );
+
+            // ── Audit: process_log for each roll ──────────────
+            foreach ($rolls as $r) {
+                $this->writeProcessLog(
+                    'slitting',
+                    (int)$r['id'],
+                    $r['mother_id'] ? (int)$r['mother_id'] : null,
+                    $r['status'] ?? 'UNKNOWN',
+                    'IN',
+                    "Pallet {$palletNo} correction: returned to edit mode from {$oldStatus}"
+                );
+            }
 
             $this->conn->commit();
             return [
                 'ok'  => true,
-                'msg' => "Pallet {$palletNo} reopened. Edit the contents, then re-submit to QC.",
+                'msg' => "Pallet {$palletNo} returned to edit mode. Make necessary corrections, then re-submit to QC.",
             ];
         } catch (Throwable $e) {
             $this->conn->rollback();
             return ['ok' => false, 'msg' => $e->getMessage()];
         }
+    }
+
+    public function reopenRejectedPallet(int $palletId): array
+    {
+        return $this->reopenApprovedOrDeliveredPallet($palletId);
     }
 
     // =========================================================
@@ -1363,11 +1400,9 @@ class PalletManager
         // only compute on the fly for legacy rows added before this column
         // existed, so nothing shows blank for older pallets.
         foreach ($rows as &$row) {
-            if (empty($row['stock_code'])) {
-                $lenVal = (!empty($row['actual_length']) && $row['actual_length'] > 0)
-                    ? $row['actual_length'] : $row['length'];
-                $row['stock_code'] = self::formatStockCode($row['coil_no'], $row['width'], $lenVal);
-            }
+            $lenVal = (!empty($row['actual_length']) && $row['actual_length'] > 0)
+                ? $row['actual_length'] : $row['length'];
+            $row['stock_code'] = self::formatStockCode($row['coil_no'], $row['width'], $lenVal);
         }
         unset($row);
 
@@ -1517,5 +1552,23 @@ class PalletManager
             ($product['coil_no'] ?? '') . ' R-' .
             ltrim($product['roll_no'] ?? '', 'R')
         );
+    }
+
+    public static function formatPalletNo(string $raw): string
+    {
+        $raw = trim($raw);
+        if ($raw === '') return '';
+
+        $cleaned      = preg_replace('/^\s*SFS-?\s*/i', '', $raw);
+        $cleanDigits  = substr(preg_replace('/[^0-9]/', '', $cleaned), 0, 7);
+        $cleanLetters = strtoupper(substr(preg_replace('/[^A-Za-z]/', '', preg_replace('/^\s*SFS-?\s*/i', '', $raw)), 0, 3));
+
+        if ($cleanDigits === '' && $cleanLetters === '') return $raw;
+
+        $formatted = 'SFS-' . (strlen($cleanDigits) <= 4 ? $cleanDigits : substr($cleanDigits, 0, 4) . '-' . substr($cleanDigits, 4));
+        if ($cleanLetters !== '') {
+            $formatted .= " ({$cleanLetters})";
+        }
+        return $formatted;
     }
 }
