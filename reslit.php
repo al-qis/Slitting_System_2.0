@@ -948,7 +948,7 @@ function generateForm() {
                         <input type="number" step="0.01" name="new_width[]" class="form-control form-control-sm highlight-field width-input" required>
                     </td>
                     <td>
-                        <input type="number" step="0.01" name="actual_length[]" class="form-control form-control-sm highlight-field actual-length-input" required>
+                        <input type="number" step="0.01" name="actual_length[]" class="form-control form-control-sm highlight-field actual-length-input" placeholder="Optional">
                     </td>
                     <td class="text-center sfc-cell">
                         <label class="sfc-toggle" for="sfcCheck${i - 1}">

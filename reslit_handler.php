@@ -113,41 +113,60 @@ if ($coil_no_val === '' && $mother_id_val) {
 $conn->begin_transaction();
 
 try {
-    // ── Validation: check for duplicate lot+coil+roll ─────────
+    // ── STEP 1: Void the parent slitting_product row if present ────────
+    // Free the UNIQUE KEY (lot_no, coil_no, roll_no) on the parent roll
+    // so child rolls or leftovers can reuse the same lot number, coil, and roll.
+    if ($parent_slit_id) {
+        $stmt_void_parent = $conn->prepare("
+            UPDATE slitting_product
+            SET is_voided = 1,
+                voided_at = NOW(),
+                voided_reason = 'reslitted_into_child_rolls'
+            WHERE id = ?
+        ");
+        $stmt_void_parent->bind_param("i", $parent_slit_id);
+        $stmt_void_parent->execute();
+        $stmt_void_parent->close();
+    }
+
+    // ── Validation: check for duplicate active (non-voided) lot+coil+roll ─────────
+    $exclude_id = $parent_slit_id ?? 0;
+
     foreach ($roll_numbers as $index => $roll_label) {
-        $letter      = $cut_letters[$index] ?? '';
+        $letter      = trim($cut_letters[$index] ?? '');
         $temp_lot_no = $parent['lot_no'] . $letter;
 
+        // Check against OTHER active non-voided rolls only
         $check = $conn->prepare("
             SELECT id FROM slitting_product
             WHERE lot_no = ? AND coil_no = ? AND roll_no = ?
+              AND id != ?
+              AND (is_voided = 0 OR is_voided IS NULL)
         ");
-        $check->bind_param("sss", $temp_lot_no, $coil_no_val, $roll_label);
+        $check->bind_param("sssi", $temp_lot_no, $coil_no_val, $roll_label, $exclude_id);
         $check->execute();
         if ($check->get_result()->num_rows > 0) {
             throw new Exception(
-                "Duplicate: Lot [{$temp_lot_no}] Coil [{$coil_no_val}] Roll [{$roll_label}] already exists. Add a letter suffix."
+                "Duplicate: Lot [{$temp_lot_no}] Coil [{$coil_no_val}] Roll [{$roll_label}] already exists on an active roll."
             );
         }
         $check->close();
     }
 
-    // Cut Into 2 leftover, routed to Finished Product, also needs a
-    // duplicate check (a row for this lot/coil/roll may already exist).
-    // The leftover keeps the ORIGINAL roll_no — it's not renamed to
-    // "BALANCE" — since it's still physically the same roll.
-    // Not needed for the SFC path — sfc has no such uniqueness constraint.
+    // Cut Into 2 leftover, routed to Finished Product: exclude parent & voided rolls
     $leftover_roll_no = $parent['roll_no'] ?? '';
     if ($cut_type === 'cut_into_2' && $leftover_length > 0 && !$leftover_to_sfc) {
         $check = $conn->prepare("
             SELECT id FROM slitting_product
             WHERE lot_no = ? AND coil_no = ? AND roll_no = ?
+              AND id != ?
+              AND (is_voided = 0 OR is_voided IS NULL)
         ");
-        $check->bind_param("sss", $parent['lot_no'], $coil_no_val, $leftover_roll_no);
+        $check->bind_param("sssi", $parent['lot_no'], $coil_no_val, $leftover_roll_no, $exclude_id);
         $check->execute();
         if ($check->get_result()->num_rows > 0) {
             throw new Exception(
-                "Duplicate: Lot [{$parent['lot_no']}] Coil [{$coil_no_val}] Roll [{$leftover_roll_no}] already exists."
+                "Duplicate: Lot [{$parent['lot_no']}] Coil [{$coil_no_val}] Roll [{$leftover_roll_no}] already exists on an active roll."
             );
         }
         $check->close();
@@ -157,10 +176,11 @@ try {
 
     // ── Insert pass ───────────────────────────────────────────
     foreach ($roll_numbers as $index => $roll_label) {
-        $letter  = $cut_letters[$index]   ?? '';
+        $letter  = trim($cut_letters[$index]   ?? '');
         $width   = floatval($new_widths[$index]    ?? 0);
         $nom_len = floatval($lengths[$index]        ?? 0);
-        $act_len = floatval($actual_lengths[$index] ?? 0);
+        $act_raw = trim($actual_lengths[$index]    ?? '');
+        $act_len = ($act_raw !== '' && is_numeric($act_raw)) ? floatval($act_raw) : $nom_len;
 
         $new_lot_no    = $parent['lot_no'] . $letter;
         $total_actual += $act_len;
