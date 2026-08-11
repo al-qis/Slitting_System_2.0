@@ -1034,11 +1034,46 @@ if (isset($_GET['success'])): ?>
                 </div>
 
                 <!-- Edit mode (hidden until pencil clicked) -->
+                <?php
+                    $PALLET_CUSTOMERS = [
+                        'NAE'      => 'NICHIAS AUTOPARTS EUROPE (NAE)',
+                        'NAX'      => 'NAX MFG, SA.DE C.V',
+                        'NCI MFG'  => 'NCI MFG., INC.',
+                        'TAIHO'    => 'TAIHO MFG OF TN. INC',
+                        'NRI'      => 'PT NICHIAS ROCKWOOL IND.',
+                        'ASHUKA'   => 'ASHUKA TECHNOLOGIES SDN. BHD.',
+                        'NIPPON'   => 'NTC(NIPPON GASKET)',
+                        'NTC'      => 'NICHIAS THAILAND',
+                        'SGC'      => 'SHANGHAI XINGSHENG',
+                        'STAMPING' => 'MK STAMPING',
+                        'YANTAI'   => 'NICHIAS (SHANGHAI) AUTOPARTS TRADING',
+                        'NIP'      => 'NICHIAS IND.PRODUCTS PVT. LTD.',
+                        'NVC'      => 'NICHIAS VIETNAM CO., LTD',
+                        'NCS'      => 'NC-PT NICHIAS SUNIJAYA',
+                        'SNP'      => 'SUZHOU NICHIAS IND. PRODUCTS',
+                        'YTEC'     => 'YTEC CO., LTD.',
+                        'NSEA'     => 'NICHIAS SOUTH EAST ASIA (UP PACKING)',
+                        'NCI 2'    => 'NCI 2',
+                        'STOCK'    => 'STOCK',
+                        'TRIAL'    => 'TRIAL',
+                    ];
+                    $curCust = trim($activePallet['customer_name'] ?? '');
+                    $isOtherCustomer = ($curCust !== '' && !isset($PALLET_CUSTOMERS[$curCust]) && !in_array($curCust, $PALLET_CUSTOMERS, true));
+                ?>
                 <div class="d-none align-items-center gap-1 flex-wrap mt-2" id="constraintEditForm">
-                    <input type="text" class="form-control form-control-sm constraint-edit-input" id="constraintCustomerInput"
-                           value="<?= htmlspecialchars($activePallet['customer_name']) ?>"
-                           placeholder="Customer" maxlength="120" autocomplete="off"
-                           onkeydown="onConstraintEditKeydown(event)">
+                    <select class="form-select form-select-sm constraint-edit-input" id="constraintCustomerInput"
+                            onchange="handleConstraintCustomerChange()" onkeydown="onConstraintEditKeydown(event)" style="min-width:180px;">
+                        <option value="">-- Select Customer --</option>
+                        <?php foreach ($PALLET_CUSTOMERS as $code => $fullName): ?>
+                            <option value="<?= htmlspecialchars($code) ?>" <?= ($curCust === $code || $curCust === $fullName) ? 'selected' : '' ?>>
+                                <?= htmlspecialchars($code) ?> — <?= htmlspecialchars($fullName) ?>
+                            </option>
+                        <?php endforeach; ?>
+                        <option value="OTHER" <?= $isOtherCustomer ? 'selected' : '' ?>>OTHER (type below)</option>
+                    </select>
+                    <input type="text" class="form-control form-control-sm constraint-edit-input mt-1" id="constraintCustomCustomerInput"
+                           placeholder="Enter customer name" style="display:<?= $isOtherCustomer ? 'block' : 'none' ?>;"
+                           value="<?= $isOtherCustomer ? htmlspecialchars($curCust) : '' ?>" onkeydown="onConstraintEditKeydown(event)">
                     <input type="text" class="form-control form-control-sm constraint-edit-input" id="constraintRefNoInput"
                            value="<?= htmlspecialchars($activePallet['ref_no']) ?>"
                            placeholder="Ref No" maxlength="80" autocomplete="off"
@@ -2115,9 +2150,17 @@ function updateConstraintBadges(p) {
         </div>
 
         <div class="d-none align-items-center gap-1 flex-wrap mt-2" id="constraintEditForm">
-            <input type="text" class="form-control form-control-sm constraint-edit-input" id="constraintCustomerInput"
-                   value="${escHtml(p.customer_name || '')}" placeholder="Customer" maxlength="120" autocomplete="off"
-                   onkeydown="onConstraintEditKeydown(event)">
+            <select class="form-select form-select-sm constraint-edit-input" id="constraintCustomerInput"
+                    onchange="handleConstraintCustomerChange()" onkeydown="onConstraintEditKeydown(event)" style="min-width:180px;">
+                <option value="">-- Select Customer --</option>
+                ${Object.entries(PALLET_CUSTOMERS_MAP).map(([code, fullName]) => {
+                    const isSel = (p.customer_name === code || p.customer_name === fullName);
+                    return `<option value="${escHtml(code)}" ${isSel ? 'selected' : ''}>${escHtml(code)} &mdash; ${escHtml(fullName)}</option>`;
+                }).join('')}
+                <option value="OTHER">OTHER (type below)</option>
+            </select>
+            <input type="text" class="form-control form-control-sm constraint-edit-input mt-1" id="constraintCustomCustomerInput"
+                   placeholder="Enter customer name" style="display:none;" value="" onkeydown="onConstraintEditKeydown(event)">
             <input type="text" class="form-control form-control-sm constraint-edit-input" id="constraintRefNoInput"
                    value="${escHtml(p.ref_no || '')}" placeholder="Ref No" maxlength="80" autocomplete="off"
                    onkeydown="onConstraintEditKeydown(event)">
@@ -2987,14 +3030,55 @@ async function savePalletRename() {
 
 // ─────────────────────────────────────────────────────────────
 // INLINE CUSTOMER / REF NO EDIT (constraint badge header)
-// Same pattern as the pallet-no rename above: click pencil → edit
-// two fields → save via AJAX → PalletManager::updatePalletCustomerRef()
-// propagates the new values to every roll (slitting_product) on
-// this pallet so nothing drifts out of sync.
+// Standardized Customer selection component + auto-population
 // ─────────────────────────────────────────────────────────────
+const PALLET_CUSTOMERS_MAP = {
+    'NAE':      'NICHIAS AUTOPARTS EUROPE (NAE)',
+    'NAX':      'NAX MFG, SA.DE C.V',
+    'NCI MFG':  'NCI MFG., INC.',
+    'TAIHO':    'TAIHO MFG OF TN. INC',
+    'NRI':      'PT NICHIAS ROCKWOOL IND.',
+    'ASHUKA':   'ASHUKA TECHNOLOGIES SDN. BHD.',
+    'NIPPON':   'NTC(NIPPON GASKET)',
+    'NTC':      'NICHIAS THAILAND',
+    'SGC':      'SHANGHAI XINGSHENG',
+    'STAMPING': 'MK STAMPING',
+    'YANTAI':   'NICHIAS (SHANGHAI) AUTOPARTS TRADING',
+    'NIP':      'NICHIAS IND.PRODUCTS PVT. LTD.',
+    'NVC':      'NICHIAS VIETNAM CO., LTD',
+    'NCS':      'NC-PT NICHIAS SUNIJAYA',
+    'SNP':      'SUZHOU NICHIAS IND. PRODUCTS',
+    'YTEC':     'YTEC CO., LTD.',
+    'NSEA':     'NICHIAS SOUTH EAST ASIA (UP PACKING)',
+    'NCI 2':    'NCI 2',
+    'STOCK':    'STOCK',
+    'TRIAL':    'TRIAL'
+};
+
 let constraintEditSaving = false;
 let currentConstraintCustomer = <?= json_encode($activePallet['customer_name'] ?? '') ?>;
 let currentConstraintRefNo    = <?= json_encode($activePallet['ref_no'] ?? '') ?>;
+
+function handleConstraintCustomerChange() {
+    const sel = document.getElementById('constraintCustomerInput');
+    const customEl = document.getElementById('constraintCustomCustomerInput');
+    const refNoEl = document.getElementById('constraintRefNoInput');
+    if (!sel) return;
+
+    const val = sel.value;
+    if (customEl) {
+        customEl.style.display = (val === 'OTHER') ? 'block' : 'none';
+        if (val === 'OTHER') customEl.focus();
+    }
+
+    if (refNoEl) {
+        if (val === 'STOCK') {
+            refNoEl.value = 'STOCK';
+        } else if (refNoEl.value === 'STOCK' || !refNoEl.value.trim()) {
+            refNoEl.value = 'SO-';
+        }
+    }
+}
 
 function startEditConstraint() {
     document.getElementById('constraintDisplayGroup').classList.add('d-none');
@@ -3004,12 +3088,40 @@ function startEditConstraint() {
     document.getElementById('constraintHintText').classList.add('d-none');
     hideConstraintEditError();
 
-    const customerInput = document.getElementById('constraintCustomerInput');
+    const customerSelect = document.getElementById('constraintCustomerInput');
+    const customInput    = document.getElementById('constraintCustomCustomerInput');
     const refNoInput     = document.getElementById('constraintRefNoInput');
-    customerInput.value = currentConstraintCustomer;
-    refNoInput.value    = currentConstraintRefNo;
-    customerInput.focus();
-    customerInput.select();
+
+    let matchedCode = '';
+    if (currentConstraintCustomer) {
+        if (PALLET_CUSTOMERS_MAP[currentConstraintCustomer]) {
+            matchedCode = currentConstraintCustomer;
+        } else {
+            for (const [code, fullName] of Object.entries(PALLET_CUSTOMERS_MAP)) {
+                if (fullName === currentConstraintCustomer) {
+                    matchedCode = code;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (matchedCode) {
+        customerSelect.value = matchedCode;
+        if (customInput) customInput.style.display = 'none';
+    } else if (currentConstraintCustomer) {
+        customerSelect.value = 'OTHER';
+        if (customInput) {
+            customInput.value = currentConstraintCustomer;
+            customInput.style.display = 'block';
+        }
+    } else {
+        customerSelect.value = '';
+        if (customInput) customInput.style.display = 'none';
+    }
+
+    refNoInput.value = currentConstraintRefNo;
+    customerSelect.focus();
 }
 
 function cancelEditConstraint() {
@@ -3018,8 +3130,12 @@ function cancelEditConstraint() {
     form.classList.remove('d-flex');
     document.getElementById('constraintDisplayGroup').classList.remove('d-none');
     document.getElementById('constraintHintText').classList.remove('d-none');
-    document.getElementById('constraintCustomerInput').value = currentConstraintCustomer;
-    document.getElementById('constraintRefNoInput').value    = currentConstraintRefNo;
+
+    const customerSelect = document.getElementById('constraintCustomerInput');
+    const customInput    = document.getElementById('constraintCustomCustomerInput');
+    if (customerSelect) customerSelect.value = '';
+    if (customInput) { customInput.value = ''; customInput.style.display = 'none'; }
+    document.getElementById('constraintRefNoInput').value = currentConstraintRefNo;
     hideConstraintEditError();
 }
 
@@ -3040,19 +3156,24 @@ function hideConstraintEditError() {
 async function saveConstraintEdit() {
     if (constraintEditSaving) return;
 
-    const customerInput = document.getElementById('constraintCustomerInput');
+    const customerSelect = document.getElementById('constraintCustomerInput');
+    const customInput    = document.getElementById('constraintCustomCustomerInput');
     const refNoInput     = document.getElementById('constraintRefNoInput');
-    const newCustomer    = customerInput.value.trim();
-    const newRefNo       = refNoInput.value.trim();
+
+    let newCustomer = customerSelect ? customerSelect.value.trim() : '';
+    if (newCustomer === 'OTHER' && customInput) {
+        newCustomer = customInput.value.trim();
+    }
+    const newRefNo = refNoInput.value.trim();
 
     if (newCustomer === '') {
-        showConstraintEditError('Customer cannot be empty.');
-        customerInput.focus();
+        showConstraintEditError('Please select a Customer.');
+        if (customerSelect) customerSelect.focus();
         return;
     }
     if (newRefNo === '') {
         showConstraintEditError('Ref No cannot be empty.');
-        refNoInput.focus();
+        if (refNoInput) refNoInput.focus();
         return;
     }
     if (newCustomer === currentConstraintCustomer && newRefNo === currentConstraintRefNo) {
@@ -3080,15 +3201,20 @@ async function saveConstraintEdit() {
 
         if (!data.ok) {
             showConstraintEditError(data.msg || 'Could not update Customer / Ref No.');
-            customerInput.focus();
+            if (customerSelect) customerSelect.focus();
             return;
         }
 
         // Success — update the badges in place and drop out of edit mode.
-        currentConstraintCustomer = data.customer_name;
-        currentConstraintRefNo    = data.ref_no;
-        document.getElementById('constraintCustomerText').textContent = currentConstraintCustomer;
-        document.getElementById('constraintRefNoText').textContent    = currentConstraintRefNo;
+        currentConstraintCustomer = data.customer_name || newCustomer;
+        currentConstraintRefNo    = data.ref_no || newRefNo;
+
+        const custTextEl = document.getElementById('constraintCustomerText');
+        if (custTextEl) custTextEl.textContent = currentConstraintCustomer;
+
+        const refTextEl = document.getElementById('constraintRefNoText');
+        if (refTextEl) refTextEl.textContent = currentConstraintRefNo;
+
         cancelEditConstraint();
 
         // Refresh the right-side Pallets list so the updated card shows
@@ -3096,8 +3222,9 @@ async function saveConstraintEdit() {
         if (typeof loadPalletList === 'function') loadPalletList();
 
     } catch (e) {
-        showConstraintEditError('Network error — please try again.');
-        customerInput.focus();
+        console.error('saveConstraintEdit error:', e);
+        showConstraintEditError((e && e.message) ? e.message : 'Network error — please try again.');
+        if (customerSelect) customerSelect.focus();
     } finally {
         constraintEditSaving = false;
         document.getElementById('constraintSaveBtn').disabled = false;

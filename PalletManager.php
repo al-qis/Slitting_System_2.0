@@ -302,7 +302,7 @@ class PalletManager
                 ];
             }
 
-            $editableStates = ['building', 'rejected'];
+            $editableStates = ['building', 'pending_qc', 'approved', 'rejected'];
             if (!in_array($pallet['status'], $editableStates, true)) {
                 throw new RuntimeException(
                     "Pallet {$pallet['pallet_no']} cannot be edited (status: {$pallet['status']}). "
