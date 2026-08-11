@@ -51,6 +51,53 @@ try {
     $stmt->execute();
     $stmt->close();
 
+    // 3.5. Remove from pallet_items if assigned to a pallet, and clean up pallet if empty
+    $stmt = $conn->prepare("SELECT pallet_id FROM pallet_items WHERE slitting_product_id = ?");
+    $stmt->bind_param("i", $id);
+    $stmt->execute();
+    $pRow = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    if ($pRow) {
+        $affectedPalletId = (int)$pRow['pallet_id'];
+        $stmt = $conn->prepare("DELETE FROM pallet_items WHERE slitting_product_id = ?");
+        $stmt->bind_param("i", $id);
+        $stmt->execute();
+        $stmt->close();
+
+        // Check remaining items on that pallet
+        $stmt = $conn->prepare("SELECT id FROM pallet_items WHERE pallet_id = ? ORDER BY seq ASC");
+        $stmt->bind_param("i", $affectedPalletId);
+        $stmt->execute();
+        $remItems = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+
+        if (empty($remItems)) {
+            $stmt = $conn->prepare("DELETE FROM pallet_edit_log WHERE pallet_id = ?");
+            $stmt->bind_param("i", $affectedPalletId);
+            $stmt->execute();
+            $stmt->close();
+
+            $stmt = $conn->prepare("DELETE FROM pallet_delivery_log WHERE pallet_id = ?");
+            $stmt->bind_param("i", $affectedPalletId);
+            $stmt->execute();
+            $stmt->close();
+
+            $stmt = $conn->prepare("DELETE FROM pallets WHERE id = ?");
+            $stmt->bind_param("i", $affectedPalletId);
+            $stmt->execute();
+            $stmt->close();
+        } else {
+            foreach ($remItems as $idx => $rItem) {
+                $newSeq = $idx + 1;
+                $u = $conn->prepare("UPDATE pallet_items SET seq = ? WHERE id = ?");
+                $u->bind_param("ii", $newSeq, $rItem['id']);
+                $u->execute();
+                $u->close();
+            }
+        }
+    }
+
     // 4. Write to process_log
     $performed_by = $_SESSION['role'] ?? 'system';
     $entity_type  = 'slitting';

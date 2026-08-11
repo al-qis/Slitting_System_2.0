@@ -213,6 +213,61 @@ try {
         $stmt->execute();
         $stmt->close();
 
+        // ── STEP 7.5: Clean up pallet_items & empty pallets ────────
+        $stmt = $conn->prepare(
+            "SELECT DISTINCT pallet_id FROM pallet_items WHERE slitting_product_id IN ($sp_placeholders)"
+        );
+        $stmt->bind_param($sp_types, ...$sp_ids);
+        $stmt->execute();
+        $pallet_rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+
+        $affected_pallet_ids = array_column($pallet_rows, 'pallet_id');
+
+        $stmt = $conn->prepare(
+            "DELETE FROM pallet_items WHERE slitting_product_id IN ($sp_placeholders)"
+        );
+        $stmt->bind_param($sp_types, ...$sp_ids);
+        $stmt->execute();
+        $stmt->close();
+
+        if (!empty($affected_pallet_ids)) {
+            foreach ($affected_pallet_ids as $palletId) {
+                $stmt = $conn->prepare(
+                    "SELECT id FROM pallet_items WHERE pallet_id = ? ORDER BY seq ASC"
+                );
+                $stmt->bind_param("i", $palletId);
+                $stmt->execute();
+                $rem_items = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+
+                if (empty($rem_items)) {
+                    $stmt = $conn->prepare("DELETE FROM pallet_edit_log WHERE pallet_id = ?");
+                    $stmt->bind_param("i", $palletId);
+                    $stmt->execute();
+                    $stmt->close();
+
+                    $stmt = $conn->prepare("DELETE FROM pallet_delivery_log WHERE pallet_id = ?");
+                    $stmt->bind_param("i", $palletId);
+                    $stmt->execute();
+                    $stmt->close();
+
+                    $stmt = $conn->prepare("DELETE FROM pallets WHERE id = ?");
+                    $stmt->bind_param("i", $palletId);
+                    $stmt->execute();
+                    $stmt->close();
+                } else {
+                    foreach ($rem_items as $idx => $rItem) {
+                        $newSeq = $idx + 1;
+                        $u = $conn->prepare("UPDATE pallet_items SET seq = ? WHERE id = ?");
+                        $u->bind_param("ii", $newSeq, $rItem['id']);
+                        $u->execute();
+                        $u->close();
+                    }
+                }
+            }
+        }
+
         // ── STEP 8: Delete the slitting_product rows themselves
         $stmt = $conn->prepare(
             "DELETE FROM slitting_product WHERE id IN ($sp_placeholders)"
