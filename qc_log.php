@@ -14,12 +14,13 @@ $search        = trim($_GET['search']    ?? '');
 $date_from     = $_GET['date_from'] ?? '';
 $date_to       = $_GET['date_to']   ?? '';
 
-$where  = "WHERE p.status IN ('approved','rejected')";
+$where  = "WHERE p.status IN ('approved','rejected','delivered')";
 $params = [];
 $types  = '';
 
 if ($filter_status === 'approved') { $where .= " AND p.status = 'approved'"; }
 elseif ($filter_status === 'rejected') { $where .= " AND p.status = 'rejected'"; }
+elseif ($filter_status === 'delivered') { $where .= " AND p.status = 'delivered'"; }
 
 if ($search !== '') {
     $where   .= " AND (p.pallet_no LIKE ? OR p.customer_name LIKE ? OR p.product_type LIKE ? OR p.checked_by LIKE ?)";
@@ -89,16 +90,19 @@ if (!empty($palletIds)) {
 }
 
 // ── KPI — pallet counts ───────────────────────────────────────
-$kpiStmt = $conn->prepare("SELECT status, COUNT(*) AS total FROM pallets WHERE status IN ('approved','rejected') GROUP BY status");
+$kpiStmt = $conn->prepare("SELECT status, COUNT(*) AS total FROM pallets WHERE status IN ('approved','rejected','delivered') GROUP BY status");
 $kpiStmt->execute();
-$total_approved = 0; $total_rejected = 0;
+$total_approved = 0; $total_rejected = 0; $total_delivered = 0;
 foreach ($kpiStmt->get_result()->fetch_all(MYSQLI_ASSOC) as $k) {
-    if ($k['status'] === 'approved') $total_approved = (int)$k['total'];
-    if ($k['status'] === 'rejected') $total_rejected = (int)$k['total'];
+    if ($k['status'] === 'approved')  $total_approved  = (int)$k['total'];
+    if ($k['status'] === 'rejected')  $total_rejected  = (int)$k['total'];
+    if ($k['status'] === 'delivered') $total_delivered = (int)$k['total'];
 }
 $kpiStmt->close();
-$total   = $total_approved + $total_rejected;
-$pass_rate = $total > 0 ? round(($total_approved / $total) * 100, 1) : 0;
+// "Passed QC" = approved (still on-site) + delivered (already shipped) — both cleared inspection.
+$total_passed = $total_approved + $total_delivered;
+$total        = $total_passed + $total_rejected;
+$pass_rate    = $total > 0 ? round(($total_passed / $total) * 100, 1) : 0;
 
 function fmtDate(?string $dt, string $f='d M Y'): string { return $dt ? date($f,strtotime($dt)) : '—'; }
 function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)) : ''; }
@@ -121,7 +125,7 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
         .page-header p  { margin:0; color:#6c757d; font-size:13px; }
 
         /* KPI */
-        .kpi-row  { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-bottom:22px; }
+        .kpi-row  { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:22px; }
         .kpi-card {
             background:#fff; border-radius:10px; box-shadow:0 1px 6px rgba(0,0,0,.07);
             border-left:5px solid var(--kc);
@@ -133,9 +137,10 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
         .kpi-num   { font-size:2rem; font-weight:800; color:var(--kc); line-height:1; }
         .kpi-label { font-size:10px; font-weight:700; text-transform:uppercase;
                      letter-spacing:.8px; color:#9ca3af; margin-top:3px; }
-        .kpi-approved { --kc:#059669; --ki-bg:#ecfdf5; }
-        .kpi-rejected { --kc:#dc2626; --ki-bg:#fef2f2; }
-        .kpi-rate     { --kc:#2563eb; --ki-bg:#eff6ff; }
+        .kpi-approved  { --kc:#059669; --ki-bg:#ecfdf5; }
+        .kpi-delivered { --kc:#7c3aed; --ki-bg:#f5f3ff; }
+        .kpi-rejected  { --kc:#dc2626; --ki-bg:#fef2f2; }
+        .kpi-rate      { --kc:#2563eb; --ki-bg:#eff6ff; }
 
         /* Filter */
         .filter-bar { background:#fff; border-radius:10px; padding:16px 20px;
@@ -176,8 +181,9 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
                         font-size:11px; font-weight:700; letter-spacing:.4px;
                         text-transform:uppercase; padding:4px 12px; border-radius:20px;
                         white-space:nowrap; }
-        .badge-approved { background:#d1fae5; color:#065f46; }
-        .badge-rejected { background:#fee2e2; color:#991b1b; }
+        .badge-approved  { background:#d1fae5; color:#065f46; }
+        .badge-delivered { background:#ede9fe; color:#5b21b6; }
+        .badge-rejected  { background:#fee2e2; color:#991b1b; }
 
         .checked-by-chip { display:inline-flex; align-items:center; gap:5px;
                            font-size:12px; font-weight:600; color:#1e40af;
@@ -294,7 +300,7 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
     <div class="page-header">
         <div>
             <h2><i class="bi bi-clock-history me-2 text-secondary"></i>QC Inspection Log</h2>
-            <p>Full history of approved and rejected pallets. Expand a row to see individual rolls.</p>
+            <p>Full history of approved, delivered, and rejected pallets. Expand a row to see individual rolls.</p>
         </div>
         <a href="qc_dashboard.php" class="btn btn-outline-secondary shadow-sm btn-sm px-3">
             <i class="bi bi-arrow-left me-1"></i> Back to Dashboard
@@ -305,7 +311,11 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
     <div class="kpi-row">
         <div class="kpi-card kpi-approved">
             <div class="kpi-icon"><i class="bi bi-check-circle"></i></div>
-            <div><div class="kpi-num"><?= $total_approved ?></div><div class="kpi-label">Total Approved</div></div>
+            <div><div class="kpi-num"><?= $total_approved ?></div><div class="kpi-label">Approved (On-site)</div></div>
+        </div>
+        <div class="kpi-card kpi-delivered">
+            <div class="kpi-icon"><i class="bi bi-truck"></i></div>
+            <div><div class="kpi-num"><?= $total_delivered ?></div><div class="kpi-label">Delivered</div></div>
         </div>
         <div class="kpi-card kpi-rejected">
             <div class="kpi-icon"><i class="bi bi-x-circle"></i></div>
@@ -329,9 +339,10 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
             <div class="col-md-2">
                 <label>Status</label>
                 <select name="status" class="form-select form-select-sm">
-                    <option value="all"      <?= $filter_status==='all'      ?'selected':'' ?>>All</option>
-                    <option value="approved" <?= $filter_status==='approved' ?'selected':'' ?>>Approved</option>
-                    <option value="rejected" <?= $filter_status==='rejected' ?'selected':'' ?>>Rejected</option>
+                    <option value="all"       <?= $filter_status==='all'       ?'selected':'' ?>>All</option>
+                    <option value="approved"  <?= $filter_status==='approved'  ?'selected':'' ?>>Approved (On-site)</option>
+                    <option value="delivered" <?= $filter_status==='delivered' ?'selected':'' ?>>Delivered</option>
+                    <option value="rejected"  <?= $filter_status==='rejected'  ?'selected':'' ?>>Rejected</option>
                 </select>
             </div>
             <div class="col-md-2">
@@ -400,11 +411,14 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
         </div>
 
         <?php foreach ($palletRows as $idx => $pallet):
-            $pid        = (int)$pallet['pallet_id'];
-            $isApproved = strtolower($pallet['pallet_status']) === 'approved';
-            $isLast     = ($idx === count($palletRows) - 1);
-            $checkedBy  = trim($pallet['checked_by'] ?? '');
-            $rolls      = $rollsByPallet[$pid] ?? [];
+            $pid         = (int)$pallet['pallet_id'];
+            $statusLower = strtolower($pallet['pallet_status']);
+            $isRejected  = $statusLower === 'rejected';
+            $isDelivered = $statusLower === 'delivered';
+            $isApproved  = !$isRejected; // approved AND delivered both mean "passed QC"
+            $isLast      = ($idx === count($palletRows) - 1);
+            $checkedBy   = trim($pallet['checked_by'] ?? '');
+            $rolls       = $rollsByPallet[$pid] ?? [];
         ?>
 
         <div class="pallet-row <?= $isLast?'last':'' ?>"
@@ -435,18 +449,20 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
             </div>
 
             <div>
-                <?php if ($isApproved): ?>
-                    <span class="status-badge badge-approved"><i class="bi bi-check-lg"></i> Approved</span>
-                <?php else: ?>
+                <?php if ($isRejected): ?>
                     <span class="status-badge badge-rejected"><i class="bi bi-x-lg"></i> Rejected</span>
+                <?php elseif ($isDelivered): ?>
+                    <span class="status-badge badge-delivered"><i class="bi bi-truck"></i> Delivered</span>
+                <?php else: ?>
+                    <span class="status-badge badge-approved"><i class="bi bi-check-lg"></i> Approved</span>
                 <?php endif; ?>
             </div>
 
             <div>
                 <?php if ($checkedBy !== ''): ?>
-                    <span class="checked-by-chip <?= $isApproved?'':'rejected-chip' ?>">
+                    <span class="checked-by-chip <?= $isRejected?'rejected-chip':'' ?>">
                         <i class="bi bi-person-check"></i>
-                        <?= $isApproved?'Approved by':'Rejected by' ?>:
+                        <?= $isRejected?'Rejected by':'Approved by' ?>:
                         <strong><?= htmlspecialchars($checkedBy) ?></strong>
                     </span>
                 <?php else: ?>
@@ -455,7 +471,7 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
             </div>
 
             <div>
-                <?php if (!$isApproved && !empty($pallet['rejection_reason'])): ?>
+                <?php if ($isRejected && !empty($pallet['rejection_reason'])): ?>
                     <div class="rejection-wrap">
                         <i class="bi bi-chat-left-text me-1"></i>
                         <?= htmlspecialchars($pallet['rejection_reason']) ?>

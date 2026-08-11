@@ -22,12 +22,13 @@ $search        = trim($_GET['search']    ?? '');
 $date_from     = $_GET['date_from'] ?? '';
 $date_to       = $_GET['date_to']   ?? '';
 
-$where  = "WHERE p.status IN ('approved','rejected')";
+$where  = "WHERE p.status IN ('approved','rejected','delivered')";
 $params = [];
 $types  = '';
 
 if ($filter_status === 'approved') { $where .= " AND p.status = 'approved'"; }
 elseif ($filter_status === 'rejected') { $where .= " AND p.status = 'rejected'"; }
+elseif ($filter_status === 'delivered') { $where .= " AND p.status = 'delivered'"; }
 if ($search !== '') {
     $where .= " AND (p.pallet_no LIKE ? OR p.customer_name LIKE ? OR p.product_type LIKE ? OR p.checked_by LIKE ?)";
     $like   = '%' . $search . '%';
@@ -104,6 +105,8 @@ $C_GRID     = 'CBD5E1';
 
 $C_APPR_ODD = 'D1FAE5';
 $C_APPR_EVN = 'ECFDF5';
+$C_DELV_ODD = 'EDE9FE';
+$C_DELV_EVN = 'F5F3FF';
 $C_RJCT_ODD = 'FEE2E2';
 $C_RJCT_EVN = 'FFF5F5';
 
@@ -219,10 +222,13 @@ $applyBase = function(string $range, string $bg) use ($sheet, $C_GRID) {
 };
 
 foreach ($pallets as $pid => $pallet) {
-    $meta       = $pallet['meta'];
-    $rolls      = $pallet['rolls'];
-    $rollCount  = count($rolls);
-    $isApproved = strtolower($meta['pallet_status']) === 'approved';
+    $meta        = $pallet['meta'];
+    $rolls       = $pallet['rolls'];
+    $rollCount   = count($rolls);
+    $statusLower = strtolower($meta['pallet_status']);
+    $isRejected  = $statusLower === 'rejected';
+    $isDelivered = $statusLower === 'delivered';
+    $isApproved  = !$isRejected; // approved AND delivered both mean "passed QC"
     $totalRollsAll += $rollCount;
 
     // First and last row index for this pallet's rolls
@@ -230,8 +236,13 @@ foreach ($pallets as $pid => $pallet) {
     $lastRow  = $rowNum + $rollCount - 1;
 
     // Alternating bg colours for this pallet's rolls
-    $bgOdd = $isApproved ? $C_APPR_ODD : $C_RJCT_ODD;
-    $bgEvn = $isApproved ? $C_APPR_EVN : $C_RJCT_EVN;
+    if ($isRejected) {
+        $bgOdd = $C_RJCT_ODD; $bgEvn = $C_RJCT_EVN;
+    } elseif ($isDelivered) {
+        $bgOdd = $C_DELV_ODD; $bgEvn = $C_DELV_EVN;
+    } else {
+        $bgOdd = $C_APPR_ODD; $bgEvn = $C_APPR_EVN;
+    }
 
     // ── Write every roll row first ────────────────────────────
     $altIdx = 0;
@@ -323,8 +334,16 @@ foreach ($pallets as $pid => $pallet) {
         : '—';
 
     // Status suffix on the date cell
-    $statusTag  = $isApproved ? '  ✔ APPROVED' : '  ✘ REJECTED';
-    $statusFg   = $isApproved ? '065F46'       : '991B1B';
+    if ($isRejected) {
+        $statusTag = '  ✘ REJECTED';
+        $statusFg  = '991B1B';
+    } elseif ($isDelivered) {
+        $statusTag = '  📦 DELIVERED';
+        $statusFg  = '5B21B6';
+    } else {
+        $statusTag = '  ✔ APPROVED';
+        $statusFg  = '065F46';
+    }
 
     // Background for merged columns — use the odd-row colour of this pallet
     $mergeBg = $bgOdd;
