@@ -1706,7 +1706,39 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                 <?php else: ?>
                     <span class="badge bg-secondary w-100 mb-1">Not Printed</span>
                 <?php endif; ?>
-                <a href="select_customer.php?id=<?= $row['id'] ?>" class="btn btn-secondary btn-sm w-100">Set Customer</a>
+                <?php
+                    // ── Resolve sibling rolls sharing this same Mother Coil ────────
+                    // Same eligibility rule as bulk_print_action.php's $base_where:
+                    // exclude voided, recoiled, or reslitted rolls. Falls back to just
+                    // this roll if it has no mother_id, or if the lookup comes back
+                    // empty for any reason.
+                    $siblingIds = [(int)$row['id']];
+                    if (!empty($row['mother_id'])) {
+                        $stmtSib = $conn->prepare("
+                            SELECT id FROM slitting_product
+                            WHERE mother_id = ?
+                              AND is_voided = 0
+                              AND (is_recoiled  = 0 OR is_recoiled  IS NULL)
+                              AND (is_reslitted = 0 OR is_reslitted IS NULL)
+                        ");
+                        $stmtSib->bind_param("i", $row['mother_id']);
+                        $stmtSib->execute();
+                        $sibRes = $stmtSib->get_result();
+                        $fetched = [];
+                        while ($sr = $sibRes->fetch_assoc()) { $fetched[] = (int)$sr['id']; }
+                        $stmtSib->close();
+                        if (!empty($fetched)) { $siblingIds = $fetched; }
+                    }
+                ?>
+                <button type="button"
+                        class="btn btn-secondary btn-sm w-100"
+                        onclick="setCustomerForBatch(this)"
+                        data-batch-ids='<?= htmlspecialchars(json_encode($siblingIds), ENT_QUOTES, "UTF-8") ?>'>
+                    <i class="bi bi-person-lines-fill me-1"></i>Set Customer
+                    <?php if (count($siblingIds) > 1): ?>
+                        <span class="badge bg-light text-dark ms-1"><?= count($siblingIds) ?> rolls</span>
+                    <?php endif; ?>
+                </button>
             <?php endif; ?>
 
         </div>
@@ -2426,6 +2458,29 @@ function goToMixedBatchSetup() {
     }
 
     const ids = Array.from(checked).map(el => el.value);
+    document.getElementById('mixedBulkPrintIdsInput').value = JSON.stringify(ids);
+    document.getElementById('mixedBulkPrintForm').submit();
+}
+
+// ── Set Customer for whole Mother Coil batch ─────────────────────────
+// Reuses the same mixed_batch_setup.php pipeline as "Bulk Print
+// Selected" — the button's data-batch-ids already carries every
+// sibling roll id (same mother_id, filtered for voided/recoiled/
+// reslitted), so this is just a one-click version of checking those
+// boxes and hitting Bulk Print. Works the same whether the batch is
+// one roll or many — mixed_batch_setup.php already handles per-roll
+// Customer/Ref No entry for any batch size.
+function setCustomerForBatch(btn) {
+    let ids = [];
+    try {
+        ids = JSON.parse(btn.dataset.batchIds || '[]');
+    } catch (e) {
+        ids = [];
+    }
+    if (!ids.length) {
+        alert('No eligible rolls found for this Mother Coil batch.');
+        return;
+    }
     document.getElementById('mixedBulkPrintIdsInput').value = JSON.stringify(ids);
     document.getElementById('mixedBulkPrintForm').submit();
 }
