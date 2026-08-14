@@ -153,12 +153,12 @@ $stmt->close();
                         <option value="SGC">SHANGHAI XINGSHENG</option>
                         <option value="STAMPING">MK STAMPING</option>
                         <option value="YANTAI">NICHIAS (SHANGHAI) AUTOPARTS TRADING</option>
-                        <option value="NIP">NICHIAS IND.PRODUCTS PVT. LTD.</option>
+                        <option value="NIPP">NICHIAS IND.PRODUCTS PVT. LTD.</option>
                         <option value="NVC">NICHIAS VIETNAM CO., LTD</option>
-                        <option value="NCS">NC-PT NICHIAS SUNIJAYA</option>
-                        <option value="SNP">SUZHOU NICHIAS IND. PRODUCTS</option>
+                        <option value="NSJ">NC-PT NICHIAS SUNIJAYA</option>
+                        <option value="NIP">SUZHOU NICHIAS IND. PRODUCTS</option>
                         <option value="YTEC">YTEC CO., LTD.</option>
-                        <option value="NSEA">NICHIAS SOUTH EAST ASIA (UP PACKING)</option>
+                        <option value="NSA">NICHIAS SOUTH EAST ASIA (UP PACKING)</option>
                         <option value="NCI 2">NCI 2</option>
                         <option value="STOCK">STOCK</option>
                         <option value="TRIAL">TRIAL</option>
@@ -244,7 +244,7 @@ $stmt->close();
                     <td>
                         <?php
                             $saved = trim($r['customer_name'] ?? '');
-                            $knownCustomers = ['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA','NIPPON','NTC','SGC','STAMPING','YANTAI','NIP','NVC','NCS','SNP','YTEC','NSEA','NCI 2','STOCK','TRIAL'];
+                            $knownCustomers = ['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA','NIPPON','NTC','SGC','STAMPING','YANTAI','NIPP','NVC','NSJ','NIP','YTEC','NSA','NCI 2','STOCK','TRIAL'];
                             $isOther = ($saved !== '' && !in_array($saved, $knownCustomers, true));
 
                             $rawRefNo = trim($r['ref_no'] ?? '');
@@ -265,12 +265,12 @@ $stmt->close();
                             <option value="SGC"      <?= $saved==='SGC'      ?'selected':'' ?>>SHANGHAI XINGSHENG</option>
                             <option value="STAMPING" <?= $saved==='STAMPING' ?'selected':'' ?>>MK STAMPING</option>
                             <option value="YANTAI"   <?= $saved==='YANTAI'   ?'selected':'' ?>>NICHIAS (SHANGHAI) AUTOPARTS TRADING</option>
-                            <option value="NIP"      <?= $saved==='NIP'      ?'selected':'' ?>>NICHIAS IND.PRODUCTS PVT. LTD.</option>
+                            <option value="NIPP"     <?= $saved==='NIPP'     ?'selected':'' ?>>NICHIAS IND.PRODUCTS PVT. LTD.</option>
                             <option value="NVC"      <?= $saved==='NVC'      ?'selected':'' ?>>NICHIAS VIETNAM CO., LTD</option>
-                            <option value="NCS"      <?= $saved==='NCS'      ?'selected':'' ?>>NC-PT NICHIAS SUNIJAYA</option>
-                            <option value="SNP"      <?= $saved==='SNP'      ?'selected':'' ?>>SUZHOU NICHIAS IND. PRODUCTS</option>
+                            <option value="NSJ"      <?= $saved==='NSJ'      ?'selected':'' ?>>NC-PT NICHIAS SUNIJAYA</option>
+                            <option value="NIP"      <?= $saved==='NIP'      ?'selected':'' ?>>SUZHOU NICHIAS IND. PRODUCTS</option>
                             <option value="YTEC"     <?= $saved==='YTEC'     ?'selected':'' ?>>YTEC CO., LTD.</option>
-                            <option value="NSEA"     <?= $saved==='NSEA'     ?'selected':'' ?>>NICHIAS SOUTH EAST ASIA (UP PACKING)</option>
+                            <option value="NSA"     <?= $saved==='NSA'     ?'selected':'' ?>>NICHIAS SOUTH EAST ASIA (UP PACKING)</option>
                             <option value="NCI 2"    <?= $saved==='NCI 2'    ?'selected':'' ?>>NCI 2</option>
                             <option value="STOCK"    <?= $saved==='STOCK'    ?'selected':'' ?>>STOCK</option>
                             <option value="TRIAL"    <?= $saved==='TRIAL'    ?'selected':'' ?>>TRIAL</option>

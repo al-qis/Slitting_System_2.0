@@ -437,6 +437,8 @@ CREATE TABLE `slitting_plans` (
   `mother_coil_id` int NOT NULL,
   `roll_seq` varchar(10) NOT NULL,
   `planned_width` decimal(10,2) NOT NULL,
+  `customer_name` varchar(100) DEFAULT NULL,
+  `ref_no` varchar(150) DEFAULT NULL,
   `sort_order` int NOT NULL DEFAULT '0',
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
