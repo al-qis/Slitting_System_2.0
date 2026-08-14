@@ -84,7 +84,7 @@ $ref_no   = 'SFC';
 // ── Determine pattern ─────────────────────────────────────────
 $pattern = 'pattern2';
 $pattern1_customers = ['NAE', 'NRI', 'STAMPING'];
-$pattern2_customers = ['NAX', 'TAIHO', 'ASHUKA', 'NTC', 'STOCK', 'NCI MFG', 'NIP'];
+$pattern2_customers = ['NAX', 'TAIHO', 'ASHUKA', 'NTC', 'STOCK', 'NCI MFG', 'NIPP', 'NIP'];
 $pattern3_customers = ['YANTAI'];
 $pattern4_customers = ['NCI 2'];
 

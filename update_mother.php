@@ -60,23 +60,43 @@ try {
         $delPlan->close();
     }
 
-    $planSeqs   = $_POST['plan_seq']   ?? [];
-    $planWidths = $_POST['plan_width'] ?? [];
+    $knownCustomers = ['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA','NIPPON','NTC','SGC','STAMPING','YANTAI','NIPP','NVC','NSJ','NIP','YTEC','NSA','NCI 2','STOCK','TRIAL'];
+
+    if (!function_exists('sanitizeCustomerCode')) {
+        function sanitizeCustomerCode($cust, $knownCustomers) {
+            $cust = strtoupper(trim((string)$cust));
+            if ($cust === '') return null;
+            foreach ($knownCustomers as $k) {
+                if (strtoupper($k) === $cust) {
+                    return $k;
+                }
+            }
+            return null;
+        }
+    }
+
+    $planSeqs      = $_POST['plan_seq']      ?? [];
+    $planWidths    = $_POST['plan_width']    ?? [];
+    $planCustomers = $_POST['plan_customer'] ?? [];
+    $planRefs      = $_POST['plan_ref']      ?? [];
 
     if (is_array($planSeqs) && is_array($planWidths)) {
         $insPlan = $conn->prepare("
-            INSERT INTO slitting_plans (mother_coil_id, roll_seq, planned_width, sort_order)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO slitting_plans (mother_coil_id, roll_seq, planned_width, customer_name, ref_no, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?)
         ");
         if ($insPlan) {
             $order = 0;
             foreach ($planSeqs as $i => $seqRaw) {
-                $seq  = trim($seqRaw);
-                $wRaw = trim($planWidths[$i] ?? '');
+                $seq   = trim($seqRaw);
+                $wRaw  = trim($planWidths[$i] ?? '');
+                $cRaw  = trim($planCustomers[$i] ?? '');
+                $refNo = trim($planRefs[$i] ?? '');
                 if ($seq === '' || $wRaw === '' || !is_numeric($wRaw)) continue;
                 $order++;
                 $widthVal = (float)$wRaw;
-                $insPlan->bind_param("isdi", $id, $seq, $widthVal, $order);
+                $cust = sanitizeCustomerCode($cRaw, $knownCustomers);
+                $insPlan->bind_param("isdssi", $id, $seq, $widthVal, $cust, $refNo, $order);
                 $insPlan->execute();
             }
             $insPlan->close();
