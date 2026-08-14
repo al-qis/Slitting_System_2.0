@@ -352,6 +352,9 @@ usort($rolls, function ($a, $b) {
 <!-- Sticky bottom action bar ────────────────────────────────────── -->
 <div class="action-bar">
     <span id="printAllFeedback"></span>
+    <button type="button" class="btn btn-outline-dark" id="saveOnlyBtn" onclick="saveOnly()" <?= empty($rolls)?'disabled':'' ?>>
+        <i class="bi bi-save me-1"></i> Save Only
+    </button>
     <button type="button" class="btn btn-danger" id="printAllBtn" onclick="printAllStickers()" <?= empty($rolls)?'disabled':'' ?>>
         <i class="bi bi-printer-fill me-1"></i> Print All Stickers
     </button>
@@ -542,6 +545,61 @@ function printAllStickers() {
 
     document.getElementById('mixedPrintSelectionsInput').value = JSON.stringify(selections);
     document.getElementById('mixedPrintForm').submit();
+}
+
+// ── Save Only (no printing) ───────────────────────────────────────
+// Same per-row validation as Print All, but posts to the save-only
+// endpoint via fetch instead of submitting a form — so the operator
+// stays on this grid, sees a per-row "Saved" confirmation, and no
+// print job / new tab is triggered. Nothing here touches is_printed
+// or print_count; that's the whole point of this button existing.
+async function saveOnly() {
+    const selections = collectSelections();
+    if (!selections) {
+        document.getElementById('printAllFeedback').innerHTML =
+            '<span class="text-danger">Fix the highlighted rows before saving.</span>';
+        return;
+    }
+
+    const saveBtn = document.getElementById('saveOnlyBtn');
+    saveBtn.disabled = true;
+    saveBtn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i> Saving…';
+    document.getElementById('printAllFeedback').textContent = '';
+
+    try {
+        const res  = await fetch('mixed_batch_save_action.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'selections=' + encodeURIComponent(JSON.stringify(selections)),
+        });
+        const data = await res.json();
+
+        const trs = Array.from(document.querySelectorAll('#batchGridTable tbody tr'));
+        if (data.ok) {
+            const savedSet = new Set((data.saved || []).map(String));
+            trs.forEach((tr, idx) => {
+                if (savedSet.has(String(tr.dataset.id))) {
+                    setRowStatus(idx, 'Saved ✓', false);
+                }
+            });
+            const skipped = (data.errors || []).length;
+            document.getElementById('printAllFeedback').innerHTML =
+                `<span class="text-success"><i class="bi bi-check-circle me-1"></i>Saved ${data.saved.length} roll(s).</span>` +
+                (skipped > 0 ? ` <span class="text-danger ms-2">${skipped} skipped — see below.</span>` : '');
+            if (skipped > 0) {
+                console.warn('Save Only — skipped rolls:', data.errors);
+            }
+        } else {
+            document.getElementById('printAllFeedback').innerHTML =
+                `<span class="text-danger">${escHtml(data.msg || 'Save failed.')}</span>`;
+        }
+    } catch (e) {
+        document.getElementById('printAllFeedback').innerHTML =
+            '<span class="text-danger">Network error while saving.</span>';
+    } finally {
+        saveBtn.disabled = false;
+        saveBtn.innerHTML = '<i class="bi bi-save me-1"></i> Save Only';
+    }
 }
 </script>
 </body>
