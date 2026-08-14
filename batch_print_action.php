@@ -66,6 +66,7 @@ foreach ($selections as $sel) {
     $id       = intval($sel['id'] ?? 0);
     $customer = trim($sel['customer'] ?? '');
     $ref_no   = trim($sel['ref_no']   ?? '');
+    $length   = isset($sel['length']) ? (float)$sel['length'] : 0;
     // 0 is a valid, deliberate choice — "save the customer/ref no, but
     // skip printing a sticker for this roll in this batch". Only clamp
     // the upper bound and reject negative/garbage input.
@@ -86,6 +87,7 @@ foreach ($selections as $sel) {
         'customer'         => $customer,        // resolves pattern/colour/NCI via print_product.php
         'customer_to_save' => $customerToSave,   // what gets persisted to the DB
         'ref_no'           => $ref_no,
+        'length'           => $length,
         'copies'           => $copies,
     ];
 }
@@ -102,7 +104,7 @@ $ids = array_column($clean, 'id');
 $placeholders = implode(',', array_fill(0, count($ids), '?'));
 $stmtInfo = $conn->prepare("
     SELECT id, product, lot_no, coil_no, roll_no,
-           is_printed, print_count, mother_id
+           is_printed, print_count, mother_id, is_completed
     FROM slitting_product WHERE id IN ($placeholders)
 ");
 $stmtInfo->bind_param(str_repeat('i', count($ids)), ...$ids);
@@ -113,9 +115,10 @@ $stmtInfo->close();
 $infoById = [];
 foreach ($infoRows as $ir) { $infoById[(int)$ir['id']] = $ir; }
 
-// ── Save customer / ref_no for each roll, mark print-tracking, + audit log ──
+// ── Save customer / ref_no / actual_length for each roll, mark print-tracking, + audit log ──
 $performedBy = $_SESSION['role'] ?? 'system';
-$stmtUpd = $conn->prepare("UPDATE slitting_product SET customer_name = ?, ref_no = ? WHERE id = ?");
+$stmtUpdLength = $conn->prepare("UPDATE slitting_product SET customer_name = ?, ref_no = ?, actual_length = ?, stock_counted = 1, is_completed = 1 WHERE id = ?");
+$stmtUpdNormal = $conn->prepare("UPDATE slitting_product SET customer_name = ?, ref_no = ? WHERE id = ?");
 $stmtPrint = $conn->prepare("
     UPDATE slitting_product
     SET is_printed = 1,
@@ -127,8 +130,57 @@ $stmtPrint = $conn->prepare("
 ");
 
 foreach ($clean as &$row) {
-    $stmtUpd->bind_param("ssi", $row['customer_to_save'], $row['ref_no'], $row['id']);
-    $stmtUpd->execute();
+    $info = $infoById[$row['id']] ?? null;
+    $wasPending = $info && ((int)($info['is_completed'] ?? 0) === 0);
+
+    if ($row['length'] > 0) {
+        $stmtUpdLength->bind_param("ssdi", $row['customer_to_save'], $row['ref_no'], $row['length'], $row['id']);
+        $stmtUpdLength->execute();
+    } else {
+        $stmtUpdNormal->bind_param("ssi", $row['customer_to_save'], $row['ref_no'], $row['id']);
+        $stmtUpdNormal->execute();
+    }
+
+    // If roll was pending and now completed, process cut_into_2 leftover transfer
+    if ($wasPending && $info && $row['length'] > 0) {
+        $fullRowRes = $conn->query("SELECT * FROM slitting_product WHERE id={$row['id']}");
+        if ($fullRowRes && $fullRowRes->num_rows > 0) {
+            $existing = $fullRowRes->fetch_assoc();
+            if ($existing['cut_type'] === 'cut_into_2'
+                && floatval($existing['leftover_length'] ?? $existing['stock'] ?? 0) > 0) {
+
+                $leftover = floatval($existing['leftover_length'] ?? $existing['stock'] ?? 0);
+                $motherId = intval($existing['mother_id'] ?? 0);
+                if ($motherId > 0) {
+                    $mRes = $conn->query("SELECT * FROM mother_coil WHERE id={$motherId}");
+                    if ($mRes && $mRes->num_rows > 0) {
+                        $mother = $mRes->fetch_assoc();
+                        $stock_lot_no = $existing['lot_no'] . 'a';
+                        $check = $conn->query("
+                            SELECT id, length FROM stock_raw_material
+                            WHERE lot_no='$stock_lot_no' AND coil_no='{$existing['coil_no']}'
+                        ");
+                        if ($check && $check->num_rows > 0) {
+                            $exStock = $check->fetch_assoc();
+                            $new_length = $exStock['length'] + $leftover;
+                            $conn->query("UPDATE stock_raw_material SET length=$new_length, updated_at=NOW() WHERE id={$exStock['id']}");
+                        } else {
+                            $ins = $conn->prepare("
+                                INSERT INTO stock_raw_material
+                                    (lot_no, coil_no, width, length, status, source_type, source_id, date_in)
+                                VALUES (?, ?, ?, ?, 'IN', 'reslit', ?, NOW())
+                            ");
+                            $ins->bind_param("ssddi",
+                                $stock_lot_no, $existing['coil_no'],
+                                $mother['width'], $leftover, $motherId);
+                            $ins->execute();
+                            $ins->close();
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     $info = $infoById[$row['id']] ?? null;
     $row['product_label']  = $info['product'] ?? ('Roll #' . $row['id']);
@@ -159,7 +211,8 @@ foreach ($clean as &$row) {
     }
 }
 unset($row);
-$stmtUpd->close();
+if ($stmtUpdLength) $stmtUpdLength->close();
+if ($stmtUpdNormal) $stmtUpdNormal->close();
 $stmtPrint->close();
 
 // ── Back-to-list URL, preserving tab/filter/search state ──────────

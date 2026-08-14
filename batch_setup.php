@@ -134,8 +134,12 @@ $stmt->close();
     <div class="card copy-all-card mb-3">
         <div class="card-body py-2">
             <div class="row g-2 align-items-end">
-                <div class="col-12 col-md-4">
-                    <label class="small fw-bold mb-1">Copy to All Rows — Customer</label>
+                <div class="col-6 col-md-3">
+                    <label class="small fw-bold mb-1">Actual Length (meters)</label>
+                    <input type="number" step="0.01" min="0" class="form-control form-control-sm" id="copyAllActualLength" placeholder="e.g. 500">
+                </div>
+                <div class="col-12 col-md-3">
+                    <label class="small fw-bold mb-1">Customer</label>
                     <select class="form-select form-select-sm" id="copyAllCustomer">
                         <option value="">-- Select Customer --</option>
                         <option value="NAE">NICHIAS AUTOPARTS EUROPE (NAE)</option>
@@ -163,7 +167,7 @@ $stmt->close();
                     <input type="text" class="form-control form-control-sm mt-1" id="copyAllCustomOther"
                            placeholder="Customer name (if OTHER)" style="display:none;">
                 </div>
-                <div class="col-8 col-md-5">
+                <div class="col-8 col-md-3">
                     <label class="small fw-bold mb-1">Ref No</label>
                     <input type="text" class="form-control form-control-sm" id="copyAllRefNo" value="SO-" placeholder="SO-00-0000">
                 </div>
@@ -179,12 +183,12 @@ $stmt->close();
                     </select>
                 </div>
                 <div class="col-12 col-md-2">
-                    <button type="button" class="btn btn-outline-danger btn-sm w-100" onclick="copyToAllRows()">
-                        <i class="bi bi-arrow-down-square me-1"></i> Copy to All Rows
+                    <button type="button" class="btn btn-outline-danger btn-sm w-100 fw-bold" onclick="copyToAllRows()">
+                        <i class="bi bi-arrow-down-square me-1"></i> Copy to All
                     </button>
                 </div>
             </div>
-            <div class="form-text mb-0">Fills every row below with the same Customer/Ref No — then adjust any row that differs.</div>
+            <div class="form-text mb-0">Fills every row below with Customer, Ref No, Actual Length, and Print Copies — then adjust any row if needed.</div>
         </div>
     </div>
 
@@ -515,16 +519,18 @@ document.querySelectorAll('.row-stock-override').forEach((cb) => {
 
 // ── Copy to All Rows ─────────────────────────────────────────────
 async function copyToAllRows() {
-    const sel      = document.getElementById('copyAllCustomer');
-    const otherEl  = document.getElementById('copyAllCustomOther');
-    const refEl    = document.getElementById('copyAllRefNo');
-    const copiesEl = document.getElementById('copyAllCopies');
+    const sel       = document.getElementById('copyAllCustomer');
+    const otherEl   = document.getElementById('copyAllCustomOther');
+    const refEl     = document.getElementById('copyAllRefNo');
+    const lengthEl  = document.getElementById('copyAllActualLength');
+    const copiesEl  = document.getElementById('copyAllCopies');
 
-    const customerVal = sel.value;
-    const refVal       = refEl.value.trim().replace(/\s+/g, '');
-    const copiesVal    = copiesEl.value;
+    const customerVal = sel ? sel.value : '';
+    const refVal      = refEl ? refEl.value.trim().replace(/\s+/g, '') : '';
+    const lengthVal   = lengthEl ? lengthEl.value.trim() : '';
+    const copiesVal   = copiesEl ? copiesEl.value : '';
 
-    if (!customerVal) { alert('Select a customer to copy to all rows first.'); return; }
+    if (!customerVal && !lengthVal) { alert('Set Customer or Actual Length to copy to all rows.'); return; }
     if (customerVal === 'OTHER' && !otherEl.value.trim()) { alert('Enter the customer name.'); return; }
 
     const rowCount = getRowCount();
@@ -532,24 +538,33 @@ async function copyToAllRows() {
         const rowSel      = document.querySelector(`.row-customer[data-row="${idx}"]`);
         const rowOtherEl  = document.querySelector(`.row-custom-customer[data-row="${idx}"]`);
         const rowRefEl    = document.querySelector(`.row-refno[data-row="${idx}"]`);
+        const rowLengthEl = document.querySelector(`.row-length[data-row="${idx}"]`);
         const rowCopiesEl = document.querySelector(`.row-copies[data-row="${idx}"]`);
         const rowStockEl  = document.querySelector(`.row-stock-override[data-row="${idx}"]`);
 
-        rowSel.value = customerVal;
-        if (customerVal === 'OTHER') rowOtherEl.value = otherEl.value.trim();
+        if (customerVal) {
+            rowSel.value = customerVal;
+            if (customerVal === 'OTHER') rowOtherEl.value = otherEl.value.trim();
 
-        if (customerVal === 'STOCK') {
-            if (rowStockEl) rowStockEl.checked = true;
-            rowRefEl.readOnly = true;
-            if (refVal !== '') rowRefEl.value = refVal;
-        } else {
-            if (rowStockEl) rowStockEl.checked = false;
-            rowRefEl.readOnly = false;
-            if (refVal !== '') rowRefEl.value = refVal;
+            if (customerVal === 'STOCK') {
+                if (rowStockEl) rowStockEl.checked = true;
+                rowRefEl.readOnly = true;
+                if (refVal !== '') rowRefEl.value = refVal;
+            } else {
+                if (rowStockEl) rowStockEl.checked = false;
+                rowRefEl.readOnly = false;
+                if (refVal !== '') rowRefEl.value = refVal;
+            }
+            await handleRowCustomerChange(idx);
         }
-        if (copiesVal) rowCopiesEl.value = copiesVal;
 
-        await handleRowCustomerChange(idx);
+        if (lengthVal !== '' && rowLengthEl) {
+            rowLengthEl.value = lengthVal;
+        }
+
+        if (copiesVal && rowCopiesEl) {
+            rowCopiesEl.value = copiesVal;
+        }
     }
 }
 
@@ -641,18 +656,17 @@ async function saveAllRows() {
 }
 
 // ── Print All Stickers (saves, then opens consolidated print job) ──
-function printAllStickers() {
+async function printAllStickers() {
+    const feedback = document.getElementById('saveAllFeedback');
     const selections = collectSelections();
     if (!selections) {
-        document.getElementById('saveAllFeedback').innerHTML =
-            '<span class="text-danger">Fix the highlighted rows before printing.</span>';
+        if (feedback) {
+            feedback.innerHTML = '<span class="text-danger">Fix the highlighted rows before printing.</span>';
+        }
         return;
     }
 
     // ── Warn if any selected roll (with copies > 0) was already printed ──
-    // collectSelections() pushes one entry per row, in the same order as
-    // the table rows, skipping none (an error would have returned null
-    // above) — so selections[i] always corresponds to trs[i].
     const trs = Array.from(document.querySelectorAll('#batchGridTable tbody tr'));
     const alreadyPrinted = [];
     selections.forEach((sel, idx) => {
@@ -672,6 +686,34 @@ function printAllStickers() {
             `\n\nPrint again anyway?`
         );
         if (!proceed) return;
+    }
+
+    if (feedback) {
+        feedback.innerHTML = '<span class="text-primary fw-bold"><span class="spinner-border spinner-border-sm me-1"></span> Saving all updates to stock inventory before printing…</span>';
+    }
+
+    try {
+        const saveResp = await fetch('batch_setup_save.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            body: JSON.stringify({ selections }),
+        });
+        const saveResult = await saveResp.json();
+        if (!saveResult.ok) {
+            if (feedback) {
+                feedback.innerHTML = `<span class="text-danger fw-bold"><i class="bi bi-exclamation-circle me-1"></i>Save failed: ${saveResult.msg}</span>`;
+            }
+            return;
+        }
+    } catch (e) {
+        if (feedback) {
+            feedback.innerHTML = '<span class="text-danger fw-bold">Network error saving to stock prior to print.</span>';
+        }
+        return;
+    }
+
+    if (feedback) {
+        feedback.innerHTML = '<span class="text-success fw-bold"><i class="bi bi-check-circle me-1"></i>Saved to stock! Opening batch print view…</span>';
     }
 
     document.getElementById('batchPrintSelectionsInput').value = JSON.stringify(selections);

@@ -80,6 +80,7 @@ if (empty($ids)) {
 $placeholders = implode(',', array_fill(0, count($ids), '?'));
 $stmt = $conn->prepare("
     SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
+           sp.width, sp.length, sp.actual_length,
            sp.status, sp.is_completed, sp.customer_name, sp.ref_no,
            sp.is_printed, sp.print_count, sp.last_printed_at, sp.last_printed_by,
            pi.pallet_id
@@ -194,7 +195,11 @@ usort($rolls, function ($a, $b) {
     <div class="card copy-all-card mb-3">
         <div class="card-body py-2">
             <div class="row g-2 align-items-end">
-                <div class="col-12 col-md-5">
+                <div class="col-6 col-md-3">
+                    <label class="small fw-bold mb-1">Actual Length (meters)</label>
+                    <input type="number" step="0.01" min="0" class="form-control form-control-sm" id="copyAllActualLength" placeholder="e.g. 500">
+                </div>
+                <div class="col-12 col-md-3">
                     <label class="small fw-bold mb-1">Apply to All Rows — Customer</label>
                     <select class="form-select form-select-sm" id="copyAllCustomer">
                         <option value="">-- Select Customer --</option>
@@ -223,7 +228,7 @@ usort($rolls, function ($a, $b) {
                     <input type="text" class="form-control form-control-sm mt-1" id="copyAllCustomOther"
                            placeholder="Customer name (if OTHER)" style="display:none;">
                 </div>
-                <div class="col-8 col-md-4">
+                <div class="col-8 col-md-3">
                     <label class="small fw-bold mb-1">Ref No</label>
                     <input type="text" class="form-control form-control-sm" id="copyAllRefNo" value="SO-" placeholder="SO-00-0000">
                 </div>
@@ -237,12 +242,12 @@ usort($rolls, function ($a, $b) {
                     </select>
                 </div>
                 <div class="col-12 col-md-2">
-                    <button type="button" class="btn btn-outline-danger btn-sm w-100" onclick="applyToAllRows()">
+                    <button type="button" class="btn btn-outline-danger btn-sm w-100 fw-bold" onclick="applyToAllRows()">
                         <i class="bi bi-arrow-down-square me-1"></i> Apply to All
                     </button>
                 </div>
             </div>
-            <div class="form-text mb-0">Fills every row below with the same Customer/Ref No/Copies — then adjust any row that differs. NCI MFG / NCI 2 rows still resolve their own Ref No individually.</div>
+            <div class="form-text mb-0">Fills every row below with Customer, Ref No, Actual Length, and Copies — then adjust any row that differs. NCI MFG / NCI 2 rows still resolve their own Ref No individually.</div>
         </div>
     </div>
 
@@ -260,11 +265,12 @@ usort($rolls, function ($a, $b) {
         <table class="table table-bordered table-sm grid-table bg-white" id="batchGridTable">
             <thead class="table-dark">
                 <tr>
-                    <th style="width:25%;">Product / Coil / Roll</th>
-                    <th style="width:28%;">Customer</th>
+                    <th style="width:20%;">Product / Coil / Roll</th>
+                    <th style="width:16%;">Width / Actual Length</th>
+                    <th style="width:25%;">Customer</th>
                     <th style="width:22%;">Ref No.</th>
-                    <th style="width:10%;">Copies</th>
-                    <th style="width:15%;">Status</th>
+                    <th style="width:8%;">Copies</th>
+                    <th style="width:9%;">Status</th>
                 </tr>
             </thead>
             <tbody>
@@ -286,6 +292,16 @@ usort($rolls, function ($a, $b) {
                         <?php else: ?>
                             <span class="badge bg-secondary mt-1" style="font-size:10px;">Not Printed</span>
                         <?php endif; ?>
+                    </td>
+                    <td>
+                        <span class="fw-semibold"><?= number_format((float)($r['width'] ?? 0), 0) ?> mm</span>
+                        <?php $curLength = (!empty($r['actual_length']) && $r['actual_length'] > 0) ? $r['actual_length'] : ($r['length'] ?? ''); ?>
+                        <div class="input-group input-group-sm mt-1">
+                            <input type="number" step="0.01" min="0"
+                                   class="form-control form-control-sm row-length" data-row="<?= $idx ?>"
+                                   value="<?= htmlspecialchars((string)$curLength) ?>">
+                            <span class="input-group-text px-1" style="font-size:10px;">m</span>
+                        </div>
                     </td>
                     <td>
                         <?php
@@ -441,16 +457,18 @@ document.getElementById('copyAllCustomer')?.addEventListener('change', function 
 
 // ── Apply to All Rows (convenience only — every row stays editable) ──
 async function applyToAllRows() {
-    const sel      = document.getElementById('copyAllCustomer');
-    const otherEl  = document.getElementById('copyAllCustomOther');
-    const refEl    = document.getElementById('copyAllRefNo');
-    const copiesEl = document.getElementById('copyAllCopies');
+    const sel       = document.getElementById('copyAllCustomer');
+    const otherEl   = document.getElementById('copyAllCustomOther');
+    const refEl     = document.getElementById('copyAllRefNo');
+    const lengthEl  = document.getElementById('copyAllActualLength');
+    const copiesEl  = document.getElementById('copyAllCopies');
 
-    const customerVal = sel.value;
-    const refVal       = refEl.value.trim();
-    const copiesVal    = copiesEl.value;
+    const customerVal = sel ? sel.value : '';
+    const refVal      = refEl ? refEl.value.trim() : '';
+    const lengthVal   = lengthEl ? lengthEl.value.trim() : '';
+    const copiesVal   = copiesEl ? copiesEl.value : '';
 
-    if (!customerVal) { alert('Select a customer to apply to all rows first.'); return; }
+    if (!customerVal && !lengthVal) { alert('Set Customer or Actual Length to apply to all rows.'); return; }
     if (customerVal === 'OTHER' && !otherEl.value.trim()) { alert('Enter the customer name.'); return; }
 
     const rowCount = getRowCount();
@@ -458,17 +476,27 @@ async function applyToAllRows() {
         const rowSel      = document.querySelector(`.row-customer[data-row="${idx}"]`);
         const rowOtherEl  = document.querySelector(`.row-custom-customer[data-row="${idx}"]`);
         const rowRefEl    = document.querySelector(`.row-refno[data-row="${idx}"]`);
+        const rowLengthEl = document.querySelector(`.row-length[data-row="${idx}"]`);
         const rowCopiesEl = document.querySelector(`.row-copies[data-row="${idx}"]`);
 
-        rowSel.value = customerVal;
-        rowOtherEl.style.display = (customerVal === 'OTHER') ? 'block' : 'none';
-        if (customerVal === 'OTHER') rowOtherEl.value = otherEl.value.trim();
-        if (refVal !== '') rowRefEl.value = refVal;
-        if (copiesVal) rowCopiesEl.value = copiesVal;
+        if (customerVal) {
+            rowSel.value = customerVal;
+            rowOtherEl.style.display = (customerVal === 'OTHER') ? 'block' : 'none';
+            if (customerVal === 'OTHER') rowOtherEl.value = otherEl.value.trim();
+            if (refVal !== '') rowRefEl.value = refVal;
+        }
+
+        if (lengthVal !== '' && rowLengthEl) {
+            rowLengthEl.value = lengthVal;
+        }
+
+        if (copiesVal && rowCopiesEl) {
+            rowCopiesEl.value = copiesVal;
+        }
 
         // NCI rows still resolve their own Ref No per product/width —
         // a shared Ref No wouldn't be valid across a mixed batch.
-        if (NCI_CUSTOMERS.includes(customerVal)) {
+        if (customerVal && NCI_CUSTOMERS.includes(customerVal)) {
             await handleRowCustomerChange(idx);
         }
     }
@@ -492,21 +520,25 @@ function collectSelections() {
         const otherEl  = document.querySelector(`.row-custom-customer[data-row="${idx}"]`);
         const refEl    = document.querySelector(`.row-refno[data-row="${idx}"]`);
         const copiesEl = document.querySelector(`.row-copies[data-row="${idx}"]`);
+        const lengthEl = document.querySelector(`.row-length[data-row="${idx}"]`);
 
         let customer = sel.value;
         if (customer === 'OTHER') customer = otherEl.value.trim();
         const ref_no = refEl.value.trim();
         const parsedCopies = parseInt(copiesEl.value, 10);
         const copies = (parsedCopies >= 1 && parsedCopies <= 3) ? parsedCopies : 3;
+        const length = lengthEl ? parseFloat(lengthEl.value) : 0;
 
         if (!customer) { setRowStatus(idx, 'Select a customer', true); hasError = true; return; }
         if (!ref_no)   { setRowStatus(idx, 'Ref No required', true);   hasError = true; return; }
+        if (isNaN(length) || length <= 0) { setRowStatus(idx, 'Length must be > 0', true); hasError = true; return; }
 
         setRowStatus(idx, `OK · ${copies}x`, false);
         selections.push({
             id:                    tr.dataset.id,
             customer:              customer,
             ref_no:                ref_no,
+            length:                length,
             copies:                copies,
             nci_resolved_customer: refEl.dataset.nciResolvedCustomer || '',
         });

@@ -70,12 +70,14 @@ foreach ($rawSelections as $sel) {
 
     $customer = trim((string)($sel['customer'] ?? ''));
     $ref_no   = trim((string)($sel['ref_no']   ?? ''));
+    $length   = isset($sel['length']) ? (float)$sel['length'] : 0;
     if ($customer === '' || $ref_no === '') continue; // skip silently, same as print action
 
     $selectionsById[$id] = [
         'id'       => $id,
         'customer' => $customer,
         'ref_no'   => $ref_no,
+        'length'   => $length,
     ];
 }
 
@@ -130,6 +132,7 @@ foreach ($rows as $r) {
         'mother_id' => $r['mother_id'] ? (int)$r['mother_id'] : null,
         'customer'  => $sel['customer'],
         'ref_no'    => $sel['ref_no'],
+        'length'    => $sel['length'],
     ];
 }
 
@@ -145,24 +148,31 @@ if (empty($clean)) {
 
 // ── Save each roll's own customer/ref_no + audit log — NO print
 //    tracking touched here, that's the whole point of Save Only ──
-$stmtUpd = $conn->prepare("UPDATE slitting_product SET customer_name = ?, ref_no = ? WHERE id = ?");
+$stmtUpdLength = $conn->prepare("UPDATE slitting_product SET customer_name = ?, ref_no = ?, actual_length = ? WHERE id = ?");
+$stmtUpdNormal = $conn->prepare("UPDATE slitting_product SET customer_name = ?, ref_no = ? WHERE id = ?");
 
 $savedIds = [];
 foreach ($clean as $row) {
-    $stmtUpd->bind_param("ssi", $row['customer'], $row['ref_no'], $row['id']);
-    $stmtUpd->execute();
+    if (isset($row['length']) && $row['length'] > 0) {
+        $stmtUpdLength->bind_param("ssdi", $row['customer'], $row['ref_no'], $row['length'], $row['id']);
+        $stmtUpdLength->execute();
+    } else {
+        $stmtUpdNormal->bind_param("ssi", $row['customer'], $row['ref_no'], $row['id']);
+        $stmtUpdNormal->execute();
+    }
 
     mixed_save_log_process(
         $conn,
         $row['id'],
         $row['mother_id'],
         'mixed_batch_save',
-        "Mixed batch save (no print) — Customer: {$row['customer']} · Ref: {$row['ref_no']}"
+        "Mixed batch save (no print) — Customer: {$row['customer']} · Ref: {$row['ref_no']}" . ($row['length'] > 0 ? " · Length: {$row['length']}m" : "")
     );
 
     $savedIds[] = $row['id'];
 }
-$stmtUpd->close();
+if ($stmtUpdLength) $stmtUpdLength->close();
+if ($stmtUpdNormal) $stmtUpdNormal->close();
 
 echo json_encode([
     'ok'     => true,
