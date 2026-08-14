@@ -83,12 +83,14 @@ foreach ($rawSelections as $sel) {
     // client's number blindly.
     $copies = intval($sel['copies'] ?? 3);
     if ($copies < 1 || $copies > 3) { $copies = 3; }
+    $length = isset($sel['length']) ? (float)$sel['length'] : 0;
 
     // Last one wins if the client somehow sent the same id twice.
     $selectionsById[$id] = [
         'id'                    => $id,
         'customer'              => $customer,
         'ref_no'                => $ref_no,
+        'length'                => $length,
         'copies'                => $copies,
         'nci_resolved_customer' => trim((string)($sel['nci_resolved_customer'] ?? '')),
     ];
@@ -150,6 +152,7 @@ foreach ($rows as $r) {
         'prior_print_count'   => (int)$r['print_count'],
         'customer'         => $sel['customer'],
         'ref_no'           => $sel['ref_no'],
+        'length'           => $sel['length'],
         'copies'           => $sel['copies'],
         'nci_resolved_customer' => $sel['nci_resolved_customer'],
     ];
@@ -168,7 +171,8 @@ if (empty($clean)) {
 // ── Save each roll's OWN customer/ref_no, mark print-tracking, and
 //    audit log — per row now, instead of one global pair for everyone ──
 $performedBy = $_SESSION['role'] ?? 'system';
-$stmtUpd = $conn->prepare("UPDATE slitting_product SET customer_name = ?, ref_no = ? WHERE id = ?");
+$stmtUpdLength = $conn->prepare("UPDATE slitting_product SET customer_name = ?, ref_no = ?, actual_length = ? WHERE id = ?");
+$stmtUpdNormal = $conn->prepare("UPDATE slitting_product SET customer_name = ?, ref_no = ? WHERE id = ?");
 $stmtPrint = $conn->prepare("
     UPDATE slitting_product
     SET is_printed = 1,
@@ -180,8 +184,13 @@ $stmtPrint = $conn->prepare("
 ");
 
 foreach ($clean as $row) {
-    $stmtUpd->bind_param("ssi", $row['customer'], $row['ref_no'], $row['id']);
-    $stmtUpd->execute();
+    if (isset($row['length']) && $row['length'] > 0) {
+        $stmtUpdLength->bind_param("ssdi", $row['customer'], $row['ref_no'], $row['length'], $row['id']);
+        $stmtUpdLength->execute();
+    } else {
+        $stmtUpdNormal->bind_param("ssi", $row['customer'], $row['ref_no'], $row['id']);
+        $stmtUpdNormal->execute();
+    }
 
     $stmtPrint->bind_param("isi", $row['copies'], $performedBy, $row['id']);
     $stmtPrint->execute();
@@ -192,10 +201,12 @@ foreach ($clean as $row) {
         $row['mother_id'],
         'mixed_batch_print',
         "Mixed bulk print — Customer: {$row['customer']} · Ref: {$row['ref_no']} · {$row['copies']}x copies"
+        . ($row['length'] > 0 ? " · Length: {$row['length']}m" : "")
         . ($row['was_already_printed'] ? " · REPRINT (was {$row['prior_print_count']}x)" : " · first print")
     );
 }
-$stmtUpd->close();
+if ($stmtUpdLength) $stmtUpdLength->close();
+if ($stmtUpdNormal) $stmtUpdNormal->close();
 $stmtPrint->close();
 
 // ── Back-to-list URL, preserving tab/filter/search state ──────────
