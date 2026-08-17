@@ -76,8 +76,9 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'list_pallets') {
     header('Content-Type: application/json');
     $group  = trim($_GET['group']  ?? 'all');
     $search = trim($_GET['q']      ?? '');
-    $sort   = trim($_GET['sort']   ?? 'id');
-    echo json_encode($pm->listPallets($group, $search, $sort));
+    $sort   = trim($_GET['sort']   ?? 'latest');
+    $suffix = trim($_GET['suffix'] ?? 'all');
+    echo json_encode($pm->listPallets($group, $search, $sort, $suffix));
     exit;
 }
 
@@ -327,10 +328,18 @@ function buildSummaryPalletRows(mysqli $conn): array {
     }, $rows);
 }
 
-// ── Shared: apply the same category/value filter + 2nd status filter
+function getPalletSuffix(string $palletNo): string {
+    $palletNo = trim($palletNo);
+    if (preg_match('/\(([A-Z0-9]+)\)$/i', $palletNo, $m)) {
+        return strtoupper($m[1]);
+    }
+    return 'none';
+}
+
+// ── Shared: apply the same category/value filter + status + suffix filter
 //    used by the modal's client-side JS, so the exported Excel matches
 //    whatever the user was actually looking at when they clicked Export. ──
-function filterSummaryPalletRows(array $rows, string $cat, string $val, string $statusFilter = ''): array {
+function filterSummaryPalletRows(array $rows, string $cat, string $val, string $statusFilter = '', string $suffixFilter = ''): array {
     // 1. Main Filter
     if ($val !== '') {
         if ($cat === 'date') {
@@ -340,6 +349,11 @@ function filterSummaryPalletRows(array $rows, string $cat, string $val, string $
             $rows = array_values(array_filter($rows, fn($r) => (string)($r['date'] ?? '') === $val));
         } elseif ($cat === 'customer' || $cat === 'product') {
             $rows = array_values(array_filter($rows, fn($r) => (string)($r[$cat] ?? '') === $val));
+        } elseif ($cat === 'suffix') {
+            $rows = array_values(array_filter($rows, function ($r) use ($val) {
+                $s = getPalletSuffix((string)($r['pallet_no'] ?? ''));
+                return ($val === 'none') ? ($s === 'none') : (strcasecmp($s, $val) === 0);
+            }));
         } elseif ($cat === 'width') {
             $rows = array_values(array_filter($rows, function ($r) use ($val) {
                 return $r['width'] !== null && str_contains((string)round($r['width']), $val);
@@ -359,6 +373,14 @@ function filterSummaryPalletRows(array $rows, string $cat, string $val, string $
     // 2. Sub Filter by Status
     if ($statusFilter !== '') {
         $rows = array_values(array_filter($rows, fn($r) => (string)($r['status'] ?? '') === $statusFilter));
+    }
+
+    // 3. Sub Filter by Suffix
+    if ($suffixFilter !== '') {
+        $rows = array_values(array_filter($rows, function ($r) use ($suffixFilter) {
+            $s = getPalletSuffix((string)($r['pallet_no'] ?? ''));
+            return ($suffixFilter === 'none') ? ($s === 'none') : (strcasecmp($s, $suffixFilter) === 0);
+        }));
     }
 
     return $rows;
@@ -381,11 +403,12 @@ if (isset($_GET['export']) && $_GET['export'] === 'summary_pallet') {
     $cat         = isset($_GET['cat']) ? trim($_GET['cat']) : '';
     $val         = isset($_GET['val']) ? trim($_GET['val']) : '';
     $statusParam = isset($_GET['status']) ? trim($_GET['status']) : '';
+    $suffixParam = isset($_GET['suffix']) ? trim($_GET['suffix']) : '';
 
     $rows = buildSummaryPalletRows($conn);
-    $rows = filterSummaryPalletRows($rows, $cat, $val, $statusParam);
+    $rows = filterSummaryPalletRows($rows, $cat, $val, $statusParam, $suffixParam);
 
-    $catLabels = ['customer' => 'Customer', 'product' => 'Product Type', 'date' => 'Date', 'width' => 'Width'];
+    $catLabels = ['customer' => 'Customer', 'product' => 'Product Type', 'date' => 'Date', 'width' => 'Width', 'suffix' => 'Pallet Suffix'];
     $filterParts = [];
     if ($val !== '') {
         $filterParts[] = isset($catLabels[$cat]) ? "{$catLabels[$cat]}: {$val}" : "Search: {$val}";
@@ -393,6 +416,10 @@ if (isset($_GET['export']) && $_GET['export'] === 'summary_pallet') {
     if ($statusParam !== '') {
         $statusName = ucwords(str_replace('_', ' ', $statusParam));
         $filterParts[] = "Status: {$statusName}";
+    }
+    if ($suffixParam !== '') {
+        $suffixName = ($suffixParam === 'none') ? 'None (Standard)' : strtoupper($suffixParam);
+        $filterParts[] = "Suffix: {$suffixName}";
     }
     $filterLbl = !empty($filterParts) ? implode(' | ', $filterParts) : 'All Records';
 
@@ -656,6 +683,12 @@ $isReadOnly  = $activePallet && !in_array($activePallet['status'], ['building', 
 .pallet-tab-group .pallet-tab:hover  { color:#fff; }
 .pallet-tab-group .pallet-tab.active { background:#fff; color:#212529; }
 .pallet-tab-group .pallet-tab .tab-count { opacity:.65; font-weight:500; margin-left:2px; }
+.pallet-tab-group .pallet-suffix-btn {
+    color:#adb5bd; border:0; font-size:10.5px; font-weight:600; padding:2px 6px;
+    border-radius:4px; letter-spacing:.01em; transition:all 0.15s ease;
+}
+.pallet-tab-group .pallet-suffix-btn:hover  { color:#fff; }
+.pallet-tab-group .pallet-suffix-btn.active { background:#0d6efd; color:#fff; font-weight:700; }
 
 .pallet-list-scroll {
     flex:1 1 auto; overflow-y:auto; padding:10px; background:#f8f9fa;
@@ -1903,14 +1936,32 @@ if (isset($_GET['success'])): ?>
             <div class="card-header bg-dark text-white py-2 pallet-list-header">
                 <div class="d-flex justify-content-between align-items-center mb-2">
                     <span class="fw-bold"><i class="bi bi-boxes me-2"></i>Pallets</span>
-                    <span class="badge bg-secondary" id="palletListCount">—</span>
+                    <div class="d-flex align-items-center gap-1">
+                        <span class="text-white-50 me-1" style="font-size:11px;">Suffix:</span>
+                        <div class="btn-group btn-group-sm pallet-tab-group" id="palletSuffixGroup">
+                            <button type="button" class="btn pallet-suffix-btn active" data-suffix="all">All</button>
+                            <button type="button" class="btn pallet-suffix-btn" data-suffix="none">None</button>
+                            <button type="button" class="btn pallet-suffix-btn" data-suffix="B">B</button>
+                            <button type="button" class="btn pallet-suffix-btn" data-suffix="BN">BN</button>
+                        </div>
+                        <span class="badge bg-secondary ms-1" id="palletListCount">—</span>
+                    </div>
                 </div>
-                <div class="position-relative mb-2">
-                    <i class="bi bi-search position-absolute"
-                       style="left:10px; top:50%; transform:translateY(-50%); font-size:12px; color:#adb5bd;"></i>
-                    <input type="text" id="palletSearchInput"
-                           class="form-control form-control-sm ps-4"
-                           placeholder="Type 7 numbers (e.g. 8888888), Pallet No, or Customer…">
+                <div class="d-flex gap-2 mb-2">
+                    <div class="position-relative flex-grow-1">
+                        <i class="bi bi-search position-absolute"
+                           style="left:10px; top:50%; transform:translateY(-50%); font-size:12px; color:#adb5bd;"></i>
+                        <input type="text" id="palletSearchInput"
+                               class="form-control form-control-sm ps-4"
+                               placeholder="Type 7 numbers (e.g. 8888888), Pallet No, or Customer…">
+                    </div>
+                    <select id="palletSortSelect" class="form-select form-select-sm text-white border-secondary"
+                            style="background:#2b3035; font-size:11.5px; width:auto; max-width:130px;"
+                            onchange="loadPalletList()">
+                        <option value="latest" selected>Latest Created</option>
+                        <option value="updated">Latest Activity</option>
+                        <option value="id">Pallet No (A-Z)</option>
+                    </select>
                 </div>
                     <div class="btn-group btn-group-sm pallet-tab-group flex-grow-1" id="palletTabGroup">
                         <button type="button" class="btn pallet-tab active" data-group="all">
@@ -1998,21 +2049,22 @@ if (isset($_GET['success'])): ?>
 
         <!-- Filter controls -->
         <div class="row g-2 mb-3 align-items-center">
-          <div class="col-md-3">
+          <div class="col-md-2">
             <select id="summaryFilterCategory" class="form-select form-select-sm" onchange="onSummaryCategoryChange()">
               <option value="">All Fields</option>
+              <option value="suffix">Pallet Suffix (B, BN, None)</option>
               <option value="date">Date</option>
               <option value="product">Product Type</option>
               <option value="customer">Customer</option>
               <option value="width">Width</option>
             </select>
           </div>
-          <div class="col-md-4">
+          <div class="col-md-3">
             <!-- Text input — used for "All Fields" free search, and for Width -->
             <input type="text" id="summaryFilterValueText" class="form-control form-control-sm"
                    placeholder="Search Pallet No, Date, Stock Code, Product, Rolls, Customer, Ref No, Width..."
                    oninput="applySummaryFilter()">
-            <!-- Dropdown — used for Product / Customer, populated dynamically with distinct values -->
+            <!-- Dropdown — used for Product / Customer / Suffix, populated dynamically with distinct values -->
             <select id="summaryFilterValueSelect" class="form-select form-select-sm d-none" onchange="applySummaryFilter()">
               <option value="">All</option>
             </select>
@@ -2030,6 +2082,18 @@ if (isset($_GET['success'])): ?>
                 <option value="approved">Approved</option>
                 <option value="rejected">Rejected</option>
                 <option value="delivered">Delivered</option>
+              </select>
+            </div>
+          </div>
+          <div class="col-md-2">
+            <!-- Sub Filter by Suffix -->
+            <div class="input-group input-group-sm">
+              <span class="input-group-text bg-light text-muted fw-semibold" style="font-size:12px;">Suffix</span>
+              <select id="summaryFilterSuffix" class="form-select form-select-sm" onchange="applySummaryFilter()">
+                <option value="">All</option>
+                <option value="none">None (Standard)</option>
+                <option value="B">B</option>
+                <option value="BN">BN</option>
               </select>
             </div>
           </div>
@@ -2841,6 +2905,11 @@ function summaryStatusLabel(status) {
     return String(status ?? '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
+function getPalletSuffix(palletNo) {
+    const m = String(palletNo || '').trim().match(/\(([A-Z0-9]+)\)$/i);
+    return m ? m[1].toUpperCase() : 'none';
+}
+
 async function loadSummaryPallet() {
     // Reset filter UI each time the modal is opened
     document.getElementById('summaryFilterCategory').value = '';
@@ -2848,6 +2917,9 @@ async function loadSummaryPallet() {
     document.getElementById('summaryFilterValueDate').value = '';
     if (document.getElementById('summaryFilterStatus')) {
         document.getElementById('summaryFilterStatus').value = '';
+    }
+    if (document.getElementById('summaryFilterSuffix')) {
+        document.getElementById('summaryFilterSuffix').value = '';
     }
     document.getElementById('summaryFilterValueText').classList.remove('d-none');
     document.getElementById('summaryFilterValueSelect').classList.add('d-none');
@@ -2908,7 +2980,7 @@ function renderSummaryTable(rows) {
 
 // When the filter category changes, swap between:
 // - Calendar Date Picker (Date)
-// - Dropdown of distinct values (Product / Customer)
+// - Dropdown of distinct values (Product / Customer / Suffix)
 // - Free-text search box (All Fields / Width)
 function onSummaryCategoryChange() {
     const cat         = document.getElementById('summaryFilterCategory').value;
@@ -2934,6 +3006,15 @@ function onSummaryCategoryChange() {
             distinct.map(v => `<option value="${escHtml(v)}">${escHtml(v)}</option>`).join('');
 
         selectInput.classList.remove('d-none');
+    } else if (cat === 'suffix') {
+        const distinct = [...new Set(
+            summaryData.map(r => getPalletSuffix(r.pallet_no))
+        )].sort();
+
+        selectInput.innerHTML = '<option value="">All</option>' +
+            distinct.map(v => `<option value="${escHtml(v)}">${v === 'none' ? 'None (Standard)' : escHtml(v)}</option>`).join('');
+
+        selectInput.classList.remove('d-none');
     } else {
         // "All Fields" and "Width" both use free-text search
         textInput.value = '';
@@ -2949,6 +3030,7 @@ function onSummaryCategoryChange() {
 function applySummaryFilter() {
     const cat          = document.getElementById('summaryFilterCategory').value;
     const statusFilter = document.getElementById('summaryFilterStatus') ? document.getElementById('summaryFilterStatus').value : '';
+    const suffixFilter = document.getElementById('summaryFilterSuffix') ? document.getElementById('summaryFilterSuffix').value : '';
     let rows           = summaryData;
 
     // 1. Main Filter
@@ -2965,6 +3047,11 @@ function applySummaryFilter() {
         const val = document.getElementById('summaryFilterValueSelect').value;
         if (val !== '') {
             rows = rows.filter(r => String(r[cat] ?? '') === val);
+        }
+    } else if (cat === 'suffix') {
+        const val = document.getElementById('summaryFilterValueSelect').value;
+        if (val !== '') {
+            rows = rows.filter(r => (val === 'none') ? (getPalletSuffix(r.pallet_no) === 'none') : (getPalletSuffix(r.pallet_no) === val.toUpperCase()));
         }
     } else if (cat === 'width') {
         const val = document.getElementById('summaryFilterValueText').value.trim();
@@ -2987,6 +3074,11 @@ function applySummaryFilter() {
         rows = rows.filter(r => String(r.status ?? '') === statusFilter);
     }
 
+    // 3. Sub Filter by Suffix
+    if (suffixFilter !== '') {
+        rows = rows.filter(r => (suffixFilter === 'none') ? (getPalletSuffix(r.pallet_no) === 'none') : (getPalletSuffix(r.pallet_no) === suffixFilter.toUpperCase()));
+    }
+
     renderSummaryTable(rows);
 }
 
@@ -2996,6 +3088,9 @@ function clearSummaryFilter() {
     document.getElementById('summaryFilterValueDate').value = '';
     if (document.getElementById('summaryFilterStatus')) {
         document.getElementById('summaryFilterStatus').value = '';
+    }
+    if (document.getElementById('summaryFilterSuffix')) {
+        document.getElementById('summaryFilterSuffix').value = '';
     }
     document.getElementById('summaryFilterValueText').classList.remove('d-none');
     document.getElementById('summaryFilterValueSelect').classList.add('d-none');
@@ -3325,6 +3420,12 @@ const urlParams   = new URLSearchParams(window.location.search);
 const initialTab  = urlParams.get('tab') || localStorage.getItem('palletActiveTab') || 'all';
 let palletActiveTab = VALID_PALLET_TABS.includes(initialTab) ? initialTab : 'all';
 
+const initialSuffix = urlParams.get('suffix') || localStorage.getItem('palletActiveSuffix') || 'all';
+let palletActiveSuffix = ['all', 'none', 'B', 'BN'].includes(initialSuffix) ? initialSuffix : 'all';
+
+const initialSort = urlParams.get('sort') || localStorage.getItem('palletActiveSort') || 'latest';
+let palletActiveSort = ['latest', 'updated', 'id'].includes(initialSort) ? initialSort : 'latest';
+
 // Sync initial UI state for tab buttons
 function syncTabButtonsUI() {
     document.querySelectorAll('#palletTabGroup .pallet-tab').forEach(btn => {
@@ -3337,17 +3438,33 @@ function syncTabButtonsUI() {
 }
 syncTabButtonsUI();
 
+function syncSuffixButtonsUI() {
+    document.querySelectorAll('#palletSuffixGroup .pallet-suffix-btn').forEach(btn => {
+        if (btn.dataset.suffix === palletActiveSuffix) {
+            btn.classList.add('active');
+        } else {
+            btn.classList.remove('active');
+        }
+    });
+    if (document.getElementById('palletSortSelect')) {
+        document.getElementById('palletSortSelect').value = palletActiveSort;
+    }
+}
+syncSuffixButtonsUI();
+
 let palletSearchDebounce = null;
 
 async function loadPalletList() {
     const q    = document.getElementById('palletSearchInput').value.trim();
-    const sort = 'id';
+    const sort = document.getElementById('palletSortSelect')?.value || palletActiveSort || 'latest';
+    palletActiveSort = sort;
+    localStorage.setItem('palletActiveSort', sort);
 
     document.getElementById('palletListScroll').innerHTML =
         `<div class="pallet-list-loading"><div class="spinner-border spinner-border-sm me-2"></div>Loading pallets…</div>`;
 
     try {
-        const params = new URLSearchParams({ ajax: 'list_pallets', group: 'all', q, sort });
+        const params = new URLSearchParams({ ajax: 'list_pallets', group: 'all', q, sort, suffix: palletActiveSuffix });
         const res  = await fetch('pallet.php?' + params.toString());
         const data = await res.json();
         if (!data.ok) throw new Error(data.msg || 'Failed to load pallets.');
@@ -3363,6 +3480,7 @@ async function loadPalletList() {
 
 function renderPalletList() {
     syncTabButtonsUI();
+    syncSuffixButtonsUI();
     const counts = { all: palletListData.length, open: 0, qc: 0, approved: 0, rejected: 0, delivered: 0, closed: 0 };
     palletListData.forEach(p => { if (counts[p.status_group] !== undefined) counts[p.status_group]++; });
     document.querySelectorAll('.tab-count').forEach(el => {
@@ -3372,16 +3490,6 @@ function renderPalletList() {
     const rows = palletActiveTab === 'all'
         ? [...palletListData]
         : palletListData.filter(p => p.status_group === palletActiveTab);
-
-    // Pin the pallet the user currently has open to the very top of the
-    // list, regardless of sort order, so it's always easy to find.
-    if (PALLET_ID) {
-        const activeIdx = rows.findIndex(p => Number(p.id) === Number(PALLET_ID));
-        if (activeIdx > 0) {
-            const [activeRow] = rows.splice(activeIdx, 1);
-            rows.unshift(activeRow);
-        }
-    }
 
     document.getElementById('palletListCount').textContent =
         rows.length + (rows.length === 1 ? ' pallet' : ' pallets');
@@ -3422,9 +3530,16 @@ function renderPalletList() {
             </a>
         `;
     }).join('');
+
+    if (PALLET_ID) {
+        const activeCard = scroll.querySelector('.pallet-card.active');
+        if (activeCard) {
+            activeCard.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+        }
+    }
 }
 
-document.getElementById('palletTabGroup').addEventListener('click', e => {
+document.getElementById('palletTabGroup')?.addEventListener('click', e => {
     const btn = e.target.closest('.pallet-tab');
     if (!btn) return;
     document.querySelectorAll('#palletTabGroup .pallet-tab').forEach(t => t.classList.remove('active'));
@@ -3442,6 +3557,31 @@ document.getElementById('palletTabGroup').addEventListener('click', e => {
     window.history.replaceState({}, '', url);
 
     renderPalletList();
+});
+
+document.getElementById('palletTabGroup')?.addEventListener('dblclick', e => {
+    const scroll = document.getElementById('palletListScroll');
+    if (scroll) {
+        scroll.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+});
+
+document.getElementById('palletSuffixGroup')?.addEventListener('click', e => {
+    const btn = e.target.closest('.pallet-suffix-btn');
+    if (!btn) return;
+    document.querySelectorAll('#palletSuffixGroup .pallet-suffix-btn').forEach(t => t.classList.remove('active'));
+    btn.classList.add('active');
+    palletActiveSuffix = btn.dataset.suffix;
+    localStorage.setItem('palletActiveSuffix', palletActiveSuffix);
+
+    loadPalletList();
+});
+
+document.getElementById('palletSuffixGroup')?.addEventListener('dblclick', e => {
+    const scroll = document.getElementById('palletListScroll');
+    if (scroll) {
+        scroll.scrollTo({ top: 0, behavior: 'smooth' });
+    }
 });
 
 document.getElementById('palletSearchInput')?.addEventListener('input', function() {
@@ -3463,11 +3603,12 @@ loadPalletList();
 function exportSummaryPallet() {
     const cat    = document.getElementById('summaryFilterCategory').value;
     const status = document.getElementById('summaryFilterStatus') ? document.getElementById('summaryFilterStatus').value : '';
+    const suffix = document.getElementById('summaryFilterSuffix') ? document.getElementById('summaryFilterSuffix').value : '';
     let val      = '';
 
     if (cat === 'date') {
         val = document.getElementById('summaryFilterValueDate').value;
-    } else if (cat === 'customer' || cat === 'product') {
+    } else if (cat === 'customer' || cat === 'product' || cat === 'suffix') {
         val = document.getElementById('summaryFilterValueSelect').value;
     } else {
         val = document.getElementById('summaryFilterValueText').value.trim();
@@ -3477,6 +3618,7 @@ function exportSummaryPallet() {
     if (cat)    params.set('cat', cat);
     if (val)    params.set('val', val);
     if (status) params.set('status', status);
+    if (suffix) params.set('suffix', suffix);
 
     // Plain navigation — the server responds with Content-Disposition:
     // attachment, so this triggers a download without leaving the page.

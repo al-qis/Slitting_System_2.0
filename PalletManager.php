@@ -1262,7 +1262,7 @@ class PalletManager
     //   $search      : matches Pallet No, Customer, or Lot No
     //   $sort        : 'updated' | 'capacity' | 'id'
     // =========================================================
-    public function listPallets(string $statusGroup = 'all', string $search = '', string $sort = 'updated'): array
+    public function listPallets(string $statusGroup = 'all', string $search = '', string $sort = 'updated', string $suffix = 'all'): array
     {
         $search = trim($search);
 
@@ -1280,6 +1280,16 @@ class PalletManager
             foreach ($statuses as $s) {
                 $types    .= 's';
                 $params[]  = $s;
+            }
+        }
+
+        if ($suffix !== 'all' && $suffix !== '') {
+            if ($suffix === 'none') {
+                $where[] = "pallet_no NOT LIKE '%(%)%'";
+            } else {
+                $where[]  = "pallet_no LIKE ?";
+                $types   .= 's';
+                $params[] = '%(' . strtoupper(trim($suffix)) . ')';
             }
         }
 
@@ -1314,9 +1324,10 @@ class PalletManager
         $whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
 
         $orderSql = match ($sort) {
-            'capacity' => 'roll_count DESC, last_activity DESC',
-            'id'       => 'pallet_no ASC',
-            default    => 'last_activity DESC, id DESC', // 'updated'
+            'capacity'           => 'roll_count DESC, last_activity DESC',
+            'id', 'pallet_no'   => 'pallet_no ASC',
+            'updated', 'activity'=> 'last_activity DESC, id DESC',
+            default              => 'id DESC', // 'latest' / 'created' (newest created at top)
         };
 
         // Roll count + lot numbers are aggregated first, then filtered/sorted
