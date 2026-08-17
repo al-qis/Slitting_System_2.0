@@ -288,7 +288,7 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === 'deliver_by_scan') {
 // ── Shared: build the flattened Summary Pallet dataset ─────────
 function buildSummaryPalletRows(mysqli $conn): array {
     $rows = $conn->query("
-        SELECT p.id AS pallet_id, p.pallet_no, p.status, pi.stock_code AS pi_stock_code,
+        SELECT p.id AS pallet_id, p.pallet_no, p.status, p.created_at AS pallet_date, pi.stock_code AS pi_stock_code,
                sp.roll_no, sp.lot_no, sp.coil_no, sp.product,
                sp.customer_name, sp.ref_no, sp.width, sp.length, sp.actual_length
         FROM pallets p
@@ -309,9 +309,12 @@ function buildSummaryPalletRows(mysqli $conn): array {
             $stockCode = PalletManager::formatStockCode($r['coil_no'], $r['width'] ?? 0, $lenVal ?? 0);
         }
 
+        $formattedDate = !empty($r['pallet_date']) ? date('d/m/Y', strtotime($r['pallet_date'])) : '-';
+
         return [
             'pallet_id'  => $r['pallet_id'],
             'pallet_no'  => $r['pallet_no'],
+            'date'       => $formattedDate,
             'status'     => $r['status'],
             'stock_code' => $stockCode,
             'roll_no'    => $r['roll_no'] ? str_replace('R', 'R-', $r['roll_no']) : null,
@@ -324,30 +327,41 @@ function buildSummaryPalletRows(mysqli $conn): array {
     }, $rows);
 }
 
-// ── Shared: apply the same category/value filter used by the modal's
-//    client-side JS, so the exported Excel matches whatever the user
-//    was actually looking at when they clicked Export. ─────────────
-function filterSummaryPalletRows(array $rows, string $cat, string $val): array {
-    if ($val === '') return $rows;
-
-    if ($cat === 'status' || $cat === 'customer') {
-        return array_values(array_filter($rows, fn($r) => (string)($r[$cat] ?? '') === $val));
-    }
-
-    if ($cat === 'width') {
-        return array_values(array_filter($rows, function ($r) use ($val) {
-            return $r['width'] !== null && str_contains((string)round($r['width']), $val);
-        }));
-    }
-
-    // All Fields — free text across everything visible in the table
-    $needle = strtolower($val);
-    return array_values(array_filter($rows, function ($r) use ($needle) {
-        foreach ([$r['pallet_no'], $r['status'], $r['stock_code'], $r['lot_coil'], $r['roll_no'], $r['customer'], $r['ref_no'], $r['width']] as $field) {
-            if ($field !== null && str_contains(strtolower((string)$field), $needle)) return true;
+// ── Shared: apply the same category/value filter + 2nd status filter
+//    used by the modal's client-side JS, so the exported Excel matches
+//    whatever the user was actually looking at when they clicked Export. ──
+function filterSummaryPalletRows(array $rows, string $cat, string $val, string $statusFilter = ''): array {
+    // 1. Main Filter
+    if ($val !== '') {
+        if ($cat === 'date') {
+            if (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $val, $m)) {
+                $val = "{$m[3]}/{$m[2]}/{$m[1]}";
+            }
+            $rows = array_values(array_filter($rows, fn($r) => (string)($r['date'] ?? '') === $val));
+        } elseif ($cat === 'customer' || $cat === 'product') {
+            $rows = array_values(array_filter($rows, fn($r) => (string)($r[$cat] ?? '') === $val));
+        } elseif ($cat === 'width') {
+            $rows = array_values(array_filter($rows, function ($r) use ($val) {
+                return $r['width'] !== null && str_contains((string)round($r['width']), $val);
+            }));
+        } else {
+            // All Fields — free text across everything visible in the table
+            $needle = strtolower($val);
+            $rows = array_values(array_filter($rows, function ($r) use ($needle) {
+                foreach ([$r['pallet_no'], $r['date'], $r['status'], $r['stock_code'], $r['product'], $r['lot_coil'], $r['roll_no'], $r['customer'], $r['ref_no'], $r['width']] as $field) {
+                    if ($field !== null && str_contains(strtolower((string)$field), $needle)) return true;
+                }
+                return false;
+            }));
         }
-        return false;
-    }));
+    }
+
+    // 2. Sub Filter by Status
+    if ($statusFilter !== '') {
+        $rows = array_values(array_filter($rows, fn($r) => (string)($r['status'] ?? '') === $statusFilter));
+    }
+
+    return $rows;
 }
 
 // ── AJAX: Summary Pallet — flattened pallet + nested product rows ──
@@ -364,16 +378,23 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'summary_pallet') {
 // Respects the same category/value filter the modal has active, so
 // the download matches whatever the user was looking at on screen.
 if (isset($_GET['export']) && $_GET['export'] === 'summary_pallet') {
-    $cat = isset($_GET['cat']) ? trim($_GET['cat']) : '';
-    $val = isset($_GET['val']) ? trim($_GET['val']) : '';
+    $cat         = isset($_GET['cat']) ? trim($_GET['cat']) : '';
+    $val         = isset($_GET['val']) ? trim($_GET['val']) : '';
+    $statusParam = isset($_GET['status']) ? trim($_GET['status']) : '';
 
     $rows = buildSummaryPalletRows($conn);
-    $rows = filterSummaryPalletRows($rows, $cat, $val);
+    $rows = filterSummaryPalletRows($rows, $cat, $val, $statusParam);
 
-    $catLabels = ['status' => 'Status', 'customer' => 'Customer', 'width' => 'Width'];
-    $filterLbl = ($val !== '' && isset($catLabels[$cat]))
-        ? "{$catLabels[$cat]}: {$val}"
-        : (($val !== '') ? "Search: {$val}" : 'All Records');
+    $catLabels = ['customer' => 'Customer', 'product' => 'Product Type', 'date' => 'Date', 'width' => 'Width'];
+    $filterParts = [];
+    if ($val !== '') {
+        $filterParts[] = isset($catLabels[$cat]) ? "{$catLabels[$cat]}: {$val}" : "Search: {$val}";
+    }
+    if ($statusParam !== '') {
+        $statusName = ucwords(str_replace('_', ' ', $statusParam));
+        $filterParts[] = "Status: {$statusName}";
+    }
+    $filterLbl = !empty($filterParts) ? implode(' | ', $filterParts) : 'All Records';
 
     $filename = 'Summary_Pallet_' . date('Y-m-d_His') . '.xls';
 
@@ -381,7 +402,7 @@ if (isset($_GET['export']) && $_GET['export'] === 'summary_pallet') {
     header('Content-Disposition: attachment; filename="' . $filename . '"');
     header('Cache-Control: max-age=0');
 
-    $cols      = 7; // Pallet No, Status, Stock Code, Rolls, Customer, Ref No, Width
+    $cols      = 9; // Pallet No, Date, Status, Stock Code, Product Type, Rolls, Customer, Ref No, Width
     $generated = date('d M Y, H:i');
     ?>
 <html><head><meta charset="UTF-8"></head><body>
@@ -404,8 +425,10 @@ if (isset($_GET['export']) && $_GET['export'] === 'summary_pallet') {
     <thead>
         <tr style="background:#343a40;color:#fff;font-weight:bold;font-size:12px;">
             <th style="padding:8px 10px;">Pallet No</th>
+            <th style="padding:8px 10px;">Date</th>
             <th style="padding:8px 10px;">Status</th>
             <th style="padding:8px 10px;">Stock Code</th>
+            <th style="padding:8px 10px;">Product Type</th>
             <th style="padding:8px 10px;">Rolls</th>
             <th style="padding:8px 10px;">Customer</th>
             <th style="padding:8px 10px;">Ref No</th>
@@ -424,8 +447,10 @@ if (isset($_GET['export']) && $_GET['export'] === 'summary_pallet') {
 
             echo '<tr>';
             echo '<td ' . $td  . '><b>' . htmlspecialchars($r['pallet_no'] ?? '-') . '</b></td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars(($r['date'] ?? '') ?: '-') . '</td>';
             echo '<td ' . $td  . '>' . htmlspecialchars($statusLbl) . '</td>';
             echo '<td ' . $td  . '>' . htmlspecialchars(($r['stock_code'] ?? '') ?: '-') . '</td>';
+            echo '<td ' . $td  . '>' . htmlspecialchars(($r['product'] ?? '') ?: '-') . '</td>';
             echo '<td ' . $td  . '>' . htmlspecialchars($rollsCell) . '</td>';
             echo '<td ' . $td  . '>' . htmlspecialchars($r['customer'] ?: '-') . '</td>';
             echo '<td ' . $td  . '>' . htmlspecialchars($r['ref_no']   ?: '-') . '</td>';
@@ -1972,32 +1997,47 @@ if (isset($_GET['success'])): ?>
       <div class="modal-body">
 
         <!-- Filter controls -->
-        <div class="row g-2 mb-3">
+        <div class="row g-2 mb-3 align-items-center">
           <div class="col-md-3">
             <select id="summaryFilterCategory" class="form-select form-select-sm" onchange="onSummaryCategoryChange()">
               <option value="">All Fields</option>
-              <option value="status">Status</option>
+              <option value="date">Date</option>
+              <option value="product">Product Type</option>
               <option value="customer">Customer</option>
               <option value="width">Width</option>
             </select>
           </div>
-          <div class="col-md-5">
+          <div class="col-md-4">
             <!-- Text input — used for "All Fields" free search, and for Width -->
             <input type="text" id="summaryFilterValueText" class="form-control form-control-sm"
-                   placeholder="Search Pallet No, Status, Stock Code, Rolls, Customer, Ref No, Width..."
+                   placeholder="Search Pallet No, Date, Stock Code, Product, Rolls, Customer, Ref No, Width..."
                    oninput="applySummaryFilter()">
-            <!-- Dropdown — used for Status / Customer, populated dynamically with distinct values -->
+            <!-- Dropdown — used for Product / Customer, populated dynamically with distinct values -->
             <select id="summaryFilterValueSelect" class="form-select form-select-sm d-none" onchange="applySummaryFilter()">
               <option value="">All</option>
             </select>
+            <!-- Calendar Date Picker — used specifically when Date is selected -->
+            <input type="date" id="summaryFilterValueDate" class="form-control form-control-sm d-none" onchange="applySummaryFilter()">
           </div>
-          <div class="col-md-2">
-            <button type="button" class="btn btn-outline-secondary btn-sm w-100" onclick="clearSummaryFilter()">
+          <div class="col-md-3">
+            <!-- Sub Filter by Status -->
+            <div class="input-group input-group-sm">
+              <span class="input-group-text bg-light text-muted fw-semibold" style="font-size:12px;">Status</span>
+              <select id="summaryFilterStatus" class="form-select form-select-sm" onchange="applySummaryFilter()">
+                <option value="">All Statuses</option>
+                <option value="building">Building</option>
+                <option value="pending_qc">Pending QC</option>
+                <option value="approved">Approved</option>
+                <option value="rejected">Rejected</option>
+                <option value="delivered">Delivered</option>
+              </select>
+            </div>
+          </div>
+          <div class="col-md-2 d-flex gap-2 align-items-center justify-content-end">
+            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="clearSummaryFilter()" title="Clear Filters">
               <i class="bi bi-x-lg me-1"></i>Clear
             </button>
-          </div>
-          <div class="col-md-2 d-flex align-items-center justify-content-md-end">
-            <span class="text-muted small" id="summaryResultCount"></span>
+            <span class="text-muted small text-nowrap" id="summaryResultCount"></span>
           </div>
         </div>
 
@@ -2010,8 +2050,10 @@ if (isset($_GET['success'])): ?>
             <thead class="table-dark">
               <tr>
                 <th>Pallet No</th>
+                <th>Date</th>
                 <th>Status</th>
                 <th>Stock Code</th>
+                <th>Product Type</th>
                 <th>Rolls</th>
                 <th>Customer</th>
                 <th>Ref No</th>
@@ -2803,8 +2845,13 @@ async function loadSummaryPallet() {
     // Reset filter UI each time the modal is opened
     document.getElementById('summaryFilterCategory').value = '';
     document.getElementById('summaryFilterValueText').value = '';
+    document.getElementById('summaryFilterValueDate').value = '';
+    if (document.getElementById('summaryFilterStatus')) {
+        document.getElementById('summaryFilterStatus').value = '';
+    }
     document.getElementById('summaryFilterValueText').classList.remove('d-none');
     document.getElementById('summaryFilterValueSelect').classList.add('d-none');
+    document.getElementById('summaryFilterValueDate').classList.add('d-none');
 
     document.getElementById('summaryLoading').classList.remove('d-none');
     document.getElementById('summaryTableWrap').classList.add('d-none');
@@ -2831,7 +2878,7 @@ function renderSummaryTable(rows) {
     const countEl = document.getElementById('summaryResultCount');
 
     if (!rows.length) {
-        tbody.innerHTML = `<tr><td colspan="7" class="py-4 text-muted">No matching records.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="9" class="py-4 text-muted">No matching records.</td></tr>`;
         countEl.textContent = '0 rows';
         return;
     }
@@ -2844,8 +2891,10 @@ function renderSummaryTable(rows) {
         return `
             <tr>
                 <td class="fw-bold">${r.pallet_id ? `<a href="pallet.php?pallet_id=${r.pallet_id}" class="text-decoration-none">${escHtml(r.pallet_no)}</a>` : escHtml(r.pallet_no)}</td>
+                <td>${r.date ? escHtml(r.date) : '<span class="text-muted">&mdash;</span>'}</td>
                 <td><span class="badge ${badgeClass}">${escHtml(summaryStatusLabel(r.status))}</span></td>
                 <td style="font-family:monospace;font-size:12px;">${r.stock_code ? escHtml(r.stock_code) : '<span class="text-muted">&mdash;</span>'}</td>
+                <td>${r.product ? escHtml(r.product) : '<span class="text-muted">&mdash;</span>'}</td>
                 <td>${rollsCell}</td>
                 <td>${r.customer ? escHtml(r.customer) : '<span class="text-muted">&mdash;</span>'}</td>
                 <td>${r.ref_no ? escHtml(r.ref_no) : '<span class="text-muted">&mdash;</span>'}</td>
@@ -2857,44 +2906,62 @@ function renderSummaryTable(rows) {
     countEl.textContent = rows.length + (rows.length === 1 ? ' row' : ' rows');
 }
 
-// When the filter category changes, swap between the free-text
-// search box (All Fields / Width) and a dropdown of distinct values
-// (Status / Customer) so users pick from what's actually in the data.
+// When the filter category changes, swap between:
+// - Calendar Date Picker (Date)
+// - Dropdown of distinct values (Product / Customer)
+// - Free-text search box (All Fields / Width)
 function onSummaryCategoryChange() {
-    const cat        = document.getElementById('summaryFilterCategory').value;
-    const textInput  = document.getElementById('summaryFilterValueText');
+    const cat         = document.getElementById('summaryFilterCategory').value;
+    const textInput   = document.getElementById('summaryFilterValueText');
     const selectInput = document.getElementById('summaryFilterValueSelect');
+    const dateInput   = document.getElementById('summaryFilterValueDate');
 
-    if (cat === 'status' || cat === 'customer') {
+    textInput.classList.add('d-none');
+    selectInput.classList.add('d-none');
+    dateInput.classList.add('d-none');
+
+    if (cat === 'date') {
+        dateInput.value = '';
+        dateInput.classList.remove('d-none');
+    } else if (cat === 'customer' || cat === 'product') {
         const distinct = [...new Set(
             summaryData
-                .map(r => cat === 'status' ? r.status : r.customer)
-                .filter(v => v !== null && v !== '')
+                .map(r => cat === 'customer' ? r.customer : r.product)
+                .filter(v => v !== null && v !== '' && v !== '-')
         )].sort();
 
         selectInput.innerHTML = '<option value="">All</option>' +
-            distinct.map(v => `<option value="${escHtml(v)}">${escHtml(cat === 'status' ? summaryStatusLabel(v) : v)}</option>`).join('');
+            distinct.map(v => `<option value="${escHtml(v)}">${escHtml(v)}</option>`).join('');
 
-        textInput.classList.add('d-none');
         selectInput.classList.remove('d-none');
     } else {
         // "All Fields" and "Width" both use free-text search
         textInput.value = '';
         textInput.placeholder = (cat === 'width')
             ? 'Type a width in mm, e.g. 309'
-            : 'Search Pallet No, Status, Rolls, Customer, Ref No, Width...';
+            : 'Search Pallet No, Date, Status, Stock Code, Product, Rolls, Customer, Ref No, Width...';
         textInput.classList.remove('d-none');
-        selectInput.classList.add('d-none');
     }
 
     applySummaryFilter();
 }
 
 function applySummaryFilter() {
-    const cat = document.getElementById('summaryFilterCategory').value;
-    let rows = summaryData;
+    const cat          = document.getElementById('summaryFilterCategory').value;
+    const statusFilter = document.getElementById('summaryFilterStatus') ? document.getElementById('summaryFilterStatus').value : '';
+    let rows           = summaryData;
 
-    if (cat === 'status' || cat === 'customer') {
+    // 1. Main Filter
+    if (cat === 'date') {
+        const rawDate = document.getElementById('summaryFilterValueDate').value;
+        if (rawDate) {
+            const parts = rawDate.split('-');
+            if (parts.length === 3) {
+                const targetDate = `${parts[2]}/${parts[1]}/${parts[0]}`; // DD/MM/YYYY
+                rows = rows.filter(r => String(r.date ?? '') === targetDate);
+            }
+        }
+    } else if (cat === 'customer' || cat === 'product') {
         const val = document.getElementById('summaryFilterValueSelect').value;
         if (val !== '') {
             rows = rows.filter(r => String(r[cat] ?? '') === val);
@@ -2909,10 +2976,15 @@ function applySummaryFilter() {
         const val = document.getElementById('summaryFilterValueText').value.trim().toLowerCase();
         if (val !== '') {
             rows = rows.filter(r => [
-                r.pallet_no, r.status, r.stock_code, r.lot_coil, r.roll_no,
+                r.pallet_no, r.date, r.status, r.stock_code, r.product, r.lot_coil, r.roll_no,
                 r.customer, r.ref_no, r.width
             ].some(v => v !== null && String(v).toLowerCase().includes(val)));
         }
+    }
+
+    // 2. Sub Filter by Status
+    if (statusFilter !== '') {
+        rows = rows.filter(r => String(r.status ?? '') === statusFilter);
     }
 
     renderSummaryTable(rows);
@@ -2921,8 +2993,13 @@ function applySummaryFilter() {
 function clearSummaryFilter() {
     document.getElementById('summaryFilterCategory').value = '';
     document.getElementById('summaryFilterValueText').value = '';
+    document.getElementById('summaryFilterValueDate').value = '';
+    if (document.getElementById('summaryFilterStatus')) {
+        document.getElementById('summaryFilterStatus').value = '';
+    }
     document.getElementById('summaryFilterValueText').classList.remove('d-none');
     document.getElementById('summaryFilterValueSelect').classList.add('d-none');
+    document.getElementById('summaryFilterValueDate').classList.add('d-none');
     renderSummaryTable(summaryData);
 }
 
@@ -3384,18 +3461,22 @@ document.getElementById('palletSearchInput')?.addEventListener('input', function
 loadPalletList();
 
 function exportSummaryPallet() {
-    const cat = document.getElementById('summaryFilterCategory').value;
-    let val = '';
+    const cat    = document.getElementById('summaryFilterCategory').value;
+    const status = document.getElementById('summaryFilterStatus') ? document.getElementById('summaryFilterStatus').value : '';
+    let val      = '';
 
-    if (cat === 'status' || cat === 'customer') {
+    if (cat === 'date') {
+        val = document.getElementById('summaryFilterValueDate').value;
+    } else if (cat === 'customer' || cat === 'product') {
         val = document.getElementById('summaryFilterValueSelect').value;
     } else {
         val = document.getElementById('summaryFilterValueText').value.trim();
     }
 
     const params = new URLSearchParams({ export: 'summary_pallet' });
-    if (cat) params.set('cat', cat);
-    if (val) params.set('val', val);
+    if (cat)    params.set('cat', cat);
+    if (val)    params.set('val', val);
+    if (status) params.set('status', status);
 
     // Plain navigation — the server responds with Content-Disposition:
     // attachment, so this triggers a download without leaving the page.
