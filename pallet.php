@@ -43,6 +43,16 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'get_latest_pallets') {
     exit;
 }
 
+// ── AJAX: get next auto-generated Pallet ID ───────────────────
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'get_next_pallet_no') {
+    header('Content-Type: application/json');
+    $yy     = trim($_GET['yy'] ?? date('y'));
+    $mm     = trim($_GET['mm'] ?? date('m'));
+    $suffix = trim($_GET['suffix'] ?? 'none');
+    echo json_encode($pm->getNextPalletNo($yy, $mm, $suffix));
+    exit;
+}
+
 // ── AJAX: product lookup (now includes std_weight) ────────────
 if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
     header('Content-Type: application/json');
@@ -2002,7 +2012,7 @@ if (isset($_GET['success'])): ?>
 
 <!-- ── CREATE PALLET MODAL ───────────────────────────────────── -->
 <div class="modal fade" id="createPalletModal" tabindex="-1">
-  <div class="modal-dialog modal-sm">
+  <div class="modal-dialog">
     <div class="modal-content">
       <div class="modal-header" style="background:#0f2744;">
         <h5 class="modal-title text-white">
@@ -2011,10 +2021,83 @@ if (isset($_GET['success'])): ?>
         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body pb-2">
-        <!-- Latest Pallet Numbers Info Card -->
+        <!-- ── AUTO GENERATION CONTROLS CARD ── -->
+        <div class="card bg-light border mb-3">
+          <div class="card-header bg-white py-1 px-3 fw-bold text-primary" style="font-size:12px;">
+            <i class="bi bi-magic me-1"></i>Pallet ID Auto-Generator
+          </div>
+          <div class="card-body p-2" style="font-size:12px;">
+            <div class="row g-2 mb-2">
+              <div class="col-6">
+                <label class="form-label mb-1 fw-semibold text-secondary" style="font-size:11px;">
+                  <i class="bi bi-calendar-event me-1"></i>Year (YY)
+                </label>
+                <select id="autoGenYY" class="form-select form-select-sm font-monospace">
+                  <?php
+                    $curYY = date('y');
+                    for ($y = 20; $y <= 99; $y++) {
+                        $yyVal = sprintf("%02d", $y);
+                        $sel = ($yyVal === $curYY) ? 'selected' : '';
+                        echo "<option value=\"{$yyVal}\" {$sel}>20{$yyVal} ({$yyVal})</option>";
+                    }
+                  ?>
+                </select>
+              </div>
+              <div class="col-6">
+                <label class="form-label mb-1 fw-semibold text-secondary" style="font-size:11px;">
+                  <i class="bi bi-calendar-month me-1"></i>Month (MM)
+                </label>
+                <select id="autoGenMM" class="form-select form-select-sm font-monospace">
+                  <?php
+                    $months = [
+                      '01'=>'01 - Jan', '02'=>'02 - Feb', '03'=>'03 - Mar', '04'=>'04 - Apr',
+                      '05'=>'05 - May', '06'=>'06 - Jun', '07'=>'07 - Jul', '08'=>'08 - Aug',
+                      '09'=>'09 - Sep', '10'=>'10 - Oct', '11'=>'11 - Nov', '12'=>'12 - Dec'
+                    ];
+                    $curMM = date('m');
+                    foreach ($months as $mCode => $mName) {
+                        $sel = ($mCode === $curMM) ? 'selected' : '';
+                        echo "<option value=\"{$mCode}\" {$sel}>{$mName}</option>";
+                    }
+                  ?>
+                </select>
+              </div>
+            </div>
+
+            <div class="mb-2">
+              <label class="form-label mb-1 fw-bold text-primary" style="font-size:11px;">
+                Step 1: Select Pallet Type / Suffix <span class="text-danger">*</span>
+              </label>
+              <div class="btn-group w-100 btn-group-sm" role="group" id="autoGenSuffixGroup">
+                <input type="radio" class="btn-check" name="autoGenSuffix" id="sufNone" value="none" autocomplete="off">
+                <label class="btn btn-outline-primary" for="sufNone">None (Std)</label>
+
+                <input type="radio" class="btn-check" name="autoGenSuffix" id="sufB" value="b" autocomplete="off">
+                <label class="btn btn-outline-primary" for="sufB">(B)</label>
+
+                <input type="radio" class="btn-check" name="autoGenSuffix" id="sufBN" value="bn" autocomplete="off">
+                <label class="btn btn-outline-primary" for="sufBN">(BN)</label>
+              </div>
+            </div>
+
+            <div class="d-flex justify-content-between align-items-center p-2 bg-white border rounded">
+              <div>
+                <div class="text-muted" style="font-size:10px; text-transform:uppercase;">Next Auto Pallet ID</div>
+                <div id="nextAutoPalletDisplay" class="font-monospace fw-bold text-success fs-6">
+                  <span class="text-muted fst-italic" style="font-size:12px;">Select Pallet Type above</span>
+                </div>
+              </div>
+              <button type="button" class="btn btn-sm btn-outline-success py-1 px-2" onclick="applyAutoPalletNo()">
+                <i class="bi bi-box-arrow-in-down me-1"></i>Use Auto ID
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── HIGHEST PALLET NUMBERS REFERENCE CARD ── -->
         <div class="p-2 mb-3 bg-light border rounded" style="font-size:12px;">
           <div class="fw-bold text-dark mb-1 border-bottom pb-1" style="font-size:11px; text-transform:uppercase; letter-spacing:.5px;">
-            <i class="bi bi-clock-history me-1 text-primary"></i>Latest Pallet Numbers Created
+            <i class="bi bi-clock-history me-1 text-primary"></i>Highest Pallet Numbers Created
           </div>
           <div class="d-flex justify-content-between align-items-center py-1">
             <span class="text-secondary">Standard (None):</span>
@@ -2035,10 +2118,10 @@ if (isset($_GET['success'])): ?>
             Pallet Serial No <span class="text-danger">*</span>
           </label>
           <input type="text" id="palletNoInput" class="form-control"
-                 placeholder="e.g. 2607185 or 2607185(A)"
+                 placeholder="e.g. 2608108 or 2608287(B)"
                  autocomplete="off" spellcheck="false"
                  style="font-family:monospace;letter-spacing:.4px;">
-          <div class="form-text">Just type the digits — <code>SFS-</code> and the dashes are added automatically. Format: <code>SFS-XXXX-XXX</code> or <code>SFS-XXXX-XXX (A)</code></div>
+          <div class="form-text">Format: <code>SFS-YYMM-XXX</code> or <code>SFS-YYMM-XXX (B)</code></div>
           <div id="palletNoFeedback" class="mt-1" style="font-size:12px;min-height:18px;"></div>
         </div>
         <div class="alert alert-info py-2 mb-0" style="font-size:12px;">
@@ -2772,6 +2855,57 @@ document.getElementById('manCombined')?.addEventListener('keydown', function (e)
 // ─────────────────────────────────────────────────────────────
 let palletNoValid = false;
 let palletNoTimer;
+let currentNextAutoPalletId = '';
+
+function fetchNextAutoPalletId(autoApply = true) {
+    const yyEl = document.getElementById('autoGenYY');
+    const mmEl = document.getElementById('autoGenMM');
+    const sufEl = document.querySelector('input[name="autoGenSuffix"]:checked');
+    const dispEl = document.getElementById('nextAutoPalletDisplay');
+
+    if (!yyEl || !mmEl || !dispEl) return;
+
+    if (!sufEl) {
+        currentNextAutoPalletId = '';
+        dispEl.innerHTML = '<span class="text-muted fst-italic" style="font-size:12px;">Select Pallet Type above</span>';
+        return;
+    }
+
+    const yy = yyEl.value.trim();
+    const mm = mmEl.value.trim();
+    const suffix = sufEl.value;
+
+    dispEl.innerHTML = '<span class="spinner-border spinner-border-sm text-secondary" style="width:.85rem;height:.85rem;"></span>';
+
+    fetch(`pallet.php?ajax=get_next_pallet_no&yy=${enc(yy)}&mm=${enc(mm)}&suffix=${enc(suffix)}`)
+        .then(r => r.json())
+        .then(res => {
+            if (res.ok && res.next_pallet_no) {
+                currentNextAutoPalletId = res.next_pallet_no;
+                dispEl.textContent = res.next_pallet_no;
+                if (autoApply) {
+                    applyAutoPalletNo();
+                }
+            } else {
+                currentNextAutoPalletId = '';
+                dispEl.textContent = 'Error';
+            }
+        })
+        .catch(() => {
+            currentNextAutoPalletId = '';
+            dispEl.textContent = 'Error';
+        });
+}
+
+function applyAutoPalletNo() {
+    if (!currentNextAutoPalletId) return;
+    const inp = document.getElementById('palletNoInput');
+    if (inp) {
+        inp.value = currentNextAutoPalletId;
+        inp.dispatchEvent(new Event('input', { bubbles: true }));
+        inp.focus();
+    }
+}
 
 function useLatestPalletNo(el) {
     const text = el.textContent ? el.textContent.trim() : '';
@@ -2784,13 +2918,40 @@ function useLatestPalletNo(el) {
     }
 }
 
+// Event listeners for auto-generator controls
+document.getElementById('autoGenYY')?.addEventListener('change', fetchNextAutoPalletId);
+document.getElementById('autoGenYY')?.addEventListener('input', fetchNextAutoPalletId);
+document.getElementById('autoGenMM')?.addEventListener('change', fetchNextAutoPalletId);
+document.getElementById('autoGenMM')?.addEventListener('input', fetchNextAutoPalletId);
+document.querySelectorAll('input[name="autoGenSuffix"]').forEach(radio => {
+    radio.addEventListener('change', fetchNextAutoPalletId);
+});
+
 document.getElementById('createPalletModal')?.addEventListener('show.bs.modal', () => {
     palletNoValid = false;
+    currentNextAutoPalletId = '';
     const inp = document.getElementById('palletNoInput');
     inp.value = '';
     inp.classList.remove('is-valid', 'is-invalid');
     document.getElementById('palletNoFeedback').innerHTML = '';
     document.getElementById('createPalletBtn').disabled = true;
+
+    // Reset Auto Gen controls to current YY/MM and uncheck suffix radios
+    const now = new Date();
+    const yyStr = String(now.getFullYear()).slice(-2);
+    const mmStr = String(now.getMonth() + 1).padStart(2, '0');
+
+    const yyEl = document.getElementById('autoGenYY');
+    const mmEl = document.getElementById('autoGenMM');
+
+    if (yyEl) yyEl.value = yyStr;
+    if (mmEl) mmEl.value = mmStr;
+
+    // Uncheck suffix radio options on modal open
+    document.querySelectorAll('input[name="autoGenSuffix"]').forEach(radio => radio.checked = false);
+
+    const dispEl = document.getElementById('nextAutoPalletDisplay');
+    if (dispEl) dispEl.innerHTML = '<span class="text-muted fst-italic" style="font-size:12px;">Select Pallet Type above</span>';
 
     const sp = '<span class="spinner-border spinner-border-sm text-secondary" style="width:.75rem;height:.75rem;"></span>';
     const elNone = document.getElementById('latestPalletNone');
