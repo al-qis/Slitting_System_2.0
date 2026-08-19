@@ -159,7 +159,7 @@ function fmtNum($v): string {
         margin-bottom: 2mm;
     }
     table.info-table td {
-        border: 1px solid #bebebe;
+        border: 1px solid #000000;
         padding: 1mm 2mm;
         font-size: 10pt;
         vertical-align: middle;
@@ -180,7 +180,7 @@ function fmtNum($v): string {
         margin-bottom: 2mm;
     }
     table.data-table th, table.data-table td {
-        border: 1px solid #bebebe;
+        border: 1px solid #000000;
         padding: 0.8mm 1mm;
         text-align: center;
         font-size: 9.5pt;
@@ -267,7 +267,7 @@ function fmtNum($v): string {
 
     /* ── Print rules ────────────────────────────────────── */
     @media print {
-        @page { size: 8.5in 5.5in; margin: 4mm; }
+        @page { size: 21.5cm 14cm; margin: 3mm; }
         body { background: #fff; padding: 0; }
         .sheet { width: 100%; padding: 0; }
         .no-print { display: none !important; }
