@@ -41,6 +41,8 @@ $inspStmt->execute();
 $inspectors = $inspStmt->get_result()->fetch_all(MYSQLI_ASSOC);
 $inspStmt->close();
 
+$activeInspectorSession = $_SESSION['active_qc_inspector'] ?? '';
+
 // Pending pallets
 $result = $conn->query("
     SELECT p.id, p.pallet_no, p.status,
@@ -190,8 +192,19 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
         <a class="navbar-brand fw-bold" href="#">
             <i class="bi bi-shield-check"></i> NICHIAS QC MANAGEMENT
         </a>
-        <div class="d-flex align-items-center gap-2">
-            <span class="navbar-text text-light">QC: <?= htmlspecialchars($_SESSION['role'] ?? 'qc') ?></span>
+        <div class="d-flex align-items-center gap-3">
+            <div class="d-flex align-items-center bg-white bg-opacity-10 border border-light border-opacity-25 rounded-3 px-2 py-1 text-light">
+                <i class="bi bi-person-badge-fill text-warning me-1"></i>
+                <label for="globalQcInspectorSelect" class="small me-2 mb-0 fw-semibold text-white-50">Active Inspector:</label>
+                <select id="globalQcInspectorSelect" class="form-select form-select-sm border-0 shadow-none font-monospace fw-bold py-0 text-dark" style="width: auto; background:#ffffff; font-size:12px;" onchange="updateGlobalQcInspector(this.value)">
+                    <option value="">-- Select Active Inspector --</option>
+                    <?php foreach ($inspectors as $insp): ?>
+                    <option value="<?= htmlspecialchars($insp['name'], ENT_QUOTES) ?>" <?= ($activeInspectorSession === $insp['name']) ? 'selected' : '' ?>>
+                        <?= htmlspecialchars($insp['name']) ?>
+                    </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
             <a href="qc_manage_inspectors.php" class="btn btn-outline-light btn-sm" title="Manage Inspector Names">
                 <i class="bi bi-gear-fill me-1"></i> Inspectors
             </a>
@@ -385,20 +398,15 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
                         </div>
                         <?php endif; ?>
 
-                        <!-- Checked By bar -->
-                        <div class="checked-by-bar me-3" id="checkedByBar<?= $pid ?>">
-                            <label for="inspectorSelect<?= $pid ?>">
-                                <i class="bi bi-person-badge-fill"></i> Checked By:
+                        <!-- Checked By Indicator Bar -->
+                        <div class="checked-by-bar me-3 p-2 rounded" id="checkedByBar<?= $pid ?>" style="background:#f8fafc; border:1px solid #e2e8f0;">
+                            <label class="mb-0 font-monospace text-secondary fw-semibold">
+                                <i class="bi bi-person-badge-fill me-1 text-primary"></i> Checked By (Header Inspector):
                             </label>
-                            <select id="inspectorSelect<?= $pid ?>" onchange="evalChecklist(<?= $pid ?>,null)">
-                                <option value="">-- Select Inspector Name --</option>
-                                <?php foreach ($inspectors as $insp): ?>
-                                <option value="<?= htmlspecialchars($insp['name']) ?>">
-                                    <?= htmlspecialchars($insp['name']) ?>
-                                </option>
-                                <?php endforeach; ?>
-                            </select>
-                            <span class="cb-hint" id="cbHint<?= $pid ?>">Required before Approve or Reject</span>
+                            <span id="activeInspectorBadge<?= $pid ?>" class="fw-bold font-monospace px-2 py-1 bg-white rounded border text-dark ms-1">
+                                -- Select in Header --
+                            </span>
+                            <span class="cb-hint ms-2" id="cbHint<?= $pid ?>">Select in header bar above</span>
                         </div>
 
                         <!-- Checklist hint -->
@@ -513,14 +521,9 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
                 </div>
                 <?php endif; ?>
 
-                <div class="mb-3">
-                    <label class="form-label fw-bold">Checked By <span class="text-danger">*</span></label>
-                    <select class="form-select form-select-sm" id="rejectInspectorSelect<?= $pid ?>" required>
-                        <option value="">-- Select Inspector Name --</option>
-                        <?php foreach ($inspectors as $insp): ?>
-                        <option value="<?= htmlspecialchars($insp['name']) ?>"><?= htmlspecialchars($insp['name']) ?></option>
-                        <?php endforeach; ?>
-                    </select>
+                <div class="mb-3 p-2 bg-light border rounded" style="font-size:13px;">
+                    <span class="text-secondary fw-semibold">Inspector (Checked By):</span>
+                    <span id="rejectModalInspectorName<?= $pid ?>" class="fw-bold font-monospace text-primary ms-1">-- Select in Header --</span>
                 </div>
                 <div>
                     <label class="form-label fw-bold">Reason for Rejection <span class="text-danger">*</span></label>
@@ -543,7 +546,61 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 /* ─────────────────────────────────────────────────────────────
-   toggleRolls — unchanged
+   Global QC Inspector Persistence & State Management
+───────────────────────────────────────────────────────────── */
+function escHtml(str) {
+    if (!str) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function updateGlobalQcInspector(val) {
+    val = (val || '').trim();
+    localStorage.setItem('active_qc_inspector', val);
+
+    const fd = new FormData();
+    fd.append('action', 'set_active_inspector');
+    fd.append('name', val);
+    fetch('qc_inspectors_ajax.php', { method: 'POST', body: fd }).catch(() => {});
+
+    evalAllChecklists();
+}
+
+function getGlobalQcInspector() {
+    const sel = document.getElementById('globalQcInspectorSelect');
+    if (sel && sel.value) return sel.value.trim();
+    return localStorage.getItem('active_qc_inspector') || '';
+}
+
+function evalAllChecklists() {
+    document.querySelectorAll('[id^="rollsRow"]').forEach(row => {
+        const pid = row.id.replace('rollsRow', '');
+        evalChecklist(parseInt(pid, 10), null);
+    });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const sel = document.getElementById('globalQcInspectorSelect');
+    if (sel) {
+        const saved = localStorage.getItem('active_qc_inspector');
+        if (saved && (!sel.value || sel.value === '')) {
+            for (let opt of sel.options) {
+                if (opt.value === saved) {
+                    sel.value = saved;
+                    updateGlobalQcInspector(saved);
+                    break;
+                }
+            }
+        }
+    }
+    evalAllChecklists();
+});
+
+/* ─────────────────────────────────────────────────────────────
+   toggleRolls
 ───────────────────────────────────────────────────────────── */
 function toggleRolls(pid) {
     const row     = document.getElementById('rollsRow' + pid);
@@ -555,13 +612,8 @@ function toggleRolls(pid) {
 
 /* ─────────────────────────────────────────────────────────────
    evalChecklist(palletId, productId)
-
-   NEW: tracks which product row passed (topProductId) and
-   writes it into the approve and reject hidden fields.
 ───────────────────────────────────────────────────────────── */
 function evalChecklist(pid, productId) {
-
-    // Update row highlight for the changed row
     if (productId !== null) {
         const windEl = document.getElementById('winding_' + pid + '_' + productId);
         const hairEl = document.getElementById('hairy_'   + pid + '_' + productId);
@@ -571,10 +623,9 @@ function evalChecklist(pid, productId) {
         }
     }
 
-    // Find which product row (if any) has both boxes ticked
     const allWindingBoxes = document.querySelectorAll('[id^="winding_' + pid + '_"]');
     let checklistPassed = false;
-    let topProductId    = 0;   // ← NEW: the product whose row passed
+    let topProductId    = 0;
 
     Array.from(allWindingBoxes).forEach(function(windBox) {
         const parts   = windBox.id.split('_');
@@ -586,36 +637,42 @@ function evalChecklist(pid, productId) {
         }
     });
 
-    // Inspector selection
-    const inspSel      = document.getElementById('inspectorSelect' + pid);
-    const inspectorOk  = inspSel && inspSel.value !== '';
+    const inspectorVal = getGlobalQcInspector();
+    const inspectorOk  = inspectorVal !== '';
     const canApprove   = checklistPassed && inspectorOk;
 
-    // ── Sync hidden fields for APPROVE form ──────────────────
-    const approveCheckedBy  = document.getElementById('approveCheckedBy'  + pid);
-    const approveTopProduct = document.getElementById('approveTopProduct' + pid);
-    if (approveCheckedBy)  approveCheckedBy.value  = inspSel ? inspSel.value : '';
-    if (approveTopProduct) approveTopProduct.value = topProductId > 0 ? topProductId : '';
-
-    // ── Pre-fill reject modal inspector if already chosen ────
-    if (inspSel && inspSel.value) {
-        const rejectSel = document.getElementById('rejectInspectorSelect' + pid);
-        if (rejectSel && rejectSel.value === '') rejectSel.value = inspSel.value;
+    // Sync active inspector badge in row
+    const badge = document.getElementById('activeInspectorBadge' + pid);
+    if (badge) {
+        badge.textContent = inspectorOk ? inspectorVal : '-- Select in Header --';
+        badge.className   = inspectorOk ? 'fw-bold font-monospace px-2 py-1 bg-white rounded border text-success ms-1' : 'fw-bold font-monospace px-2 py-1 bg-white rounded border text-danger ms-1';
     }
 
-    // ── Approve button enable / disable ──────────────────────
+    // Sync hidden fields for APPROVE form
+    const approveCheckedBy  = document.getElementById('approveCheckedBy'  + pid);
+    const approveTopProduct = document.getElementById('approveTopProduct' + pid);
+    if (approveCheckedBy)  approveCheckedBy.value  = inspectorVal;
+    if (approveTopProduct) approveTopProduct.value = topProductId > 0 ? topProductId : '';
+
+    // Sync hidden fields for REJECT form
+    const rejectCheckedBy   = document.getElementById('rejectCheckedBy'   + pid);
+    const rejectModalInsp   = document.getElementById('rejectModalInspectorName' + pid);
+    if (rejectCheckedBy)  rejectCheckedBy.value = inspectorVal;
+    if (rejectModalInsp)  rejectModalInsp.textContent = inspectorOk ? inspectorVal : 'None Selected (Select in Header)';
+
+    // Approve button enable / disable
     const approveBtn = document.getElementById('approveBtn' + pid);
     if (approveBtn) approveBtn.disabled = !canApprove;
 
-    // ── Inspector hint text & bar colour ─────────────────────
+    // Inspector hint text & bar colour
     const cbHint = document.getElementById('cbHint' + pid);
     if (cbHint) {
         if (!inspectorOk) {
             cbHint.style.color = '#ef4444';
-            cbHint.textContent = 'Please select an inspector ↑';
+            cbHint.textContent = 'Please select active inspector in header navigation bar ↑';
         } else {
             cbHint.style.color = '#16a34a';
-            cbHint.textContent = '✓ Inspector selected';
+            cbHint.textContent = '✓ Active inspector selected';
         }
     }
     const cbBar = document.getElementById('checkedByBar' + pid);
@@ -626,25 +683,25 @@ function evalChecklist(pid, productId) {
         if (lbl) lbl.style.color = inspectorOk ? '#166534' : '#991b1b';
     }
 
-    // ── Checklist hint banner ─────────────────────────────────
+    // Checklist hint banner
     const hintEl = document.getElementById('checklistHint' + pid);
     if (!hintEl) return;
     if (canApprove) {
         hintEl.classList.add('hint-ok');
         hintEl.innerHTML = '<i class="bi bi-check-circle-fill"></i>' +
-            '<span><strong>All checks passed ✓</strong> — Inspector selected and checklist complete. Approve button is now unlocked.</span>';
+            '<span><strong>All checks passed ✓</strong> — Inspector set (' + escHtml(inspectorVal) + ') and checklist complete. Approve button unlocked.</span>';
     } else if (checklistPassed && !inspectorOk) {
         hintEl.classList.remove('hint-ok');
         hintEl.innerHTML = '<i class="bi bi-person-x"></i>' +
-            '<span><strong>Checklist done — select an inspector</strong> to unlock the Approve button.</span>';
+            '<span><strong>Checklist done — select active inspector in header bar</strong> to unlock Approve.</span>';
     } else if (!checklistPassed && inspectorOk) {
         hintEl.classList.remove('hint-ok');
         hintEl.innerHTML = '<i class="bi bi-clipboard2-check"></i>' +
-            '<span><strong>Inspector selected — complete the checklist:</strong> tick <em>both</em> boxes on at least one product row.</span>';
+            '<span><strong>Inspector set (' + escHtml(inspectorVal) + ') — complete checklist:</strong> tick <em>both</em> boxes on at least one product row.</span>';
     } else {
         hintEl.classList.remove('hint-ok');
         hintEl.innerHTML = '<i class="bi bi-clipboard2-check"></i>' +
-            '<span><strong>QC Checklist required:</strong> Select an inspector <em>and</em> tick both checkboxes on at least one product row.</span>';
+            '<span><strong>QC Checklist required:</strong> Select active inspector in header bar <em>and</em> tick both checkboxes on at least one product row.</span>';
     }
 }
 
@@ -652,10 +709,12 @@ function evalChecklist(pid, productId) {
    confirmApprove — final client-side gate
 ───────────────────────────────────────────────────────────── */
 function confirmApprove(pid, palletNo, totalWgt) {
-    const inspSel   = document.getElementById('inspectorSelect' + pid);
-    const inspector = inspSel ? inspSel.value : '';
-    if (!inspector) { alert('Please select an inspector before approving.'); return false; }
-    const wgtLine   = totalWgt > 0 ? '\nEst. Total Weight: ' + Number(totalWgt).toFixed(2) + ' kg' : '';
+    const inspector = getGlobalQcInspector();
+    if (!inspector) {
+        alert('Please select an active QC Inspector in the header navigation bar first.');
+        return false;
+    }
+    const wgtLine = totalWgt > 0 ? '\nEst. Total Weight: ' + Number(totalWgt).toFixed(2) + ' kg' : '';
     return confirm('Approve all rolls on pallet ' + palletNo + '?' + wgtLine + '\nChecked By: ' + inspector);
 }
 
@@ -663,17 +722,13 @@ function confirmApprove(pid, palletNo, totalWgt) {
    openRejectModal — syncs inspector + topProductId then shows
 ───────────────────────────────────────────────────────────── */
 function openRejectModal(pid) {
-    const expandSel = document.getElementById('inspectorSelect'   + pid);
-    const modalSel  = document.getElementById('rejectInspectorSelect' + pid);
-    if (expandSel && modalSel && expandSel.value) modalSel.value = expandSel.value;
-
-    // Sync top_product_id into reject modal hidden field
-    const approveTopProduct = document.getElementById('approveTopProduct' + pid);
-    const rejectTopProduct  = document.getElementById('rejectTopProduct'  + pid);
-    if (approveTopProduct && rejectTopProduct) {
-        rejectTopProduct.value = approveTopProduct.value;
+    const inspector = getGlobalQcInspector();
+    if (!inspector) {
+        alert('Please select an active QC Inspector in the header navigation bar first before rejecting.');
+        return false;
     }
 
+    evalChecklist(pid, null);
     new bootstrap.Modal(document.getElementById('rejectModal' + pid)).show();
 }
 
@@ -681,18 +736,17 @@ function openRejectModal(pid) {
    syncRejectFields — validates and syncs before reject submit
 ───────────────────────────────────────────────────────────── */
 function syncRejectFields(pid) {
-    const modalSel = document.getElementById('rejectInspectorSelect' + pid);
-    if (!modalSel || !modalSel.value) {
-        alert('Please select an inspector before rejecting.'); return false;
+    const inspector = getGlobalQcInspector();
+    if (!inspector) {
+        alert('Please select an active QC Inspector in the header navigation bar first.');
+        return false;
     }
     const hiddenCB  = document.getElementById('rejectCheckedBy'   + pid);
     const hiddenTP  = document.getElementById('rejectTopProduct'  + pid);
     const approveTP = document.getElementById('approveTopProduct' + pid);
-    if (hiddenCB)  hiddenCB.value  = modalSel.value;
+    if (hiddenCB)  hiddenCB.value  = inspector;
     if (hiddenTP && approveTP) hiddenTP.value = approveTP.value;
 
-    // top_product_id is optional for reject (inspector didn't need to tick checklist)
-    // but if they did tick it, we record it. No block if 0.
     return true;
 }
 </script>

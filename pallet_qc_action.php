@@ -168,6 +168,10 @@ $pallet_id       = intval($_POST['pallet_id']       ?? 0);
 $checked_by      = trim($_POST['checked_by']      ?? '');
 $top_product_id  = intval($_POST['top_product_id']  ?? 0);
 
+if ($checked_by === '' && !empty($_SESSION['active_qc_inspector'])) {
+    $checked_by = trim($_SESSION['active_qc_inspector']);
+}
+
 if ($pallet_id <= 0) {
     header("Location: qc_dashboard.php?error=invalid_id");
     exit;
@@ -176,7 +180,7 @@ if ($pallet_id <= 0) {
 // Server-side guard: inspector must be set (required for BOTH actions)
 if ($checked_by === '') {
     header("Location: qc_dashboard.php?error=" .
-        urlencode('Please select an inspector name before proceeding.'));
+        urlencode('Please select an active inspector name in the header navbar before proceeding.'));
     exit;
 }
 

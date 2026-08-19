@@ -31,6 +31,14 @@ if ($action === 'list') {
     exit;
 }
 
+// ── POST: set active QC inspector session ─────────────────────
+if ($action === 'set_active_inspector') {
+    $name = trim($_POST['name'] ?? '');
+    $_SESSION['active_qc_inspector'] = $name;
+    echo json_encode(['ok' => true, 'active_qc_inspector' => $name]);
+    exit;
+}
+
 // ── POST: add inspector ───────────────────────────────────────
 if ($action === 'add') {
     $name = trim($_POST['name'] ?? '');
