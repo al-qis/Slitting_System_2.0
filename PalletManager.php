@@ -1629,4 +1629,74 @@ class PalletManager
 
         return ['ok' => true, 'latest' => $res];
     }
+
+    /**
+     * Get the next auto-generated Pallet ID for a given Year (YY), Month (MM), and Suffix (none, B, BN).
+     * Format: SFS-YYMM-XXX or SFS-YYMM-XXX (SUFFIX)
+     * Resets counter to 000 if no record exists for that YYMM + Suffix.
+     *
+     * @return array{ok: bool, next_pallet_no: string, highest_pallet_no: ?string, counter: int, yy: string, mm: string, suffix: string}
+     */
+    public function getNextPalletNo(string $yy, string $mm, string $suffix = 'none'): array
+    {
+        $yyInt = (int)preg_replace('/[^0-9]/', '', $yy);
+        $mmInt = (int)preg_replace('/[^0-9]/', '', $mm);
+
+        if ($yyInt <= 0) $yyInt = (int)date('y');
+        if ($mmInt < 1 || $mmInt > 12) $mmInt = (int)date('m');
+
+        $yyClean = sprintf("%02d", $yyInt % 100);
+        $mmClean = sprintf("%02d", $mmInt);
+
+        $suffix = strtolower(trim($suffix));
+        if ($suffix !== 'b' && $suffix !== 'bn') {
+            $suffix = 'none';
+        }
+
+        $prefixPattern = "SFS-{$yyClean}{$mmClean}-%";
+
+        if ($suffix === 'none') {
+            $sql = "SELECT pallet_no FROM pallets WHERE pallet_no LIKE ? AND pallet_no NOT LIKE '%(%)%' ORDER BY pallet_no DESC, id DESC LIMIT 1";
+            $stmt = $this->conn->prepare($sql);
+            $stmt->bind_param("s", $prefixPattern);
+        } else {
+            $sufPattern = "%(" . strtoupper($suffix) . ")";
+            $sql = "SELECT pallet_no FROM pallets WHERE pallet_no LIKE ? AND pallet_no LIKE ? ORDER BY pallet_no DESC, id DESC LIMIT 1";
+            $stmt = $this->conn->prepare($sql);
+            $stmt->bind_param("ss", $prefixPattern, $sufPattern);
+        }
+
+        $stmt->execute();
+        $res = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        if (!$res) {
+            $nextSeq = 1;
+            $highestPalletNo = null;
+        } else {
+            $highestPalletNo = $res['pallet_no'];
+            if (preg_match('/SFS-\d{4}-(\d{3,})/', $res['pallet_no'], $matches)) {
+                $lastSeq = (int)$matches[1];
+                $nextSeq = $lastSeq + 1;
+            } else {
+                $nextSeq = 1;
+            }
+        }
+
+        $seqStr = str_pad((string)$nextSeq, 3, '0', STR_PAD_LEFT);
+        $nextPalletNo = "SFS-{$yyClean}{$mmClean}-{$seqStr}";
+        if ($suffix !== 'none') {
+            $nextPalletNo .= " (" . strtoupper($suffix) . ")";
+        }
+
+        return [
+            'ok'                => true,
+            'next_pallet_no'    => $nextPalletNo,
+            'highest_pallet_no' => $highestPalletNo,
+            'counter'           => $nextSeq,
+            'yy'                => $yyClean,
+            'mm'                => $mmClean,
+            'suffix'            => $suffix
+        ];
+    }
 }
