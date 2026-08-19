@@ -24,6 +24,7 @@ $stmt->close();
 
 $activeCount   = count(array_filter($inspectors, fn($r) => $r['is_active']));
 $inactiveCount = count($inspectors) - $activeCount;
+$activeInspectorSession = $_SESSION['active_qc_inspector'] ?? '';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -120,9 +121,23 @@ $inactiveCount = count($inspectors) - $activeCount;
         <a class="navbar-brand fw-bold" href="qc_dashboard.php">
             <i class="bi bi-shield-check"></i> NICHIAS QC MANAGEMENT
         </a>
-        <a href="qc_dashboard.php" class="btn btn-outline-light btn-sm">
-            <i class="bi bi-arrow-left me-1"></i> Back to Dashboard
-        </a>
+        <div class="d-flex align-items-center gap-3">
+            <div class="d-flex align-items-center bg-white bg-opacity-10 border border-light border-opacity-25 rounded-3 px-2 py-1 text-light">
+                <i class="bi bi-person-badge-fill text-warning me-1"></i>
+                <label for="globalQcInspectorSelect" class="small me-2 mb-0 fw-semibold text-white-50">Active Inspector:</label>
+                <select id="globalQcInspectorSelect" class="form-select form-select-sm border-0 shadow-none font-monospace fw-bold py-0 text-dark" style="width: auto; background:#ffffff; font-size:12px;" onchange="updateGlobalQcInspector(this.value)">
+                    <option value="">-- Select Active Inspector --</option>
+                    <?php foreach ($inspectors as $insp): if (!$insp['is_active']) continue; ?>
+                    <option value="<?= htmlspecialchars($insp['name'], ENT_QUOTES) ?>" <?= ($activeInspectorSession === $insp['name']) ? 'selected' : '' ?>>
+                        <?= htmlspecialchars($insp['name']) ?>
+                    </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <a href="qc_dashboard.php" class="btn btn-outline-light btn-sm">
+                <i class="bi bi-arrow-left me-1"></i> Back to Dashboard
+            </a>
+        </div>
     </div>
 </nav>
 
@@ -331,8 +346,31 @@ async function restoreInspector(name) {
                 btn.setAttribute('onclick', `deleteInspector(${r.id}, '${esc(name)}')`);
             }
         }
-    }
+function updateGlobalQcInspector(val) {
+    val = (val || '').trim();
+    localStorage.setItem('active_qc_inspector', val);
+
+    const fd = new FormData();
+    fd.append('action', 'set_active_inspector');
+    fd.append('name', val);
+    fetch('qc_inspectors_ajax.php', { method: 'POST', body: fd }).catch(() => {});
 }
+
+document.addEventListener('DOMContentLoaded', () => {
+    const sel = document.getElementById('globalQcInspectorSelect');
+    if (sel) {
+        const saved = localStorage.getItem('active_qc_inspector');
+        if (saved && (!sel.value || sel.value === '')) {
+            for (let opt of sel.options) {
+                if (opt.value === saved) {
+                    sel.value = saved;
+                    updateGlobalQcInspector(saved);
+                    break;
+                }
+            }
+        }
+    }
+});
 </script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
