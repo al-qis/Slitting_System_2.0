@@ -36,6 +36,13 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'validate_pallet_no') {
     exit;
 }
 
+// ── AJAX: get latest pallet numbers (none, B, BN) ─────────────
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'get_latest_pallets') {
+    header('Content-Type: application/json');
+    echo json_encode($pm->getLatestPalletNumbers());
+    exit;
+}
+
 // ── AJAX: product lookup (now includes std_weight) ────────────
 if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
     header('Content-Type: application/json');
@@ -2004,6 +2011,25 @@ if (isset($_GET['success'])): ?>
         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body pb-2">
+        <!-- Latest Pallet Numbers Info Card -->
+        <div class="p-2 mb-3 bg-light border rounded" style="font-size:12px;">
+          <div class="fw-bold text-dark mb-1 border-bottom pb-1" style="font-size:11px; text-transform:uppercase; letter-spacing:.5px;">
+            <i class="bi bi-clock-history me-1 text-primary"></i>Latest Pallet Numbers Created
+          </div>
+          <div class="d-flex justify-content-between align-items-center py-1">
+            <span class="text-secondary">Standard (None):</span>
+            <span id="latestPalletNone" class="font-monospace fw-bold text-dark cursor-pointer" title="Click to insert" onclick="useLatestPalletNo(this)">-</span>
+          </div>
+          <div class="d-flex justify-content-between align-items-center py-1 border-top border-light">
+            <span class="text-secondary">(B):</span>
+            <span id="latestPalletB" class="font-monospace fw-bold text-dark cursor-pointer" title="Click to insert" onclick="useLatestPalletNo(this)">-</span>
+          </div>
+          <div class="d-flex justify-content-between align-items-center py-1 border-top border-light">
+            <span class="text-secondary">(BN):</span>
+            <span id="latestPalletBN" class="font-monospace fw-bold text-dark cursor-pointer" title="Click to insert" onclick="useLatestPalletNo(this)">-</span>
+          </div>
+        </div>
+
         <div class="mb-3">
           <label class="form-label fw-bold mb-1">
             Pallet Serial No <span class="text-danger">*</span>
@@ -2747,6 +2773,17 @@ document.getElementById('manCombined')?.addEventListener('keydown', function (e)
 let palletNoValid = false;
 let palletNoTimer;
 
+function useLatestPalletNo(el) {
+    const text = el.textContent ? el.textContent.trim() : '';
+    if (!text || text === '-' || text === 'None' || text === '—') return;
+    const inp = document.getElementById('palletNoInput');
+    if (inp) {
+        inp.value = text;
+        inp.dispatchEvent(new Event('input', { bubbles: true }));
+        inp.focus();
+    }
+}
+
 document.getElementById('createPalletModal')?.addEventListener('show.bs.modal', () => {
     palletNoValid = false;
     const inp = document.getElementById('palletNoInput');
@@ -2754,6 +2791,34 @@ document.getElementById('createPalletModal')?.addEventListener('show.bs.modal', 
     inp.classList.remove('is-valid', 'is-invalid');
     document.getElementById('palletNoFeedback').innerHTML = '';
     document.getElementById('createPalletBtn').disabled = true;
+
+    const sp = '<span class="spinner-border spinner-border-sm text-secondary" style="width:.75rem;height:.75rem;"></span>';
+    const elNone = document.getElementById('latestPalletNone');
+    const elB    = document.getElementById('latestPalletB');
+    const elBN   = document.getElementById('latestPalletBN');
+    if (elNone) elNone.innerHTML = sp;
+    if (elB)    elB.innerHTML    = sp;
+    if (elBN)   elBN.innerHTML   = sp;
+
+    fetch('pallet.php?ajax=get_latest_pallets')
+        .then(r => r.json())
+        .then(res => {
+            if (res.ok && res.latest) {
+                if (elNone) elNone.textContent = res.latest.none || 'None';
+                if (elB)    elB.textContent    = res.latest.B    || 'None';
+                if (elBN)   elBN.textContent   = res.latest.BN   || 'None';
+            } else {
+                if (elNone) elNone.textContent = '—';
+                if (elB)    elB.textContent    = '—';
+                if (elBN)   elBN.textContent   = '—';
+            }
+        })
+        .catch(() => {
+            if (elNone) elNone.textContent = '—';
+            if (elB)    elB.textContent    = '—';
+            if (elBN)   elBN.textContent   = '—';
+        });
+
     setTimeout(() => inp.focus(), 300);
 });
 
