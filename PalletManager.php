@@ -1585,4 +1585,48 @@ class PalletManager
         }
         return $formatted;
     }
+
+    /**
+     * Get the latest pallet numbers created for none (standard), (B), and (BN).
+     * Used in Create Pallet UI to inform operators and avoid duplicate serials.
+     *
+     * @return array{ok: true, latest: array{none: ?string, B: ?string, BN: ?string}}
+     */
+    public function getLatestPalletNumbers(): array
+    {
+        $res = [
+            'none' => null,
+            'B'    => null,
+            'BN'   => null,
+        ];
+
+        // 1. Highest standard (none) - no suffix in parentheses
+        $stmt = $this->conn->prepare("SELECT pallet_no FROM pallets WHERE pallet_no NOT LIKE '%(%)%' ORDER BY pallet_no DESC, id DESC LIMIT 1");
+        if ($stmt) {
+            $stmt->execute();
+            $r = $stmt->get_result()->fetch_assoc();
+            if ($r) $res['none'] = $r['pallet_no'];
+            $stmt->close();
+        }
+
+        // 2. Highest (B)
+        $stmt = $this->conn->prepare("SELECT pallet_no FROM pallets WHERE pallet_no LIKE '%(B)' ORDER BY pallet_no DESC, id DESC LIMIT 1");
+        if ($stmt) {
+            $stmt->execute();
+            $r = $stmt->get_result()->fetch_assoc();
+            if ($r) $res['B'] = $r['pallet_no'];
+            $stmt->close();
+        }
+
+        // 3. Highest (BN)
+        $stmt = $this->conn->prepare("SELECT pallet_no FROM pallets WHERE pallet_no LIKE '%(BN)' ORDER BY pallet_no DESC, id DESC LIMIT 1");
+        if ($stmt) {
+            $stmt->execute();
+            $r = $stmt->get_result()->fetch_assoc();
+            if ($r) $res['BN'] = $r['pallet_no'];
+            $stmt->close();
+        }
+
+        return ['ok' => true, 'latest' => $res];
+    }
 }
