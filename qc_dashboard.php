@@ -184,6 +184,31 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
         /* approve disabled */
         .btn-approve-pallet:disabled,
         .btn-approve-pallet[disabled]{ opacity:.4; cursor:not-allowed; pointer-events:none; }
+
+        /* Scanning Row Highlights & Focus Effects */
+        .scan-row-highlight {
+            outline: 3px solid #2563eb !important;
+            background-color: #eff6ff !important;
+            transition: all 0.3s ease;
+            animation: scanRowPulse 1.8s ease-in-out 3;
+        }
+        @keyframes scanRowPulse {
+            0%   { background-color: #dbeafe; box-shadow: inset 0 0 12px rgba(37,99,235,0.4); }
+            50%  { background-color: #bfdbfe; box-shadow: inset 0 0 20px rgba(37,99,235,0.7); }
+            100% { background-color: #eff6ff; box-shadow: none; }
+        }
+        .scan-focus-checklist {
+            border: 2px solid #2563eb !important;
+            background-color: #f0f9ff !important;
+            border-radius: 6px;
+            padding: 6px;
+            box-shadow: 0 0 12px rgba(37,99,235,0.35);
+            animation: checklistPulse 2s infinite alternate;
+        }
+        @keyframes checklistPulse {
+            from { box-shadow: 0 0 6px rgba(37,99,235,0.2); }
+            to   { box-shadow: 0 0 14px rgba(37,99,235,0.6); }
+        }
     </style>
 </head>
 <body>
@@ -245,6 +270,41 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
         <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
     </div>
     <?php endif; ?>
+
+    <!-- Rapid Barcode/QR Scanning Bar -->
+    <div class="card mb-4 border-0 shadow-sm bg-white rounded-3">
+        <div class="card-body p-3">
+            <div class="d-flex flex-wrap align-items-center justify-content-between gap-2">
+                <div class="d-flex align-items-center gap-2 flex-grow-1" style="min-width: 280px;">
+                    <div class="input-group">
+                        <span class="input-group-text bg-primary text-white border-primary">
+                            <i class="bi bi-qr-code-scan"></i>
+                        </span>
+                        <input type="text" id="qcScanInput" class="form-control font-monospace"
+                               placeholder="Scan product coil barcode / QR code or Pallet No (Hardware scanner ready)..."
+                               autocomplete="off" autocorrect="off" spellcheck="false"
+                               onkeydown="if(event.key==='Enter'){ handleQCScan(this.value); this.value=''; }">
+                        <button type="button" class="btn btn-primary fw-bold" onclick="var el=document.getElementById('qcScanInput'); handleQCScan(el.value); el.value='';">
+                            <i class="bi bi-search me-1"></i> Scan Lookup
+                        </button>
+                    </div>
+                </div>
+                <div class="d-flex align-items-center gap-2">
+                    <span class="badge bg-success bg-opacity-10 text-success border border-success border-opacity-25 px-2 py-2 d-none d-md-inline-flex align-items-center gap-1" title="Hardware scanner gun automatically detected">
+                        <i class="bi bi-keyboard-fill"></i> USB/BT Gun Ready
+                    </span>
+                    <button type="button" class="btn btn-outline-dark fw-semibold" id="qcCamBtn" onclick="if(document.getElementById('cam-scan-btn')){ document.getElementById('cam-scan-btn').click(); }">
+                        <i class="bi bi-camera-fill text-primary me-1"></i> Camera Scanner
+                    </button>
+                </div>
+            </div>
+            <!-- Alert / Toast Banner for Scan Feedback -->
+            <div id="qcScanAlert" class="alert alert-dismissible fade show mt-2 mb-0 d-none" role="alert">
+                <span id="qcScanAlertMsg"></span>
+                <button type="button" class="btn-close" onclick="document.getElementById('qcScanAlert').classList.add('d-none');"></button>
+            </div>
+        </div>
+    </div>
 
     <!-- summary cards -->
     <div class="row g-3 mb-4">
@@ -326,7 +386,7 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
                 <?php foreach ($pallets as $pallet):
                     $pid = (int)$pallet['id'];
                 ?>
-                <tr class="pallet-row expand-toggle" onclick="toggleRolls(<?= $pid ?>)">
+                <tr class="pallet-row expand-toggle" id="pallet-row-<?= $pid ?>" data-pallet-id="<?= $pid ?>" data-pallet-no="<?= htmlspecialchars($pallet['pallet_no'], ENT_QUOTES) ?>" onclick="toggleRolls(<?= $pid ?>)">
                     <td class="text-center">
                         <i class="bi bi-chevron-right" id="chevron<?= $pid ?>" style="transition:transform .2s;"></i>
                     </td>
@@ -436,7 +496,7 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
                                 $itemWgt   = calcEstWeight($itemLen,(float)$item['width'],(float)$item['std_weight']);
                                 $productId = (int)$item['product_id'];
                             ?>
-                                <tr class="roll-check-row" id="checkRow_<?= $pid ?>_<?= $productId ?>">
+                                <tr class="roll-check-row" id="checkRow_<?= $pid ?>_<?= $productId ?>" data-pallet-id="<?= $pid ?>" data-product-id="<?= $productId ?>" data-lot="<?= htmlspecialchars($item['lot_no'], ENT_QUOTES) ?>" data-coil="<?= htmlspecialchars($item['coil_no'], ENT_QUOTES) ?>" data-roll="<?= htmlspecialchars($item['roll_no'], ENT_QUOTES) ?>">
                                     <td><?= $item['seq'] ?></td>
                                     <td><?= htmlspecialchars($item['product']??'—') ?></td>
                                     <td class="roll-ref">
@@ -457,7 +517,7 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
                                         <span class="wgt-chip-roll"><i class="bi bi-speedometer2"></i><?= number_format($itemWgt,2) ?> kg</span>
                                         <?php else: ?><span class="text-muted" style="font-size:11px;">N/A</span><?php endif; ?>
                                     </td>
-                                    <td class="checklist-cell text-center">
+                                    <td class="checklist-cell text-center" id="checklistCell_<?= $pid ?>_<?= $productId ?>">
                                         <div class="checklist-item">
                                             <input type="checkbox"
                                                    id="winding_<?= $pid ?>_<?= $productId ?>"
@@ -748,6 +808,167 @@ function syncRejectFields(pid) {
     if (hiddenTP && approveTP) hiddenTP.value = approveTP.value;
 
     return true;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   QC Dashboard Barcode/QR Scanning Engine
+───────────────────────────────────────────────────────────── */
+
+// Audio feedback (Web Audio API)
+function playAudioBeep(type) {
+    try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+        const ctx = new AudioCtx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        if (type === 'success') {
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(880, ctx.currentTime);
+            osc.frequency.setValueAtTime(1174.66, ctx.currentTime + 0.1);
+            gain.gain.setValueAtTime(0.3, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.25);
+            osc.start(ctx.currentTime);
+            osc.stop(ctx.currentTime + 0.25);
+        } else {
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(220, ctx.currentTime);
+            osc.frequency.setValueAtTime(164.81, ctx.currentTime + 0.12);
+            gain.gain.setValueAtTime(0.4, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+            osc.start(ctx.currentTime);
+            osc.stop(ctx.currentTime + 0.35);
+        }
+    } catch (e) {
+        console.warn('Audio feedback failed:', e);
+    }
+}
+
+// Visual Toast/Alert Banner
+function showScanAlert(msg, type) {
+    const alertBox = document.getElementById('qcScanAlert');
+    const alertMsg = document.getElementById('qcScanAlertMsg');
+    if (!alertBox || !alertMsg) return;
+
+    alertBox.className = 'alert alert-dismissible fade show mt-2 mb-0 alert-' + (type === 'success' ? 'success' : type === 'info' ? 'info' : 'danger');
+    alertMsg.innerHTML = (type === 'success' ? '<i class="bi bi-check-circle-fill me-2"></i>' : type === 'info' ? '<i class="bi bi-info-circle-fill me-2"></i>' : '<i class="bi bi-exclamation-triangle-fill me-2"></i>') + msg;
+    alertBox.classList.remove('d-none');
+
+    clearTimeout(window.qcScanAlertTimer);
+    if (type !== 'info') {
+        window.qcScanAlertTimer = setTimeout(function() {
+            alertBox.classList.add('d-none');
+        }, 6000);
+    }
+}
+
+// Core scan lookup trigger
+function handleQCScan(scannedText) {
+    if (!scannedText || !scannedText.trim()) return;
+    const text = scannedText.trim();
+
+    showScanAlert('Searching for "' + escHtml(text) + '"…', 'info');
+
+    const fd = new FormData();
+    fd.append('qr', text);
+
+    fetch('qc_scan_lookup.php', {
+        method: 'POST',
+        body: fd
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.ok) {
+            playAudioBeep('success');
+            showScanAlert('<strong>Matched Pallet ' + escHtml(data.pallet_no) + '!</strong> Please inspect and tick checklist items.', 'success');
+            highlightAndOpenPallet(data.pallet_id, data.slitting_product_id);
+        } else {
+            playAudioBeep('error');
+            showScanAlert(data.msg || 'Pallet/Coil not found or already processed.', 'danger');
+        }
+    })
+    .catch(err => {
+        console.error('Scan lookup error:', err);
+        if (!searchLocalDOM(text)) {
+            playAudioBeep('error');
+            showScanAlert('Pallet/Coil not found or network lookup failed.', 'danger');
+        }
+    });
+}
+
+// Client-side DOM fallback
+function searchLocalDOM(text) {
+    text = text.toUpperCase().trim();
+    const palletRows = document.querySelectorAll('[data-pallet-no]');
+    for (let pRow of palletRows) {
+        const pNo = (pRow.getAttribute('data-pallet-no') || '').toUpperCase();
+        if (pNo === text || pNo.includes(text)) {
+            const pid = parseInt(pRow.getAttribute('data-pallet-id'), 10);
+            playAudioBeep('success');
+            showScanAlert('<strong>Matched Pallet ' + escHtml(pRow.getAttribute('data-pallet-no')) + '!</strong>', 'success');
+            highlightAndOpenPallet(pid, null);
+            return true;
+        }
+    }
+    const rollRows = document.querySelectorAll('[data-lot]');
+    for (let rRow of rollRows) {
+        const lot  = (rRow.getAttribute('data-lot') || '').toUpperCase();
+        const coil = (rRow.getAttribute('data-coil') || '').toUpperCase();
+        if (lot && coil && text.includes(lot) && text.includes(coil)) {
+            const pid = parseInt(rRow.getAttribute('data-pallet-id'), 10);
+            const prodId = parseInt(rRow.getAttribute('data-product-id'), 10);
+            playAudioBeep('success');
+            showScanAlert('<strong>Matched Roll on Pallet!</strong> Please inspect checklist items.', 'success');
+            highlightAndOpenPallet(pid, prodId);
+            return true;
+        }
+    }
+    return false;
+}
+
+// Highlight & navigate to target pallet and roll
+function highlightAndOpenPallet(pid, productId) {
+    document.querySelectorAll('.scan-row-highlight').forEach(el => el.classList.remove('scan-row-highlight'));
+    document.querySelectorAll('.scan-focus-checklist').forEach(el => el.classList.remove('scan-focus-checklist'));
+
+    const palletRow = document.getElementById('pallet-row-' + pid);
+    const rollsRow  = document.getElementById('rollsRow' + pid);
+
+    if (!palletRow) return;
+
+    if (rollsRow && rollsRow.style.display === 'none') {
+        toggleRolls(pid);
+    }
+
+    palletRow.classList.add('scan-row-highlight');
+    palletRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    if (productId) {
+        const rollRow = document.getElementById('checkRow_' + pid + '_' + productId);
+        const cell    = document.getElementById('checklistCell_' + pid + '_' + productId);
+        const windBox = document.getElementById('winding_' + pid + '_' + productId);
+
+        if (rollRow) rollRow.classList.add('scan-row-highlight');
+        if (cell)    cell.classList.add('scan-focus-checklist');
+
+        // Focus the first checkbox for QC user to manually inspect and tick
+        if (windBox) {
+            setTimeout(function() { windBox.focus(); }, 450);
+        }
+    }
+}
+</script>
+<script src="camera_scanner.js?v=8"></script>
+<script>
+if (typeof initCameraScanner === 'function') {
+    initCameraScanner({
+        onScan: function(text) {
+            handleQCScan(text);
+        }
+    });
 }
 </script>
 </body>
