@@ -76,6 +76,14 @@ $activeInspectorSession = $_SESSION['active_qc_inspector'] ?? '';
         }
         .btn-del:hover { background: #fca5a5; }
 
+        .btn-edit {
+            background: #e0f2fe; color: #0369a1; border: none;
+            border-radius: 7px; padding: 5px 12px; font-size: 12px;
+            font-weight: 700; cursor: pointer; transition: background .15s;
+            display: inline-flex; align-items: center; gap: 4px;
+        }
+        .btn-edit:hover { background: #bae6fd; }
+
         .btn-restore {
             background: #dcfce7; color: #166534; border: none;
             border-radius: 7px; padding: 5px 12px; font-size: 12px;
@@ -174,7 +182,7 @@ $activeInspectorSession = $_SESSION['active_qc_inspector'] ?? '';
                 id="inspRow<?= $insp['id'] ?>">
                 <div>
                     <div class="insp-name">
-                        <?= htmlspecialchars($insp['name']) ?>
+                        <span class="insp-name-text"><?= htmlspecialchars($insp['name']) ?></span>
                         <?php if (!$insp['is_active']): ?>
                             <span class="insp-badge" style="background:#f1f5f9;color:#64748b;">Removed</span>
                         <?php else: ?>
@@ -185,17 +193,23 @@ $activeInspectorSession = $_SESSION['active_qc_inspector'] ?? '';
                         Added: <?= date('d M Y', strtotime($insp['created_at'])) ?>
                     </div>
                 </div>
+                <div class="insp-actions d-flex gap-2">
                 <?php if ($insp['is_active']): ?>
-                <button class="btn-del"
-                        onclick="deleteInspector(<?= $insp['id'] ?>, '<?= htmlspecialchars(addslashes($insp['name'])) ?>')">
-                    <i class="bi bi-trash3"></i> Remove
-                </button>
+                    <button class="btn-edit"
+                            onclick="editInspector(<?= $insp['id'] ?>, '<?= htmlspecialchars(addslashes($insp['name'])) ?>')">
+                        <i class="bi bi-pencil"></i> Edit
+                    </button>
+                    <button class="btn-del"
+                            onclick="deleteInspector(<?= $insp['id'] ?>, '<?= htmlspecialchars(addslashes($insp['name'])) ?>')">
+                        <i class="bi bi-trash3"></i> Remove
+                    </button>
                 <?php else: ?>
-                <button class="btn-restore"
-                        onclick="restoreInspector('<?= htmlspecialchars(addslashes($insp['name'])) ?>')">
-                    <i class="bi bi-arrow-counterclockwise"></i> Restore
-                </button>
+                    <button class="btn-restore"
+                            onclick="restoreInspector('<?= htmlspecialchars(addslashes($insp['name'])) ?>')">
+                        <i class="bi bi-arrow-counterclockwise"></i> Restore
+                    </button>
                 <?php endif; ?>
+                </div>
             </li>
             <?php endforeach; ?>
 
@@ -270,15 +284,20 @@ async function addInspector() {
         const existingRow = document.getElementById('inspRow' + r.id);
         if (existingRow) {
             existingRow.classList.remove('inactive');
-            existingRow.querySelector('.insp-badge').style.background = '#dcfce7';
-            existingRow.querySelector('.insp-badge').style.color      = '#166534';
-            existingRow.querySelector('.insp-badge').textContent      = 'Active';
-            // Swap restore button for delete button
-            const btn = existingRow.querySelector('button');
-            if (btn) {
-                btn.className = 'btn-del';
-                btn.innerHTML = '<i class="bi bi-trash3"></i> Remove';
-                btn.setAttribute('onclick', `deleteInspector(${r.id}, '${esc(r.name)}')`);
+            const nameTxt = existingRow.querySelector('.insp-name-text');
+            if (nameTxt) nameTxt.textContent = r.name;
+            const badge = existingRow.querySelector('.insp-badge');
+            if (badge) { badge.style.background = '#dcfce7'; badge.style.color = '#166534'; badge.textContent = 'Active'; }
+
+            const actions = existingRow.querySelector('.insp-actions');
+            if (actions) {
+                actions.innerHTML = `
+                    <button class="btn-edit" onclick="editInspector(${r.id}, '${esc(r.name)}')">
+                        <i class="bi bi-pencil"></i> Edit
+                    </button>
+                    <button class="btn-del" onclick="deleteInspector(${r.id}, '${esc(r.name)}')">
+                        <i class="bi bi-trash3"></i> Remove
+                    </button>`;
             }
         } else {
             // Append new row
@@ -288,15 +307,58 @@ async function addInspector() {
             li.innerHTML = `
                 <div>
                     <div class="insp-name">
-                        ${esc(r.name)}
+                        <span class="insp-name-text">${esc(r.name)}</span>
                         <span class="insp-badge" style="background:#dcfce7;color:#166534;">Active</span>
                     </div>
                     <div class="insp-date">Added: just now</div>
                 </div>
-                <button class="btn-del" onclick="deleteInspector(${r.id}, '${esc(r.name)}')">
-                    <i class="bi bi-trash3"></i> Remove
-                </button>`;
+                <div class="insp-actions d-flex gap-2">
+                    <button class="btn-edit" onclick="editInspector(${r.id}, '${esc(r.name)}')">
+                        <i class="bi bi-pencil"></i> Edit
+                    </button>
+                    <button class="btn-del" onclick="deleteInspector(${r.id}, '${esc(r.name)}')">
+                        <i class="bi bi-trash3"></i> Remove
+                    </button>
+                </div>`;
             document.getElementById('inspectorList').appendChild(li);
+        }
+    }
+}
+
+/* ── Edit inspector ─────────────────────────────────────────── */
+async function editInspector(id, currentName) {
+    const newName = prompt('Edit inspector name:', currentName);
+    if (newName === null) return;
+    const name = newName.trim();
+    if (!name) { toast('Name cannot be empty.', false); return; }
+    if (name === currentName) return;
+
+    const r = await post({ action: 'edit', id, name });
+    toast(r.msg, r.ok);
+
+    if (r.ok) {
+        const row = document.getElementById('inspRow' + id);
+        if (row) {
+            const nameTxt = row.querySelector('.insp-name-text');
+            if (nameTxt) nameTxt.textContent = r.name;
+
+            const editBtn = row.querySelector('.btn-edit');
+            if (editBtn) editBtn.setAttribute('onclick', `editInspector(${id}, '${esc(r.name)}')`);
+
+            const delBtn = row.querySelector('.btn-del');
+            if (delBtn) delBtn.setAttribute('onclick', `deleteInspector(${id}, '${esc(r.name)}')`);
+        }
+
+        // Update dropdown if option exists
+        const sel = document.getElementById('globalQcInspectorSelect');
+        if (sel) {
+            for (let opt of sel.options) {
+                if (opt.value === currentName) {
+                    opt.value = r.name;
+                    opt.textContent = r.name;
+                    break;
+                }
+            }
         }
     }
 }
@@ -312,15 +374,15 @@ async function deleteInspector(id, name) {
         const row = document.getElementById('inspRow' + id);
         if (row) {
             row.classList.add('inactive');
-            row.querySelector('.insp-badge').style.background = '#f1f5f9';
-            row.querySelector('.insp-badge').style.color      = '#64748b';
-            row.querySelector('.insp-badge').textContent      = 'Removed';
-            // Swap delete button for restore button
-            const btn = row.querySelector('button');
-            if (btn) {
-                btn.className = 'btn-restore';
-                btn.innerHTML = '<i class="bi bi-arrow-counterclockwise"></i> Restore';
-                btn.setAttribute('onclick', `restoreInspector('${esc(name)}')`);
+            const badge = row.querySelector('.insp-badge');
+            if (badge) { badge.style.background = '#f1f5f9'; badge.style.color = '#64748b'; badge.textContent = 'Removed'; }
+
+            const actions = row.querySelector('.insp-actions');
+            if (actions) {
+                actions.innerHTML = `
+                    <button class="btn-restore" onclick="restoreInspector('${esc(name)}')">
+                        <i class="bi bi-arrow-counterclockwise"></i> Restore
+                    </button>`;
             }
         }
     }
@@ -336,16 +398,25 @@ async function restoreInspector(name) {
         const row = document.getElementById('inspRow' + r.id);
         if (row) {
             row.classList.remove('inactive');
-            row.querySelector('.insp-badge').style.background = '#dcfce7';
-            row.querySelector('.insp-badge').style.color      = '#166534';
-            row.querySelector('.insp-badge').textContent      = 'Active';
-            const btn = row.querySelector('button');
-            if (btn) {
-                btn.className = 'btn-del';
-                btn.innerHTML = '<i class="bi bi-trash3"></i> Remove';
-                btn.setAttribute('onclick', `deleteInspector(${r.id}, '${esc(name)}')`);
+            const nameTxt = row.querySelector('.insp-name-text');
+            if (nameTxt) nameTxt.textContent = r.name;
+            const badge = row.querySelector('.insp-badge');
+            if (badge) { badge.style.background = '#dcfce7'; badge.style.color = '#166534'; badge.textContent = 'Active'; }
+
+            const actions = row.querySelector('.insp-actions');
+            if (actions) {
+                actions.innerHTML = `
+                    <button class="btn-edit" onclick="editInspector(${r.id}, '${esc(r.name)}')">
+                        <i class="bi bi-pencil"></i> Edit
+                    </button>
+                    <button class="btn-del" onclick="deleteInspector(${r.id}, '${esc(r.name)}')">
+                        <i class="bi bi-trash3"></i> Remove
+                    </button>`;
             }
         }
+    }
+}
+
 function updateGlobalQcInspector(val) {
     val = (val || '').trim();
     localStorage.setItem('active_qc_inspector', val);
