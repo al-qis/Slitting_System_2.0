@@ -43,18 +43,40 @@ $inspStmt->close();
 
 $activeInspectorSession = $_SESSION['active_qc_inspector'] ?? '';
 
-// Pending pallets
-$result = $conn->query("
+// Pending pallets date filtering (single date)
+$filter_date = trim($_GET['filter_date'] ?? $_GET['date'] ?? '');
+
+$where  = "WHERE p.status = 'pending_qc'";
+$params = [];
+$types  = '';
+
+if ($filter_date !== '') {
+    $where .= " AND DATE(p.updated_at) = ?";
+    $params[] = $filter_date;
+    $types   .= 's';
+}
+
+$sql = "
     SELECT p.id, p.pallet_no, p.status,
            p.customer_name, p.ref_no, p.product_type, p.width,
            p.created_at, p.updated_at,
            COUNT(pi.id) AS roll_count
     FROM pallets p
     JOIN pallet_items pi ON pi.pallet_id = p.id
-    WHERE p.status = 'pending_qc'
+    $where
     GROUP BY p.id
     ORDER BY p.updated_at DESC
-");
+";
+
+if (!empty($params)) {
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param($types, ...$params);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $stmt->close();
+} else {
+    $result = $conn->query($sql);
+}
 
 $pallets = [];
 if ($result) {
@@ -293,9 +315,6 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
                     <span class="badge bg-success bg-opacity-10 text-success border border-success border-opacity-25 px-2 py-2 d-none d-md-inline-flex align-items-center gap-1" title="Hardware scanner gun automatically detected">
                         <i class="bi bi-keyboard-fill"></i> USB/BT Gun Ready
                     </span>
-                    <button type="button" class="btn btn-outline-dark fw-semibold" id="qcCamBtn" onclick="if(document.getElementById('cam-scan-btn')){ document.getElementById('cam-scan-btn').click(); }">
-                        <i class="bi bi-camera-fill text-primary me-1"></i> Camera Scanner
-                    </button>
                 </div>
             </div>
             <!-- Alert / Toast Banner for Scan Feedback -->
@@ -303,6 +322,34 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
                 <span id="qcScanAlertMsg"></span>
                 <button type="button" class="btn-close" onclick="document.getElementById('qcScanAlert').classList.add('d-none');"></button>
             </div>
+        </div>
+    </div>
+
+    <!-- Date Filter Bar -->
+    <div class="card mb-4 border-0 shadow-sm bg-white rounded-3">
+        <div class="card-body p-3">
+            <form method="GET" action="qc_dashboard.php" id="qcDateFilterForm" class="row g-2 align-items-center">
+                <div class="col-auto">
+                    <span class="fw-bold text-dark small me-1">
+                        <i class="bi bi-calendar3 text-primary me-1"></i>Filter by Date:
+                    </span>
+                </div>
+                <div class="col-md-3 col-sm-6">
+                    <input type="date" id="filter_date" name="filter_date" class="form-control form-control-sm" value="<?= htmlspecialchars($filter_date) ?>" onchange="document.getElementById('qcDateFilterForm').submit()">
+                </div>
+                <div class="col-auto d-flex flex-wrap gap-2 align-items-center">
+                    <button type="submit" class="btn btn-primary btn-sm px-3 fw-bold">
+                        <i class="bi bi-funnel-fill me-1"></i> Filter
+                    </button>
+                    <?php if ($filter_date !== ''): ?>
+                    <a href="qc_dashboard.php" class="btn btn-outline-secondary btn-sm px-3 fw-semibold">
+                        <i class="bi bi-x-circle me-1"></i> Clear
+                    </a>
+                    <?php endif; ?>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" onclick="setSingleDatePreset('today')">Today</button>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" onclick="setSingleDatePreset('yesterday')">Yesterday</button>
+                </div>
+            </form>
         </div>
     </div>
 
@@ -359,8 +406,14 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
 
     <!-- pallets table -->
     <div class="card shadow-sm">
-        <div class="card-header bg-white py-3">
+        <div class="card-header bg-white py-3 d-flex flex-wrap align-items-center justify-content-between gap-2">
             <h5 class="card-title mb-0 fw-bold"><i class="bi bi-archive me-2"></i>Pending Pallets</h5>
+            <?php if ($filter_date !== ''): ?>
+            <span class="badge bg-primary bg-opacity-10 text-primary border border-primary border-opacity-25 px-3 py-2 rounded-pill font-monospace" style="font-size: 12px;">
+                <i class="bi bi-funnel-fill me-1"></i> Date Filtered:
+                <?= date('d M Y', strtotime($filter_date)) ?>
+            </span>
+            <?php endif; ?>
         </div>
 
         <?php if (empty($pallets)): ?>
@@ -959,6 +1012,22 @@ function highlightAndOpenPallet(pid, productId) {
             setTimeout(function() { windBox.focus(); }, 450);
         }
     }
+}
+
+// Single date preset helper function
+function setSingleDatePreset(preset) {
+    const dateInput = document.getElementById('filter_date');
+    if (!dateInput) return;
+
+    const d = new Date();
+    if (preset === 'today') {
+        dateInput.value = d.toISOString().split('T')[0];
+    } else if (preset === 'yesterday') {
+        d.setDate(d.getDate() - 1);
+        dateInput.value = d.toISOString().split('T')[0];
+    }
+    const form = document.getElementById('qcDateFilterForm');
+    if (form) form.submit();
 }
 </script>
 <script src="camera_scanner.js?v=8"></script>
