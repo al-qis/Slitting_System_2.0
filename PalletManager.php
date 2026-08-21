@@ -1352,6 +1352,7 @@ class PalletManager
                     p.ref_no,
                     p.product_type,
                     p.width,
+                    p.created_by,
                     p.created_at,
                     COUNT(sp.id)                                    AS roll_count,
                     COALESCE(p.updated_at, p.created_at)            AS last_activity,

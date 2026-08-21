@@ -1151,6 +1151,10 @@ if (isset($_GET['success'])): ?>
                         EDIT #<?= $activePallet['edit_count'] ?>
                     </span>
                     <?php endif; ?>
+
+                    <span class="badge bg-white text-dark ms-2 shadow-sm d-inline-flex align-items-center gap-1" style="font-size:18px !important; font-weight:700; padding:4px 12px; border-radius:6px; color:#1e293b !important;" title="Active Operator">
+                        <i class="bi bi-person-fill text-primary" style="font-size:18px !important;"></i> <strong><?= htmlspecialchars($activePallet['created_by'] ?: ($activeOperatorSession ?: 'N/A')) ?></strong>
+                    </span>
                 </div>
                 <span class="badge bg-white text-primary" id="rollCountBadge">
                     <?= count($activeItems) ?> / <?= $MAX ?> rolls
@@ -1466,6 +1470,9 @@ if (isset($_GET['success'])): ?>
                     </div>
 
                     <span class="badge bg-white text-danger ms-1">QC REJECTED</span>
+                    <span class="badge bg-white text-dark ms-2 shadow-sm d-inline-flex align-items-center gap-1" style="font-size:18px !important; font-weight:700; padding:4px 12px; border-radius:6px; color:#1e293b !important;" title="Active Operator">
+                        <i class="bi bi-person-fill text-danger" style="font-size:18px !important;"></i> <strong><?= htmlspecialchars($activePallet['created_by'] ?: ($activeOperatorSession ?: 'N/A')) ?></strong>
+                    </span>
                 </div>
                 <span class="badge bg-white text-danger">
                     <?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?>
@@ -1619,6 +1626,9 @@ if (isset($_GET['success'])): ?>
                     <i class="bi bi-clock-history me-1"></i>
                     <strong><?= htmlspecialchars($activePallet['pallet_no']) ?></strong>
                     <span class="badge bg-white text-warning ms-1" style="color:#b45309 !important;">PENDING QC — AWAITING QC APPROVAL</span>
+                    <span class="badge bg-white text-dark ms-2 shadow-sm d-inline-flex align-items-center gap-1" style="font-size:18px !important; font-weight:700; padding:4px 12px; border-radius:6px; color:#1e293b !important;" title="Active Operator">
+                        <i class="bi bi-person-fill text-warning" style="font-size:18px !important;"></i> <strong><?= htmlspecialchars($activePallet['created_by'] ?: ($activeOperatorSession ?: 'N/A')) ?></strong>
+                    </span>
                 </div>
                 <span class="badge bg-white text-warning" style="color:#b45309 !important;">
                     <?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?>
@@ -1747,6 +1757,9 @@ if (isset($_GET['success'])): ?>
                     <i class="bi bi-check-circle-fill me-1"></i>
                     <strong><?= htmlspecialchars($activePallet['pallet_no']) ?></strong>
                     <span class="badge bg-white text-success ms-1">APPROVED — READY TO DELIVER</span>
+                    <span class="badge bg-white text-dark ms-2 shadow-sm d-inline-flex align-items-center gap-1" style="font-size:18px !important; font-weight:700; padding:4px 12px; border-radius:6px; color:#1e293b !important;" title="Active Operator">
+                        <i class="bi bi-person-fill text-success" style="font-size:18px !important;"></i> <strong><?= htmlspecialchars($activePallet['created_by'] ?: ($activeOperatorSession ?: 'N/A')) ?></strong>
+                    </span>
                 </div>
                 <span class="badge bg-white text-success">
                     <?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?>
@@ -1890,6 +1903,9 @@ if (isset($_GET['success'])): ?>
                     <i class="bi bi-truck me-1"></i>
                     <strong><?= htmlspecialchars($activePallet['pallet_no']) ?></strong>
                     <span class="badge bg-white text-success ms-1">DELIVERED</span>
+                    <span class="badge bg-white text-dark ms-2 shadow-sm d-inline-flex align-items-center gap-1" style="font-size:18px !important; font-weight:700; padding:4px 12px; border-radius:6px; color:#1e293b !important;" title="Active Operator">
+                        <i class="bi bi-person-fill text-success" style="font-size:18px !important;"></i> <strong><?= htmlspecialchars($activePallet['created_by'] ?: ($activeOperatorSession ?: 'N/A')) ?></strong>
+                    </span>
                 </div>
                 <span class="badge bg-white text-success">
                     <?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?>
@@ -3912,6 +3928,7 @@ function renderPalletList() {
                             ${escHtml(p.pallet_no)}
                             ${isActive ? '<span class="pallet-card-open-pill"><i class="bi bi-eye-fill"></i> Open</span>' : ''}
                         </div>
+                        ${p.created_by ? `<div class="pallet-card-operator" style="font-size:11px; color:#475569; font-weight:600;"><i class="bi bi-person-fill text-primary me-1"></i>${escHtml(p.created_by)}</div>` : ''}
                         ${p.lot_nos ? `<div class="pallet-card-lot">${escHtml(p.lot_nos)}</div>` : ''}
                     </div>
                     <div class="d-flex flex-column align-items-end">
