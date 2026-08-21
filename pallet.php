@@ -26,8 +26,68 @@ if ($_SESSION['role'] !== 'slitting') { die("Access denied"); }
 include 'config.php';
 require_once 'PalletManager.php';
 
-$pm           = new PalletManager($conn, $_SESSION['role']);
-$performed_by = $_SESSION['role'];
+// Auto-create operators table if not exists
+$conn->query("
+    CREATE TABLE IF NOT EXISTS operators (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(100) NOT NULL UNIQUE,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+");
+
+$activeOperatorSession = $_SESSION['active_operator'] ?? '';
+$actor        = !empty($activeOperatorSession) ? $activeOperatorSession : ($_SESSION['role'] ?? 'system');
+$pm           = new PalletManager($conn, $actor);
+$performed_by = $actor;
+
+// Fetch operators
+$operators = [];
+$opRes = $conn->query("SELECT id, name FROM operators WHERE is_active = 1 ORDER BY name ASC");
+if ($opRes) {
+    while ($r = $opRes->fetch_assoc()) {
+        $operators[] = $r;
+    }
+}
+
+// ── AJAX: set active operator ──────────────────────────────────
+if (isset($_POST['ajax']) && $_POST['ajax'] === 'set_active_operator') {
+    header('Content-Type: application/json');
+    $opName = trim($_POST['operator_name'] ?? '');
+    $_SESSION['active_operator'] = $opName;
+    $palletId = (int)($_POST['pallet_id'] ?? 0);
+    if ($palletId > 0 && $opName !== '') {
+        $stmt = $conn->prepare("UPDATE pallets SET created_by = ? WHERE id = ? AND status = 'building'");
+        $stmt->bind_param("si", $opName, $palletId);
+        $stmt->execute();
+        $stmt->close();
+    }
+    echo json_encode(['ok' => true, 'operator' => $opName]);
+    exit;
+}
+
+// ── AJAX: add new operator ─────────────────────────────────────
+if (isset($_POST['ajax']) && $_POST['ajax'] === 'add_operator') {
+    header('Content-Type: application/json');
+    $opName = trim($_POST['operator_name'] ?? '');
+    if ($opName === '') {
+        echo json_encode(['ok' => false, 'msg' => 'Operator name cannot be empty.']);
+        exit;
+    }
+    $stmt = $conn->prepare("INSERT INTO operators (name, is_active) VALUES (?, 1) ON DUPLICATE KEY UPDATE is_active = 1");
+    if ($stmt) {
+        $stmt->bind_param("s", $opName);
+        $ok = $stmt->execute();
+        $stmt->close();
+        if ($ok) {
+            $_SESSION['active_operator'] = $opName;
+            echo json_encode(['ok' => true, 'name' => $opName, 'msg' => 'Operator added successfully.']);
+            exit;
+        }
+    }
+    echo json_encode(['ok' => false, 'msg' => 'Failed to save operator.']);
+    exit;
+}
 
 // ── AJAX: validate pallet_no ──────────────────────────────────
 if (isset($_GET['ajax']) && $_GET['ajax'] === 'validate_pallet_no') {
@@ -95,7 +155,8 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'list_pallets') {
     $search = trim($_GET['q']      ?? '');
     $sort   = trim($_GET['sort']   ?? 'latest');
     $suffix = trim($_GET['suffix'] ?? 'all');
-    echo json_encode($pm->listPallets($group, $search, $sort, $suffix));
+    $date   = trim($_GET['date']   ?? '');
+    echo json_encode($pm->listPallets($group, $search, $sort, $suffix, $date));
     exit;
 }
 
@@ -730,7 +791,8 @@ $isReadOnly  = $activePallet && !in_array($activePallet['status'], ['building', 
 .pallet-card.active { background:#0d6efd; border-left-color:#fff; color:#fff; }
 .pallet-card.active .pallet-card-customer,
 .pallet-card.active .pallet-card-rolls,
-.pallet-card.active .pallet-card-lot { color:rgba(255,255,255,.75) !important; }
+.pallet-card.active .pallet-card-lot,
+.pallet-card.active .pallet-card-date { color:rgba(255,255,255,.75) !important; }
 .pallet-card.active .pallet-progress { background:rgba(255,255,255,.25); }
 
 .pallet-card-top      { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:5px; }
@@ -743,6 +805,7 @@ $isReadOnly  = $activePallet && !in_array($activePallet['status'], ['building', 
     border-radius:8px; padding:1px 6px; margin-left:6px; vertical-align:middle;
 }
 .pallet-card-lot        { font-family:'Courier New', monospace; font-size:10px; color:#adb5bd; margin-top:1px; }
+.pallet-card-date       { font-size:10px; color:#6c757d; font-weight:500; margin-top:2px; white-space:nowrap; }
 .pallet-card-customer  { font-size:12.5px; font-weight:600; margin-bottom:7px; }
 .pallet-card-rolls      { font-size:11px; font-weight:600; color:#6c757d; white-space:nowrap; }
 
@@ -926,10 +989,37 @@ $isReadOnly  = $activePallet && !in_array($activePallet['status'], ['building', 
 .edit-mode-pill { display:inline-flex; align-items:center; gap:5px; font-size:11px;
                   font-weight:700; padding:3px 10px; border-radius:20px;
                   background:#fef3c7; color:#92400e; border:1px solid #fcd34d; }
+/* Active Operator Select & Name List */
+#activeOperatorSelect, #activeOperatorSelect option {
+    font-size: 18px !important;
+}
 </style>
 
-<div class="d-flex justify-content-between align-items-center mb-4">
-    <h2><i class="bi bi-archive me-2"></i>Pallet Management</h2>
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+    <div class="d-flex align-items-center gap-3 flex-wrap">
+        <h2 class="mb-0"><i class="bi bi-archive me-2"></i>Pallet Management</h2>
+
+        <!-- Active Operator Selector -->
+        <div class="d-flex align-items-center gap-2 bg-white border border-primary-subtle rounded-3 px-3 py-2 shadow-sm">
+            <span class="text-secondary fw-bold text-nowrap" style="font-size:15px !important;">
+                <i class="bi bi-person-badge text-primary me-1" style="font-size:17px !important;"></i>Active Operator:
+            </span>
+            <select id="activeOperatorSelect" class="form-select border-primary font-monospace fw-bold text-primary bg-primary-subtle"
+                    style="min-width:180px; font-size:18px !important; padding:6px 38px 6px 14px !important; height:auto !important;" onchange="setActiveOperator(this.value)">
+                <option value="" style="font-size:18px !important;">-- Select Operator --</option>
+                <?php foreach ($operators as $op): ?>
+                <option value="<?= htmlspecialchars($op['name']) ?>" style="font-size:18px !important;" <?= ($activeOperatorSession === $op['name']) ? 'selected' : '' ?>>
+                    <?= htmlspecialchars($op['name']) ?>
+                </option>
+                <?php endforeach; ?>
+            </select>
+            <button type="button" class="btn btn-primary text-nowrap shadow-sm font-monospace fw-bold" style="font-size:14px !important; padding:6px 14px !important;"
+                    data-bs-toggle="modal" data-bs-target="#addOperatorModal" title="Add New Operator">
+                <i class="bi bi-plus-lg me-1"></i>Add
+            </button>
+        </div>
+    </div>
+
     <div class="d-flex gap-2">
         <button type="button" class="btn btn-outline-primary shadow-sm"
                 data-bs-toggle="modal" data-bs-target="#summaryPalletModal"
@@ -1103,6 +1193,14 @@ if (isset($_GET['success'])): ?>
                                 <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['product_type']) ?></td>
                                 <td class="bg-light fw-bold text-muted">Width (mm)</td>
                                 <td class="fw-bold text-dark"><?= number_format((float)$activePallet['width']) ?> mm</td>
+                            </tr>
+                            <tr>
+                                <td class="bg-light fw-bold text-muted">Active Operator</td>
+                                <td class="fw-bold text-dark" colspan="3">
+                                    <span class="badge bg-primary-subtle text-primary border border-primary-subtle font-monospace px-2 py-1" style="font-size:13px;">
+                                        <i class="bi bi-person-badge me-1"></i><?= htmlspecialchars(!empty($activePallet['created_by']) ? $activePallet['created_by'] : ($_SESSION['active_operator'] ?? 'slitting')) ?>
+                                    </span>
+                                </td>
                             </tr>
                         </tbody>
                     </table>
@@ -1964,7 +2062,7 @@ if (isset($_GET['success'])): ?>
                         <span class="badge bg-secondary ms-1" id="palletListCount">—</span>
                     </div>
                 </div>
-                <div class="d-flex gap-2 mb-2">
+                <div class="d-flex gap-2 mb-2 align-items-center">
                     <div class="position-relative flex-grow-1">
                         <i class="bi bi-search position-absolute"
                            style="left:10px; top:50%; transform:translateY(-50%); font-size:12px; color:#adb5bd;"></i>
@@ -1972,8 +2070,19 @@ if (isset($_GET['success'])): ?>
                                class="form-control form-control-sm ps-4"
                                placeholder="Type 7 numbers (e.g. 8888888), Pallet No, or Customer…">
                     </div>
+                    <div class="position-relative" style="width:130px;">
+                        <input type="date" id="palletDateFilter" class="form-control form-control-sm text-white border-secondary pe-4"
+                               style="background:#2b3035; font-size:11px; height:31px; color-scheme: dark;"
+                               title="Filter by date"
+                               onchange="loadPalletList()">
+                        <button type="button" id="palletDateClearBtn" class="btn btn-sm text-white-50 position-absolute d-none p-0"
+                                style="right:6px; top:50%; transform:translateY(-50%); font-size:12px; line-height:1; z-index:5;"
+                                title="Clear date filter" onclick="clearPalletDateFilter()">
+                            <i class="bi bi-x-circle-fill"></i>
+                        </button>
+                    </div>
                     <select id="palletSortSelect" class="form-select form-select-sm text-white border-secondary"
-                            style="background:#2b3035; font-size:11.5px; width:auto; max-width:130px;"
+                            style="background:#2b3035; font-size:11.5px; width:auto; max-width:125px;"
                             onchange="loadPalletList()">
                         <option value="latest" selected>Latest Created</option>
                         <option value="updated">Latest Activity</option>
@@ -2009,6 +2118,33 @@ if (isset($_GET['success'])): ?>
         </div>
     </div><!-- /col-md-5 sidebar -->
 </div><!-- /row -->
+
+<!-- ── ADD OPERATOR MODAL ────────────────────────────────────── -->
+<div class="modal fade" id="addOperatorModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-sm modal-dialog-centered">
+    <div class="modal-content shadow border-0">
+      <div class="modal-header bg-primary text-white py-2">
+        <h5 class="modal-title fs-6"><i class="bi bi-person-plus me-1"></i>Add New Operator</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body py-3">
+        <div class="mb-2">
+          <label class="form-label fw-semibold small mb-1">Operator Name <span class="text-danger">*</span></label>
+          <input type="text" id="newOperatorNameInput" class="form-control form-control-sm"
+                 placeholder="e.g. Ahmad / Siti" autocomplete="off"
+                 onkeydown="if(event.key==='Enter') submitAddOperator()">
+        </div>
+        <div id="addOperatorFeedback" class="small text-danger d-none mt-2"></div>
+      </div>
+      <div class="modal-footer py-2 px-3 bg-light">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary btn-sm" onclick="submitAddOperator()">
+          <i class="bi bi-check-lg me-1"></i>Save Operator
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- ── CREATE PALLET MODAL ───────────────────────────────────── -->
 <div class="modal fade" id="createPalletModal" tabindex="-1">
@@ -2358,6 +2494,14 @@ function updateConstraintBadges(p) {
                         <td class="fw-bold text-dark">${escHtml(p.product || '-')}</td>
                         <td class="bg-light fw-bold text-muted">Width (mm)</td>
                         <td class="fw-bold text-dark">${(+p.width).toFixed(0)} mm</td>
+                    </tr>
+                    <tr>
+                        <td class="bg-light fw-bold text-muted">Active Operator</td>
+                        <td class="fw-bold text-dark" colspan="3">
+                            <span class="badge bg-primary-subtle text-primary border border-primary-subtle font-monospace px-2 py-1" style="font-size:13px;">
+                                <i class="bi bi-person-badge me-1"></i>${escHtml(p.created_by || document.getElementById('activeOperatorSelect')?.value || 'slitting')}
+                            </span>
+                        </td>
                     </tr>
                 </tbody>
             </table>
@@ -3652,6 +3796,9 @@ let palletActiveSuffix = ['all', 'none', 'B', 'BN'].includes(initialSuffix) ? in
 const initialSort = urlParams.get('sort') || localStorage.getItem('palletActiveSort') || 'latest';
 let palletActiveSort = ['latest', 'updated', 'id'].includes(initialSort) ? initialSort : 'latest';
 
+const initialDate = urlParams.get('date') || localStorage.getItem('palletActiveDate') || '';
+let palletActiveDate = initialDate;
+
 // Sync initial UI state for tab buttons
 function syncTabButtonsUI() {
     document.querySelectorAll('#palletTabGroup .pallet-tab').forEach(btn => {
@@ -3675,6 +3822,14 @@ function syncSuffixButtonsUI() {
     if (document.getElementById('palletSortSelect')) {
         document.getElementById('palletSortSelect').value = palletActiveSort;
     }
+    if (document.getElementById('palletDateFilter')) {
+        document.getElementById('palletDateFilter').value = palletActiveDate;
+        const clearBtn = document.getElementById('palletDateClearBtn');
+        if (clearBtn) {
+            if (palletActiveDate) clearBtn.classList.remove('d-none');
+            else clearBtn.classList.add('d-none');
+        }
+    }
 }
 syncSuffixButtonsUI();
 
@@ -3683,14 +3838,23 @@ let palletSearchDebounce = null;
 async function loadPalletList() {
     const q    = document.getElementById('palletSearchInput').value.trim();
     const sort = document.getElementById('palletSortSelect')?.value || palletActiveSort || 'latest';
+    const date = document.getElementById('palletDateFilter')?.value || '';
     palletActiveSort = sort;
     localStorage.setItem('palletActiveSort', sort);
+    palletActiveDate = date;
+    localStorage.setItem('palletActiveDate', date);
+
+    const clearBtn = document.getElementById('palletDateClearBtn');
+    if (clearBtn) {
+        if (date) clearBtn.classList.remove('d-none');
+        else clearBtn.classList.add('d-none');
+    }
 
     document.getElementById('palletListScroll').innerHTML =
         `<div class="pallet-list-loading"><div class="spinner-border spinner-border-sm me-2"></div>Loading pallets…</div>`;
 
     try {
-        const params = new URLSearchParams({ ajax: 'list_pallets', group: 'all', q, sort, suffix: palletActiveSuffix });
+        const params = new URLSearchParams({ ajax: 'list_pallets', group: 'all', q, sort, suffix: palletActiveSuffix, date: palletActiveDate });
         const res  = await fetch('pallet.php?' + params.toString());
         const data = await res.json();
         if (!data.ok) throw new Error(data.msg || 'Failed to load pallets.');
@@ -3702,6 +3866,12 @@ async function loadPalletList() {
     }
 
     renderPalletList();
+}
+
+function clearPalletDateFilter() {
+    const input = document.getElementById('palletDateFilter');
+    if (input) input.value = '';
+    loadPalletList();
 }
 
 function renderPalletList() {
@@ -3744,7 +3914,10 @@ function renderPalletList() {
                         </div>
                         ${p.lot_nos ? `<div class="pallet-card-lot">${escHtml(p.lot_nos)}</div>` : ''}
                     </div>
-                    <span class="badge ${badgeClass}">${escHtml(summaryStatusLabel(p.status))}</span>
+                    <div class="d-flex flex-column align-items-end">
+                        <span class="badge ${badgeClass}">${escHtml(summaryStatusLabel(p.status))}</span>
+                        ${p.created_date ? `<div class="pallet-card-date"><i class="bi bi-calendar-event me-1"></i>${escHtml(p.created_date)}</div>` : ''}
+                    </div>
                 </div>
                 <div class="pallet-card-customer">${escHtml(p.customer_name || 'No constraint set yet')}</div>
                 <div class="d-flex align-items-center gap-2">
@@ -3851,7 +4024,71 @@ function exportSummaryPallet() {
     window.location.href = 'pallet.php?' + params.toString();
 }
 
+async function setActiveOperator(name) {
+    const fd = new FormData();
+    fd.append('ajax', 'set_active_operator');
+    fd.append('operator_name', name);
+    try {
+        await fetch('pallet.php', { method: 'POST', body: fd });
+    } catch(e) {
+        console.error('Failed to set active operator:', e);
+    }
+}
 
+async function submitAddOperator() {
+    const input = document.getElementById('newOperatorNameInput');
+    const name = input ? input.value.trim() : '';
+    const feedback = document.getElementById('addOperatorFeedback');
+
+    if (!name) {
+        if (feedback) {
+            feedback.textContent = 'Please enter an operator name.';
+            feedback.classList.remove('d-none');
+        }
+        return;
+    }
+    if (feedback) feedback.classList.add('d-none');
+
+    const fd = new FormData();
+    fd.append('ajax', 'add_operator');
+    fd.append('operator_name', name);
+
+    try {
+        const res = await fetch('pallet.php', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (data.ok) {
+            const select = document.getElementById('activeOperatorSelect');
+            if (select) {
+                let existingOpt = Array.from(select.options).find(opt => opt.value.toLowerCase() === data.name.toLowerCase());
+                if (!existingOpt) {
+                    const opt = document.createElement('option');
+                    opt.value = data.name;
+                    opt.textContent = data.name;
+                    select.appendChild(opt);
+                    existingOpt = opt;
+                }
+                select.value = data.name;
+            }
+
+            const modalEl = document.getElementById('addOperatorModal');
+            if (modalEl) {
+                const modal = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
+                modal.hide();
+            }
+            if (input) input.value = '';
+        } else {
+            if (feedback) {
+                feedback.textContent = data.msg || 'Error adding operator.';
+                feedback.classList.remove('d-none');
+            }
+        }
+    } catch(e) {
+        if (feedback) {
+            feedback.textContent = e.message;
+            feedback.classList.remove('d-none');
+        }
+    }
+}
 </script>
 
 <!-- Cache-busted (?v=8) so the browser always loads the latest scanner.
