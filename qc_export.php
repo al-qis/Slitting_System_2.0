@@ -38,6 +38,12 @@ if ($search !== '') {
 if ($date_from !== '') { $where .= " AND DATE(p.updated_at) >= ?"; $params[] = $date_from; $types .= 's'; }
 if ($date_to   !== '') { $where .= " AND DATE(p.updated_at) <= ?"; $params[] = $date_to;   $types .= 's'; }
 
+// Ensure coil_width column exists in pallet_items table
+$colCheck = $conn->query("SHOW COLUMNS FROM pallet_items LIKE 'coil_width'");
+if ($colCheck && $colCheck->num_rows === 0) {
+    $conn->query("ALTER TABLE pallet_items ADD COLUMN coil_width TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = Coil Width checkbox was ticked by QC inspector' AFTER hairy_rubber");
+}
+
 // ── Query ─────────────────────────────────────────────────────
 $sql = "
     SELECT
@@ -51,6 +57,7 @@ $sql = "
         sp.width,
         pi.winding_condition,
         pi.hairy_rubber,
+        pi.coil_width,
         p.checked_by,
         p.status                                AS pallet_status,
         pi.seq,
@@ -167,7 +174,7 @@ $headers = [
     'F' => 'Length (m)',
     'G' => 'Width (mm)',
     'H' => 'Winding Condition',
-    'I' => 'Hairy Rubber',
+    'I' => 'No Hairy Rubber',
     'J' => 'Checked By',
 ];
 foreach ($headers as $col => $label) {
@@ -203,7 +210,7 @@ $sheet->freezePane('A5');
 //   E = Lot, Coil, Roll
 //   F = Length (m)
 //   H = Winding Condition  ← show only if ticked
-//   I = Hairy Rubber       ← show only if ticked
+//   I = No Hairy Rubber       ← show only if ticked
 
 $rowNum         = 5;
 $totalRollsAll  = 0;
@@ -250,9 +257,10 @@ foreach ($pallets as $pid => $pallet) {
         $altIdx++;
         $bg = ($altIdx % 2 === 1) ? $bgOdd : $bgEvn;
 
-        // Is this the inspected top roll? (both checkboxes ticked)
-        $isTopRoll = ((int)$roll['winding_condition'] === 1)
-                  && ((int)$roll['hairy_rubber']      === 1);
+        // Is this the inspected top roll? (all 3 checkboxes ticked)
+        $isTopRoll = ((int)($roll['winding_condition'] ?? 0) === 1)
+                  && ((int)($roll['hairy_rubber']      ?? 0) === 1)
+                  && ((int)($roll['coil_width']        ?? 0) === 1);
 
         $lcr = trim($roll['lot_no']) . ' ' . trim($roll['coil_no'])
              . ' – ' . str_replace('R', 'R-', trim($roll['roll_no']));
@@ -280,7 +288,7 @@ foreach ($pallets as $pid => $pallet) {
             $applyBase("H{$rowNum}", $isTopRoll ? $C_TOP_BG : $bg);
         }
 
-        // ── I: Hairy Rubber ───────────────────────────────────
+        // ── I: No Hairy Rubber ───────────────────────────────────
         if ((int)$roll['hairy_rubber'] === 1) {
             $sheet->setCellValue("I{$rowNum}", '✔  Ticked');
             $sheet->getStyle("I{$rowNum}")->applyFromArray([
@@ -444,7 +452,7 @@ $colWidths = [
     'F' => 12,  // Length
     'G' => 11,  // Width
     'H' => 16,  // Winding
-    'I' => 14,  // Hairy Rubber
+    'I' => 14,  // No Hairy Rubber
     'J' => 16,  // Checked By
 ];
 foreach ($colWidths as $col => $w) {

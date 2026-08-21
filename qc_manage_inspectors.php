@@ -36,7 +36,7 @@ $activeInspectorSession = $_SESSION['active_qc_inspector'] ?? '';
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
     <style>
         body        { background: #f4f7f9; font-family: 'Segoe UI', sans-serif; }
-        .navbar     { background: #2c3e50; }
+        .navbar     { background: #2c3e50; position: sticky; top: 0; z-index: 1030; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
         .page-card  {
             max-width: 640px; margin: 40px auto;
             background: #fff; border-radius: 12px;
@@ -124,7 +124,7 @@ $activeInspectorSession = $_SESSION['active_qc_inspector'] ?? '';
 </head>
 <body>
 
-<nav class="navbar navbar-dark">
+<nav class="navbar navbar-dark sticky-top">
     <div class="container">
         <a class="navbar-brand fw-bold" href="qc_dashboard.php">
             <i class="bi bi-shield-check"></i> NICHIAS QC MANAGEMENT

@@ -162,7 +162,7 @@ CREATE TABLE `pallet_items` (
   `seq` tinyint unsigned NOT NULL,
   `added_by` varchar(60) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'slitting',
   `winding_condition` tinyint(1) NOT NULL DEFAULT '0' COMMENT '1 = Winding Condition checkbox was ticked by QC inspector',
-  `hairy_rubber` tinyint(1) NOT NULL DEFAULT '0' COMMENT '1 = Hairy Rubber checkbox was ticked by QC inspector',
+  `hairy_rubber` tinyint(1) NOT NULL DEFAULT '0' COMMENT '1 = No Hairy Rubber checkbox was ticked by QC inspector',
   `qc_checked_at` datetime DEFAULT NULL COMMENT 'Timestamp when this row was marked as the top inspected roll',
   `added_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
