@@ -29,11 +29,18 @@ function saveChecklistState(
     int    $pallet_id,
     int    $top_product_id
 ): void {
+    // Ensure coil_width column exists in pallet_items table
+    $colCheck = $conn->query("SHOW COLUMNS FROM pallet_items LIKE 'coil_width'");
+    if ($colCheck && $colCheck->num_rows === 0) {
+        $conn->query("ALTER TABLE pallet_items ADD COLUMN coil_width TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = Coil Width checkbox was ticked by QC inspector' AFTER hairy_rubber");
+    }
+
     // Clear all rows for this pallet first (ensures only one "top roll" exists)
     $clear = $conn->prepare("
         UPDATE pallet_items
         SET winding_condition = 0,
             hairy_rubber      = 0,
+            coil_width        = 0,
             qc_checked_at     = NULL
         WHERE pallet_id = ?
     ");
@@ -46,6 +53,7 @@ function saveChecklistState(
         UPDATE pallet_items
         SET winding_condition = 1,
             hairy_rubber      = 1,
+            coil_width        = 1,
             qc_checked_at     = NOW()
         WHERE pallet_id = ?
           AND slitting_product_id = ?

@@ -1262,9 +1262,10 @@ class PalletManager
     //   $search      : matches Pallet No, Customer, or Lot No
     //   $sort        : 'updated' | 'capacity' | 'id'
     // =========================================================
-    public function listPallets(string $statusGroup = 'all', string $search = '', string $sort = 'updated', string $suffix = 'all'): array
+    public function listPallets(string $statusGroup = 'all', string $search = '', string $sort = 'updated', string $suffix = 'all', string $date = ''): array
     {
         $search = trim($search);
+        $date   = trim($date);
 
         $where  = [];
         $types  = '';
@@ -1291,6 +1292,13 @@ class PalletManager
                 $types   .= 's';
                 $params[] = '%(' . strtoupper(trim($suffix)) . ')';
             }
+        }
+
+        if ($date !== '') {
+            $where[]  = "(DATE(created_at) = ? OR DATE(last_activity) = ?)";
+            $types   .= 'ss';
+            $params[] = $date;
+            $params[] = $date;
         }
 
         if ($search !== '') {
@@ -1344,6 +1352,7 @@ class PalletManager
                     p.ref_no,
                     p.product_type,
                     p.width,
+                    p.created_at,
                     COUNT(sp.id)                                    AS roll_count,
                     COALESCE(p.updated_at, p.created_at)            AS last_activity,
                     GROUP_CONCAT(DISTINCT sp.lot_no SEPARATOR ', ') AS lot_nos
@@ -1373,6 +1382,7 @@ class PalletManager
             $row['roll_count']   = (int)$row['roll_count'];
             $row['max_rolls']    = self::MAX_ROLLS;
             $row['status_group'] = $this->statusGroupOf($row['status']);
+            $row['created_date'] = !empty($row['created_at']) ? date('d/m/Y', strtotime($row['created_at'])) : '';
         }
         unset($row);
 

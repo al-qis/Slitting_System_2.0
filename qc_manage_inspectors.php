@@ -36,7 +36,7 @@ $activeInspectorSession = $_SESSION['active_qc_inspector'] ?? '';
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
     <style>
         body        { background: #f4f7f9; font-family: 'Segoe UI', sans-serif; }
-        .navbar     { background: #2c3e50; }
+        .navbar     { background: #2c3e50; position: sticky; top: 0; z-index: 1030; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
         .page-card  {
             max-width: 640px; margin: 40px auto;
             background: #fff; border-radius: 12px;
@@ -124,16 +124,16 @@ $activeInspectorSession = $_SESSION['active_qc_inspector'] ?? '';
 </head>
 <body>
 
-<nav class="navbar navbar-dark">
+<nav class="navbar navbar-dark sticky-top">
     <div class="container">
         <a class="navbar-brand fw-bold" href="qc_dashboard.php">
             <i class="bi bi-shield-check"></i> NICHIAS QC MANAGEMENT
         </a>
         <div class="d-flex align-items-center gap-3">
-            <div class="d-flex align-items-center bg-white bg-opacity-10 border border-light border-opacity-25 rounded-3 px-2 py-1 text-light">
-                <i class="bi bi-person-badge-fill text-warning me-1"></i>
-                <label for="globalQcInspectorSelect" class="small me-2 mb-0 fw-semibold text-white-50">Active Inspector:</label>
-                <select id="globalQcInspectorSelect" class="form-select form-select-sm border-0 shadow-none font-monospace fw-bold py-0 text-dark" style="width: auto; background:#ffffff; font-size:12px;" onchange="updateGlobalQcInspector(this.value)">
+            <div class="d-flex align-items-center bg-white bg-opacity-10 border border-light border-opacity-25 rounded-3 px-3 py-1 text-light">
+                <i class="bi bi-person-badge-fill text-warning me-2" style="font-size:18px !important;"></i>
+                <label for="globalQcInspectorSelect" class="me-2 mb-0 fw-semibold text-white" style="font-size:15px !important;">Active QC:</label>
+                <select id="globalQcInspectorSelect" class="form-select border-0 shadow font-monospace fw-bold text-dark" style="width: auto; background:#fff3cd; font-size:18px !important; color:#856404; padding:6px 36px 6px 14px !important; height:auto !important;" onchange="updateGlobalQcInspector(this.value)">
                     <option value="">-- Select Active Inspector --</option>
                     <?php foreach ($inspectors as $insp): if (!$insp['is_active']) continue; ?>
                     <option value="<?= htmlspecialchars($insp['name'], ENT_QUOTES) ?>" <?= ($activeInspectorSession === $insp['name']) ? 'selected' : '' ?>>

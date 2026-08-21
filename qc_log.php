@@ -62,6 +62,12 @@ $stmt->close();
 $rollsByPallet = [];
 $palletIds = array_column($palletRows, 'pallet_id');
 
+// Ensure coil_width column exists in pallet_items table
+$colCheck = $conn->query("SHOW COLUMNS FROM pallet_items LIKE 'coil_width'");
+if ($colCheck && $colCheck->num_rows === 0) {
+    $conn->query("ALTER TABLE pallet_items ADD COLUMN coil_width TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = Coil Width checkbox was ticked by QC inspector' AFTER hairy_rubber");
+}
+
 if (!empty($palletIds)) {
     $ph       = implode(',', array_fill(0, count($palletIds), '?'));
     $phTypes  = str_repeat('i', count($palletIds));
@@ -72,6 +78,7 @@ if (!empty($palletIds)) {
             pi.seq,
             pi.winding_condition,
             pi.hairy_rubber,
+            pi.coil_width,
             pi.qc_checked_at,
             sp.id           AS product_id,
             sp.lot_no,
@@ -125,7 +132,7 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
     <style>
         body { background:#f4f7f9; font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif; font-size:14px; }
-        .navbar { background:#2c3e50; }
+        .navbar { background:#2c3e50; position:sticky; top:0; z-index:1030; box-shadow:0 4px 12px rgba(0,0,0,0.15); }
 
         .page-header { display:flex; align-items:flex-start; justify-content:space-between;
                        flex-wrap:wrap; gap:12px; margin-bottom:24px; }
@@ -289,16 +296,16 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
 </head>
 <body>
 
-<nav class="navbar navbar-dark mb-4">
+<nav class="navbar navbar-dark sticky-top mb-4">
     <div class="container-fluid px-4">
         <a class="navbar-brand fw-bold" href="qc_dashboard.php">
             <i class="bi bi-shield-check"></i> NICHIAS QC MANAGEMENT
         </a>
         <div class="d-flex align-items-center gap-3">
-            <div class="d-flex align-items-center bg-white bg-opacity-10 border border-light border-opacity-25 rounded-3 px-2 py-1 text-light">
-                <i class="bi bi-person-badge-fill text-warning me-1"></i>
-                <label for="globalQcInspectorSelect" class="small me-2 mb-0 fw-semibold text-white-50">Active Inspector:</label>
-                <select id="globalQcInspectorSelect" class="form-select form-select-sm border-0 shadow-none font-monospace fw-bold py-0 text-dark" style="width: auto; background:#ffffff; font-size:12px;" onchange="updateGlobalQcInspector(this.value)">
+            <div class="d-flex align-items-center bg-white bg-opacity-10 border border-light border-opacity-25 rounded-3 px-3 py-1 text-light">
+                <i class="bi bi-person-badge-fill text-warning me-2" style="font-size:18px !important;"></i>
+                <label for="globalQcInspectorSelect" class="me-2 mb-0 fw-semibold text-white" style="font-size:15px !important;">Active QC:</label>
+                <select id="globalQcInspectorSelect" class="form-select border-0 shadow font-monospace fw-bold text-dark" style="width: auto; background:#fff3cd; font-size:18px !important; color:#856404; padding:6px 36px 6px 14px !important; height:auto !important;" onchange="updateGlobalQcInspector(this.value)">
                     <option value="">-- Select Active Inspector --</option>
                     <?php foreach ($inspectors as $insp): ?>
                     <option value="<?= htmlspecialchars($insp['name'], ENT_QUOTES) ?>" <?= ($activeInspectorSession === $insp['name']) ? 'selected' : '' ?>>
@@ -514,7 +521,7 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
             <div class="d-flex align-items-center gap-2 mt-2 mb-2"
                  style="font-size:11px; color:#374151;">
                 <span class="top-roll-badge"><i class="bi bi-star-fill"></i> Top Roll Inspected</span>
-                <span>— The roll physically on top of the pallet; both Winding Condition &amp; Hairy Rubber were verified.</span>
+                <span>— The roll physically on top of the pallet; Winding Condition, No Hairy Rubber &amp; Coil Width were verified.</span>
             </div>
 
             <table class="roll-table">
@@ -526,7 +533,8 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
                         <th>Width (mm)</th>
                         <th>Length (m)</th>
                         <th>Winding</th>
-                        <th>Hairy Rubber</th>
+                        <th>No Hairy Rubber</th>
+                        <th>Coil Width</th>
                         <th>Roll Status</th>
                         
                     </tr>
@@ -534,7 +542,8 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
                 <tbody>
                 <?php foreach ($rolls as $roll):
                     $isTopRoll = ((int)($roll['winding_condition']??0) === 1)
-                              && ((int)($roll['hairy_rubber']??0) === 1);
+                              && ((int)($roll['hairy_rubber']??0) === 1)
+                              && ((int)($roll['coil_width']??0) === 1);
                 ?>
                 <tr <?= $isTopRoll ? 'class="tr-top-roll"' : '' ?>>
                     <td style="color:#9ca3af;"><?= $roll['seq'] ?></td>
@@ -546,7 +555,7 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
                         </span>
                         <?php if ($isTopRoll): ?>
                             <span class="top-roll-badge"
-                                  title="Both Winding Condition &amp; Hairy Rubber were verified on this roll during inspection">
+                                  title="Winding Condition, No Hairy Rubber &amp; Coil Width were verified on this roll during inspection">
                                 <i class="bi bi-star-fill"></i> Top Roll Inspected
                             </span>
                         <?php endif; ?>
@@ -570,10 +579,18 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
                             <i class="bi bi-dash-circle check-dash" title="Not checked"></i>
                         <?php endif; ?>
                     </td>
-                    <!-- Hairy Rubber tick -->
+                    <!-- No Hairy Rubber tick -->
                     <td class="text-center">
                         <?php if ((int)($roll['hairy_rubber']??0)===1): ?>
-                            <i class="bi bi-check-circle-fill check-tick" title="Hairy Rubber verified"></i>
+                            <i class="bi bi-check-circle-fill check-tick" title="No Hairy Rubber verified"></i>
+                        <?php else: ?>
+                            <i class="bi bi-dash-circle check-dash" title="Not checked"></i>
+                        <?php endif; ?>
+                    </td>
+                    <!-- Coil Width tick -->
+                    <td class="text-center">
+                        <?php if ((int)($roll['coil_width']??0)===1): ?>
+                            <i class="bi bi-check-circle-fill check-tick" title="Coil Width verified"></i>
                         <?php else: ?>
                             <i class="bi bi-dash-circle check-dash" title="Not checked"></i>
                         <?php endif; ?>
