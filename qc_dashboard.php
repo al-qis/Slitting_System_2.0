@@ -104,9 +104,7 @@ if ($result) {
             if (!empty($item['nod_length']) && (float)$item['nod_length'] > 0) {
                 $nodCoilCount++;
             }
-            if (empty($item['stock_code'])) {
-                $item['stock_code'] = PalletManager::formatStockCode($item['coil_no'], $item['width'], $len);
-            }
+            $item['stock_code'] = PalletManager::formatStockCode($item['coil_no'], $item['width'], $len);
         }
         unset($item);
         $row['items']          = $items;

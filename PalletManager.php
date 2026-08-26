@@ -82,14 +82,18 @@ class PalletManager
             }
         }
         return 'SFS-' . $coilPart
-            . '-' . self::formatStockCodeNumber($length)
-            . '-' . self::formatStockCodeNumber($width);
+            . '-' . self::formatStockCodeNumber($width)
+            . '-' . self::formatStockCodeNumber($length);
     }
 
     private static function formatStockCodeNumber($value): string
     {
-        $formatted = number_format((float)$value, 2, '.', '');
-        return str_ends_with($formatted, '.00') ? substr($formatted, 0, -3) : $formatted;
+        $f = (float)$value;
+        if ($f == (int)$f) {
+            return number_format($f, 0, '.', '');
+        }
+        $formatted = number_format($f, 2, '.', '');
+        return rtrim(rtrim($formatted, '0'), '.');
     }
 
     private mysqli $conn;

@@ -381,12 +381,11 @@ function buildSummaryPalletRows(mysqli $conn): array {
         // Trusts the value stored on pallet_items (set at insert time via
         // PalletManager); only recomputes for legacy rows added before that
         // column existed, so old pallets still show a code.
-        $stockCode = $r['pi_stock_code'];
-        if (empty($stockCode) && !empty($r['coil_no'])) {
-            $lenVal = (!empty($r['actual_length']) && $r['actual_length'] > 0)
-                ? $r['actual_length'] : $r['length'];
-            $stockCode = PalletManager::formatStockCode($r['coil_no'], $r['width'] ?? 0, $lenVal ?? 0);
-        }
+        $lenVal = (!empty($r['actual_length']) && $r['actual_length'] > 0)
+            ? $r['actual_length'] : $r['length'];
+        $stockCode = !empty($r['coil_no'])
+            ? PalletManager::formatStockCode($r['coil_no'], $r['width'] ?? 0, $lenVal ?? 0)
+            : ($r['pi_stock_code'] ?? null);
 
         $formattedDate = !empty($r['pallet_date']) ? date('d/m/Y', strtotime($r['pallet_date'])) : '-';
 
