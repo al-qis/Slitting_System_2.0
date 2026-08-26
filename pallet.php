@@ -434,7 +434,7 @@ function filterSummaryPalletRows(array $rows, string $cat, string $val, string $
             }));
         } elseif ($cat === 'width') {
             $rows = array_values(array_filter($rows, function ($r) use ($val) {
-                return $r['width'] !== null && str_contains((string)round($r['width']), $val);
+                return $r['width'] !== null && str_contains((string)$r['width'], $val);
             }));
         } else {
             // All Fields — free text across everything visible in the table
@@ -2516,7 +2516,7 @@ function updateConstraintBadges(p) {
                         <td class="bg-light fw-bold text-muted">Product Type :</td>
                         <td class="fw-bold text-dark">${escHtml(p.product || '-')}</td>
                         <td class="bg-light fw-bold text-muted">Width (mm)</td>
-                        <td class="fw-bold text-dark">${(+p.width).toFixed(0)} mm</td>
+                        <td class="fw-bold text-dark">${p.width !== null && p.width !== undefined ? (+p.width) : '-'} mm</td>
                     </tr>
                     <tr>
                         <td class="bg-light fw-bold text-muted">Active Operator</td>
@@ -2879,7 +2879,7 @@ function fillSlot(seq, p) {
             ${escHtml(p.lot_no)} ${escHtml(p.coil_no)}
         </td>
         <td>${len.toFixed(1)}${nodChip}</td>
-        <td>${(+p.width).toFixed(0)}</td>
+        <td>${p.width !== null && p.width !== undefined ? (+p.width) : '-'}</td>
         <td>1</td>
         <td class="fw-bold">${escHtml(p.roll_no.replace(/^R/, 'R-'))}</td>
         <td class="fw-bold text-end pe-3 text-primary">${wgtStr}</td>
@@ -3363,7 +3363,7 @@ function renderSummaryTable(rows) {
                 <td>${rollsCell}</td>
                 <td>${r.customer ? escHtml(r.customer) : '<span class="text-muted">&mdash;</span>'}</td>
                 <td>${r.ref_no ? escHtml(r.ref_no) : '<span class="text-muted">&mdash;</span>'}</td>
-                <td>${r.width !== null ? (+r.width).toFixed(0) + ' mm' : '<span class="text-muted">&mdash;</span>'}</td>
+                <td>${r.width !== null ? (+r.width) + ' mm' : '<span class="text-muted">&mdash;</span>'}</td>
             </tr>
         `;
     }).join('');
@@ -3449,7 +3449,7 @@ function applySummaryFilter() {
     } else if (cat === 'width') {
         const val = document.getElementById('summaryFilterValueText').value.trim();
         if (val !== '') {
-            rows = rows.filter(r => r.width !== null && String(Math.round(r.width)).includes(val));
+            rows = rows.filter(r => r.width !== null && String(r.width).includes(val));
         }
     } else {
         // All Fields — free text across everything visible in the table
