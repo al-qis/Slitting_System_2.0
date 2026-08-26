@@ -498,9 +498,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'update' && $id > 0) {
-        // Fetch the CURRENT lot_no before overwriting it — we need the OLD
-        // value to know what prefix to look for on child rolls.
-        $curStmt = $conn->prepare("SELECT lot_no FROM mother_coil WHERE id = ?");
+        // Fetch the CURRENT lot_no, coil_no, product before overwriting — we need the OLD
+        // values to update all downstream child records across tables.
+        $curStmt = $conn->prepare("SELECT lot_no, coil_no, product FROM mother_coil WHERE id = ?");
         $curStmt->bind_param("i", $id);
         $curStmt->execute();
         $curRow = $curStmt->get_result()->fetch_assoc();
@@ -509,8 +509,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$curRow) {
             die("Mother coil not found.");
         }
-        $oldLotNo     = $curRow['lot_no'];
-        $lotNoChanged = ($oldLotNo !== $lot_no);
+        $oldLotNo       = $curRow['lot_no'];
+        $oldCoilNo      = $curRow['coil_no'];
+        $oldProduct     = $curRow['product'];
+
+        $lotNoChanged   = ($oldLotNo   !== $lot_no);
+        $coilNoChanged  = ($oldCoilNo  !== $coil_no);
+        $productChanged = ($oldProduct !== $product);
 
         $conn->begin_transaction();
         try {
@@ -565,19 +570,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $childrenUpdated = 0;
 
-            // 2. Cascade the lot_no rename to every child slitting_product row
-            //    linked to this mother — this is the "Finished Product" stage
-            //    the mismatch was reported at.
-            //
-            //    IMPORTANT: a child's lot_no is not always identical to the
-            //    mother's — reslit/recoiled children pick up a letter suffix
-            //    (e.g. mother "826604" -> child "826604a"). A blind overwrite
-            //    would destroy that suffix, so instead we replace only the OLD
-            //    lot_no PREFIX and keep whatever comes after it intact:
-            //    "826604a" -> "{new lot_no}a".
-            if ($lotNoChanged) {
+            // 2. Cascade changes (coil_no, lot_no, product) to child records in slitting_product
+            if ($lotNoChanged || $coilNoChanged || $productChanged) {
                 $childStmt = $conn->prepare("
-                    SELECT id, lot_no FROM slitting_product
+                    SELECT id, lot_no, coil_no, product FROM slitting_product
                     WHERE mother_id = ? AND (is_voided = 0 OR is_voided IS NULL)
                 ");
                 $childStmt->bind_param("i", $id);
@@ -585,61 +581,144 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $childRows = $childStmt->get_result()->fetch_all(MYSQLI_ASSOC);
                 $childStmt->close();
 
-                $updChild = $conn->prepare("UPDATE slitting_product SET lot_no = ? WHERE id = ?");
+                $updChild = $conn->prepare("
+                    UPDATE slitting_product
+                    SET lot_no = ?, coil_no = ?, product = ?, is_printed = 0
+                    WHERE id = ?
+                ");
 
                 foreach ($childRows as $child) {
-                    $childLot = $child['lot_no'] ?? '';
+                    $childLot   = $child['lot_no'] ?? '';
+                    $newChildLot = $childLot;
 
-                    // Only touch rows whose lot_no actually starts with the OLD
-                    // mother lot_no. This is what preserves any suffix, and it
-                    // also defensively skips anything that doesn't match the
-                    // expected pattern rather than guessing and risking
-                    // corrupting unrelated data.
-                    if (strpos($childLot, $oldLotNo) !== 0) {
-                        continue;
+                    if ($lotNoChanged && strpos($childLot, $oldLotNo) === 0) {
+                        $suffix      = substr($childLot, strlen($oldLotNo));
+                        $newChildLot = $lot_no . $suffix;
                     }
 
-                    $suffix      = substr($childLot, strlen($oldLotNo));
-                    $newChildLot = $lot_no . $suffix;
+                    $newCoil = $coilNoChanged ? $coil_no : $child['coil_no'];
+                    $newProd = $productChanged ? $product : $child['product'];
 
-                    if ($newChildLot === $childLot) {
-                        continue; // no actual change for this row
-                    }
-
-                    $updChild->bind_param("si", $newChildLot, $child['id']);
+                    $updChild->bind_param("sssi", $newChildLot, $newCoil, $newProd, $child['id']);
                     if (!$updChild->execute()) {
-                        // Most likely cause: renaming this child would collide
-                        // with the (lot_no, coil_no, roll_no) UNIQUE KEY of some
-                        // unrelated existing row. Abort the whole cascade rather
-                        // than leave it half-applied.
                         throw new Exception(
-                            "Could not rename child roll (old lot: {$childLot}) to " .
-                            "\"{$newChildLot}\" — likely a duplicate Lot/Coil/Roll " .
-                            "combination already exists. " . $updChild->error
+                            "Could not update child roll (old lot: {$childLot}) — " .
+                            "likely a duplicate Lot/Coil/Roll combination already exists. " . $updChild->error
                         );
                     }
                     $childrenUpdated++;
 
-                    // Lightweight audit trail — logged per child roll using
-                    // entity_type='slitting' (a value process_log already
-                    // accepts elsewhere in the app). 'mother_coil' is not a
-                    // valid entity_type, so we don't log a separate parent-
-                    // level entry; each renamed child gets its own line
-                    // instead, which is arguably more useful anyway.
                     if (function_exists('log_process')) {
                         log_process($conn, 'slitting', (int)$child['id'], $id,
-                            $childLot, $newChildLot, 'lot_no_cascade_rename',
-                            "Cascaded from mother_coil id={$id} lot_no rename " .
-                            "(\"{$oldLotNo}\" -> \"{$lot_no}\")"
+                            $childLot, $newChildLot, 'mother_coil_cascade_update',
+                            "Cascaded from mother_coil id={$id} update (lot: \"{$oldLotNo}\" -> \"{$lot_no}\", coil: \"{$oldCoilNo}\" -> \"{$coil_no}\")"
                         );
                     }
                 }
                 $updChild->close();
             }
 
+            // 3. Cascade updates to stock_raw_material
+            if ($coilNoChanged || $lotNoChanged) {
+                $stStmt = $conn->prepare("SELECT id, lot_no FROM stock_raw_material WHERE source_id = ?");
+                if ($stStmt) {
+                    $stStmt->bind_param("i", $id);
+                    $stStmt->execute();
+                    $stRows = $stStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                    $stStmt->close();
+
+                    $stUpd = $conn->prepare("UPDATE stock_raw_material SET coil_no = ?, lot_no = ? WHERE id = ?");
+                    foreach ($stRows as $stRow) {
+                        $stLot = $stRow['lot_no'] ?? '';
+                        $newStLot = $stLot;
+                        if ($lotNoChanged && strpos($stLot, $oldLotNo) === 0) {
+                            $suffix   = substr($stLot, strlen($oldLotNo));
+                            $newStLot = $lot_no . $suffix;
+                        }
+                        $stUpd->bind_param("ssi", $coil_no, $newStLot, $stRow['id']);
+                        $stUpd->execute();
+                    }
+                    $stUpd->close();
+                }
+            }
+
+            // 4. Cascade updates to sfc
+            if ($coilNoChanged || $lotNoChanged || $productChanged) {
+                $sfcStmt = $conn->prepare("SELECT sfc_id, lot_no FROM sfc WHERE mother_id = ?");
+                if ($sfcStmt) {
+                    $sfcStmt->bind_param("i", $id);
+                    $sfcStmt->execute();
+                    $sfcRows = $sfcStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                    $sfcStmt->close();
+
+                    $sfcUpd = $conn->prepare("UPDATE sfc SET coil_no = ?, product = ?, lot_no = ? WHERE sfc_id = ?");
+                    foreach ($sfcRows as $sfcRow) {
+                        $sfcLot = $sfcRow['lot_no'] ?? '';
+                        $newSfcLot = $sfcLot;
+                        if ($lotNoChanged && strpos($sfcLot, $oldLotNo) === 0) {
+                            $suffix    = substr($sfcLot, strlen($oldLotNo));
+                            $newSfcLot = $lot_no . $suffix;
+                        }
+                        $sfcUpd->bind_param("sssi", $coil_no, $product, $newSfcLot, $sfcRow['sfc_id']);
+                        $sfcUpd->execute();
+                    }
+                    $sfcUpd->close();
+                }
+            }
+
+            // 5. Cascade updates to recoiling_product
+            if ($coilNoChanged || $lotNoChanged || $productChanged) {
+                $recStmt = $conn->prepare("SELECT id, lot_no FROM recoiling_product WHERE mother_id = ?");
+                if ($recStmt) {
+                    $recStmt->bind_param("i", $id);
+                    $recStmt->execute();
+                    $recRows = $recStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                    $recStmt->close();
+
+                    $recUpd = $conn->prepare("UPDATE recoiling_product SET coil_no = ?, product = ?, lot_no = ? WHERE id = ?");
+                    foreach ($recRows as $recRow) {
+                        $recLot = $recRow['lot_no'] ?? '';
+                        $newRecLot = $recLot;
+                        if ($lotNoChanged && strpos($recLot, $oldLotNo) === 0) {
+                            $suffix    = substr($recLot, strlen($oldLotNo));
+                            $newRecLot = $lot_no . $suffix;
+                        }
+                        $recUpd->bind_param("sssi", $coil_no, $product, $newRecLot, $recRow['id']);
+                        $recUpd->execute();
+                    }
+                    $recUpd->close();
+                }
+            }
+
+            // 6. Cascade updates to reslit_product
+            if ($coilNoChanged || $lotNoChanged || $productChanged) {
+                $resStmt = $conn->prepare("SELECT id, lot_no FROM reslit_product WHERE mother_id = ?");
+                if ($resStmt) {
+                    $resStmt->bind_param("i", $id);
+                    $resStmt->execute();
+                    $resRows = $resStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                    $resStmt->close();
+
+                    $resUpd = $conn->prepare("UPDATE reslit_product SET coil_no = ?, product = ?, lot_no = ? WHERE id = ?");
+                    foreach ($resRows as $resRow) {
+                        $resLot = $resRow['lot_no'] ?? '';
+                        $newResLot = $resLot;
+                        if ($lotNoChanged && strpos($resLot, $oldLotNo) === 0) {
+                            $suffix    = substr($resLot, strlen($oldLotNo));
+                            $newResLot = $lot_no . $suffix;
+                        }
+                        $resUpd->bind_param("sssi", $coil_no, $product, $newResLot, $resRow['id']);
+                        $resUpd->execute();
+                    }
+                    $resUpd->close();
+                }
+            }
+
             $conn->commit();
             $successParams = 'success=update';
-            if ($lotNoChanged) { $successParams .= '&children_updated=' . $childrenUpdated; }
+            if ($lotNoChanged || $coilNoChanged || $productChanged) {
+                $successParams .= '&children_updated=' . $childrenUpdated;
+            }
             header("Location: mother_coil.php?{$successParams}");
             exit;
 

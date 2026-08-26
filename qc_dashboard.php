@@ -2,10 +2,11 @@
 // qc_dashboard.php — v5: passes top_product_id to backend for top-roll persistence
 session_start();
 require_once 'config.php';
+require_once 'PalletManager.php';
 
 function getPalletItems(mysqli $conn, int $pallet_id): array {
     $stmt = $conn->prepare("
-        SELECT pi.seq, pi.added_at,
+        SELECT pi.seq, pi.added_at, pi.stock_code,
                sp.id AS product_id,
                sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
                sp.width, sp.length, sp.actual_length, sp.status,
@@ -22,6 +23,12 @@ function getPalletItems(mysqli $conn, int $pallet_id): array {
     $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     $stmt->close();
     return $rows;
+}
+
+function formatWidthDisplay($val): string {
+    if ($val === null || $val === '') return '-';
+    $f = (float)$val;
+    return ($f == (int)$f) ? number_format($f, 0) : (string)$f;
 }
 
 function calcEstWeight(float $l, float $w, float $s): float {
@@ -91,13 +98,17 @@ if ($result) {
         $items        = getPalletItems($conn, (int)$row['id']);
         $totalWgt     = 0.0;
         $nodCoilCount = 0;
-        foreach ($items as $item) {
+        foreach ($items as &$item) {
             $len      = (float)($item['actual_length'] ?: $item['length']);
             $totalWgt += calcEstWeight($len, (float)$item['width'], (float)$item['std_weight']);
             if (!empty($item['nod_length']) && (float)$item['nod_length'] > 0) {
                 $nodCoilCount++;
             }
+            if (empty($item['stock_code'])) {
+                $item['stock_code'] = PalletManager::formatStockCode($item['coil_no'], $item['width'], $len);
+            }
         }
+        unset($item);
         $row['items']          = $items;
         $row['total_wgt']      = $totalWgt;
         $row['nod_coil_count'] = $nodCoilCount;
@@ -465,7 +476,7 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
                             <span class="constraint-chip"><i class="bi bi-person me-1"></i><?= htmlspecialchars($pallet['customer_name']) ?></span>
                             <span class="constraint-chip"><i class="bi bi-hash me-1"></i><?= htmlspecialchars($pallet['ref_no']) ?></span>
                             <span class="constraint-chip"><i class="bi bi-tag me-1"></i><?= htmlspecialchars($pallet['product_type']) ?></span>
-                            <span class="constraint-chip"><?= number_format((float)$pallet['width']) ?> mm</span>
+                            <span class="constraint-chip"><?= formatWidthDisplay($pallet['width']) ?> mm</span>
                             <?php if (!empty($pallet['nod_coil_count']) && $pallet['nod_coil_count'] > 0): ?>
                             <span class="constraint-chip nod-alert-chip" style="background:#fef08a; color:#854d0e; border:1px solid #fde047; font-weight:700;" title="Notice of Defect (NOD) recorded on <?= $pallet['nod_coil_count'] ?> coil<?= $pallet['nod_coil_count'] > 1 ? 's' : '' ?>">
                                 <i class="bi bi-exclamation-triangle-fill me-1" style="color:#d97706 !important;"></i>NOD=<?= $pallet['nod_coil_count'] ?> coil<?= $pallet['nod_coil_count'] > 1 ? 's' : '' ?>
@@ -512,9 +523,40 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
                 <!-- Expandable content -->
                 <tr id="rollsRow<?= $pid ?>" style="display:none;">
                     <td colspan="7" style="padding:0 0 14px 50px;background:#f8faff;">
+                        <!-- Warehousing Slip Header Grid -->
+                        <div class="table-responsive my-3 me-3 border rounded bg-white p-3 shadow-sm">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <span class="fw-bold text-secondary" style="font-size:12px;">
+                                    <i class="bi bi-file-text me-1"></i> WAREHOUSING SLIP HEADER
+                                </span>
+                                <span class="badge bg-secondary">MS-WH-01(QR)</span>
+                            </div>
+                            <table class="table table-sm table-bordered align-middle mb-0" style="font-size:13px; background:#fff; border-color:#cbd5e1;">
+                                <tbody>
+                                    <tr>
+                                        <td class="bg-light fw-bold text-muted" style="width:15%;">Customer</td>
+                                        <td class="fw-bold text-dark" style="width:35%;"><?= htmlspecialchars(($pallet['customer_name'] ?? '') ?: '-') ?></td>
+                                        <td class="bg-light fw-bold text-muted" style="width:15%;">Date</td>
+                                        <td class="fw-bold text-dark" style="width:35%;"><?= date('d/m/Y', strtotime($pallet['created_at'] ?? 'now')) ?></td>
+                                    </tr>
+                                    <tr>
+                                        <td class="bg-light fw-bold text-muted">SOS No.</td>
+                                        <td class="fw-bold text-dark"><?= htmlspecialchars(($pallet['ref_no'] ?? '') ?: '-') ?></td>
+                                        <td class="bg-light fw-bold text-muted">Serial No.</td>
+                                        <td class="fw-bold text-primary"><?= htmlspecialchars(($pallet['pallet_no'] ?? '') ?: '-') ?></td>
+                                    </tr>
+                                    <tr>
+                                        <td class="bg-light fw-bold text-muted">Product Type :</td>
+                                        <td class="fw-bold text-dark"><?= htmlspecialchars(($pallet['product_type'] ?? '') ?: '-') ?></td>
+                                        <td class="bg-light fw-bold text-muted">Width (mm)</td>
+                                        <td class="fw-bold text-dark"><?= !empty($pallet['width']) ? formatWidthDisplay($pallet['width']) . ' mm' : '-' ?></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
 
                         <?php if ($pallet['total_wgt']>0): ?>
-                        <div class="pallet-wgt-bar mt-2 me-3">
+                        <div class="pallet-wgt-bar me-3">
                             <div class="label"><i class="bi bi-speedometer2"></i>Est. Total Weight</div>
                             <div style="display:flex;align-items:baseline;gap:5px;">
                                 <span class="total"><?= number_format($pallet['total_wgt'],2) ?></span>
@@ -544,79 +586,85 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
                             <i class="bi bi-clipboard2-check"></i>
                             <span>
                                 <strong>QC Checklist required:</strong>
-                                Tick <em>all 3</em> checkboxes (Winding Condition, No Hairy Rubber, Coil Width) on <em>at least one</em> product row,
+                                Tick <em>all 3</em> boxes (Winding Condition, No Hairy Rubber, Coil Width) on <em>at least one</em> product row,
                                 and select an inspector above.
                             </span>
                         </div>
 
-                        <!-- Roll table -->
-                        <table class="roll-sub-table table table-sm mb-0 me-3">
-                            <thead>
-                                <tr>
-                                    <th>#</th><th>Product</th><th>Lot · Coil · Roll</th>
-                                    <th>Width (mm)</th><th>Actual Length (m)</th><th>Est. Weight</th>
-                                    <th class="text-center" style="background:#e8f5e9;color:#166534;">
-                                        <i class="bi bi-check2-circle me-1"></i>QC Checklist
-                                    </th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                            <?php foreach ($pallet['items'] as $item):
-                                $itemLen   = (float)($item['actual_length'] ?: $item['length']);
-                                $itemWgt   = calcEstWeight($itemLen,(float)$item['width'],(float)$item['std_weight']);
-                                $productId = (int)$item['product_id'];
-                                $hasNod    = !empty($item['nod_length']) && (float)$item['nod_length'] > 0;
-                            ?>
-                                <tr class="roll-check-row <?= $hasNod ? 'table-warning' : '' ?>" id="checkRow_<?= $pid ?>_<?= $productId ?>" data-pallet-id="<?= $pid ?>" data-product-id="<?= $productId ?>" data-lot="<?= htmlspecialchars($item['lot_no'], ENT_QUOTES) ?>" data-coil="<?= htmlspecialchars($item['coil_no'], ENT_QUOTES) ?>" data-roll="<?= htmlspecialchars($item['roll_no'], ENT_QUOTES) ?>">
-                                    <td><?= $item['seq'] ?></td>
-                                    <td><?= htmlspecialchars($item['product']??'—') ?></td>
-                                    <td class="roll-ref">
-                                        <?= htmlspecialchars($item['lot_no']) ?>
-                                        <?= htmlspecialchars($item['coil_no']) ?>
-                                        – <?= str_replace('R','R-',htmlspecialchars($item['roll_no'])) ?>
-                                        <?php if ($hasNod): ?>
-                                        <span class="badge ms-1" style="font-size:10px; background:#fef08a !important; color:#854d0e !important; border:1px solid #fde047 !important;" title="Notice of Defect length: <?= (float)$item['nod_length'] ?>m">
-                                            <i class="bi bi-exclamation-triangle-fill me-1" style="color:#d97706 !important;"></i>NOD <?= (float)$item['nod_length'] ?>m
-                                        </span>
-                                        <?php endif; ?>
-                                    </td>
-                                    <td><?= number_format((float)$item['width']) ?></td>
-                                    <td>
-                                        <?php $len=$item['actual_length']?:$item['length']; ?>
-                                        <?= number_format((float)$len,1) ?>
-                                        <?php if($item['actual_length']): ?>
-                                        <span style="font-size:10px;background:#dcfce7;color:#166534;padding:1px 5px;border-radius:8px;">ACTUAL</span>
-                                        <?php endif; ?>
-                                    </td>
-                                    <td>
-                                        <?php if($itemWgt>0): ?>
-                                        <span class="wgt-chip-roll"><i class="bi bi-speedometer2"></i><?= number_format($itemWgt,2) ?> kg</span>
-                                        <?php else: ?><span class="text-muted" style="font-size:11px;">N/A</span><?php endif; ?>
-                                    </td>
-                                    <td class="checklist-cell text-center" id="checklistCell_<?= $pid ?>_<?= $productId ?>">
-                                        <div class="checklist-item">
-                                            <input type="checkbox"
-                                                   id="winding_<?= $pid ?>_<?= $productId ?>"
-                                                   onchange="evalChecklist(<?= $pid ?>,<?= $productId ?>)">
-                                            <label for="winding_<?= $pid ?>_<?= $productId ?>">Winding Condition</label>
-                                        </div>
-                                        <div class="checklist-item">
-                                            <input type="checkbox"
-                                                   id="hairy_<?= $pid ?>_<?= $productId ?>"
-                                                   onchange="evalChecklist(<?= $pid ?>,<?= $productId ?>)">
-                                            <label for="hairy_<?= $pid ?>_<?= $productId ?>">No Hairy Rubber</label>
-                                        </div>
-                                        <div class="checklist-item">
-                                            <input type="checkbox"
-                                                   id="coilwidth_<?= $pid ?>_<?= $productId ?>"
-                                                   onchange="evalChecklist(<?= $pid ?>,<?= $productId ?>)">
-                                            <label for="coilwidth_<?= $pid ?>_<?= $productId ?>">Coil Width</label>
-                                        </div>
-                                    </td>
-                                </tr>
-                            <?php endforeach; ?>
-                            </tbody>
-                        </table>
+                        <!-- Warehousing Slip Roll Items Table -->
+                        <div class="table-responsive me-3">
+                            <table class="roll-sub-table table table-sm table-bordered table-hover align-middle text-center mb-0" style="font-size:13px; border-color:#cbd5e1; background:#fff;">
+                                <thead class="table-light border-bottom border-secondary" style="font-size:12px;">
+                                    <tr>
+                                        <th rowspan="2" class="align-middle text-start ps-3" style="width: 18%;">Stock Code :</th>
+                                        <th rowspan="2" class="align-middle" style="width: 18%;">Lot No.</th>
+                                        <th colspan="2" class="align-middle">Size</th>
+                                        <th rowspan="2" class="align-middle" style="width: 6%;">Coils</th>
+                                        <th rowspan="2" class="align-middle" style="width: 10%;">Roll No.</th>
+                                        <th rowspan="2" class="align-middle" style="width: 14%;">Nett Wgt (kg)</th>
+                                        <th rowspan="2" class="align-middle text-center" style="background:#e8f5e9;color:#166534;width: 22%;">
+                                            <i class="bi bi-check2-circle me-1"></i>QC Checklist
+                                        </th>
+                                    </tr>
+                                    <tr>
+                                        <th style="width: 11%;">Length (mtr)</th>
+                                        <th style="width: 11%;">width (mm)</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                <?php foreach ($pallet['items'] as $item):
+                                    $itemLen   = (float)($item['actual_length'] ?: $item['length']);
+                                    $itemWgt   = calcEstWeight($itemLen,(float)$item['width'],(float)$item['std_weight']);
+                                    $productId = (int)$item['product_id'];
+                                    $hasNod    = !empty($item['nod_length']) && (float)$item['nod_length'] > 0;
+                                ?>
+                                    <tr class="roll-check-row <?= $hasNod ? 'table-warning' : '' ?>" id="checkRow_<?= $pid ?>_<?= $productId ?>" data-pallet-id="<?= $pid ?>" data-product-id="<?= $productId ?>" data-lot="<?= htmlspecialchars($item['lot_no'], ENT_QUOTES) ?>" data-coil="<?= htmlspecialchars($item['coil_no'], ENT_QUOTES) ?>" data-roll="<?= htmlspecialchars($item['roll_no'], ENT_QUOTES) ?>">
+                                        <td class="fw-bold text-start ps-3" style="font-family:monospace; font-size:12px;"><?= htmlspecialchars(($item['stock_code'] ?? '') ?: '-') ?></td>
+                                        <td><?= htmlspecialchars($item['lot_no']) ?> <?= htmlspecialchars($item['coil_no']) ?></td>
+                                        <td>
+                                            <?= number_format((float)$itemLen, 1) ?>
+                                            <?php if($item['actual_length']): ?>
+                                            <span style="font-size:10px;background:#dcfce7;color:#166534;padding:1px 5px;border-radius:8px;">ACTUAL</span>
+                                            <?php endif; ?>
+                                            <?php if ($hasNod): ?>
+                                            <br><span class="badge ms-1" style="font-size:10px; background:#fef08a !important; color:#854d0e !important; border:1px solid #fde047 !important;" title="Notice of Defect length: <?= (float)$item['nod_length'] ?>m">
+                                                <i class="bi bi-exclamation-triangle-fill me-1" style="color:#d97706 !important;"></i>NOD <?= (float)$item['nod_length'] ?>m
+                                            </span>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td><?= formatWidthDisplay($item['width']) ?></td>
+                                        <td>1</td>
+                                        <td class="fw-bold"><?= str_replace('R','R-',htmlspecialchars($item['roll_no'])) ?></td>
+                                        <td class="fw-bold text-end pe-3 text-primary">
+                                            <?php if($itemWgt>0): ?>
+                                            <span class="wgt-chip-roll"><i class="bi bi-speedometer2"></i><?= number_format($itemWgt,2) ?> kg</span>
+                                            <?php else: ?><span class="text-muted" style="font-size:11px;">N/A</span><?php endif; ?>
+                                        </td>
+                                        <td class="checklist-cell text-center" id="checklistCell_<?= $pid ?>_<?= $productId ?>">
+                                            <div class="checklist-item">
+                                                <input type="checkbox"
+                                                       id="winding_<?= $pid ?>_<?= $productId ?>"
+                                                       onchange="evalChecklist(<?= $pid ?>,<?= $productId ?>)">
+                                                <label for="winding_<?= $pid ?>_<?= $productId ?>">Winding Condition</label>
+                                            </div>
+                                            <div class="checklist-item">
+                                                <input type="checkbox"
+                                                       id="hairy_<?= $pid ?>_<?= $productId ?>"
+                                                       onchange="evalChecklist(<?= $pid ?>,<?= $productId ?>)">
+                                                <label for="hairy_<?= $pid ?>_<?= $productId ?>">No Hairy Rubber</label>
+                                            </div>
+                                            <div class="checklist-item">
+                                                <input type="checkbox"
+                                                       id="coilwidth_<?= $pid ?>_<?= $productId ?>"
+                                                       onchange="evalChecklist(<?= $pid ?>,<?= $productId ?>)">
+                                                <label for="coilwidth_<?= $pid ?>_<?= $productId ?>">Coil Width</label>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
                     </td>
                 </tr>
 

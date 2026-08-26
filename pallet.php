@@ -559,7 +559,7 @@ if (isset($_GET['export']) && $_GET['export'] === 'summary_pallet') {
             echo '<td ' . $td  . '>' . htmlspecialchars($rollsCell) . '</td>';
             echo '<td ' . $td  . '>' . htmlspecialchars($r['customer'] ?: '-') . '</td>';
             echo '<td ' . $td  . '>' . htmlspecialchars($r['ref_no']   ?: '-') . '</td>';
-            echo '<td ' . $tdN . '>' . ($r['width'] !== null ? number_format($r['width']) : '-') . '</td>';
+            echo '<td ' . $tdN . '>' . ($r['width'] !== null ? formatWidthDisplay($r['width']) : '-') . '</td>';
             echo '</tr>';
         }
     } else {
@@ -689,6 +689,13 @@ function getPalletItemsWithWeight(mysqli $conn, int $pallet_id): array {
     }
     unset($row);
     return $rows;
+}
+
+// Helper: format width to show decimals if present (e.g. 109.5) or integer if whole number (e.g. 110)
+function formatWidthDisplay($val): string {
+    if ($val === null || $val === '') return '-';
+    $f = (float)$val;
+    return ($f == (int)$f) ? number_format($f, 0) : (string)$f;
 }
 
 // Helper: calculate estimated weight for one roll
@@ -1196,7 +1203,7 @@ if (isset($_GET['success'])): ?>
                                 <td class="bg-light fw-bold text-muted">Product Type :</td>
                                 <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['product_type']) ?></td>
                                 <td class="bg-light fw-bold text-muted">Width (mm)</td>
-                                <td class="fw-bold text-dark"><?= number_format((float)$activePallet['width']) ?> mm</td>
+                                <td class="fw-bold text-dark"><?= formatWidthDisplay($activePallet['width']) ?> mm</td>
                             </tr>
                             <tr>
                                 <td class="bg-light fw-bold text-muted">Active Operator</td>
@@ -1374,7 +1381,7 @@ if (isset($_GET['success'])): ?>
                                 <br><span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m"><i class="bi bi-exclamation-triangle-fill"></i> NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m</span>
                                 <?php endif; ?>
                             </td>
-                            <td><?= number_format((float)$item['width']) ?></td>
+                            <td><?= formatWidthDisplay($item['width']) ?></td>
                             <td>1</td>
                             <td class="fw-bold"><?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?></td>
                             <td class="fw-bold text-end pe-3 text-primary"><?= $itemWgt > 0 ? number_format($itemWgt, 2) : '-' ?></td>
@@ -1500,7 +1507,7 @@ if (isset($_GET['success'])): ?>
                             <td class="bg-light fw-bold text-muted">Product Type :</td>
                             <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['product_type'] ?: '-') ?></td>
                             <td class="bg-light fw-bold text-muted">Width (mm)</td>
-                            <td class="fw-bold text-dark"><?= $activePallet['width'] ? number_format((float)$activePallet['width']) . ' mm' : '-' ?></td>
+                            <td class="fw-bold text-dark"><?= $activePallet['width'] ? formatWidthDisplay($activePallet['width']) . ' mm' : '-' ?></td>
                         </tr>
                     </tbody>
                 </table>
@@ -1578,7 +1585,7 @@ if (isset($_GET['success'])): ?>
                                 <br><span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m"><i class="bi bi-exclamation-triangle-fill"></i> NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m</span>
                                 <?php endif; ?>
                             </td>
-                            <td><?= number_format((float)$item['width']) ?></td>
+                            <td><?= formatWidthDisplay($item['width']) ?></td>
                             <td>1</td>
                             <td class="fw-bold"><?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?></td>
                             <td class="fw-bold text-end pe-3 text-primary"><?= $itemWgt > 0 ? number_format($itemWgt, 2) : '-' ?></td>
@@ -1656,7 +1663,7 @@ if (isset($_GET['success'])): ?>
                             <td class="bg-light fw-bold text-muted">Product Type :</td>
                             <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['product_type'] ?: '-') ?></td>
                             <td class="bg-light fw-bold text-muted">Width (mm)</td>
-                            <td class="fw-bold text-dark"><?= $activePallet['width'] ? number_format((float)$activePallet['width']) . ' mm' : '-' ?></td>
+                            <td class="fw-bold text-dark"><?= $activePallet['width'] ? formatWidthDisplay($activePallet['width']) . ' mm' : '-' ?></td>
                         </tr>
                     </tbody>
                 </table>
@@ -1721,7 +1728,7 @@ if (isset($_GET['success'])): ?>
                                 <br><span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m"><i class="bi bi-exclamation-triangle-fill"></i> NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m</span>
                                 <?php endif; ?>
                             </td>
-                            <td><?= number_format((float)$item['width']) ?></td>
+                            <td><?= formatWidthDisplay($item['width']) ?></td>
                             <td>1</td>
                             <td class="fw-bold"><?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?></td>
                             <td class="fw-bold text-end pe-3 text-primary"><?= $itemWgt > 0 ? number_format($itemWgt, 2) : '-' ?></td>
@@ -1787,7 +1794,7 @@ if (isset($_GET['success'])): ?>
                             <td class="bg-light fw-bold text-muted">Product Type :</td>
                             <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['product_type'] ?: '-') ?></td>
                             <td class="bg-light fw-bold text-muted">Width (mm)</td>
-                            <td class="fw-bold text-dark"><?= $activePallet['width'] ? number_format((float)$activePallet['width']) . ' mm' : '-' ?></td>
+                            <td class="fw-bold text-dark"><?= $activePallet['width'] ? formatWidthDisplay($activePallet['width']) . ' mm' : '-' ?></td>
                         </tr>
                     </tbody>
                 </table>
@@ -1854,7 +1861,7 @@ if (isset($_GET['success'])): ?>
                                 <br><span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m"><i class="bi bi-exclamation-triangle-fill"></i> NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m</span>
                                 <?php endif; ?>
                             </td>
-                            <td><?= number_format((float)$item['width']) ?></td>
+                            <td><?= formatWidthDisplay($item['width']) ?></td>
                             <td>1</td>
                             <td class="fw-bold"><?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?></td>
                             <td class="fw-bold text-end pe-3 text-primary"><?= $itemWgt > 0 ? number_format($itemWgt, 2) : '-' ?></td>
@@ -1933,7 +1940,7 @@ if (isset($_GET['success'])): ?>
                             <td class="bg-light fw-bold text-muted">Product Type :</td>
                             <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['product_type'] ?: '-') ?></td>
                             <td class="bg-light fw-bold text-muted">Width (mm)</td>
-                            <td class="fw-bold text-dark"><?= $activePallet['width'] ? number_format((float)$activePallet['width']) . ' mm' : '-' ?></td>
+                            <td class="fw-bold text-dark"><?= $activePallet['width'] ? formatWidthDisplay($activePallet['width']) . ' mm' : '-' ?></td>
                         </tr>
                     </tbody>
                 </table>
@@ -1998,7 +2005,7 @@ if (isset($_GET['success'])): ?>
                                 <br><span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m"><i class="bi bi-exclamation-triangle-fill"></i> NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m</span>
                                 <?php endif; ?>
                             </td>
-                            <td><?= number_format((float)$item['width']) ?></td>
+                            <td><?= formatWidthDisplay($item['width']) ?></td>
                             <td>1</td>
                             <td class="fw-bold"><?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?></td>
                             <td class="fw-bold text-end pe-3 text-primary"><?= $itemWgt > 0 ? number_format($itemWgt, 2) : '-' ?></td>
