@@ -74,12 +74,7 @@ foreach ($items as $it) {
     $lenVal = (!empty($it['actual_length']) && $it['actual_length'] > 0)
         ? (float)$it['actual_length'] : (float)$it['length'];
 
-    // Trust the value stored on pallet_items; only recompute for legacy
-    // rows added before the stock_code column existed.
-    $stockCode = $it['stock_code'];
-    if (empty($stockCode)) {
-        $stockCode = PalletManager::formatStockCode($it['coil_no'], $it['width'], $lenVal);
-    }
+    $stockCode = PalletManager::formatStockCode($it['coil_no'], $it['width'], $lenVal);
 
     $rows[] = [
         'stock_code' => $stockCode ?: '-',
