@@ -401,6 +401,7 @@ function buildSummaryPalletRows(mysqli $conn): array {
             'customer'   => $r['customer_name'],
             'ref_no'     => $r['ref_no'],
             'width'      => $r['width'] !== null ? (float)$r['width'] : null,
+            'length'     => $lenVal !== null ? (float)$lenVal : null,
         ];
     }, $rows);
 }
@@ -435,11 +436,15 @@ function filterSummaryPalletRows(array $rows, string $cat, string $val, string $
             $rows = array_values(array_filter($rows, function ($r) use ($val) {
                 return $r['width'] !== null && str_contains((string)$r['width'], $val);
             }));
+        } elseif ($cat === 'length') {
+            $rows = array_values(array_filter($rows, function ($r) use ($val) {
+                return $r['length'] !== null && str_contains((string)$r['length'], $val);
+            }));
         } else {
             // All Fields — free text across everything visible in the table
             $needle = strtolower($val);
             $rows = array_values(array_filter($rows, function ($r) use ($needle) {
-                foreach ([$r['pallet_no'], $r['date'], $r['status'], $r['stock_code'], $r['product'], $r['lot_coil'], $r['roll_no'], $r['customer'], $r['ref_no'], $r['width']] as $field) {
+                foreach ([$r['pallet_no'], $r['date'], $r['status'], $r['stock_code'], $r['product'], $r['lot_coil'], $r['roll_no'], $r['customer'], $r['ref_no'], $r['width'], $r['length']] as $field) {
                     if ($field !== null && str_contains(strtolower((string)$field), $needle)) return true;
                 }
                 return false;
@@ -485,7 +490,7 @@ if (isset($_GET['export']) && $_GET['export'] === 'summary_pallet') {
     $rows = buildSummaryPalletRows($conn);
     $rows = filterSummaryPalletRows($rows, $cat, $val, $statusParam, $suffixParam);
 
-    $catLabels = ['customer' => 'Customer', 'product' => 'Product Type', 'date' => 'Date', 'width' => 'Width', 'suffix' => 'Pallet Suffix'];
+    $catLabels = ['customer' => 'Customer', 'product' => 'Product Type', 'date' => 'Date', 'width' => 'Width', 'length' => 'Length', 'suffix' => 'Pallet Suffix'];
     $filterParts = [];
     if ($val !== '') {
         $filterParts[] = isset($catLabels[$cat]) ? "{$catLabels[$cat]}: {$val}" : "Search: {$val}";
@@ -506,7 +511,7 @@ if (isset($_GET['export']) && $_GET['export'] === 'summary_pallet') {
     header('Content-Disposition: attachment; filename="' . $filename . '"');
     header('Cache-Control: max-age=0');
 
-    $cols      = 9; // Pallet No, Date, Status, Stock Code, Product Type, Rolls, Customer, Ref No, Width
+    $cols      = 10; // Pallet No, Date, Status, Stock Code, Product Type, Rolls, Customer, Ref No, Width, Length
     $generated = date('d M Y, H:i');
     ?>
 <html><head><meta charset="UTF-8"></head><body>
@@ -537,6 +542,7 @@ if (isset($_GET['export']) && $_GET['export'] === 'summary_pallet') {
             <th style="padding:8px 10px;">Customer</th>
             <th style="padding:8px 10px;">Ref No</th>
             <th style="padding:8px 10px;">Width (mm)</th>
+            <th style="padding:8px 10px;">Length (m)</th>
         </tr>
     </thead>
     <tbody>
@@ -559,6 +565,7 @@ if (isset($_GET['export']) && $_GET['export'] === 'summary_pallet') {
             echo '<td ' . $td  . '>' . htmlspecialchars($r['customer'] ?: '-') . '</td>';
             echo '<td ' . $td  . '>' . htmlspecialchars($r['ref_no']   ?: '-') . '</td>';
             echo '<td ' . $tdN . '>' . ($r['width'] !== null ? formatWidthDisplay($r['width']) : '-') . '</td>';
+            echo '<td ' . $tdN . '>' . ($r['length'] !== null ? formatWidthDisplay($r['length']) : '-') . '</td>';
             echo '</tr>';
         }
     } else {
@@ -2324,12 +2331,13 @@ if (isset($_GET['success'])): ?>
               <option value="product">Product Type</option>
               <option value="customer">Customer</option>
               <option value="width">Width</option>
+              <option value="length">Length</option>
             </select>
           </div>
           <div class="col-md-3">
-            <!-- Text input — used for "All Fields" free search, and for Width -->
+            <!-- Text input — used for "All Fields" free search, and for Width/Length -->
             <input type="text" id="summaryFilterValueText" class="form-control form-control-sm"
-                   placeholder="Search Pallet No, Date, Stock Code, Product, Rolls, Customer, Ref No, Width..."
+                   placeholder="Search Pallet No, Date, Stock Code, Product, Rolls, Customer, Ref No, Width, Length..."
                    oninput="applySummaryFilter()">
             <!-- Dropdown — used for Product / Customer / Suffix, populated dynamically with distinct values -->
             <select id="summaryFilterValueSelect" class="form-select form-select-sm d-none" onchange="applySummaryFilter()">
@@ -2389,6 +2397,7 @@ if (isset($_GET['success'])): ?>
                 <th>Customer</th>
                 <th>Ref No</th>
                 <th>Width</th>
+                <th>Length</th>
               </tr>
             </thead>
             <tbody id="summaryTableBody"></tbody>
@@ -3342,7 +3351,7 @@ function renderSummaryTable(rows) {
     const countEl = document.getElementById('summaryResultCount');
 
     if (!rows.length) {
-        tbody.innerHTML = `<tr><td colspan="9" class="py-4 text-muted">No matching records.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="10" class="py-4 text-muted">No matching records.</td></tr>`;
         countEl.textContent = '0 rows';
         return;
     }
@@ -3363,6 +3372,7 @@ function renderSummaryTable(rows) {
                 <td>${r.customer ? escHtml(r.customer) : '<span class="text-muted">&mdash;</span>'}</td>
                 <td>${r.ref_no ? escHtml(r.ref_no) : '<span class="text-muted">&mdash;</span>'}</td>
                 <td>${r.width !== null ? (+r.width) + ' mm' : '<span class="text-muted">&mdash;</span>'}</td>
+                <td>${r.length !== null ? (+r.length) + ' m' : '<span class="text-muted">&mdash;</span>'}</td>
             </tr>
         `;
     }).join('');
@@ -3373,7 +3383,7 @@ function renderSummaryTable(rows) {
 // When the filter category changes, swap between:
 // - Calendar Date Picker (Date)
 // - Dropdown of distinct values (Product / Customer / Suffix)
-// - Free-text search box (All Fields / Width)
+// - Free-text search box (All Fields / Width / Length)
 function onSummaryCategoryChange() {
     const cat         = document.getElementById('summaryFilterCategory').value;
     const textInput   = document.getElementById('summaryFilterValueText');
@@ -3408,11 +3418,13 @@ function onSummaryCategoryChange() {
 
         selectInput.classList.remove('d-none');
     } else {
-        // "All Fields" and "Width" both use free-text search
+        // "All Fields", "Width", and "Length" use free-text search
         textInput.value = '';
         textInput.placeholder = (cat === 'width')
             ? 'Type a width in mm, e.g. 309'
-            : 'Search Pallet No, Date, Status, Stock Code, Product, Rolls, Customer, Ref No, Width...';
+            : (cat === 'length')
+            ? 'Type a length in m, e.g. 796'
+            : 'Search Pallet No, Date, Stock Code, Product, Rolls, Customer, Ref No, Width, Length...';
         textInput.classList.remove('d-none');
     }
 
@@ -3450,13 +3462,18 @@ function applySummaryFilter() {
         if (val !== '') {
             rows = rows.filter(r => r.width !== null && String(r.width).includes(val));
         }
+    } else if (cat === 'length') {
+        const val = document.getElementById('summaryFilterValueText').value.trim();
+        if (val !== '') {
+            rows = rows.filter(r => r.length !== null && String(r.length).includes(val));
+        }
     } else {
         // All Fields — free text across everything visible in the table
         const val = document.getElementById('summaryFilterValueText').value.trim().toLowerCase();
         if (val !== '') {
             rows = rows.filter(r => [
                 r.pallet_no, r.date, r.status, r.stock_code, r.product, r.lot_coil, r.roll_no,
-                r.customer, r.ref_no, r.width
+                r.customer, r.ref_no, r.width, r.length
             ].some(v => v !== null && String(v).toLowerCase().includes(val)));
         }
     }
