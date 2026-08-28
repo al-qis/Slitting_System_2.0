@@ -633,7 +633,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'send_
 // ── POST: Reopen pallet for editing / corrections ───────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'reopen_pallet') {
     $palletId = intval($_POST['pallet_id'] ?? 0);
-    $result   = $pm->reopenApprovedOrDeliveredPallet($palletId);
+    $reason   = trim($_POST['reopen_reason'] ?? '');
+    $result   = $pm->reopenApprovedOrDeliveredPallet($palletId, $reason);
     if ($result['ok']) {
         header("Location: pallet.php?pallet_id={$palletId}&success=reopened");
     } else {
@@ -1617,14 +1618,10 @@ if (isset($_GET['success'])): ?>
                         </button>
                     </form>
                 </div>
-                <form method="post">
-                    <input type="hidden" name="action"    value="reopen_pallet">
-                    <input type="hidden" name="pallet_id" value="<?= $activePalletId ?>">
-                    <button type="submit" class="btn btn-warning fw-bold"
-                            onclick="return confirm('Reopen pallet ' + currentPalletNo + ' for editing?\nAll rolls will be reset to IN so you can modify the pallet.')">
-                        <i class="bi bi-pencil-fill me-1"></i> Edit Pallet
-                    </button>
-                </form>
+                <button type="button" class="btn btn-warning fw-bold"
+                        onclick="openReopenModal(<?= (int)$activePalletId ?>, '<?= htmlspecialchars($activePallet['pallet_no'] ?? '', ENT_QUOTES) ?>')">
+                    <i class="bi bi-pencil-fill me-1"></i> Edit Pallet
+                </button>
             </div>
         </div>
 
@@ -1884,14 +1881,10 @@ if (isset($_GET['success'])): ?>
                     <a href="print_slip.php?pallet_no=<?= urlencode($activePallet['pallet_no']) ?>" target="_blank" class="btn btn-outline-primary btn-sm">
                         <i class="bi bi-printer me-1"></i> Print Slip
                     </a>
-                    <form method="post" class="d-inline"
-                          onsubmit="return confirm('Return approved pallet ' + currentPalletNo + ' to edit mode for corrections?\n\nThis will reset the pallet to BUILDING state and require re-submitting to QC once corrections are completed.')">
-                        <input type="hidden" name="action"    value="reopen_pallet">
-                        <input type="hidden" name="pallet_id" value="<?= $activePalletId ?>">
-                        <button type="submit" class="btn btn-outline-warning btn-sm fw-bold">
-                            <i class="bi bi-arrow-counterclockwise me-1"></i> Return to Edit
-                        </button>
-                    </form>
+                    <button type="button" class="btn btn-outline-warning btn-sm fw-bold"
+                            onclick="openReopenModal(<?= (int)$activePalletId ?>, '<?= htmlspecialchars($activePallet['pallet_no'] ?? '', ENT_QUOTES) ?>')">
+                        <i class="bi bi-arrow-counterclockwise me-1"></i> Return to Edit
+                    </button>
                 </div>
 
                 <form method="post"
@@ -2028,14 +2021,10 @@ if (isset($_GET['success'])): ?>
                     <a href="print_slip.php?pallet_no=<?= urlencode($activePallet['pallet_no']) ?>" target="_blank" class="btn btn-outline-primary btn-sm">
                         <i class="bi bi-printer me-1"></i> Print Slip
                     </a>
-                    <form method="post" class="d-inline"
-                          onsubmit="return confirm('Return delivered pallet ' + currentPalletNo + ' to edit mode for corrections?\n\nThis will reset the pallet to BUILDING state, reset all rolls to IN, and require re-submitting to QC once corrections are completed.')">
-                        <input type="hidden" name="action"    value="reopen_pallet">
-                        <input type="hidden" name="pallet_id" value="<?= $activePalletId ?>">
-                        <button type="submit" class="btn btn-outline-warning btn-sm fw-bold">
-                            <i class="bi bi-arrow-counterclockwise me-1"></i> Return to Edit
-                        </button>
-                    </form>
+                    <button type="button" class="btn btn-outline-warning btn-sm fw-bold"
+                            onclick="openReopenModal(<?= (int)$activePalletId ?>, '<?= htmlspecialchars($activePallet['pallet_no'] ?? '', ENT_QUOTES) ?>')">
+                        <i class="bi bi-arrow-counterclockwise me-1"></i> Return to Edit
+                    </button>
                 </div>
                 <span class="text-muted small"><i class="bi bi-lock-fill me-1"></i>Read-Only (Delivered)</span>
             </div>
@@ -2147,6 +2136,47 @@ if (isset($_GET['success'])): ?>
         </div>
     </div><!-- /col-md-5 sidebar -->
 </div><!-- /row -->
+
+<!-- ── REOPEN / RETURN TO EDIT REASON MODAL ───────────────────── -->
+<div class="modal fade" id="reopenReasonModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content shadow border-0">
+      <div class="modal-header bg-warning text-dark py-2">
+        <h5 class="modal-title fs-6 fw-bold">
+          <i class="bi bi-arrow-counterclockwise me-2"></i>Return Pallet to Edit Mode
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <form method="post" action="pallet.php">
+        <div class="modal-body py-3">
+          <input type="hidden" name="action" value="reopen_pallet">
+          <input type="hidden" name="pallet_id" id="reopenModalPalletId" value="">
+          
+          <div class="alert alert-warning py-2 mb-3 small d-flex align-items-center gap-2">
+            <i class="bi bi-exclamation-triangle-fill fs-5 flex-shrink-0"></i>
+            <div>
+              Returning pallet <strong id="reopenModalPalletNo"></strong> to edit mode will reset all attached rolls to <span class="badge bg-secondary">IN</span> status so corrections can be made.
+            </div>
+          </div>
+
+          <div class="mb-2">
+            <label for="reopenReasonInput" class="form-label small fw-bold text-dark mb-1">
+              Reason / Remark <span class="text-danger">*</span>
+            </label>
+            <textarea name="reopen_reason" id="reopenReasonInput" class="form-control form-control-sm" rows="3"
+                      placeholder="Enter reason for returning to edit mode (e.g. Wrong roll assigned, quantity correction, QC feedback...)" required></textarea>
+          </div>
+        </div>
+        <div class="modal-footer py-2 px-3 bg-light">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-warning btn-sm fw-bold">
+            <i class="bi bi-arrow-counterclockwise me-1"></i>Confirm Return to Edit
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
 
 <!-- ── ADD OPERATOR MODAL ────────────────────────────────────── -->
 <div class="modal fade" id="addOperatorModal" tabindex="-1" aria-hidden="true">
@@ -3605,6 +3635,29 @@ async function savePalletRename() {
         palletRenameSaving = false;
         document.getElementById('palletRenameSaveBtn').disabled = false;
         document.getElementById('palletRenameCancelBtn').disabled = false;
+    }
+}
+
+function openReopenModal(palletId, palletNo) {
+    const pId = palletId || (typeof PALLET_ID !== 'undefined' ? PALLET_ID : 0);
+    const pNo = palletNo || (typeof currentPalletNo !== 'undefined' ? currentPalletNo : '') || ('#' + pId);
+
+    const idInput     = document.getElementById('reopenModalPalletId');
+    const noEl        = document.getElementById('reopenModalPalletNo');
+    const reasonInput = document.getElementById('reopenReasonInput');
+
+    if (idInput)     idInput.value = pId;
+    if (noEl)        noEl.textContent = pNo;
+    if (reasonInput) reasonInput.value = '';
+
+    const modalEl = document.getElementById('reopenReasonModal');
+    if (!modalEl) return;
+
+    if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+        const modal = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
+        modal.show();
+    } else if (typeof $ !== 'undefined' && $.fn && $.fn.modal) {
+        $(modalEl).modal('show');
     }
 }
 

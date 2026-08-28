@@ -788,8 +788,9 @@ class PalletManager
     /**
      * @return array{ok: bool, msg: string}
      */
-    public function reopenApprovedOrDeliveredPallet(int $palletId): array
+    public function reopenApprovedOrDeliveredPallet(int $palletId, string $reason = ''): array
     {
+        $reason = trim($reason);
         $this->conn->begin_transaction();
         try {
             $stmt = $this->conn->prepare(
@@ -856,14 +857,21 @@ class PalletManager
             $stmt->close();
 
             // ── Audit: pallet_edit_log ────────────────────────
+            $editNote = "Pallet returned to edit mode from '{$oldStatus}' for corrections. {$rollsReset} roll(s) reset to IN.";
+            if ($reason !== '') {
+                $editNote .= " Reason: " . $reason;
+            }
             $this->writeEditLog(
                 $palletId, $palletNo,
                 'reopen', null, null,
-                "Pallet returned to edit mode from '{$oldStatus}' for corrections. "
-                . "{$rollsReset} roll(s) reset to IN."
+                $editNote
             );
 
             // ── Audit: process_log for each roll ──────────────
+            $procDetail = "Pallet {$palletNo} correction: returned to edit mode from {$oldStatus}";
+            if ($reason !== '') {
+                $procDetail .= " (Reason: {$reason})";
+            }
             foreach ($rolls as $r) {
                 $this->writeProcessLog(
                     'slitting',
@@ -871,7 +879,7 @@ class PalletManager
                     $r['mother_id'] ? (int)$r['mother_id'] : null,
                     $r['status'] ?? 'UNKNOWN',
                     'IN',
-                    "Pallet {$palletNo} correction: returned to edit mode from {$oldStatus}"
+                    $procDetail
                 );
             }
 
