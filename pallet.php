@@ -1356,6 +1356,38 @@ if (isset($_GET['success'])): ?>
             </div>
             <?php endif; ?>
 
+            <?php if ($isEditBuilding): ?>
+            <?php
+            $latestReopenLog = !empty($reopenLogs) ? $reopenLogs[0] : null;
+            $reopenReasonText = '';
+            if ($latestReopenLog) {
+                $noteText = $latestReopenLog['note'] ?? '';
+                if (preg_match('/Reason:\s*(.*)$/is', $noteText, $m)) {
+                    $reopenReasonText = trim($m[1]);
+                } else {
+                    $reopenReasonText = trim($noteText);
+                }
+            }
+            if (empty($reopenReasonText)) {
+                $reopenReasonText = 'Pallet returned to edit mode for corrections.';
+            }
+            ?>
+            <div class="px-4 py-3 border-bottom" style="background:#fffbe6; border-color:#ffe58f !important;">
+                <div class="d-flex align-items-start gap-2">
+                    <i class="bi bi-chat-left-dots-fill text-warning mt-1" style="font-size:16px;"></i>
+                    <div>
+                        <div class="fw-bold" style="font-size:12px; color:#92400e;">
+                            Return to Edit Reason
+                            <?php if ($latestReopenLog && !empty($latestReopenLog['performed_by'])): ?>
+                                <span class="fw-normal text-muted ms-1" style="font-size:11px;">(by <?= htmlspecialchars($latestReopenLog['performed_by']) ?><?= !empty($latestReopenLog['performed_at']) ? ' on ' . date('d/m/Y H:i', strtotime($latestReopenLog['performed_at'])) : '' ?>)</span>
+                            <?php endif; ?>
+                        </div>
+                        <div class="mt-1 fw-bold text-dark" style="font-size:13.5px; color:#1e293b !important;"><?= htmlspecialchars($reopenReasonText) ?></div>
+                    </div>
+                </div>
+            </div>
+            <?php endif; ?>
+
             <div class="card-body p-4">
                 <div class="pallet-progress mb-2">
                     <div class="pallet-progress-bar" id="palletProgressBar"
