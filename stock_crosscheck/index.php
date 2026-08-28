@@ -38,15 +38,31 @@ if ($resScans = $mysqli->query($sqlScans)) {
 // not voided.
 // -----------------------------------------------------------------------
 $baselineStock = [];
-$sql = "SELECT cpm.product AS product_code, COUNT(sp.id) AS cnt
+$baselineRolls = [];
+$sql = "SELECT COALESCE(NULLIF(sp.product, ''), cpm.product, 'Unknown') AS product_code,
+               sp.width, sp.lot_no, sp.coil_no, sp.roll_no
         FROM slitting_product sp
-        JOIN coil_product_map cpm ON cpm.coil_code = SUBSTRING_INDEX(sp.coil_no, '-', 1)
+        LEFT JOIN coil_product_map cpm ON cpm.coil_code = SUBSTRING_INDEX(sp.coil_no, '-', 1)
         WHERE sp.status NOT IN ('OUT','DELIVERED')
           AND (sp.is_voided IS NULL OR sp.is_voided = 0)
-        GROUP BY cpm.product";
+        ORDER BY sp.lot_no ASC, sp.coil_no ASC, sp.roll_no ASC";
 if ($res = $mysqli->query($sql)) {
     while ($row = $res->fetch_assoc()) {
-        $baselineStock[$row['product_code']] = (int) $row['cnt'];
+        $p = trim($row['product_code']);
+        $w = (float) $row['width'];
+        $wClean = ($w > 0) ? ((fmod($w, 1) == 0) ? (int)$w : $w) : null;
+        $label = $wClean !== null ? "$p ({$wClean}mm)" : $p;
+
+        if (!isset($baselineStock[$label])) {
+            $baselineStock[$label] = 0;
+            $baselineRolls[$label] = [];
+        }
+        $baselineStock[$label]++;
+        $baselineRolls[$label][] = [
+            'lot'  => $row['lot_no'],
+            'coil' => $row['coil_no'],
+            'roll' => $row['roll_no']
+        ];
     }
 }
 ?>
@@ -356,6 +372,58 @@ if ($res = $mysqli->query($sql)) {
   }
   .btn-fetch-stock:hover {
     background: #cbd5e1;
+  }
+
+  .summary-main-row.has-unscanned {
+    cursor: pointer;
+  }
+  .summary-main-row.has-unscanned:hover td {
+    background: #f0f7ff !important;
+  }
+  .expand-toggle-icon {
+    display: inline-block;
+    width: 14px;
+    font-size: 10px;
+    color: var(--blue);
+    transition: transform .18s ease;
+    margin-right: 4px;
+  }
+  .summary-main-row.expanded .expand-toggle-icon {
+    transform: rotate(90deg);
+  }
+  .summary-detail-row td {
+    padding: 0 !important;
+    background: #fffdf5 !important;
+    border-bottom: 1px solid var(--border);
+  }
+  .summary-detail-box {
+    padding: 10px 14px;
+    border-top: 1px dashed #fcd34d;
+  }
+  .summary-detail-header {
+    font-size: 11.5px;
+    font-weight: 700;
+    color: #b06000;
+    margin-bottom: 7px;
+  }
+  .summary-detail-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    max-height: 180px;
+    overflow-y: auto;
+  }
+  .summary-detail-chip {
+    background: #fff;
+    border: 1px solid #fde68a;
+    color: #1e293b;
+    padding: 4px 9px;
+    border-radius: 6px;
+    font-size: 11.5px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+  }
+  .summary-detail-chip b {
+    color: var(--navy);
   }
 
   .manual-stock-notice {
@@ -692,7 +760,7 @@ if ($res = $mysqli->query($sql)) {
       <div class="table-wrap summary-wrap">
       <table id="summaryTable">
         <thead>
-          <tr><th>Product</th><th>System</th><th>Scanned</th><th>Left</th><th>Status</th></tr>
+          <tr><th>Product &amp; Width</th><th>System</th><th>Scanned</th><th>Left</th><th>Status</th></tr>
         </thead>
         <tbody id="summaryTbody"></tbody>
       </table>
@@ -711,9 +779,10 @@ if ($res = $mysqli->query($sql)) {
 // ---------------------------------------------------------------------
 let scannedRecords = <?php echo json_encode($existingScans, JSON_UNESCAPED_SLASHES); ?>;
 
-// Baseline "should exist" stock count per product code, computed server-side
+// Baseline "should exist" stock count per product code & width, computed server-side
 // on page load (see the SQL query at the top of this file).
 const systemStockBaseline = <?php echo json_encode($baselineStock, JSON_UNESCAPED_SLASHES); ?>;
+const systemStockRolls    = <?php echo json_encode($baselineRolls, JSON_UNESCAPED_SLASHES); ?>;
 
 const scanInput   = document.getElementById('scanInput');
 const scanTbody   = document.getElementById('scanTbody');
@@ -737,35 +806,84 @@ function refreshScanTable() {
   renderSummary();
 }
 
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function escapeJsString(str) {
+  if (!str) return '';
+  return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
 // ---------------------------------------------------------------------
-// Live reconciliation summary: system baseline vs scanned, per product code
+// Live reconciliation summary: system baseline vs scanned, per Product & Width
 // ---------------------------------------------------------------------
+function getProductLabel(r) {
+  const code = r.product_code || '(unknown)';
+  const w = parseFloat(r.width || 0);
+  if (w > 0) {
+    const wClean = (w % 1 === 0) ? w : w;
+    return `${code} (${wClean}mm)`;
+  }
+  return code;
+}
+
+const expandedSummaryRows = new Set();
+
+function toggleSummaryRow(labelKey) {
+  if (expandedSummaryRows.has(labelKey)) {
+    expandedSummaryRows.delete(labelKey);
+  } else {
+    expandedSummaryRows.add(labelKey);
+  }
+  renderSummary();
+}
+
 function renderSummary() {
   const summaryTbody = document.getElementById('summaryTbody');
   const summaryEmptyNote = document.getElementById('summaryEmptyNote');
 
-  // Count scans per product code
+  // Count scans per product & width
   const scannedCounts = {};
   scannedRecords.forEach(r => {
-    const code = r.product_code || '(unknown)';
-    scannedCounts[code] = (scannedCounts[code] || 0) + 1;
+    const label = getProductLabel(r);
+    scannedCounts[label] = (scannedCounts[label] || 0) + 1;
   });
 
-  // Union of every product code we know about: baseline + anything scanned
-  // that isn't in the baseline (e.g. unexpected/extra scans).
-  const allCodes = new Set([...Object.keys(systemStockBaseline), ...Object.keys(scannedCounts)]);
+  // Union of every product & width label: baseline + anything scanned
+  const allLabels = new Set([...Object.keys(systemStockBaseline), ...Object.keys(scannedCounts)]);
 
-  if (!allCodes.size) {
+  if (!allLabels.size) {
     summaryTbody.innerHTML = '';
     summaryEmptyNote.style.display = 'block';
     return;
   }
   summaryEmptyNote.style.display = 'none';
 
-  const rows = [...allCodes].sort().map(code => {
-    const system   = systemStockBaseline[code] ?? 0;
-    const scanned  = scannedCounts[code] || 0;
+  const rows = [];
+  [...allLabels].sort().forEach(label => {
+    const system    = systemStockBaseline[label] ?? 0;
+    const scanned   = scannedCounts[label] || 0;
     const remaining = system - scanned;
+
+    // Find unscanned rolls for this product label
+    const systemRolls = systemStockRolls[label] || [];
+    const unscannedRolls = systemRolls.filter(item => {
+      return !scannedRecords.some(r =>
+        (r.lot || '').toLowerCase()  === (item.lot || '').toLowerCase() &&
+        (r.coil || '').toLowerCase() === (item.coil || '').toLowerCase() &&
+        String(r.roll) === String(item.roll)
+      );
+    });
+
+    const hasUnscanned = unscannedRolls.length > 0;
+    const isExpanded   = expandedSummaryRows.has(label);
 
     let statusHtml, rowClass;
     if (remaining > 0) {
@@ -779,9 +897,42 @@ function renderSummary() {
       rowClass = 'summary-row-complete';
     }
 
-    return `<tr class="${rowClass}">
-      <td>${escapeHtml(code)}</td><td>${system}</td><td>${scanned}</td>
-      <td>${remaining}</td><td>${statusHtml}</td></tr>`;
+    const clickAttr = hasUnscanned ? `onclick="toggleSummaryRow('${escapeJsString(label)}')" title="Click to view/hide remaining coils"` : '';
+    const mainClass = `${rowClass} summary-main-row ${hasUnscanned ? 'has-unscanned' : ''} ${isExpanded ? 'expanded' : ''}`;
+
+    rows.push(`
+      <tr class="${mainClass}" ${clickAttr}>
+        <td>
+          ${hasUnscanned ? `<span class="expand-toggle-icon">\u{25B6}</span>` : ''}
+          <b>${escapeHtml(label)}</b>
+        </td>
+        <td>${system}</td>
+        <td>${scanned}</td>
+        <td>${remaining}</td>
+        <td>${statusHtml}</td>
+      </tr>
+    `);
+
+    if (hasUnscanned && isExpanded) {
+      const chipsHtml = unscannedRolls.map(roll => `
+        <div class="summary-detail-chip">
+          Lot <b>${escapeHtml(roll.lot)}</b> &middot; Coil <b>${escapeHtml(roll.coil)}</b> &middot; Roll <b>${escapeHtml(roll.roll)}</b>
+        </div>
+      `).join('');
+
+      rows.push(`
+        <tr class="summary-detail-row">
+          <td colspan="5">
+            <div class="summary-detail-box">
+              <div class="summary-detail-header">📦 Coils &amp; Rolls Left (${unscannedRolls.length} Unscanned):</div>
+              <div class="summary-detail-grid">
+                ${chipsHtml}
+              </div>
+            </div>
+          </td>
+        </tr>
+      `);
+    }
   });
 
   summaryTbody.innerHTML = rows.join('');
