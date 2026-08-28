@@ -20,7 +20,7 @@ $sqlScans = "SELECT raw, lot, coil, roll, width, length, product_code,
                     d365_item_number, d365_lot_no, mtr,
                     DATE_FORMAT(scanned_at, '%H:%i:%s') AS scanned_at
              FROM stock_crosscheck_scans
-             ORDER BY id ASC";
+             ORDER BY id DESC";
 if ($resScans = $mysqli->query($sqlScans)) {
     while ($row = $resScans->fetch_assoc()) {
         $existingScans[] = $row;
@@ -248,7 +248,187 @@ if ($res = $mysqli->query($sql)) {
     border:1px solid var(--border);
   }
   .btn-ghost:hover { background:#e5e9f0; }
-  .actions { display:flex; gap:10px; margin-top:16px; }
+  .actions { display:flex; gap:10px; margin-top:16px; flex-wrap:wrap; }
+
+  /* Manual Entry Form Styles */
+  .manual-entry-card {
+    background: #f8faff;
+    border: 1.5px solid #cbd5e1;
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-top: 14px;
+    box-shadow: var(--shadow-sm);
+  }
+  .manual-entry-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #e2e8f0;
+  }
+  .manual-entry-header h3 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--navy);
+  }
+  .close-manual-btn {
+    background: transparent;
+    border: none;
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text-muted);
+    cursor: pointer;
+    line-height: 1;
+  }
+  .close-manual-btn:hover { color: var(--red); }
+  .manual-form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px;
+    align-items: end;
+  }
+  .form-group-lot {
+    grid-column: span 2;
+    min-width: 240px;
+  }
+  @media (max-width: 640px) {
+    .form-group-lot {
+      grid-column: 1 / -1;
+      min-width: 0;
+    }
+  }
+  .manual-form-grid .form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .manual-form-grid label {
+    font-size: 12px;
+    font-weight: 650;
+    color: #334155;
+  }
+  .manual-form-grid label .opt {
+    font-weight: 400;
+    color: #94a3b8;
+  }
+  .manual-form-grid input {
+    padding: 9px 12px;
+    font-size: 13.5px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    outline: none;
+    background: #fff;
+    transition: border-color .15s ease;
+  }
+  .manual-form-grid input:focus {
+    border-color: var(--blue);
+    box-shadow: 0 0 0 3px rgba(59,110,246,.12);
+  }
+  .form-actions-full {
+    grid-column: 1 / -1;
+    display: flex;
+    gap: 10px;
+    margin-top: 4px;
+  }
+
+  .input-with-btn {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  .input-with-btn input {
+    flex: 1;
+    min-width: 100px;
+  }
+  .btn-fetch-stock {
+    background: #e2e8f0;
+    color: #1e293b;
+    border: 1px solid var(--border);
+    padding: 9px 12px;
+    font-size: 12.5px;
+    font-weight: 650;
+    border-radius: 7px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background-color .15s ease;
+  }
+  .btn-fetch-stock:hover {
+    background: #cbd5e1;
+  }
+
+  .manual-stock-notice {
+    margin-top: 12px;
+    padding: 8px 12px;
+    border-radius: 7px;
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+  .manual-stock-notice.ok {
+    background: #e6f4ea;
+    color: #137333;
+    border: 1px solid #bfe3cb;
+  }
+  .manual-stock-notice.warn {
+    background: #fef7e0;
+    color: #b06000;
+    border: 1px solid #f5e2ab;
+  }
+  .manual-stock-list {
+    margin-top: 10px;
+    max-height: 220px;
+    overflow-y: auto;
+    border: 1px solid #cbd5e1;
+    border-radius: 9px;
+    background: #fff;
+    box-shadow: var(--shadow-sm);
+  }
+  .manual-stock-item {
+    padding: 10px 14px;
+    font-size: 13px;
+    border-bottom: 1px solid #f1f5f9;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: all .12s ease;
+  }
+  .manual-stock-item:hover {
+    background: #f0f7ff;
+  }
+  .manual-stock-item.selected {
+    background: #e6f4ea !important;
+    border-left: 4px solid var(--green);
+  }
+  .manual-stock-item.is-scanned {
+    background: #f8fafc;
+  }
+  .stock-item-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .stock-coil-badge {
+    font-weight: 700;
+    color: var(--navy);
+  }
+  .stock-roll-badge {
+    font-weight: 600;
+    color: #475569;
+  }
+  .scanned-pill {
+    font-size: 10.5px;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: #e2e8f0;
+    color: #475569;
+  }
+  .stock-dimen {
+    color: #64748b;
+    margin-left: 6px;
+  }
 
   .empty-note { color:#9aa5b8; font-size:13px; padding:14px 0; text-align:center; }
 
@@ -284,6 +464,132 @@ if ($res = $mysqli->query($sql)) {
 
   .summary-row-complete td { background:#fbfdfc; }
   .summary-row-remaining td { background:#fffdf7; }
+
+  .summary-row-complete td { background:#fbfdfc; }
+  .summary-row-remaining td { background:#fffdf7; }
+
+  /* -------------------------------------------------------------------
+     Toggle Sidebar Controls & Collapsible / Drawer Styles
+     ------------------------------------------------------------------- */
+  .btn-summary-toggle {
+    margin-left: auto;
+    background: rgba(255, 255, 255, 0.14);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    padding: 7px 15px;
+    font-size: 13px;
+    font-weight: 650;
+    border-radius: 9px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    transition: all .18s ease;
+  }
+  .btn-summary-toggle:hover {
+    background: rgba(255, 255, 255, 0.24);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  }
+  .btn-summary-toggle.active {
+    background: #fff;
+    color: var(--navy);
+    font-weight: 700;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+  }
+
+  .close-sidebar-btn {
+    margin-left: auto;
+    background: transparent;
+    border: none;
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 2px 8px;
+    border-radius: 6px;
+    line-height: 1;
+    transition: all .15s ease;
+  }
+  .close-sidebar-btn:hover {
+    background: #fee2e2;
+    color: var(--red);
+  }
+
+  .layout { display: flex; gap: 22px; align-items: flex-start; transition: all .25s ease; }
+  .main-col { flex: 1.4; min-width: 0; transition: all .25s ease; }
+  .side-col {
+    flex: 1;
+    min-width: 400px;
+    max-width: 450px;
+    flex-shrink: 0;
+    position: sticky;
+    top: 80px;
+    transition: transform .3s cubic-bezier(0.4, 0, 0.2, 1), opacity .2s ease;
+  }
+
+  /* Collapsed Sidebar on Desktop */
+  body.sidebar-closed .side-col {
+    display: none !important;
+  }
+  body.sidebar-closed .main-col {
+    flex: 1 1 100% !important;
+    max-width: 100% !important;
+  }
+
+  /* Backdrop Overlay for Mobile / Tablet Slide-out Drawer */
+  .sidebar-backdrop {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(15, 27, 45, 0.45);
+    backdrop-filter: blur(3px);
+    z-index: 1040;
+    opacity: 0;
+    transition: opacity .25s ease;
+  }
+
+  @media (max-width: 960px) {
+    .layout { flex-direction: column; }
+    .main-col { width: 100%; }
+
+    .sidebar-backdrop.active {
+      display: block;
+      opacity: 1;
+    }
+
+    .side-col {
+      position: fixed !important;
+      top: 0 !important;
+      right: 0 !important;
+      bottom: 0 !important;
+      height: 100vh !important;
+      width: 420px !important;
+      max-width: 90vw !important;
+      z-index: 1050 !important;
+      background: #fff;
+      padding: 24px !important;
+      box-shadow: -8px 0 32px rgba(0,0,0,0.18) !important;
+      overflow-y: auto !important;
+      transform: translateX(100%);
+      display: block !important;
+      margin-top: 0 !important;
+    }
+
+    body.sidebar-open .side-col {
+      transform: translateX(0);
+    }
+    body.sidebar-closed .side-col {
+      transform: translateX(100%);
+      display: block !important;
+    }
+
+    .side-col .card {
+      box-shadow: none !important;
+      border: none !important;
+      padding: 0 !important;
+      margin: 0 !important;
+    }
+  }
 </style>
 </head>
 <body>
@@ -293,8 +599,11 @@ if ($res = $mysqli->query($sql)) {
     <div class="header-badge">📦</div>
     <div>
       <h1>End-of-Month Stock Scan &amp; Export</h1>
-      <p>Slitting System &middot; Temporary physical stock scanning tool</p>
+      <p>Slitting System &middot; Physical stock scanning &amp; live reconciliation</p>
     </div>
+    <button id="toggleSummaryBtn" class="btn-summary-toggle" title="Toggle Live Reconciliation Summary Sidebar">
+      📊 Live Summary Sidebar
+    </button>
   </div>
 </header>
 
@@ -313,7 +622,48 @@ if ($res = $mysqli->query($sql)) {
 
     <div class="actions">
       <button class="btn btn-ghost" id="clearAllBtn">Clear All Scans</button>
+      <button class="btn btn-ghost" id="manualEntryToggleBtn">✏️ Manual Entry</button>
+      <button class="btn btn-ghost" id="toggleSummaryBtnActions">📊 Live Summary</button>
       <button class="btn btn-primary" id="exportBtn">Export to Excel</button>
+    </div>
+
+    <!-- MANUAL COIL ENTRY FORM -->
+    <div id="manualEntryFormCard" class="manual-entry-card" style="display: none;">
+      <div class="manual-entry-header">
+        <h3>✏️ Manual Coil Entry (Retrieve from Stock)</h3>
+        <button type="button" class="close-manual-btn" id="closeManualBtn">&times;</button>
+      </div>
+      <form id="manualEntryForm" class="manual-form-grid">
+        <div class="form-group form-group-lot">
+          <label for="manualLot">Lot No *</label>
+          <div class="input-with-btn">
+            <input type="text" id="manualLot" placeholder="e.g. 2520" required autocomplete="off">
+            <button type="button" class="btn-fetch-stock" id="fetchStockBtn" title="Retrieve matching rolls from stock">🔍 Fetch Stock</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="manualCoil">Coil No *</label>
+          <input type="text" id="manualCoil" placeholder="e.g. CH-2 or CH-02" required autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label for="manualRoll">Roll No *</label>
+          <input type="text" id="manualRoll" placeholder="e.g. 01 or 1" required autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label for="manualWidth">Width (mm) <span class="opt">(Optional)</span></label>
+          <input type="number" step="any" id="manualWidth" placeholder="Auto lookup" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label for="manualLength">Length (m) <span class="opt">(Optional)</span></label>
+          <input type="number" step="any" id="manualLength" placeholder="Auto lookup" autocomplete="off">
+        </div>
+        <div class="form-group form-actions-full">
+          <button type="submit" class="btn btn-primary" id="submitManualBtn">➕ Add Manual Scan</button>
+          <button type="button" class="btn btn-ghost" id="cancelManualBtn">Cancel</button>
+        </div>
+      </form>
+      <div id="manualStockNotice" class="manual-stock-notice" style="display:none;"></div>
+      <div id="manualStockList" class="manual-stock-list" style="display:none;"></div>
     </div>
 
     <div class="table-wrap">
@@ -335,7 +685,10 @@ if ($res = $mysqli->query($sql)) {
   <div class="side-col">
     <!-- LIVE RECONCILIATION SUMMARY -->
     <div class="card">
-      <h2>Live Reconciliation Summary</h2>
+      <h2>
+        <span>Live Reconciliation Summary</span>
+        <button id="closeSummaryBtn" class="close-sidebar-btn" title="Close Sidebar">&times;</button>
+      </h2>
       <div class="table-wrap summary-wrap">
       <table id="summaryTable">
         <thead>
@@ -350,6 +703,7 @@ if ($res = $mysqli->query($sql)) {
 
 </div>
 </main>
+<div id="sidebarBackdrop" class="sidebar-backdrop"></div>
 
 <script>
 // ---------------------------------------------------------------------
@@ -372,7 +726,7 @@ function refreshScanTable() {
   scannedRecords.forEach((r, i) => {
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${i + 1}</td><td>${escapeHtml(r.lot)}</td><td>${escapeHtml(r.coil)}</td>
+      <td>${scannedRecords.length - i}</td><td>${escapeHtml(r.lot)}</td><td>${escapeHtml(r.coil)}</td>
       <td>${escapeHtml(r.product_code)}</td><td>${escapeHtml(r.d365_item_number)}</td>
       <td>${escapeHtml(r.d365_lot_no)}</td><td>${escapeHtml(r.mtr)}</td><td>${escapeHtml(r.scanned_at)}</td>
       <td><button class="removeBtn" data-raw="${encodeURIComponent(r.raw)}">remove</button></td>`;
@@ -498,17 +852,316 @@ scanInput.addEventListener('keydown', function (e) {
         showWarning(res.error || 'Scan failed');
         return;
       }
-      scannedRecords.push(res.record);
+      scannedRecords.unshift(res.record);
       refreshScanTable();
       showWarning('Scanned OK - ' + res.record.d365_lot_no, true);
     })
     .catch(() => showWarning('Network/server error while looking up scan.'));
 });
 
+// ---------------------------------------------------------------------
+// Manual Entry Form Handling & Stock Retrieval (by Lot No + Coil No + Roll No)
+// ---------------------------------------------------------------------
+const manualEntryFormCard = document.getElementById('manualEntryFormCard');
+const manualEntryToggleBtn = document.getElementById('manualEntryToggleBtn');
+const closeManualBtn       = document.getElementById('closeManualBtn');
+const cancelManualBtn      = document.getElementById('cancelManualBtn');
+const manualEntryForm      = document.getElementById('manualEntryForm');
+const manualLotInput       = document.getElementById('manualLot');
+const manualCoilInput      = document.getElementById('manualCoil');
+const manualRollInput      = document.getElementById('manualRoll');
+const manualWidthInput     = document.getElementById('manualWidth');
+const manualLengthInput    = document.getElementById('manualLength');
+const fetchStockBtn        = document.getElementById('fetchStockBtn');
+const manualStockNotice    = document.getElementById('manualStockNotice');
+const manualStockList      = document.getElementById('manualStockList');
+
+function resetManualForm() {
+  manualEntryForm.reset();
+  if (manualStockNotice) manualStockNotice.style.display = 'none';
+  if (manualStockList)   manualStockList.style.display   = 'none';
+}
+
+function toggleManualEntry(show) {
+  const isVisible = show !== undefined ? show : manualEntryFormCard.style.display === 'none';
+  manualEntryFormCard.style.display = isVisible ? 'block' : 'none';
+  if (isVisible) {
+    resetManualForm();
+    manualLotInput.focus();
+  } else {
+    scanInput.focus();
+  }
+}
+
+function fetchStockData() {
+  const lot  = manualLotInput.value.trim();
+  const coil = manualCoilInput.value.trim();
+  const roll = manualRollInput.value.trim();
+
+  if (!lot) {
+    manualStockNotice.style.display = 'none';
+    manualStockList.style.display   = 'none';
+    return;
+  }
+
+  const query = new URLSearchParams({ lot_no: lot });
+  if (coil) query.set('coil_no', coil);
+
+  fetch('ajax_retrieve_stock.php?' + query.toString())
+    .then(r => r.json())
+    .then(res => {
+      if (!res.success || !res.items || res.items.length === 0) {
+        manualStockNotice.className = 'manual-stock-notice warn';
+        manualStockNotice.textContent = `⚠️ No matching roll found in slitting_product for Lot "${lot}".`;
+        manualStockNotice.style.display = 'block';
+        manualStockList.style.display   = 'none';
+        return;
+      }
+
+      manualStockNotice.className = 'manual-stock-notice ok';
+      manualStockNotice.textContent = `📦 Found ${res.items.length} roll(s) in stock for Lot "${lot}". Click any roll to select:`;
+      manualStockNotice.style.display = 'block';
+
+      manualStockList.innerHTML = res.items.map((item) => {
+        const isScanned = scannedRecords.some(r => 
+          (r.lot || '').toLowerCase() === (item.lot_no || '').toLowerCase() &&
+          (r.coil || '').toLowerCase() === (item.coil_no || '').toLowerCase() &&
+          String(r.roll) === String(item.roll_no)
+        );
+        const isSelected = (res.items.length === 1 || (coil && roll && item.coil_no === coil && item.roll_no === roll));
+
+        return `
+          <div class="manual-stock-item ${isSelected ? 'selected' : ''} ${isScanned ? 'is-scanned' : ''}" 
+               data-coil="${escapeHtml(item.coil_no)}" 
+               data-roll="${escapeHtml(item.roll_no)}" 
+               data-width="${escapeHtml(item.width_clean)}" 
+               data-length="${escapeHtml(item.length_clean)}" 
+               data-prod="${escapeHtml(item.product)}">
+            <div class="stock-item-left">
+              <span class="stock-coil-badge">Coil ${escapeHtml(item.coil_no)}</span>
+              <span class="stock-roll-badge">Roll ${escapeHtml(item.roll_no)}</span>
+              ${isScanned ? '<span class="scanned-pill">✔ Scanned</span>' : ''}
+            </div>
+            <div>
+              <span class="stock-pill">${escapeHtml(item.product)}</span>
+              <small class="stock-dimen">${escapeHtml(item.width_clean)}mm &times; ${escapeHtml(item.length_clean)}m</small>
+            </div>
+          </div>
+        `;
+      }).join('');
+      manualStockList.style.display = 'block';
+
+      if (res.items.length === 1) {
+        const item = res.items[0];
+        manualCoilInput.value   = item.coil_no;
+        manualRollInput.value   = item.roll_no;
+        manualWidthInput.value  = item.width_clean;
+        manualLengthInput.value = item.length_clean;
+        manualStockNotice.textContent = `✅ Selected Roll: ${item.product} | Coil: ${item.coil_no} | Roll: ${item.roll_no} (${item.width_clean}mm x ${item.length_clean}m)`;
+      }
+    })
+    .catch(() => {
+      manualStockNotice.className = 'manual-stock-notice warn';
+      manualStockNotice.textContent = 'Network error while retrieving stock.';
+      manualStockNotice.style.display = 'block';
+    });
+}
+
+fetchStockBtn?.addEventListener('click', (e) => {
+  e.preventDefault();
+  fetchStockData();
+});
+
+[manualLotInput, manualCoilInput, manualRollInput].forEach(inp => {
+  inp?.addEventListener('change', () => {
+    if (manualLotInput.value.trim().length >= 3) fetchStockData();
+  });
+});
+
+manualStockList?.addEventListener('click', (e) => {
+  const item = e.target.closest('.manual-stock-item');
+  if (!item) return;
+
+  manualStockList.querySelectorAll('.manual-stock-item').forEach(el => el.classList.remove('selected'));
+  item.classList.add('selected');
+
+  manualCoilInput.value   = item.dataset.coil;
+  manualRollInput.value   = item.dataset.roll;
+  manualWidthInput.value  = item.dataset.width;
+  manualLengthInput.value = item.dataset.length;
+
+  manualStockNotice.className = 'manual-stock-notice ok';
+  manualStockNotice.textContent = `✅ Selected Roll: ${item.dataset.prod} | Coil: ${item.dataset.coil} | Roll: ${item.dataset.roll} (${item.dataset.width}mm x ${item.dataset.length}m)`;
+});
+
+manualEntryToggleBtn?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleManualEntry();
+});
+closeManualBtn?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleManualEntry(false);
+});
+cancelManualBtn?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleManualEntry(false);
+});
+
+manualEntryForm?.addEventListener('submit', function (e) {
+  e.preventDefault();
+  const lot    = manualLotInput.value.trim();
+  const coil   = manualCoilInput.value.trim();
+  const roll   = manualRollInput.value.trim();
+  const width  = manualWidthInput.value.trim();
+  const length = manualLengthInput.value.trim();
+
+  if (!lot || !coil || !roll) {
+    showWarning('Please enter Lot No, Coil No, and Roll No.');
+    return;
+  }
+
+  const raw = `LOT=${lot};COIL=${coil};ROLL=${roll}` +
+              (width ? `;WIDTH=${width}` : '') +
+              (length ? `;LENGTH=${length}` : '');
+
+  if (scannedRecords.some(r => r.raw === raw)) {
+    showWarning('Already Scanned');
+    return;
+  }
+
+  const body = new URLSearchParams({ raw, lot, coil, roll });
+  if (width)  body.set('width', width);
+  if (length) body.set('length', length);
+
+  fetch('ajax_lookup.php', { method: 'POST', body })
+    .then(r => r.json())
+    .then(res => {
+      if (!res.success) {
+        showWarning(res.error || 'Manual entry failed');
+        return;
+      }
+      scannedRecords.unshift(res.record);
+      refreshScanTable();
+      showWarning('Added Manual Entry - ' + res.record.d365_lot_no, true);
+      resetManualForm();
+      toggleManualEntry(false);
+    })
+    .catch(() => showWarning('Network/server error while adding manual entry.'));
+});
+
+// ---------------------------------------------------------------------
+// View Mode Switcher (Auto / Tablet / PC) & Tablet Tab Switcher
+// ---------------------------------------------------------------------
+let currentViewMode = localStorage.getItem('stock_crosscheck_view_mode') || 'auto';
+let activeTab = 'scan';
+
+function setViewMode(mode) {
+  currentViewMode = mode;
+  localStorage.setItem('stock_crosscheck_view_mode', mode);
+  document.body.classList.remove('mode-auto', 'mode-tablet', 'mode-pc');
+  document.body.classList.add('mode-' + mode);
+  
+  const btnAuto = document.getElementById('viewAutoBtn');
+  const btnTablet = document.getElementById('viewTabletBtn');
+  const btnPc = document.getElementById('viewPcBtn');
+  if (btnAuto) btnAuto.classList.toggle('active', mode === 'auto');
+  if (btnTablet) btnTablet.classList.toggle('active', mode === 'tablet');
+  if (btnPc) btnPc.classList.toggle('active', mode === 'pc');
+
+  if (mode === 'pc' || activeTab === 'scan') {
+    scanInput.focus();
+  }
+}
+
+function setActiveTab(tab) {
+  activeTab = tab;
+  document.body.setAttribute('data-active-tab', tab);
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+  if (tab === 'scan') {
+    scanInput.focus();
+  }
+}
+
+document.getElementById('viewAutoBtn')?.addEventListener('click', () => setViewMode('auto'));
+document.getElementById('viewTabletBtn')?.addEventListener('click', () => setViewMode('tablet'));
+document.getElementById('viewPcBtn')?.addEventListener('click', () => setViewMode('pc'));
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', (e) => {
+    setActiveTab(e.currentTarget.dataset.tab);
+  });
+});
+
+setViewMode(currentViewMode);
+setActiveTab('scan');
+
+// ---------------------------------------------------------------------
+// Sidebar Toggle Logic (Desktop Collapsible & Mobile/Tablet Slide Drawer)
+// ---------------------------------------------------------------------
+let isSidebarOpen = localStorage.getItem('stock_summary_sidebar_open');
+if (isSidebarOpen === null) {
+  isSidebarOpen = window.innerWidth > 960;
+} else {
+  isSidebarOpen = isSidebarOpen === 'true';
+}
+
+function updateSidebarState(open) {
+  isSidebarOpen = open;
+  localStorage.setItem('stock_summary_sidebar_open', open);
+
+  const toggleBtnHeader = document.getElementById('toggleSummaryBtn');
+  const toggleBtnActions = document.getElementById('toggleSummaryBtnActions');
+  const backdrop = document.getElementById('sidebarBackdrop');
+
+  if (open) {
+    document.body.classList.remove('sidebar-closed');
+    document.body.classList.add('sidebar-open');
+    if (toggleBtnHeader) toggleBtnHeader.classList.add('active');
+    if (toggleBtnActions) toggleBtnActions.classList.add('active');
+    if (backdrop && window.innerWidth <= 960) backdrop.classList.add('active');
+  } else {
+    document.body.classList.remove('sidebar-open');
+    document.body.classList.add('sidebar-closed');
+    if (toggleBtnHeader) toggleBtnHeader.classList.remove('active');
+    if (toggleBtnActions) toggleBtnActions.classList.remove('active');
+    if (backdrop) backdrop.classList.remove('active');
+  }
+}
+
+function toggleSidebar() {
+  updateSidebarState(!isSidebarOpen);
+}
+
+document.getElementById('toggleSummaryBtn')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleSidebar();
+});
+document.getElementById('toggleSummaryBtnActions')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleSidebar();
+});
+document.getElementById('closeSummaryBtn')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  updateSidebarState(false);
+});
+document.getElementById('sidebarBackdrop')?.addEventListener('click', () => {
+  updateSidebarState(false);
+});
+
+updateSidebarState(isSidebarOpen);
+
 // Keep focus on the scan input at all times (scanner types into it)
 document.addEventListener('click', (e) => {
   if (e.target.id !== 'clearAllBtn' && e.target.id !== 'exportBtn' &&
-      e.target.className !== 'removeBtn') {
+      e.target.className !== 'removeBtn' &&
+      !e.target.closest('#manualEntryToggleBtn') &&
+      !e.target.closest('#manualEntryFormCard') &&
+      !e.target.closest('#toggleSummaryBtn') &&
+      !e.target.closest('#toggleSummaryBtnActions') &&
+      !e.target.closest('#closeSummaryBtn') &&
+      !e.target.closest('.side-col')) {
     scanInput.focus();
   }
 });

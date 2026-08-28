@@ -17,7 +17,7 @@ $sql = "SELECT raw, lot, coil, roll, width, length, product_code,
                d365_item_number, d365_lot_no, mtr,
                DATE_FORMAT(scanned_at, '%H:%i:%s') AS scanned_at
         FROM stock_crosscheck_scans
-        ORDER BY id ASC";
+        ORDER BY id DESC";
 if ($res = $mysqli->query($sql)) {
     while ($row = $res->fetch_assoc()) {
         $records[] = $row;
