@@ -140,7 +140,9 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
     $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
     if (!$row) { echo json_encode(['ok' => false, 'msg' => "Roll not found: {$lot} {$coil} {$roll}"]); exit; }
-    $lenForCode = (!empty($row['actual_length']) && $row['actual_length'] > 0) ? $row['actual_length'] : $row['length'];
+    $rawLen = (!empty($row['actual_length']) && $row['actual_length'] > 0) ? (float)$row['actual_length'] : (float)$row['length'];
+    $nodLen = !empty($row['nod_length']) ? (float)$row['nod_length'] : 0.0;
+    $lenForCode = max(0.0, $rawLen - $nodLen);
     $row['stock_code'] = PalletManager::formatStockCode($row['coil_no'], $row['width'], $lenForCode);
     echo json_encode(['ok' => true, 'product' => $row]);
     exit;
@@ -381,10 +383,12 @@ function buildSummaryPalletRows(mysqli $conn): array {
         // Trusts the value stored on pallet_items (set at insert time via
         // PalletManager); only recomputes for legacy rows added before that
         // column existed, so old pallets still show a code.
-        $lenVal = (!empty($r['actual_length']) && $r['actual_length'] > 0)
-            ? $r['actual_length'] : $r['length'];
+        $rawLen = (!empty($r['actual_length']) && $r['actual_length'] > 0)
+            ? (float)$r['actual_length'] : (float)$r['length'];
+        $nodLen = !empty($r['nod_length']) ? (float)$r['nod_length'] : 0.0;
+        $lenVal = max(0.0, $rawLen - $nodLen);
         $stockCode = !empty($r['coil_no'])
-            ? PalletManager::formatStockCode($r['coil_no'], $r['width'] ?? 0, $lenVal ?? 0)
+            ? PalletManager::formatStockCode($r['coil_no'], $r['width'] ?? 0, $lenVal)
             : ($r['pi_stock_code'] ?? null);
 
         $formattedDate = !empty($r['pallet_date']) ? date('d/m/Y', strtotime($r['pallet_date'])) : '-';
@@ -686,13 +690,10 @@ function getPalletItemsWithWeight(mysqli $conn, int $pallet_id): array {
     $stmt->close();
 
     foreach ($rows as &$row) {
-        $lenVal = (float)($row['actual_length'] ?: $row['length']);
-        if (empty($row['stock_code'])) {
-            $row['stock_code'] = PalletManager::formatStockCode($row['coil_no'], $row['width'], $lenVal);
-        } else {
-            // Re-format to ensure latest SFS-coil_alpha-length-width standard is reflected
-            $row['stock_code'] = PalletManager::formatStockCode($row['coil_no'], $row['width'], $lenVal);
-        }
+        $rawLen = (float)($row['actual_length'] ?: $row['length']);
+        $nodLen = !empty($row['nod_length']) ? (float)$row['nod_length'] : 0.0;
+        $lenVal = max(0.0, $rawLen - $nodLen);
+        $row['stock_code'] = PalletManager::formatStockCode($row['coil_no'], $row['width'], $lenVal);
     }
     unset($row);
     return $rows;
@@ -738,6 +739,13 @@ $rejectedPallets = $conn->query(
      GROUP BY p.id ORDER BY p.rejected_at DESC, p.updated_at DESC LIMIT 20"
 )->fetch_all(MYSQLI_ASSOC);
 
+$reopenedPallets = $conn->query(
+    "SELECT p.*, COUNT(pi.id) AS item_count
+     FROM pallets p LEFT JOIN pallet_items pi ON pi.pallet_id = p.id
+     WHERE p.status = 'building' AND p.edit_count > 0
+     GROUP BY p.id ORDER BY p.updated_at DESC, p.id DESC LIMIT 20"
+)->fetch_all(MYSQLI_ASSOC);
+
 $page_title = 'Pallet Management';
 include 'header.php';
 
@@ -749,6 +757,26 @@ $isApproved  = $activePallet && $activePallet['status'] === 'approved';
 $isPendingQc = $activePallet && $activePallet['status'] === 'pending_qc';
 $isDelivered = $activePallet && $activePallet['status'] === 'delivered';
 $isReadOnly  = $activePallet && !in_array($activePallet['status'], ['building', 'rejected']);
+
+$reopenLogs  = [];
+$allEditLogs = [];
+if ($activePalletId) {
+    $stmtAllEdit = $conn->prepare("
+        SELECT action, product_ref, performed_by, performed_at, note
+        FROM pallet_edit_log
+        WHERE pallet_id = ?
+        ORDER BY performed_at DESC
+    ");
+    if ($stmtAllEdit) {
+        $stmtAllEdit->bind_param("i", $activePalletId);
+        $stmtAllEdit->execute();
+        $allEditLogs = $stmtAllEdit->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmtAllEdit->close();
+    }
+    if ($isBuilding) {
+        $reopenLogs = array_values(array_filter($allEditLogs, fn($l) => ($l['action'] ?? '') === 'reopen'));
+    }
+}
 ?>
 <style>
 /* ── Layout ── */
@@ -799,6 +827,13 @@ $isReadOnly  = $activePallet && !in_array($activePallet['status'], ['building', 
 .pallet-card.border-approved   { border-left-color:#22c55e; }
 .pallet-card.border-rejected   { border-left-color:#ef4444; }
 .pallet-card.border-delivered  { border-left-color:#10b981; }
+
+.pallet-card.is-edit-building { background:#fffbe6 !important; border-left-color:#f59e0b !important; border-color:#ffe58f !important; }
+.pallet-card.is-edit-building.active { background:#fef08a !important; border-left-color:#d97706 !important; border-color:#fde047 !important; color:#713f12 !important; }
+.pallet-card.is-edit-building.active .pallet-card-customer,
+.pallet-card.is-edit-building.active .pallet-card-rolls,
+.pallet-card.is-edit-building.active .pallet-card-lot,
+.pallet-card.is-edit-building.active .pallet-card-date { color:#854d0e !important; }
 
 /* .active is declared last so it wins the cascade over the status
    border-color rules above, regardless of which status class is present */
@@ -1001,8 +1036,10 @@ $isReadOnly  = $activePallet && !in_array($activePallet['status'], ['building', 
 
 /* Edit mode label */
 .edit-mode-pill { display:inline-flex; align-items:center; gap:5px; font-size:11px;
-                  font-weight:700; padding:3px 10px; border-radius:20px;
-                  background:#fef3c7; color:#92400e; border:1px solid #fcd34d; }
+                  font-weight:700; padding:4px 10px; border-radius:4px;
+                  background:#fef3c7; color:#92400e; border:1px solid #fcd34d;
+                  transition: all 0.15s ease-in-out; }
+.edit-mode-pill:hover { background:#fde68a; color:#78350f; border-color:#f59e0b; }
 /* Active Operator Select & Name List */
 #activeOperatorSelect, #activeOperatorSelect option {
     font-size: 18px !important;
@@ -1123,6 +1160,32 @@ if (isset($_GET['success'])): ?>
 </div>
 <?php endif; ?>
 
+<!-- Reopened / Returned pallets notification strip (Pastel Yellow) -->
+<?php if (!empty($reopenedPallets) && !$activePalletId): ?>
+<div class="card mb-3 shadow-sm" style="background:#fffbe6; border:1px solid #ffe58f !important; border-left:4px solid #f59e0b !important;">
+    <div class="card-body p-3">
+        <h6 class="fw-bold mb-1" style="color:#92400e; font-size:14px;">
+            <i class="bi bi-arrow-counterclockwise text-warning me-2 fs-5 align-middle"></i>
+            <?= count($reopenedPallets) ?> Pallet<?= count($reopenedPallets) > 1 ? 's' : '' ?> Returned to Edit Need Attention
+        </h6>
+        <p class="small mb-2" style="color:#78350f; font-size:12.5px;">
+            The following pallets were returned to edit mode. Click "Edit" to modify rolls and re-submit to QC.
+        </p>
+        <div class="d-flex flex-wrap gap-2 mt-2">
+            <?php foreach ($reopenedPallets as $rp): ?>
+            <a href="pallet.php?pallet_id=<?= $rp['id'] ?>"
+               class="btn btn-sm fw-bold shadow-sm"
+               style="background:#fef08a; color:#713f12; border:1px solid #fde047;">
+                <i class="bi bi-pencil-fill me-1 text-warning"></i>
+                <?= htmlspecialchars($rp['pallet_no']) ?>
+                (<?= $rp['item_count'] ?> roll<?= $rp['item_count'] != 1 ? 's' : '' ?>)
+            </a>
+            <?php endforeach; ?>
+        </div>
+    </div>
+</div>
+<?php endif; ?>
+
 <div class="row g-4">
 
     <!-- ═══════════════════════════════════════════════════════
@@ -1131,13 +1194,15 @@ if (isset($_GET['success'])): ?>
     <div class="col-md-7">
 
         <?php if ($isBuilding): ?>
+        <?php $isEditBuilding = ($activePallet['edit_count'] ?? 0) > 0; ?>
         <!-- BUILDING STATE -->
-        <div class="card shadow-sm border-0 mb-4">
-            <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+        <div class="card shadow-sm border-0 mb-4 <?= $isEditBuilding ? 'border border-warning' : '' ?>" style="<?= $isEditBuilding ? 'border-color:#fde047 !important;' : '' ?>">
+            <div class="card-header d-flex justify-content-between align-items-center <?= $isEditBuilding ? 'text-dark' : 'bg-primary text-white' ?>"
+                 style="<?= $isEditBuilding ? 'background:#fef08a !important; color:#713f12 !important; border-bottom:1px solid #fde047 !important;' : '' ?>">
                 <div class="d-flex align-items-center gap-2 pallet-rename-header">
                     <!-- Display mode -->
                     <span class="fw-bold pallet-rename-text" id="palletRenameDisplay"><?= htmlspecialchars($activePallet['pallet_no']) ?></span>
-                    <button type="button" class="btn btn-sm text-white pallet-rename-edit-btn" id="palletRenameEditBtn"
+                    <button type="button" class="btn btn-sm <?= $isEditBuilding ? 'text-dark' : 'text-white' ?> pallet-rename-edit-btn" id="palletRenameEditBtn"
                             title="Rename pallet" onclick="startEditPalletRename()">
                         <i class="bi bi-pencil-square"></i>
                     </button>
@@ -1159,19 +1224,20 @@ if (isset($_GET['success'])): ?>
                         <span class="pallet-rename-error d-none" id="palletRenameError"></span>
                     </div>
 
-                    <?php if (($activePallet['edit_count'] ?? 0) > 0): ?>
-                    <span class="edit-mode-pill ms-1">
-                        <i class="bi bi-pencil-fill"></i>
-                        EDIT #<?= $activePallet['edit_count'] ?>
-                    </span>
+                    <?php if ($isEditBuilding): ?>
+                    <button type="button" class="badge border-0 ms-1 px-2 py-1 fw-bold" style="cursor:pointer; font-size:11px; background:#fffbe6; color:#92400e; border:1px solid #ffe58f !important;"
+                            onclick="openEditHistoryModal()" title="Click to view edit history & return reasons">
+                        <i class="bi bi-pencil-fill text-warning me-1"></i>
+                        RETURNED TO EDIT (EDIT #<?= $activePallet['edit_count'] ?>)
+                    </button>
                     <?php endif; ?>
 
                     <span class="badge bg-white text-dark ms-2 shadow-sm d-inline-flex align-items-center gap-1" style="font-size:18px !important; font-weight:700; padding:4px 12px; border-radius:6px; color:#1e293b !important;" title="Active Operator">
-                        <i class="bi bi-person-fill text-primary" style="font-size:18px !important;"></i> <strong><?= htmlspecialchars($activePallet['created_by'] ?: ($activeOperatorSession ?: 'N/A')) ?></strong>
+                        <i class="bi bi-person-fill <?= $isEditBuilding ? 'text-warning' : 'text-primary' ?>" style="font-size:18px !important;"></i> <strong><?= htmlspecialchars($activePallet['created_by'] ?: ($activeOperatorSession ?: 'N/A')) ?></strong>
                     </span>
                 </div>
-                <span class="badge bg-white text-primary" id="rollCountBadge">
-                    <?= count($activeItems) ?> / <?= $MAX ?> rolls
+                <span class="badge <?= $isEditBuilding ? 'text-dark border' : 'bg-white text-primary' ?>" style="<?= $isEditBuilding ? 'background:#fffbe6; color:#92400e; border-color:#ffe58f !important;' : '' ?>" id="rollCountBadge">
+                    <?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?>
                 </span>
             </div>
 
@@ -1297,7 +1363,7 @@ if (isset($_GET['success'])): ?>
                 </div>
 
                 <!-- ── Total Est. Weight Summary Bar ── -->
-                <div class="weight-summary-bar" id="weightSummaryBar">
+                <div class="weight-summary-bar" id="weightSummaryBar" style="<?= $isEditBuilding ? 'background:#fffbe6; border:1px solid #ffe58f;' : '' ?>">
                     <div class="wgt-label">
                         <i class="bi bi-speedometer2"></i>
                         Est. Total Weight
@@ -1317,9 +1383,11 @@ if (isset($_GET['success'])): ?>
                     </div>
                 </div>
 
-                <div class="alert alert-info py-2 mb-3">
-                    <i class="bi bi-qr-code-scan me-1"></i>
-                    Scan a product QR, or type the item below.
+                <div class="alert <?= $isEditBuilding ? 'alert-warning border-warning-subtle' : 'alert-info' ?> py-2 mb-3" style="<?= $isEditBuilding ? 'background:#fffbe6; color:#78350f;' : '' ?>">
+                    <i class="bi <?= $isEditBuilding ? 'bi-info-circle-fill text-warning' : 'bi-qr-code-scan' ?> me-1"></i>
+                    <?= $isEditBuilding
+                        ? 'Pallet returned to edit mode. You can remove defective roll(s), add replacement rolls, and click <strong>Re-submit to QC</strong> when completed.'
+                        : 'Scan a product QR, or type the item below.' ?>
                 </div>
 
                 <!-- Single manual-entry input — replaces the old 3-box
@@ -1441,7 +1509,8 @@ if (isset($_GET['success'])): ?>
                         <input type="hidden" name="action"    value="<?= $qcAction ?>">
                         <input type="hidden" name="pallet_id" value="<?= $activePalletId ?>">
                         <button type="submit"
-                                class="btn btn-warning btn-sm fw-bold"
+                                class="btn <?= $isEdit ? 'btn-sm fw-bold' : 'btn-primary btn-sm fw-bold' ?>"
+                                style="<?= $isEdit ? 'background:#fef08a; color:#713f12; border:1px solid #fde047;' : '' ?>"
                                 id="sendToQcBtn"
                                 <?= count($activeItems) < 1 ? 'disabled' : '' ?>
                                 onclick="return confirm('<?= $isEdit
@@ -2134,6 +2203,44 @@ if (isset($_GET['success'])): ?>
                 </div>
             </div>
         </div>
+
+        <?php if ($isBuilding && !empty($reopenLogs)): ?>
+        <!-- PALLET RETURN REASON CARD (Under Pallets List Card in Sidebar) -->
+        <div class="card shadow-sm border-0 mt-3" style="border-left: 4px solid #ffc107 !important;">
+            <div class="card-header bg-warning-subtle text-dark fw-bold py-2 d-flex justify-content-between align-items-center" style="background:#fef3c7;">
+                <div class="d-flex align-items-center gap-2">
+                    <i class="bi bi-arrow-counterclockwise text-warning fs-5"></i>
+                    <span style="font-size:13.5px;">Pallet Return Reason</span>
+                </div>
+                <span class="badge bg-warning text-dark" style="font-size:10px;">Return to Edit</span>
+            </div>
+            <div class="card-body p-3">
+                <?php foreach ($reopenLogs as $idx => $log):
+                    $noteText = $log['note'] ?? '';
+                    $reasonText = '';
+                    if (preg_match('/Reason:\s*(.*)$/is', $noteText, $m)) {
+                        $reasonText = trim($m[1]);
+                    }
+                    $timeStr = !empty($log['performed_at']) ? date('d/m/Y H:i', strtotime($log['performed_at'])) : '-';
+                ?>
+                <div class="<?= $idx > 0 ? 'pt-3 mt-3 border-top' : '' ?>">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <span class="small fw-bold text-dark">
+                            <i class="bi bi-person-fill text-primary me-1"></i><?= htmlspecialchars($log['performed_by'] ?: 'Operator') ?>
+                        </span>
+                        <span class="small text-muted" style="font-size:11px;"><i class="bi bi-clock me-1"></i><?= $timeStr ?></span>
+                    </div>
+                    <?php if ($reasonText !== ''): ?>
+                    <div class="alert alert-warning py-2 px-3 mb-2 text-dark fw-bold" style="font-size:13px; background:#fffbe6; border-color:#ffe58f;">
+                        <i class="bi bi-chat-left-quote-fill text-warning me-1"></i><?= htmlspecialchars($reasonText) ?>
+                    </div>
+                    <?php endif; ?>
+                    <div class="small text-muted text-break" style="font-size:11.5px;"><?= htmlspecialchars($noteText) ?></div>
+                </div>
+                <?php endforeach; ?>
+            </div>
+        </div>
+        <?php endif; ?>
     </div><!-- /col-md-5 sidebar -->
 </div><!-- /row -->
 
@@ -2141,9 +2248,9 @@ if (isset($_GET['success'])): ?>
 <div class="modal fade" id="reopenReasonModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content shadow border-0">
-      <div class="modal-header bg-warning text-dark py-2">
-        <h5 class="modal-title fs-6 fw-bold">
-          <i class="bi bi-arrow-counterclockwise me-2"></i>Return Pallet to Edit Mode
+      <div class="modal-header text-dark py-2" style="background:#fef08a; border-bottom:1px solid #fde047;">
+        <h5 class="modal-title fs-6 fw-bold" style="color:#713f12;">
+          <i class="bi bi-arrow-counterclockwise me-2 text-warning"></i>Return Pallet to Edit Mode
         </h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
@@ -2152,8 +2259,8 @@ if (isset($_GET['success'])): ?>
           <input type="hidden" name="action" value="reopen_pallet">
           <input type="hidden" name="pallet_id" id="reopenModalPalletId" value="">
           
-          <div class="alert alert-warning py-2 mb-3 small d-flex align-items-center gap-2">
-            <i class="bi bi-exclamation-triangle-fill fs-5 flex-shrink-0"></i>
+          <div class="alert py-2 mb-3 small d-flex align-items-center gap-2" style="background:#fffbe6; color:#78350f; border:1px solid #ffe58f;">
+            <i class="bi bi-exclamation-triangle-fill fs-5 text-warning flex-shrink-0"></i>
             <div>
               Returning pallet <strong id="reopenModalPalletNo"></strong> to edit mode will reset all attached rolls to <span class="badge bg-secondary">IN</span> status so corrections can be made.
             </div>
@@ -2169,11 +2276,87 @@ if (isset($_GET['success'])): ?>
         </div>
         <div class="modal-footer py-2 px-3 bg-light">
           <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
-          <button type="submit" class="btn btn-warning btn-sm fw-bold">
-            <i class="bi bi-arrow-counterclockwise me-1"></i>Confirm Return to Edit
+          <button type="submit" class="btn btn-sm fw-bold" style="background:#fef08a; color:#713f12; border:1px solid #fde047;">
+            <i class="bi bi-arrow-counterclockwise me-1 text-warning"></i>Confirm Return to Edit
           </button>
         </div>
       </form>
+    </div>
+  </div>
+</div>
+
+<!-- ── PALLET EDIT HISTORY & RETURN REASONS MODAL ───────────── -->
+<div class="modal fade" id="editHistoryModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content shadow border-0">
+      <div class="modal-header text-dark py-2" style="background:#fef08a; border-bottom:1px solid #fde047;">
+        <h5 class="modal-title fs-6 fw-bold" style="color:#713f12;">
+          <i class="bi bi-pencil-square me-2 text-warning"></i>Pallet Edit History & Return Reasons
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body py-3" style="max-height:70vh; overflow-y:auto;">
+        <?php if ($activePallet): ?>
+        <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom">
+          <div>
+            <strong class="fs-6 text-dark"><?= htmlspecialchars($activePallet['pallet_no']) ?></strong>
+            <span class="badge bg-secondary ms-2"><?= strtoupper(str_replace('_', ' ', $activePallet['status'])) ?></span>
+          </div>
+          <span class="badge bg-warning text-dark px-3 py-1 fw-bold" style="font-size:12px;">
+            EDIT #<?= $activePallet['edit_count'] ?? 0 ?>
+          </span>
+        </div>
+        <?php endif; ?>
+
+        <?php if (!empty($allEditLogs)): ?>
+          <div class="timeline">
+            <?php foreach ($allEditLogs as $idx => $log):
+                $action    = $log['action'] ?? '';
+                $noteText  = $log['note']   ?? '';
+                $timeStr   = !empty($log['performed_at']) ? date('d/m/Y H:i', strtotime($log['performed_at'])) : '-';
+                $byUser    = $log['performed_by'] ?: 'Operator';
+                $reasonText = '';
+                if (preg_match('/Reason:\s*(.*)$/is', $noteText, $m)) {
+                    $reasonText = trim($m[1]);
+                }
+
+                $badgeClass = match($action) {
+                    'reopen'                => 'bg-warning text-dark',
+                    'auto_upgrade_ref_no'   => 'bg-info text-dark',
+                    'add_roll'              => 'bg-success text-white',
+                    'remove_roll'           => 'bg-danger text-white',
+                    'rename_pallet'         => 'bg-secondary text-white',
+                    'update_customer_ref'   => 'bg-primary text-white',
+                    default                 => 'bg-light text-dark border',
+                };
+                $actionTitle = ucwords(str_replace('_', ' ', $action));
+            ?>
+            <div class="<?= $idx > 0 ? 'pt-3 mt-3 border-top' : '' ?>">
+              <div class="d-flex justify-content-between align-items-center mb-1">
+                <div>
+                  <span class="badge <?= $badgeClass ?> me-2"><?= htmlspecialchars($actionTitle) ?></span>
+                  <span class="small fw-bold text-dark"><i class="bi bi-person-fill text-primary me-1"></i><?= htmlspecialchars($byUser) ?></span>
+                </div>
+                <span class="small text-muted" style="font-size:11.5px;"><i class="bi bi-clock me-1"></i><?= $timeStr ?></span>
+              </div>
+              
+              <?php if ($reasonText !== ''): ?>
+              <div class="alert alert-warning py-2 px-3 my-2 text-dark fw-bold" style="font-size:13px; background:#fffbe6; border-color:#ffe58f;">
+                <i class="bi bi-chat-left-quote-fill text-warning me-2"></i>Return Reason: <?= htmlspecialchars($reasonText) ?>
+              </div>
+              <?php endif; ?>
+
+              <div class="small text-muted text-break ms-1"><?= htmlspecialchars($noteText) ?></div>
+            </div>
+            <?php endforeach; ?>
+          </div>
+        <?php else: ?>
+          <div class="text-center text-muted py-4">No edit logs found for this pallet.</div>
+        <?php endif; ?>
+      </div>
+      <div class="modal-footer py-2 px-3 bg-light">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+      </div>
     </div>
   </div>
 </div>
@@ -3661,6 +3844,17 @@ function openReopenModal(palletId, palletNo) {
     }
 }
 
+function openEditHistoryModal() {
+    const modalEl = document.getElementById('editHistoryModal');
+    if (!modalEl) return;
+    if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+        const modal = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
+        modal.show();
+    } else if (typeof $ !== 'undefined' && $.fn && $.fn.modal) {
+        $(modalEl).modal('show');
+    }
+}
+
 // ─────────────────────────────────────────────────────────────
 // INLINE CUSTOMER / REF NO EDIT (constraint badge header)
 // Standardized Customer selection component + auto-population
@@ -3992,23 +4186,26 @@ function renderPalletList() {
     const tabParam = palletActiveTab && palletActiveTab !== 'all' ? `&tab=${encodeURIComponent(palletActiveTab)}` : '';
 
     scroll.innerHTML = rows.map(p => {
-        const badgeClass = SUMMARY_STATUS_BADGE[p.status] || 'badge-building';
-        const isActive   = PALLET_ID && Number(p.id) === Number(PALLET_ID);
-        const pct        = Math.min(100, Math.round((p.roll_count / p.max_rolls) * 100));
+        const isEditBuilding = p.status === 'building' && Number(p.edit_count || 0) > 0;
+        const badgeClass     = SUMMARY_STATUS_BADGE[p.status] || 'badge-building';
+        const isActive       = PALLET_ID && Number(p.id) === Number(PALLET_ID);
+        const pct            = Math.min(100, Math.round((p.roll_count / p.max_rolls) * 100));
         return `
             <a href="pallet.php?pallet_id=${p.id}${tabParam}"
-               class="pallet-card border-${escHtml(p.status)} ${isActive ? 'active' : ''}">
+               class="pallet-card border-${escHtml(p.status)} ${isActive ? 'active' : ''} ${isEditBuilding ? 'is-edit-building' : ''}">
                 <div class="pallet-card-top">
                     <div>
                         <div class="pallet-card-id">
                             ${escHtml(p.pallet_no)}
                             ${isActive ? '<span class="pallet-card-open-pill"><i class="bi bi-eye-fill"></i> Open</span>' : ''}
                         </div>
-                        ${p.created_by ? `<div class="pallet-card-operator" style="font-size:11px; color:#475569; font-weight:600;"><i class="bi bi-person-fill text-primary me-1"></i>${escHtml(p.created_by)}</div>` : ''}
+                        ${p.created_by ? `<div class="pallet-card-operator" style="font-size:11px; ${isActive && !isEditBuilding ? 'color:rgba(255,255,255,.9);' : (isEditBuilding ? 'color:#854d0e;' : 'color:#475569;')} font-weight:600;"><i class="bi bi-person-fill ${isEditBuilding ? 'text-warning' : (isActive ? 'text-warning' : 'text-primary')} me-1"></i>${escHtml(p.created_by)}</div>` : ''}
                         ${p.lot_nos ? `<div class="pallet-card-lot">${escHtml(p.lot_nos)}</div>` : ''}
                     </div>
                     <div class="d-flex flex-column align-items-end">
-                        <span class="badge ${badgeClass}">${escHtml(summaryStatusLabel(p.status))}</span>
+                        ${isEditBuilding 
+                            ? `<span class="badge ${isActive ? 'bg-white text-dark shadow-sm border' : 'border'}" style="${isActive ? 'border-color:#fde047 !important;' : 'background:#fffbe6; color:#92400e; border-color:#ffe58f !important;'}" title="Re-opened Building Pallet"><i class="bi bi-pencil-fill me-1 text-warning"></i>BUILDING (EDIT #${p.edit_count})</span>` 
+                            : `<span class="badge ${badgeClass}">${escHtml(summaryStatusLabel(p.status))}</span>`}
                         ${p.created_date ? `<div class="pallet-card-date"><i class="bi bi-calendar-event me-1"></i>${escHtml(p.created_date)}</div>` : ''}
                     </div>
                 </div>

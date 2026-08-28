@@ -50,7 +50,7 @@ if (!$pallet) {
 $stmt = $conn->prepare("
     SELECT pi.seq, pi.stock_code,
            sp.lot_no, sp.coil_no, sp.roll_no, sp.product,
-           sp.width, sp.length, sp.actual_length,
+           sp.width, sp.length, sp.actual_length, sp.nod_length,
            COALESCE(sw.std_weight, 0) AS std_weight
     FROM pallet_items pi
     JOIN slitting_product sp ON sp.id = pi.slitting_product_id
@@ -71,8 +71,10 @@ function calcNettWeight(float $lengthM, float $widthMm, float $stdWeight): float
 
 $rows = [];
 foreach ($items as $it) {
-    $lenVal = (!empty($it['actual_length']) && $it['actual_length'] > 0)
+    $rawLen = (!empty($it['actual_length']) && $it['actual_length'] > 0)
         ? (float)$it['actual_length'] : (float)$it['length'];
+    $nodLen = !empty($it['nod_length']) ? (float)$it['nod_length'] : 0.0;
+    $lenVal = max(0.0, $rawLen - $nodLen);
 
     $stockCode = PalletManager::formatStockCode($it['coil_no'], $it['width'], $lenVal);
 

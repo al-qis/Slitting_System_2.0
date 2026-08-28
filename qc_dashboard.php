@@ -101,10 +101,13 @@ if ($result) {
         foreach ($items as &$item) {
             $len      = (float)($item['actual_length'] ?: $item['length']);
             $totalWgt += calcEstWeight($len, (float)$item['width'], (float)$item['std_weight']);
+            $nodLen   = 0.0;
             if (!empty($item['nod_length']) && (float)$item['nod_length'] > 0) {
                 $nodCoilCount++;
+                $nodLen = (float)$item['nod_length'];
             }
-            $item['stock_code'] = PalletManager::formatStockCode($item['coil_no'], $item['width'], $len);
+            $netLen = max(0.0, $len - $nodLen);
+            $item['stock_code'] = PalletManager::formatStockCode($item['coil_no'], $item['width'], $netLen);
         }
         unset($item);
         $row['items']          = $items;
