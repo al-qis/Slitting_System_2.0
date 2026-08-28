@@ -204,6 +204,9 @@ $complianceRate = ($totalRolls > 0) ? round(($matchedRolls / $totalRolls) * 100,
             padding: 18px 0;
             margin-bottom: 22px;
             box-shadow: 0 4px 12px rgba(15, 27, 45, 0.15);
+            position: sticky;
+            top: 0;
+            z-index: 1030;
         }
 
         .kpi-card {

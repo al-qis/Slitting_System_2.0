@@ -96,6 +96,9 @@ if ($res = $mysqli->query($sql)) {
     color:#fff;
     padding:22px 0;
     box-shadow:0 2px 12px rgba(15,23,42,.15);
+    position: sticky;
+    top: 0;
+    z-index: 1030;
   }
   .header-inner { max-width:1300px; margin:0 auto; padding:0 20px; display:flex; align-items:center; gap:12px; }
   .header-badge {
