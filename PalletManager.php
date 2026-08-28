@@ -513,8 +513,10 @@ class PalletManager
             }
 
             $seq = $currentCount + 1;
-            $lenForCode = (!empty($product['actual_length']) && $product['actual_length'] > 0)
-                ? $product['actual_length'] : $product['length'];
+            $rawLen = (!empty($product['actual_length']) && $product['actual_length'] > 0)
+                ? (float)$product['actual_length'] : (float)$product['length'];
+            $nodLen = !empty($product['nod_length']) ? (float)$product['nod_length'] : 0.0;
+            $lenForCode = max(0.0, $rawLen - $nodLen);
             $stockCode = self::formatStockCode($product['coil_no'], $product['width'], $lenForCode);
             $add = $this->_insertPalletItem($palletId, $productId, $seq, $stockCode);
             if (!$add['ok']) {
@@ -1366,6 +1368,7 @@ class PalletManager
                     p.width,
                     p.created_by,
                     p.created_at,
+                    p.edit_count,
                     COUNT(sp.id)                                    AS roll_count,
                     COALESCE(p.updated_at, p.created_at)            AS last_activity,
                     GROUP_CONCAT(DISTINCT sp.lot_no SEPARATOR ', ') AS lot_nos
@@ -1421,7 +1424,7 @@ class PalletManager
             SELECT pi.seq, pi.added_at, pi.stock_code,
                    sp.id AS product_id,
                    sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
-                   sp.width, sp.length, sp.actual_length, sp.status,
+                   sp.width, sp.length, sp.actual_length, sp.nod_length, sp.status,
                    sp.customer_name, sp.ref_no
             FROM pallet_items pi
             JOIN slitting_product sp ON sp.id = pi.slitting_product_id
@@ -1437,8 +1440,10 @@ class PalletManager
         // only compute on the fly for legacy rows added before this column
         // existed, so nothing shows blank for older pallets.
         foreach ($rows as &$row) {
-            $lenVal = (!empty($row['actual_length']) && $row['actual_length'] > 0)
-                ? $row['actual_length'] : $row['length'];
+            $rawLen = (!empty($row['actual_length']) && $row['actual_length'] > 0)
+                ? (float)$row['actual_length'] : (float)$row['length'];
+            $nodLen = !empty($row['nod_length']) ? (float)$row['nod_length'] : 0.0;
+            $lenVal = max(0.0, $rawLen - $nodLen);
             $row['stock_code'] = self::formatStockCode($row['coil_no'], $row['width'], $lenVal);
         }
         unset($row);
@@ -1453,7 +1458,7 @@ class PalletManager
     {
         $stmt = $this->conn->prepare("
             SELECT id, product, lot_no, coil_no, roll_no,
-                   width, length, actual_length,
+                   width, length, actual_length, nod_length,
                    status, stock_counted, is_voided,
                    mother_id, customer_name, ref_no
             FROM slitting_product
