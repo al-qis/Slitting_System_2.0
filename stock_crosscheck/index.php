@@ -71,6 +71,7 @@ if ($res = $mysqli->query($sql)) {
 <head>
 <meta charset="UTF-8">
 <title>End-of-Month Stock Scan &amp; Export</title>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <style>
   :root {
     --navy:#0f1b2d;
@@ -223,28 +224,46 @@ if ($res = $mysqli->query($sql)) {
   }
   .hint { font-size:12.5px; color:var(--text-muted); margin-top:8px; line-height:1.5; }
 
+  #scanInput.flash-success {
+    border-color: #10b981 !important;
+    background: #ecfdf5 !important;
+    box-shadow: 0 0 0 5px rgba(16, 185, 129, 0.3) !important;
+  }
+  #scanInput.flash-error {
+    border-color: #ef4444 !important;
+    background: #fef2f2 !important;
+    box-shadow: 0 0 0 5px rgba(239, 68, 68, 0.3) !important;
+    animation: shakeInput 0.4s ease-in-out;
+  }
+  @keyframes shakeInput {
+    0%, 100% { transform: translateX(0); }
+    20%, 60% { transform: translateX(-6px); }
+    40%, 80% { transform: translateX(6px); }
+  }
+
   #warningBanner {
-    display:none;
-    margin-top:12px;
-    padding:11px 14px 11px 16px;
-    border-radius:9px;
-    background:var(--red-bg);
-    color:var(--red);
-    border:1px solid var(--red-border);
-    border-left:3px solid var(--red);
-    font-weight:600;
-    font-size:13.5px;
-    box-shadow:var(--shadow-sm);
-    transition:background-color .2s ease, color .2s ease, border-color .2s ease;
+    display: none;
+    margin-top: 14px;
+    padding: 14px 18px;
+    border-radius: 10px;
+    background: #fee2e2;
+    color: #b91c1c;
+    border: 1px solid #fca5a5;
+    border-left: 6px solid #dc2626;
+    font-weight: 700;
+    font-size: 16px;
+    box-shadow: 0 4px 14px rgba(220, 38, 38, 0.15);
+    transition: all .2s ease;
   }
-  #warningBanner::before { content:"\26A0\FE0F  "; }
+  #warningBanner::before { content: "❌  "; font-size: 18px; }
   #warningBanner.ok {
-    background:var(--green-bg);
-    color:var(--green);
-    border-color:var(--green-border);
-    border-left-color:var(--green);
+    background: #dcfce7;
+    color: #15803d;
+    border-color: #86efac;
+    border-left: 6px solid #16a34a;
+    box-shadow: 0 4px 14px rgba(22, 163, 74, 0.15);
   }
-  #warningBanner.ok::before { content:"\2705  "; }
+  #warningBanner.ok::before { content: "✅  "; font-size: 18px; }
 
   .counter { font-size:13px; color:var(--text-muted); margin-top:12px; }
   .counter b { color:var(--navy); font-size:16px; font-weight:700; }
@@ -301,6 +320,132 @@ if ($res = $mysqli->query($sql)) {
     border:1px solid var(--border);
   }
   .btn-ghost:hover { background:#e5e9f0; }
+
+  .btn-camera {
+    background: linear-gradient(135deg, #0ea5e9, #0284c7);
+    color: #fff;
+    border: none;
+    box-shadow: 0 4px 12px rgba(14, 165, 233, 0.35);
+  }
+  .btn-camera:hover {
+    background: linear-gradient(135deg, #0284c7, #0369a1);
+    box-shadow: 0 6px 16px rgba(14, 165, 233, 0.45);
+  }
+
+  /* Camera Modal Styles */
+  .camera-modal {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+  }
+  .camera-modal-backdrop {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(15, 27, 45, 0.7);
+    backdrop-filter: blur(4px);
+  }
+  .camera-modal-content {
+    position: relative;
+    z-index: 2001;
+    background: #fff;
+    border-radius: 14px;
+    width: 100%;
+    max-width: 520px;
+    box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .camera-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    background: var(--navy);
+    color: #fff;
+  }
+  .camera-modal-header h3 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .close-camera-btn {
+    background: transparent;
+    border: none;
+    color: #94a3b8;
+    font-size: 24px;
+    font-weight: 700;
+    cursor: pointer;
+    line-height: 1;
+    transition: color .15s ease;
+  }
+  .close-camera-btn:hover {
+    color: #fff;
+  }
+  .camera-modal-body {
+    padding: 16px;
+  }
+  .camera-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .camera-select-dropdown {
+    flex: 1;
+    padding: 8px 12px;
+    font-size: 13px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    outline: none;
+  }
+  .continuous-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: #475569;
+    cursor: pointer;
+    user-select: none;
+  }
+  .camera-reader-container {
+    position: relative;
+    min-height: 280px;
+    background: #000;
+    border-radius: 10px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .camera-status-notice {
+    position: absolute;
+    bottom: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(15, 27, 45, 0.85);
+    color: #fff;
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+    z-index: 10;
+  }
+  #reader video {
+    width: 100% !important;
+    border-radius: 10px;
+    object-fit: cover;
+  }
   .actions { display:flex; gap:10px; margin-top:16px; flex-wrap:wrap; }
 
   /* Manual Entry Form Styles */
@@ -731,6 +876,7 @@ if ($res = $mysqli->query($sql)) {
 
     <div class="actions">
       <button class="btn btn-ghost" id="clearAllBtn">Clear All Scans</button>
+      <button class="btn btn-camera" id="cameraScanBtn">📷 Camera Scan</button>
       <button class="btn btn-ghost" id="manualEntryToggleBtn">✏️ Manual Entry</button>
       <button class="btn btn-ghost" id="toggleSummaryBtnActions">📊 Live Summary</button>
       <button class="btn btn-primary" id="exportBtn">Export to Excel</button>
@@ -813,6 +959,32 @@ if ($res = $mysqli->query($sql)) {
 </div>
 </main>
 <div id="sidebarBackdrop" class="sidebar-backdrop"></div>
+
+<!-- CAMERA SCANNER MODAL -->
+<div id="cameraScanModal" class="camera-modal" style="display: none;">
+  <div class="camera-modal-backdrop" id="cameraModalBackdrop"></div>
+  <div class="camera-modal-content">
+    <div class="camera-modal-header">
+      <h3>📷 Tablet Camera Scanner</h3>
+      <button type="button" class="close-camera-btn" id="closeCameraBtn">&times;</button>
+    </div>
+    <div class="camera-modal-body">
+      <div class="camera-controls">
+        <select id="cameraSelect" class="camera-select-dropdown">
+          <option value="">Detecting cameras...</option>
+        </select>
+        <label class="continuous-toggle">
+          <input type="checkbox" id="continuousScanToggle" checked>
+          <span>Continuous Mode</span>
+        </label>
+      </div>
+      <div id="cameraReaderContainer" class="camera-reader-container">
+        <div id="reader" style="width: 100%;"></div>
+        <div id="cameraStatusNotice" class="camera-status-notice">Initializing camera...</div>
+      </div>
+    </div>
+  </div>
+</div>
 
 <script>
 // ---------------------------------------------------------------------
@@ -985,12 +1157,70 @@ function escapeHtml(str) {
   }[c]));
 }
 
+function playScanSound(ok = true) {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ok) {
+      // High-pitched dual success tone (587Hz -> 880Hz)
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+      osc.frequency.setValueAtTime(880.00, ctx.currentTime + 0.08);
+      gain.gain.setValueAtTime(0.2, ctx.currentTime);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.2);
+    } else {
+      // Low warning error buzzer (220Hz sawtooth wave)
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(220, ctx.currentTime);
+      gain.gain.setValueAtTime(0.25, ctx.currentTime);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.35);
+    }
+  } catch (err) { /* silent fallback */ }
+}
+
 function showWarning(msg, ok = false) {
-  warningBanner.textContent = msg;
+  playScanSound(ok);
+
+  const formattedMsg = ok 
+    ? `SCANNED SUCCESSFUL! &mdash; ${escapeHtml(msg)}` 
+    : `SCAN FAILED &mdash; ${escapeHtml(msg)}`;
+
+  warningBanner.innerHTML = formattedMsg;
   warningBanner.className = ok ? 'ok' : '';
   warningBanner.style.display = 'block';
+
+  // Flash input border
+  scanInput.classList.remove('flash-success', 'flash-error');
+  void scanInput.offsetWidth; // Reflow for animation restart
+  scanInput.classList.add(ok ? 'flash-success' : 'flash-error');
+
+  // Update status notice in camera modal if open
+  const cameraNotice = document.getElementById('cameraStatusNotice');
+  if (cameraNotice && typeof isCameraModalActive === 'function' && isCameraModalActive()) {
+    cameraNotice.textContent = ok ? `✅ ${msg}` : `❌ ${msg}`;
+    cameraNotice.style.background = ok ? 'rgba(22, 163, 74, 0.95)' : 'rgba(220, 38, 38, 0.95)';
+    setTimeout(() => {
+      if (cameraNotice && isCameraModalActive()) {
+        cameraNotice.textContent = '📷 Point camera at QR code label';
+        cameraNotice.style.background = 'rgba(15, 27, 45, 0.85)';
+      }
+    }, 2800);
+  }
+
   clearTimeout(showWarning._t);
-  showWarning._t = setTimeout(() => { warningBanner.style.display = 'none'; }, 2500);
+  showWarning._t = setTimeout(() => { 
+    warningBanner.style.display = 'none';
+    scanInput.classList.remove('flash-success', 'flash-error');
+  }, 3500);
 }
 
 // ---------------------------------------------------------------------
@@ -1348,9 +1578,14 @@ updateSidebarState(isSidebarOpen);
 // Hands-Free Global Scanner Listener: Automatically captures barcode gun
 // input anywhere on the page without requiring the user to click the input!
 // ---------------------------------------------------------------------
+function isCameraModalActive() {
+  const modal = document.getElementById('cameraScanModal');
+  return modal && modal.style.display !== 'none';
+}
+
 function isManualEntryActive() {
   const formCard = document.getElementById('manualEntryFormCard');
-  return formCard && formCard.style.display !== 'none';
+  return (formCard && formCard.style.display !== 'none') || isCameraModalActive();
 }
 
 function ensureScanInputFocus() {
@@ -1402,12 +1637,19 @@ scanInput.addEventListener('focus', () => {
 
 scanInput.addEventListener('blur', () => {
   setTimeout(() => {
-    if (isManualEntryActive()) {
+    if (isCameraModalActive()) {
       const bar = document.getElementById('scannerStatusBar');
       const txt = document.getElementById('scannerStatusText');
       if (bar && txt) {
         bar.className = 'scanner-status-bar paused';
-        txt.innerHTML = '<b>Manual Entry Mode Active</b> &mdash; Close manual entry form to resume barcode gun scanning';
+        txt.innerHTML = '<b>Tablet Camera Scanner Active</b> &mdash; Close camera scanner to resume barcode gun';
+      }
+    } else if (isManualEntryActive()) {
+      const bar = document.getElementById('scannerStatusBar');
+      const txt = document.getElementById('scannerStatusText');
+      if (bar && txt) {
+        bar.className = 'scanner-status-bar paused';
+        txt.innerHTML = '<b>Manual Entry Mode Active</b> &mdash; Close manual entry form to resume barcode gun';
       }
     } else {
       ensureScanInputFocus();
@@ -1415,10 +1657,118 @@ scanInput.addEventListener('blur', () => {
   }, 150);
 });
 
+// ---------------------------------------------------------------------
+// Tablet Camera QR Scanner Handler (Html5Qrcode)
+// ---------------------------------------------------------------------
+let html5QrCodeScanner = null;
+
+function playScanBeep() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(1046.5, ctx.currentTime);
+    gain.gain.setValueAtTime(0.15, ctx.currentTime);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.12);
+  } catch (err) { /* silent fallback */ }
+}
+
+function processScannedQR(decodedText) {
+  const raw = decodedText.trim();
+  if (!raw) return;
+
+  const continuous = document.getElementById('continuousScanToggle')?.checked;
+  if (!continuous) {
+    stopCameraScanner();
+  }
+
+  scanInput.value = raw;
+  const enterEvent = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
+  scanInput.dispatchEvent(enterEvent);
+}
+
+function startCameraScanner() {
+  const modal = document.getElementById('cameraScanModal');
+  const statusNotice = document.getElementById('cameraStatusNotice');
+  modal.style.display = 'flex';
+  if (statusNotice) statusNotice.textContent = 'Starting camera viewfinder...';
+
+  if (typeof Html5Qrcode === 'undefined') {
+    if (statusNotice) statusNotice.textContent = '❌ Html5Qrcode library not loaded.';
+    return;
+  }
+
+  if (!html5QrCodeScanner) {
+    html5QrCodeScanner = new Html5Qrcode("reader");
+  }
+
+  Html5Qrcode.getCameras().then(devices => {
+    const cameraSelect = document.getElementById('cameraSelect');
+    if (cameraSelect && devices.length > 0) {
+      cameraSelect.innerHTML = devices.map((dev, i) => 
+        `<option value="${dev.id}">${dev.label || 'Camera ' + (i + 1)}</option>`
+      ).join('');
+    }
+
+    const config = { fps: 15, qrbox: { width: 250, height: 250 } };
+    const cameraParam = devices.length > 0 ? { facingMode: "environment" } : { facingMode: "user" };
+
+    html5QrCodeScanner.start(
+      cameraParam,
+      config,
+      (decodedText) => processScannedQR(decodedText),
+      () => { /* frame decode fallback */ }
+    ).then(() => {
+      if (statusNotice) statusNotice.textContent = '📷 Point camera at QR code label';
+    }).catch(err => {
+      if (statusNotice) statusNotice.textContent = '❌ Camera error: ' + (err || 'Permission denied');
+    });
+  }).catch(err => {
+    if (statusNotice) statusNotice.textContent = '❌ No camera device found.';
+  });
+}
+
+function stopCameraScanner() {
+  const modal = document.getElementById('cameraScanModal');
+  modal.style.display = 'none';
+  if (html5QrCodeScanner) {
+    try {
+      html5QrCodeScanner.stop().catch(() => {});
+    } catch(e) {}
+  }
+  ensureScanInputFocus();
+}
+
+document.getElementById('cameraScanBtn')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  startCameraScanner();
+});
+document.getElementById('closeCameraBtn')?.addEventListener('click', stopCameraScanner);
+document.getElementById('cameraModalBackdrop')?.addEventListener('click', stopCameraScanner);
+
+document.getElementById('cameraSelect')?.addEventListener('change', (e) => {
+  const deviceId = e.target.value;
+  if (!deviceId || !html5QrCodeScanner) return;
+  const config = { fps: 15, qrbox: { width: 250, height: 250 } };
+  html5QrCodeScanner.stop().then(() => {
+    html5QrCodeScanner.start(
+      deviceId,
+      config,
+      (decodedText) => processScannedQR(decodedText)
+    );
+  }).catch(() => {});
+});
+
 // Keep focus on the scan input on click anywhere on page
 document.addEventListener('click', (e) => {
   if (e.target.id !== 'clearAllBtn' && e.target.id !== 'exportBtn' &&
       e.target.className !== 'removeBtn' &&
+      !e.target.closest('#cameraScanBtn') &&
+      !e.target.closest('#cameraScanModal') &&
       !e.target.closest('#manualEntryToggleBtn') &&
       !e.target.closest('#manualEntryFormCard') &&
       !e.target.closest('#toggleSummaryBtn') &&
