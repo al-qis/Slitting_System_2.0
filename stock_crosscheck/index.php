@@ -165,6 +165,43 @@ if ($res = $mysqli->query($sql)) {
     box-shadow:0 2px 6px rgba(59,110,246,.4);
   }
 
+  .scanner-status-bar {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    background: #e6f4ea;
+    border: 1px solid #bfe3cb;
+    color: #137333;
+    padding: 8px 14px;
+    border-radius: 9px;
+    font-size: 13px;
+    margin-bottom: 12px;
+    transition: all .2s ease;
+  }
+  .scanner-status-bar.paused {
+    background: #fff8e1;
+    border-color: #ffe082;
+    color: #b06000;
+  }
+  .scanner-indicator {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #137333;
+    box-shadow: 0 0 0 3px rgba(19, 115, 51, 0.25);
+    animation: pulseDot 1.8s infinite ease-in-out;
+  }
+  .scanner-status-bar.paused .scanner-indicator {
+    background: #f59e0b;
+    box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.25);
+    animation: none;
+  }
+  @keyframes pulseDot {
+    0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(19, 115, 51, 0.5); }
+    70% { transform: scale(1.05); box-shadow: 0 0 0 8px rgba(19, 115, 51, 0); }
+    100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(19, 115, 51, 0); }
+  }
+
   #scanInput {
     width:100%;
     padding:15px 18px;
@@ -683,8 +720,12 @@ if ($res = $mysqli->query($sql)) {
   <!-- STEP 1: SCAN, DEDUPE, CONVERT -->
   <div class="card">
     <h2><span class="step-badge">1</span> Scan Physical Products</h2>
-    <input type="text" id="scanInput" placeholder="Click here, then scan a QR code..." autocomplete="off" autofocus>
-    <div class="hint">No button needed &mdash; scanning automatically submits when the scanner sends "Enter".</div>
+    <div class="scanner-status-bar" id="scannerStatusBar">
+      <span class="scanner-indicator" id="scannerIndicator"></span>
+      <span id="scannerStatusText"><b>Scanner Active &amp; Ready</b> &mdash; Point barcode gun &amp; press trigger anytime</span>
+    </div>
+    <input type="text" id="scanInput" placeholder="⚡ Ready for Scanning — Pull scanner trigger anytime..." autocomplete="off" autofocus>
+    <div class="hint">No clicking needed &mdash; point barcode gun &amp; pull trigger. Scanning automatically submits on "Enter".</div>
     <div id="warningBanner"></div>
     <div class="counter">Scanned: <b id="scanCount">0</b> item(s)</div>
 
@@ -1303,7 +1344,78 @@ document.getElementById('sidebarBackdrop')?.addEventListener('click', () => {
 
 updateSidebarState(isSidebarOpen);
 
-// Keep focus on the scan input at all times (scanner types into it)
+// ---------------------------------------------------------------------
+// Hands-Free Global Scanner Listener: Automatically captures barcode gun
+// input anywhere on the page without requiring the user to click the input!
+// ---------------------------------------------------------------------
+function isManualEntryActive() {
+  const formCard = document.getElementById('manualEntryFormCard');
+  return formCard && formCard.style.display !== 'none';
+}
+
+function ensureScanInputFocus() {
+  if (isManualEntryActive()) return;
+  if (document.activeElement !== scanInput) {
+    scanInput.focus();
+  }
+}
+
+// Focus on page load & tab visibility change
+window.addEventListener('load', ensureScanInputFocus);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) ensureScanInputFocus();
+});
+
+// Global keydown capture for barcode scanner gun
+window.addEventListener('keydown', (e) => {
+  if (isManualEntryActive()) return;
+
+  // Ignore navigation & system shortcuts (Ctrl, Alt, Meta, F-keys, Tab, Escape)
+  if (e.ctrlKey || e.altKey || e.metaKey || e.key === 'Tab' || e.key === 'Escape' || e.key.startsWith('F')) {
+    return;
+  }
+
+  const activeEl = document.activeElement;
+  const isTypingInOtherInput = activeEl && (
+    activeEl.tagName === 'INPUT' || 
+    activeEl.tagName === 'TEXTAREA' || 
+    activeEl.tagName === 'SELECT'
+  ) && activeEl !== scanInput;
+
+  if (isTypingInOtherInput) return;
+
+  // Shifting focus to scanInput automatically so scanner gun keystrokes stream in!
+  if (document.activeElement !== scanInput) {
+    scanInput.focus();
+  }
+}, true);
+
+// Scanner status indicator updates on focus / blur
+scanInput.addEventListener('focus', () => {
+  const bar = document.getElementById('scannerStatusBar');
+  const txt = document.getElementById('scannerStatusText');
+  if (bar && txt) {
+    bar.className = 'scanner-status-bar';
+    txt.innerHTML = '<b>Scanner Active &amp; Ready</b> &mdash; Point barcode gun &amp; press trigger anytime';
+  }
+});
+
+scanInput.addEventListener('blur', () => {
+  setTimeout(() => {
+    if (isManualEntryActive()) {
+      const bar = document.getElementById('scannerStatusBar');
+      const txt = document.getElementById('scannerStatusText');
+      if (bar && txt) {
+        bar.className = 'scanner-status-bar paused';
+        txt.innerHTML = '<b>Manual Entry Mode Active</b> &mdash; Close manual entry form to resume barcode gun scanning';
+      }
+    } else {
+      ensureScanInputFocus();
+    }
+  }, 150);
+});
+
+// Keep focus on the scan input on click anywhere on page
 document.addEventListener('click', (e) => {
   if (e.target.id !== 'clearAllBtn' && e.target.id !== 'exportBtn' &&
       e.target.className !== 'removeBtn' &&
@@ -1313,10 +1425,10 @@ document.addEventListener('click', (e) => {
       !e.target.closest('#toggleSummaryBtnActions') &&
       !e.target.closest('#closeSummaryBtn') &&
       !e.target.closest('.side-col')) {
-    scanInput.focus();
+    ensureScanInputFocus();
   }
 });
-scanInput.focus();
+ensureScanInputFocus();
 
 // Remove a mistaken scan
 scanTbody.addEventListener('click', (e) => {
