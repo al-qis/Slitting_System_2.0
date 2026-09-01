@@ -50,7 +50,11 @@ $baselineRolls = [];
 $sql = "SELECT COALESCE(NULLIF(sp.product, ''), cpm.product, 'Unknown') AS product_code,
                sp.width, sp.lot_no, sp.coil_no, sp.roll_no
         FROM slitting_product sp
-        LEFT JOIN coil_product_map cpm ON cpm.coil_code = SUBSTRING_INDEX(sp.coil_no, '-', 1)
+        LEFT JOIN (
+            SELECT coil_code, MIN(product) AS product
+            FROM coil_product_map
+            GROUP BY coil_code
+        ) cpm ON cpm.coil_code = SUBSTRING_INDEX(sp.coil_no, '-', 1)
         WHERE sp.status NOT IN ('OUT','DELIVERED')
           AND (sp.is_voided IS NULL OR sp.is_voided = 0)
           {$dateClause}
@@ -1306,17 +1310,33 @@ function getProductLabel(r) {
 const expandedSummaryRows = new Set();
 
 function toggleSummaryRow(labelKey) {
+  const summaryWrap = document.querySelector('.summary-wrap');
+  const sideCol = document.querySelector('.side-col');
+  const savedScrollWrap = summaryWrap ? summaryWrap.scrollTop : 0;
+  const savedScrollSide = sideCol ? sideCol.scrollTop : 0;
+  const savedPageY = window.scrollY;
+
   if (expandedSummaryRows.has(labelKey)) {
     expandedSummaryRows.delete(labelKey);
   } else {
     expandedSummaryRows.add(labelKey);
   }
+
   renderSummary();
+
+  if (summaryWrap) summaryWrap.scrollTop = savedScrollWrap;
+  if (sideCol) sideCol.scrollTop = savedScrollSide;
+  window.scrollTo(0, savedPageY);
 }
 
 function renderSummary() {
   const summaryTbody = document.getElementById('summaryTbody');
   const summaryEmptyNote = document.getElementById('summaryEmptyNote');
+  const summaryWrap = document.querySelector('.summary-wrap');
+  const sideCol = document.querySelector('.side-col');
+  const savedScrollWrap = summaryWrap ? summaryWrap.scrollTop : 0;
+  const savedScrollSide = sideCol ? sideCol.scrollTop : 0;
+  const savedPageY = window.scrollY;
 
   // Count scans per product & width
   const scannedCounts = {};
@@ -1506,6 +1526,10 @@ function renderSummary() {
   }
 
   summaryTbody.innerHTML = rows.join('');
+
+  if (summaryWrap) summaryWrap.scrollTop = savedScrollWrap;
+  if (sideCol) sideCol.scrollTop = savedScrollSide;
+  window.scrollTo(0, savedPageY);
 }
 
 function escapeHtml(str) {
@@ -2120,11 +2144,43 @@ document.getElementById('cameraSelect')?.addEventListener('change', (e) => {
   }).catch(() => {});
 });
 
+function saveScrollPositions() {
+  const summaryWrap = document.querySelector('.summary-wrap');
+  const sideCol = document.querySelector('.side-col');
+  sessionStorage.setItem('stock_page_scroll', window.scrollY);
+  if (sideCol) sessionStorage.setItem('stock_sidebar_scroll', sideCol.scrollTop);
+  if (summaryWrap) sessionStorage.setItem('stock_summary_wrap_scroll', summaryWrap.scrollTop);
+}
+
+function restoreScrollPositions() {
+  const pageY = sessionStorage.getItem('stock_page_scroll');
+  const sideScroll = sessionStorage.getItem('stock_sidebar_scroll');
+  const wrapScroll = sessionStorage.getItem('stock_summary_wrap_scroll');
+
+  if (pageY !== null) {
+    window.scrollTo(0, parseInt(pageY, 10));
+    sessionStorage.removeItem('stock_page_scroll');
+  }
+  if (sideScroll !== null) {
+    const sideCol = document.querySelector('.side-col');
+    if (sideCol) sideCol.scrollTop = parseInt(sideScroll, 10);
+    sessionStorage.removeItem('stock_sidebar_scroll');
+  }
+  if (wrapScroll !== null) {
+    const summaryWrap = document.querySelector('.summary-wrap');
+    if (summaryWrap) summaryWrap.scrollTop = parseInt(wrapScroll, 10);
+    sessionStorage.removeItem('stock_summary_wrap_scroll');
+  }
+}
+
+document.addEventListener('DOMContentLoaded', restoreScrollPositions);
+
 function setFilterDates(from, to, e) {
   if (e) {
     e.preventDefault();
     e.stopPropagation();
   }
+  saveScrollPositions();
   const fromEl = document.getElementById('from_date');
   const toEl = document.getElementById('to_date');
   if (fromEl) fromEl.value = from;
@@ -2138,6 +2194,8 @@ function setFilterDates(from, to, e) {
     }
   }
 }
+
+document.getElementById('dateFilterForm')?.addEventListener('submit', saveScrollPositions);
 
 function toggleFilterBox(e) {
   if (e) {
