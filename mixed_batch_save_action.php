@@ -119,7 +119,7 @@ foreach ($rows as $r) {
     $sel = $selectionsById[$rid];
 
     if ($from === 'slitting_product') {
-        $isEligible = !in_array($r['status'], ['WAITING', 'REJECTED'], true);
+        $isEligible = true;
     } else {
         $isEligible = !in_array($r['status'], ['WAITING', 'REJECTED'], true)
             && !($r['status'] === 'IN' && ($r['is_completed'] == 0 || $r['pallet_id']));
