@@ -152,6 +152,7 @@ if (
 $id       = null;
 $customer = 'STOCK';
 $ref_no   = 'STOCK';
+$from     = trim($_REQUEST['from'] ?? '');
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $id       = intval($_POST['id']);
@@ -167,6 +168,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 } else {
     die("Product ID required");
 }
+
+$backUrl           = ($from === 'slitting_product') ? 'slitting_product.php' : 'finish_product.php';
+$changeCustomerUrl = "select_customer.php?id={$id}" . ($from !== '' ? "&from=" . urlencode($from) : "");
 
 // ── Resolve copies (1–3, defaults to 1) ───────────────────────────
 // Only applies to the standalone print path (select_customer.php ->
@@ -534,10 +538,10 @@ if (function_exists('render_sticker')) {
     <span id="saveFeedback"></span>
 
     <!-- Navigation buttons -->
-    <a href="select_customer.php?id=<?= $id ?>" class="btn btn-back">
+    <a href="<?= htmlspecialchars($changeCustomerUrl) ?>" class="btn btn-back">
         ← Change Customer
     </a>
-    <a href="finish_product.php" class="btn btn-back">
+    <a href="<?= htmlspecialchars($backUrl) ?>" class="btn btn-back">
         ← Back to List
     </a>
 

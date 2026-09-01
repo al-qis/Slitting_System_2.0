@@ -240,15 +240,18 @@ include 'header.php';
     </div>
     <div class="col-md-5 text-md-end mt-2 mt-md-0">
         <span id="bulkPrintCount" class="text-muted me-2" style="font-size:13px;">0 selected</span>
-        <button type="button" id="bulkPrintBtn" class="btn btn-info text-dark fw-bold" disabled onclick="submitBulkPrint()">
+        <button type="button" id="bulkPrintBtn" class="btn btn-danger text-white fw-bold" disabled onclick="goToMixedBatchSetup()">
             <i class="bi bi-printer-fill me-1"></i> Bulk Print Selected
         </button>
     </div>
 </div>
 
-<!-- Hidden form used to POST the selected IDs in a new tab -->
-<form id="bulkPrintForm" method="post" action="bulk_print_action.php" target="_blank" style="display:none;">
-    <input type="hidden" name="ids" id="bulkPrintIdsInput">
+<!-- Hidden form used to POST the selected IDs to mixed_batch_setup.php -->
+<form id="mixedBulkPrintForm" method="post" action="mixed_batch_setup.php" style="display:none;">
+    <input type="hidden" name="ids"          id="mixedBulkPrintIdsInput">
+    <input type="hidden" name="from"         value="slitting_product">
+    <input type="hidden" name="search"       value="<?= htmlspecialchars($search) ?>">
+    <input type="hidden" name="print_status" value="<?= htmlspecialchars($printFilter) ?>">
 </form>
 
 <div class="card shadow-sm border-0">
@@ -319,8 +322,8 @@ include 'header.php';
                     <td>
                         <div class="btn-group shadow-sm">
                             <a href="?edit=<?= $row['id'] ?>" class="btn btn-warning btn-sm">Edit</a>
-                            <a href="select_customer.php?id=<?= $row['id'] ?>"
-                               target="_blank" class="btn btn-success btn-sm">Print</a>
+                            <a href="select_customer.php?id=<?= $row['id'] ?>&from=slitting_product"
+                               class="btn btn-success btn-sm">Print</a>
                             <a href="?delete=<?= $row['id'] ?>"
                                onclick="return confirm('Remove this product from inventory?')"
                                class="btn btn-danger btn-sm">Delete</a>
@@ -429,14 +432,15 @@ function updateBulkPrintButton() {
     }
 }
 
-function submitBulkPrint() {
-    const ids = Array.from(document.querySelectorAll('.coil-select:checked')).map(el => el.value);
-    if (ids.length === 0) {
+function goToMixedBatchSetup() {
+    const checked = document.querySelectorAll('.coil-select:checked');
+    if (checked.length === 0) {
         alert('Select at least one product to print.');
         return;
     }
-    document.getElementById('bulkPrintIdsInput').value = JSON.stringify(ids);
-    document.getElementById('bulkPrintForm').submit();
+    const ids = Array.from(checked).map(el => el.value);
+    document.getElementById('mixedBulkPrintIdsInput').value = JSON.stringify(ids);
+    document.getElementById('mixedBulkPrintForm').submit();
 }
 </script>
 

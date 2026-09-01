@@ -90,7 +90,9 @@ if (!isset($_GET['id'])) {
     die("Product ID required");
 }
 
-$id = intval($_GET['id']);
+$id   = intval($_GET['id']);
+$from = trim($_GET['from'] ?? $_POST['from'] ?? '');
+$backUrl = ($from === 'slitting_product') ? 'slitting_product.php' : 'finish_product.php';
 
 // ── Fetch product ───────────────────────────────────────────────
 $result = $conn->query("SELECT * FROM slitting_product WHERE id=$id");
@@ -270,6 +272,7 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
 
     <form method="POST" action="print_product.php" id="mainForm">
         <input type="hidden" name="id" value="<?= $id ?>">
+        <input type="hidden" name="from" value="<?= htmlspecialchars($from) ?>">
 
         <!-- Line A/B flag — toggled by the Line A button below -->
         <input type="hidden" name="line" id="lineInput" value="B">
@@ -381,7 +384,7 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
             <button type="submit" class="btn-action btn-print">
                 <i class="bi bi-printer-fill"></i> Print Sticker
             </button>
-            <a href="finish_product.php" class="btn-action btn-back">
+            <a href="<?= htmlspecialchars($backUrl) ?>" class="btn-action btn-back">
                 <i class="bi bi-arrow-left"></i> Back to List
             </a>
         </div>

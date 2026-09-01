@@ -54,19 +54,29 @@ $ids = is_array($rawIds)
     ? array_values(array_unique(array_filter(array_map('intval', $rawIds))))
     : [];
 
-// ── Preserve return state back to finish_product.php ─────────────
-$backMonth  = isset($_REQUEST['month'])  ? (int)$_REQUEST['month']  : (int)date('m');
-$backYear   = isset($_REQUEST['year'])   ? (int)$_REQUEST['year']   : (int)date('Y');
-$backDay    = isset($_REQUEST['day'])    ? (int)$_REQUEST['day']    : 0;
-$backSearch = trim($_REQUEST['search'] ?? '');
-$backFilter = trim($_REQUEST['filter'] ?? '');
-$backUrl = 'finish_product.php?' . http_build_query(array_filter([
-    'month'  => $backMonth,
-    'year'   => $backYear,
-    'day'    => $backDay > 0 ? $backDay : null,
-    'search' => $backSearch !== '' ? $backSearch : null,
-    'filter' => $backFilter !== '' ? $backFilter : null,
-]));
+// ── Preserve return state back to finish_product.php / slitting_product.php ─────
+$from            = trim($_REQUEST['from'] ?? $_REQUEST['source'] ?? '');
+$backMonth       = isset($_REQUEST['month'])  ? (int)$_REQUEST['month']  : (int)date('m');
+$backYear        = isset($_REQUEST['year'])   ? (int)$_REQUEST['year']   : (int)date('Y');
+$backDay         = isset($_REQUEST['day'])    ? (int)$_REQUEST['day']    : 0;
+$backSearch      = trim($_REQUEST['search'] ?? '');
+$backFilter      = trim($_REQUEST['filter'] ?? '');
+$backPrintFilter = trim($_REQUEST['print_status'] ?? '');
+
+if ($from === 'slitting_product') {
+    $backUrl = 'slitting_product.php?' . http_build_query(array_filter([
+        'search'       => $backSearch !== '' ? $backSearch : null,
+        'print_status' => $backPrintFilter !== '' ? $backPrintFilter : null,
+    ]));
+} else {
+    $backUrl = 'finish_product.php?' . http_build_query(array_filter([
+        'month'  => $backMonth,
+        'year'   => $backYear,
+        'day'    => $backDay > 0 ? $backDay : null,
+        'search' => $backSearch !== '' ? $backSearch : null,
+        'filter' => $backFilter !== '' ? $backFilter : null,
+    ]));
+}
 
 if (empty($ids)) {
     die('<p style="font-family:Arial;padding:24px;">No rolls were selected.</p>'
@@ -76,7 +86,7 @@ if (empty($ids)) {
 // ── Fetch every printable roll among the selected IDs ─────────────
 // Same printability rule finish_product.php / batch_setup.php use:
 // not voided, not WAITING/REJECTED, and not an IN roll still pending
-// Actual Length or already palletised.
+// Actual Length or already palletised (for slitting_product page, active rolls are printable).
 $placeholders = implode(',', array_fill(0, count($ids), '?'));
 $stmt = $conn->prepare("
     SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
@@ -101,8 +111,12 @@ $foundIds = [];
 foreach ($allRows as $r) {
     $foundIds[] = (int)$r['id'];
 
-    $isPrintable = !in_array($r['status'], ['WAITING', 'REJECTED'], true)
-        && !($r['status'] === 'IN' && ($r['is_completed'] == 0 || $r['pallet_id']));
+    if ($from === 'slitting_product') {
+        $isPrintable = !in_array($r['status'], ['WAITING', 'REJECTED'], true);
+    } else {
+        $isPrintable = !in_array($r['status'], ['WAITING', 'REJECTED'], true)
+            && !($r['status'] === 'IN' && ($r['is_completed'] == 0 || $r['pallet_id']));
+    }
 
     if (!$isPrintable) {
         $reason = $r['status'] === 'IN'
@@ -378,12 +392,14 @@ usort($rolls, function ($a, $b) {
 
 <!-- Hidden form used to POST the print job in a new tab -->
 <form id="mixedPrintForm" method="post" action="mixed_batch_print_action.php" target="_blank" style="display:none;">
-    <input type="hidden" name="selections" id="mixedPrintSelectionsInput">
-    <input type="hidden" name="month"   value="<?= $backMonth ?>">
-    <input type="hidden" name="year"    value="<?= $backYear ?>">
-    <input type="hidden" name="day"     value="<?= $backDay ?>">
-    <input type="hidden" name="search"  value="<?= htmlspecialchars($backSearch) ?>">
-    <input type="hidden" name="filter"  value="<?= htmlspecialchars($backFilter) ?>">
+    <input type="hidden" name="selections"   id="mixedPrintSelectionsInput">
+    <input type="hidden" name="from"         value="<?= htmlspecialchars($from) ?>">
+    <input type="hidden" name="month"        value="<?= $backMonth ?>">
+    <input type="hidden" name="year"         value="<?= $backYear ?>">
+    <input type="hidden" name="day"          value="<?= $backDay ?>">
+    <input type="hidden" name="search"       value="<?= htmlspecialchars($backSearch) ?>">
+    <input type="hidden" name="filter"       value="<?= htmlspecialchars($backFilter) ?>">
+    <input type="hidden" name="print_status" value="<?= htmlspecialchars($backPrintFilter) ?>">
 </form>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
@@ -602,7 +618,7 @@ async function saveOnly() {
         const res  = await fetch('mixed_batch_save_action.php', {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: 'selections=' + encodeURIComponent(JSON.stringify(selections)),
+            body: 'selections=' + encodeURIComponent(JSON.stringify(selections)) + '&from=' + encodeURIComponent(<?= json_encode($from) ?>),
         });
         const data = await res.json();
 
