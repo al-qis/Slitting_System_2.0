@@ -112,7 +112,7 @@ foreach ($allRows as $r) {
     $foundIds[] = (int)$r['id'];
 
     if ($from === 'slitting_product') {
-        $isPrintable = !in_array($r['status'], ['WAITING', 'REJECTED'], true);
+        $isPrintable = true;
     } else {
         $isPrintable = !in_array($r['status'], ['WAITING', 'REJECTED'], true)
             && !($r['status'] === 'IN' && ($r['is_completed'] == 0 || $r['pallet_id']));
