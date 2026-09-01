@@ -28,15 +28,23 @@ if ($resScans = $mysqli->query($sqlScans)) {
 }
 
 // -----------------------------------------------------------------------
-// System stock baseline per product code - "how many rolls should exist
-// per product right now". Matched the same way ajax_lookup.php derives a
-// product code: the letters before the dash in coil_no (e.g. "CH-2" -> "CH")
-// looked up in coil_product_map.
-//
-// ADJUST THE WHERE CLAUSE if "currently in stock" should mean something
-// different in your system. Current definition: not yet OUT/DELIVERED and
-// not voided.
+// Produced Date Filtering (defaults to all dates, or officer selected cutoff date)
 // -----------------------------------------------------------------------
+$fromDate = isset($_GET['from_date']) ? trim($_GET['from_date']) : '';
+$toDate   = isset($_GET['to_date'])   ? trim($_GET['to_date'])   : (isset($_GET['cutoff_date']) ? trim($_GET['cutoff_date']) : '');
+
+if ($fromDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $fromDate)) $fromDate = '';
+if ($toDate   && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $toDate))   $toDate   = '';
+
+$whereDate = [];
+if ($fromDate !== '') {
+    $whereDate[] = "DATE(COALESCE(sp.date_in, sp.updated_at)) >= '" . $mysqli->real_escape_string($fromDate) . "'";
+}
+if ($toDate !== '') {
+    $whereDate[] = "DATE(COALESCE(sp.date_in, sp.updated_at)) <= '" . $mysqli->real_escape_string($toDate) . "'";
+}
+$dateClause = count($whereDate) > 0 ? " AND " . implode(" AND ", $whereDate) : "";
+
 $baselineStock = [];
 $baselineRolls = [];
 $sql = "SELECT COALESCE(NULLIF(sp.product, ''), cpm.product, 'Unknown') AS product_code,
@@ -45,6 +53,7 @@ $sql = "SELECT COALESCE(NULLIF(sp.product, ''), cpm.product, 'Unknown') AS produ
         LEFT JOIN coil_product_map cpm ON cpm.coil_code = SUBSTRING_INDEX(sp.coil_no, '-', 1)
         WHERE sp.status NOT IN ('OUT','DELIVERED')
           AND (sp.is_voided IS NULL OR sp.is_voided = 0)
+          {$dateClause}
         ORDER BY sp.lot_no ASC, sp.coil_no ASC, sp.roll_no ASC";
 if ($res = $mysqli->query($sql)) {
     while ($row = $res->fetch_assoc()) {
@@ -747,6 +756,189 @@ if ($res = $mysqli->query($sql)) {
     box-shadow: 0 2px 8px rgba(0,0,0,0.18);
   }
 
+  .summary-total-row th,
+  .summary-total-row td {
+    position: sticky;
+    top: 28px;
+    z-index: 10;
+    background: #e2e8f0 !important;
+    color: var(--navy) !important;
+    font-weight: 800 !important;
+    font-size: 12px !important;
+    border-top: 1px solid #cbd5e1 !important;
+    border-bottom: 2.5px solid #94a3b8 !important;
+    text-transform: none !important;
+    letter-spacing: 0 !important;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.06);
+  }
+
+  /* Summary Sidebar Filter Box & Tally Banner Styles */
+  .summary-filter-box {
+    background: #f8fafc;
+    border: 1px solid #cbd5e1;
+    border-radius: 9px;
+    padding: 12px 14px;
+    margin-bottom: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .summary-filter-toggle-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+    user-select: none;
+  }
+  .btn-toggle-filter {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 11.5px;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: background .15s ease;
+  }
+  .btn-toggle-filter:hover {
+    background: #e2e8f0;
+    color: var(--navy);
+  }
+  .tally-active-badge {
+    background: #2563eb;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    margin-left: 6px;
+  }
+  .summary-filter-header {
+    font-size: 13px;
+    color: var(--navy);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .summary-filter-sub {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    margin-top: 2px;
+    margin-bottom: 10px;
+    line-height: 1.35;
+  }
+  .summary-filter-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .summary-filter-grid .date-input-group {
+    flex: 1 1 45%;
+    min-width: 130px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+  }
+  .summary-filter-grid .date-input-group label {
+    font-size: 11.5px;
+    color: var(--navy);
+  }
+  .summary-filter-grid .date-input-group input[type="date"] {
+    width: 100%;
+    padding: 5px 8px;
+    font-size: 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .summary-filter-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .summary-filter-actions .btn-filter-submit {
+    flex: 1;
+    background: var(--blue);
+    color: #fff;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 7px;
+    font-size: 12.5px;
+    font-weight: 650;
+    cursor: pointer;
+    transition: background .15s ease;
+  }
+  .summary-filter-actions .btn-filter-submit:hover {
+    background: var(--blue-dark);
+  }
+  .summary-filter-actions .btn-filter-reset {
+    background: #e2e8f0;
+    color: #475569;
+    text-decoration: none;
+    padding: 6px 10px;
+    border-radius: 7px;
+    font-size: 11.5px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .date-presets {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px dashed #cbd5e1;
+    font-size: 12px;
+  }
+  .preset-label {
+    color: var(--text-muted);
+    font-weight: 600;
+    margin-right: 4px;
+  }
+  .btn-preset {
+    background: #fff;
+    border: 1px solid #cbd5e1;
+    color: var(--navy);
+    padding: 3px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all .15s ease;
+  }
+  .btn-preset:hover {
+    background: #e2e8f0;
+    border-color: #94a3b8;
+  }
+  .summary-tally-banner {
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-radius: 8px;
+    padding: 9px 13px;
+    margin-bottom: 12px;
+    font-size: 12.5px;
+    color: #1e40af;
+  }
+  .tally-banner-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 700;
+  }
+  .tally-date-chip {
+    background: #2563eb;
+    color: #fff;
+    padding: 2px 7px;
+    border-radius: 5px;
+    font-size: 11.5px;
+    font-weight: 700;
+  }
+  .tally-banner-sub {
+    font-size: 11.5px;
+    color: #3b82f6;
+    margin-top: 2px;
+  }
+
   .close-sidebar-btn {
     margin-left: auto;
     background: transparent;
@@ -944,10 +1136,74 @@ if ($res = $mysqli->query($sql)) {
         <span>Live Reconciliation Summary</span>
         <button id="closeSummaryBtn" class="close-sidebar-btn" title="Close Sidebar">&times;</button>
       </h2>
+
+      <!-- OFFICER SYSTEM STOCK TALLY FILTER INSIDE LIVE SUMMARY (COLLAPSIBLE) -->
+      <div class="summary-filter-box" id="summaryFilterBox">
+        <div class="summary-filter-toggle-header" id="toggleFilterBoxHeader">
+          <div class="summary-filter-header">
+            <span class="icon">📊</span>
+            <b>Filter Baseline Stock by Last Date</b>
+            <?php if ($fromDate !== '' || $toDate !== ''): ?>
+              <span class="tally-active-badge">Active Filter</span>
+            <?php endif; ?>
+          </div>
+          <button type="button" class="btn-toggle-filter" id="btnToggleFilter" title="Toggle Filter Box">
+            <span id="filterToggleIcon">▼</span>
+          </button>
+        </div>
+
+        <div id="summaryFilterContent" class="summary-filter-content">
+          <div class="summary-filter-sub">
+            Filter system baseline stock up to the cut-off date to tally against physical scans
+          </div>
+
+          <form method="GET" action="index.php" id="dateFilterForm" class="date-filter-form">
+            <div class="summary-filter-grid">
+              <div class="date-input-group">
+                <label for="to_date"><b>📅 Cutoff / Last Date:</b></label>
+                <input type="date" id="to_date" name="to_date" value="<?php echo htmlspecialchars($toDate); ?>">
+              </div>
+              <div class="date-input-group">
+                <label for="from_date" style="color: var(--text-muted);">From (Optional):</label>
+                <input type="date" id="from_date" name="from_date" value="<?php echo htmlspecialchars($fromDate); ?>">
+              </div>
+            </div>
+
+            <div class="summary-filter-actions">
+              <button type="submit" class="btn-filter-submit">🔍 Tally System Stock</button>
+              <?php if ($fromDate !== '' || $toDate !== ''): ?>
+                <a href="index.php" class="btn-filter-reset">🔄 Reset (All Stock)</a>
+              <?php endif; ?>
+            </div>
+
+            <div class="date-presets">
+              <span class="preset-label">Quick Presets:</span>
+              <button type="button" class="btn-preset" onclick="setFilterDates('', '', event)">🌐 All Dates</button>
+              <button type="button" class="btn-preset" onclick="setFilterDates('', '<?php echo date('Y-m-t', strtotime('-1 month')); ?>', event)">🏁 End of Last Month (<?php echo date('31/m', strtotime('-1 month')); ?>)</button>
+              <button type="button" class="btn-preset" onclick="setFilterDates('', '<?php echo date('Y-m-d', strtotime('-1 day')); ?>', event)">📅 Yesterday</button>
+              <button type="button" class="btn-preset" onclick="setFilterDates('', '<?php echo date('Y-m-d'); ?>', event)">📅 Today (<?php echo date('d/m'); ?>)</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div class="summary-tally-banner">
+        <div class="tally-banner-title">
+          <span>🏁 <b>System Tally Cutoff:</b></span>
+          <span class="tally-date-chip">
+            <?php echo $toDate ? "Up to " . htmlspecialchars($toDate) : ($fromDate ? "From " . htmlspecialchars($fromDate) : "All Dates"); ?>
+          </span>
+        </div>
+        <div class="tally-banner-sub">
+          Tallying <b><?php echo array_sum($baselineStock); ?></b> expected system coils against scanned data
+        </div>
+      </div>
+
       <div class="table-wrap summary-wrap">
       <table id="summaryTable">
         <thead>
           <tr><th>Product &amp; Width</th><th>System</th><th>Scanned</th><th>Left</th><th>Status</th></tr>
+          <tr id="summaryTotalRow" class="summary-total-row"></tr>
         </thead>
         <tbody id="summaryTbody"></tbody>
       </table>
@@ -1095,8 +1351,23 @@ function renderSummary() {
       );
     });
 
+    // Find all physical scans for this product label
+    const scannedForProduct = scannedRecords.filter(r => getProductLabel(r) === label);
+
+    // Identify extra coils scanned (scanned coils that were NOT in system baseline stock)
+    const extraScannedRolls = scannedForProduct.filter(r => {
+      return !systemRolls.some(item =>
+        (item.lot || '').toLowerCase()  === (r.lot || '').toLowerCase() &&
+        (item.coil || '').toLowerCase() === (r.coil || '').toLowerCase() &&
+        String(item.roll) === String(r.roll)
+      );
+    });
+
+    const isOver = remaining < 0;
     const hasUnscanned = unscannedRolls.length > 0;
-    const isExpanded   = expandedSummaryRows.has(label);
+    const hasExtra = extraScannedRolls.length > 0;
+    const canExpand = hasUnscanned || isOver || (scannedForProduct.length > 0);
+    const isExpanded = expandedSummaryRows.has(label);
 
     let statusHtml, rowClass;
     if (remaining > 0) {
@@ -1110,13 +1381,13 @@ function renderSummary() {
       rowClass = 'summary-row-complete';
     }
 
-    const clickAttr = hasUnscanned ? `onclick="toggleSummaryRow('${escapeJsString(label)}')" title="Click to view/hide remaining coils"` : '';
-    const mainClass = `${rowClass} summary-main-row ${hasUnscanned ? 'has-unscanned' : ''} ${isExpanded ? 'expanded' : ''}`;
+    const clickAttr = canExpand ? `onclick="toggleSummaryRow('${escapeJsString(label)}')" title="Click to view/hide detail coils"` : '';
+    const mainClass = `${rowClass} summary-main-row ${canExpand ? 'has-unscanned' : ''} ${isExpanded ? 'expanded' : ''}`;
 
     rows.push(`
       <tr class="${mainClass}" ${clickAttr}>
         <td>
-          ${hasUnscanned ? `<span class="expand-toggle-icon">\u{25B6}</span>` : ''}
+          ${canExpand ? `<span class="expand-toggle-icon">${isExpanded ? '\u{25BC}' : '\u{25B6}'}</span>` : ''}
           <b>${escapeHtml(label)}</b>
         </td>
         <td>${system}</td>
@@ -1126,27 +1397,113 @@ function renderSummary() {
       </tr>
     `);
 
-    if (hasUnscanned && isExpanded) {
-      const chipsHtml = unscannedRolls.map(roll => `
-        <div class="summary-detail-chip">
-          Lot <b>${escapeHtml(roll.lot)}</b> &middot; Coil <b>${escapeHtml(roll.coil)}</b> &middot; Roll <b>${escapeHtml(roll.roll)}</b>
-        </div>
-      `).join('');
-
-      rows.push(`
-        <tr class="summary-detail-row">
-          <td colspan="5">
-            <div class="summary-detail-box">
-              <div class="summary-detail-header">📦 Coils &amp; Rolls Left (${unscannedRolls.length} Unscanned):</div>
-              <div class="summary-detail-grid">
-                ${chipsHtml}
-              </div>
+    if (canExpand && isExpanded) {
+      if (isOver || hasExtra) {
+        // OVER / EXTRA: Render scanned coils with extra highlighting
+        const overChipsHtml = scannedForProduct.map(r => {
+          const isExtra = extraScannedRolls.some(ex =>
+            (ex.lot || '').toLowerCase() === (r.lot || '').toLowerCase() &&
+            (ex.coil || '').toLowerCase() === (r.coil || '').toLowerCase() &&
+            String(ex.roll) === String(r.roll)
+          );
+          return `
+            <div class="summary-detail-chip ${isExtra ? 'chip-extra' : 'chip-matched'}">
+              ${isExtra ? '🚨' : '✔'} Lot <b>${escapeHtml(r.lot)}</b> &middot; Coil <b>${escapeHtml(r.coil)}</b> &middot; Roll <b>${escapeHtml(r.roll)}</b>
+              <span class="${isExtra ? 'badge-extra' : 'badge-matched'}">${isExtra ? 'EXTRA' : 'MATCHED'}</span>
             </div>
-          </td>
-        </tr>
-      `);
+          `;
+        }).join('');
+
+        rows.push(`
+          <tr class="summary-detail-row">
+            <td colspan="5">
+              <div class="summary-detail-box over-box">
+                <div class="summary-detail-header over-header">
+                  🚨 Scanned Coils List (${scannedForProduct.length} Physical Scans &middot; ${extraScannedRolls.length} Extra Coils Not In Baseline):
+                </div>
+                <div class="summary-detail-grid">
+                  ${overChipsHtml}
+                </div>
+              </div>
+            </td>
+          </tr>
+        `);
+      } else if (hasUnscanned) {
+        // LEFT > 0: Render unscanned baseline coils
+        const chipsHtml = unscannedRolls.map(roll => `
+          <div class="summary-detail-chip">
+            Lot <b>${escapeHtml(roll.lot)}</b> &middot; Coil <b>${escapeHtml(roll.coil)}</b> &middot; Roll <b>${escapeHtml(roll.roll)}</b>
+          </div>
+        `).join('');
+
+        rows.push(`
+          <tr class="summary-detail-row">
+            <td colspan="5">
+              <div class="summary-detail-box">
+                <div class="summary-detail-header">📦 Coils &amp; Rolls Left (${unscannedRolls.length} Unscanned):</div>
+                <div class="summary-detail-grid">
+                  ${chipsHtml}
+                </div>
+              </div>
+            </td>
+          </tr>
+        `);
+      } else if (scannedForProduct.length > 0) {
+        // COMPLETE (0 Left): Render matched scanned coils
+        const completeChipsHtml = scannedForProduct.map(r => `
+          <div class="summary-detail-chip chip-matched">
+            ✔ Lot <b>${escapeHtml(r.lot)}</b> &middot; Coil <b>${escapeHtml(r.coil)}</b> &middot; Roll <b>${escapeHtml(r.roll)}</b> <span class="badge-matched">MATCHED</span>
+          </div>
+        `).join('');
+
+        rows.push(`
+          <tr class="summary-detail-row">
+            <td colspan="5">
+              <div class="summary-detail-box" style="background:#f0fdf4; border-top: 1px dashed #86efac;">
+                <div class="summary-detail-header" style="color:#15803d;">
+                  🟢 Scanned Coils List (Complete &middot; ${scannedForProduct.length} Scanned):
+                </div>
+                <div class="summary-detail-grid">
+                  ${completeChipsHtml}
+                </div>
+              </div>
+            </td>
+          </tr>
+        `);
+      }
     }
   });
+
+  let totalSystem = 0;
+  let totalScanned = 0;
+
+  [...allLabels].forEach(label => {
+    totalSystem += (systemStockBaseline[label] ?? 0);
+    totalScanned += (scannedCounts[label] || 0);
+  });
+
+  const totalLeft = totalSystem - totalScanned;
+  const totalProducts = allLabels.size;
+
+  let totalStatusHtml;
+  if (totalLeft > 0) {
+    totalStatusHtml = `<span class="summary-status-remaining">\u{1F7E1} ${totalLeft} Left</span>`;
+  } else if (totalLeft < 0) {
+    totalStatusHtml = `<span class="summary-status-over">\u{1F534} Over by ${Math.abs(totalLeft)}</span>`;
+  } else {
+    totalStatusHtml = `<span class="summary-status-complete">\u{1F7E2} Complete</span>`;
+  }
+
+  const totalRowEl = document.getElementById('summaryTotalRow');
+  if (totalRowEl) {
+    totalRowEl.innerHTML = `
+      <th><b>TOTAL</b> (${totalProducts} Lines)</th>
+      <th><b>${totalSystem}</b></th>
+      <th><b>${totalScanned}</b></th>
+      <th><b>${totalLeft}</b></th>
+      <th>${totalStatusHtml}</th>
+    `;
+  }
 
   summaryTbody.innerHTML = rows.join('');
 }
@@ -1763,10 +2120,55 @@ document.getElementById('cameraSelect')?.addEventListener('change', (e) => {
   }).catch(() => {});
 });
 
+function setFilterDates(from, to, e) {
+  if (e) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  const fromEl = document.getElementById('from_date');
+  const toEl = document.getElementById('to_date');
+  if (fromEl) fromEl.value = from;
+  if (toEl) toEl.value = to;
+  const form = document.getElementById('dateFilterForm');
+  if (form) {
+    if (typeof form.requestSubmit === 'function') {
+      form.requestSubmit();
+    } else {
+      form.submit();
+    }
+  }
+}
+
+function toggleFilterBox(e) {
+  if (e) {
+    e.stopPropagation();
+    e.preventDefault();
+  }
+  const content = document.getElementById('summaryFilterContent');
+  const icon = document.getElementById('filterToggleIcon');
+  if (!content) return;
+
+  const isCurrentlyCollapsed = content.classList.contains('collapsed') || content.style.display === 'none';
+  if (isCurrentlyCollapsed) {
+    content.classList.remove('collapsed');
+    content.style.display = 'block';
+    if (icon) icon.textContent = '▼';
+  } else {
+    content.classList.add('collapsed');
+    content.style.display = 'none';
+    if (icon) icon.textContent = '▶';
+  }
+}
+
+document.getElementById('toggleFilterBoxHeader')?.addEventListener('click', toggleFilterBox);
+document.getElementById('btnToggleFilter')?.addEventListener('click', toggleFilterBox);
+
 // Keep focus on the scan input on click anywhere on page
 document.addEventListener('click', (e) => {
   if (e.target.id !== 'clearAllBtn' && e.target.id !== 'exportBtn' &&
       e.target.className !== 'removeBtn' &&
+      !e.target.closest('#summaryFilterBox') &&
+      !e.target.closest('#dateFilterForm') &&
       !e.target.closest('#cameraScanBtn') &&
       !e.target.closest('#cameraScanModal') &&
       !e.target.closest('#manualEntryToggleBtn') &&
