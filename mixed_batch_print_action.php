@@ -126,13 +126,19 @@ $clean  = [];
 $errors = [];
 $foundIds = [];
 
+$from = trim($_POST['from'] ?? $_GET['from'] ?? '');
+
 foreach ($rows as $r) {
     $rid = (int)$r['id'];
     $foundIds[] = $rid;
     $sel = $selectionsById[$rid];
 
-    $isPrintable = !in_array($r['status'], ['WAITING', 'REJECTED'], true)
-        && !($r['status'] === 'IN' && ($r['is_completed'] == 0 || $r['pallet_id']));
+    if ($from === 'slitting_product') {
+        $isPrintable = !in_array($r['status'], ['WAITING', 'REJECTED'], true);
+    } else {
+        $isPrintable = !in_array($r['status'], ['WAITING', 'REJECTED'], true)
+            && !($r['status'] === 'IN' && ($r['is_completed'] == 0 || $r['pallet_id']));
+    }
 
     if (!$isPrintable) {
         $reason = $r['status'] === 'IN'
@@ -210,18 +216,28 @@ if ($stmtUpdNormal) $stmtUpdNormal->close();
 $stmtPrint->close();
 
 // ── Back-to-list URL, preserving tab/filter/search state ──────────
-$backMonth  = intval($_POST['month'] ?? date('m'));
-$backYear   = intval($_POST['year']  ?? date('Y'));
-$backDay    = intval($_POST['day']   ?? 0);
-$backSearch = trim($_POST['search'] ?? '');
-$backFilter = trim($_POST['filter'] ?? '');
-$backUrl = 'finish_product.php?' . http_build_query(array_filter([
-    'month'  => $backMonth,
-    'year'   => $backYear,
-    'day'    => $backDay > 0 ? $backDay : null,
-    'search' => $backSearch !== '' ? $backSearch : null,
-    'filter' => $backFilter !== '' ? $backFilter : null,
-]));
+$from = trim($_POST['from'] ?? $_GET['from'] ?? '');
+if ($from === 'slitting_product') {
+    $backSearch      = trim($_POST['search'] ?? '');
+    $backPrintFilter = trim($_POST['print_status'] ?? '');
+    $backUrl = 'slitting_product.php?' . http_build_query(array_filter([
+        'search'       => $backSearch !== '' ? $backSearch : null,
+        'print_status' => $backPrintFilter !== '' ? $backPrintFilter : null,
+    ]));
+} else {
+    $backMonth  = intval($_POST['month'] ?? date('m'));
+    $backYear   = intval($_POST['year']  ?? date('Y'));
+    $backDay    = intval($_POST['day']   ?? 0);
+    $backSearch = trim($_POST['search'] ?? '');
+    $backFilter = trim($_POST['filter'] ?? '');
+    $backUrl = 'finish_product.php?' . http_build_query(array_filter([
+        'month'  => $backMonth,
+        'year'   => $backYear,
+        'day'    => $backDay > 0 ? $backDay : null,
+        'search' => $backSearch !== '' ? $backSearch : null,
+        'filter' => $backFilter !== '' ? $backFilter : null,
+    ]));
+}
 ?>
 <!DOCTYPE html>
 <html>

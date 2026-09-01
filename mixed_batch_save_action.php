@@ -111,13 +111,19 @@ $clean    = [];
 $errors   = [];
 $foundIds = [];
 
+$from = trim($_POST['from'] ?? $_GET['from'] ?? '');
+
 foreach ($rows as $r) {
     $rid = (int)$r['id'];
     $foundIds[] = $rid;
     $sel = $selectionsById[$rid];
 
-    $isEligible = !in_array($r['status'], ['WAITING', 'REJECTED'], true)
-        && !($r['status'] === 'IN' && ($r['is_completed'] == 0 || $r['pallet_id']));
+    if ($from === 'slitting_product') {
+        $isEligible = !in_array($r['status'], ['WAITING', 'REJECTED'], true);
+    } else {
+        $isEligible = !in_array($r['status'], ['WAITING', 'REJECTED'], true)
+            && !($r['status'] === 'IN' && ($r['is_completed'] == 0 || $r['pallet_id']));
+    }
 
     if (!$isEligible) {
         $reason = $r['status'] === 'IN'
