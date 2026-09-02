@@ -664,6 +664,90 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     }
 }
 
+// ── Send to SFC ───────────────────────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST'
+    && isset($_POST['action'])
+    && $_POST['action'] === 'send_to_sfc') {
+
+    $id = intval($_POST['product_id']);
+
+    $redirectMonth  = isset($_POST['month'])  ? (int)$_POST['month']  : $month;
+    $redirectYear   = isset($_POST['year'])   ? (int)$_POST['year']   : $year;
+    $redirectFilter = $_POST['filter'] ?? $filter_card;
+    $redirectSearch = $_POST['search'] ?? $search;
+    $redirectParams = ['month' => $redirectMonth, 'year' => $redirectYear];
+    $redirectDay    = isset($_POST['day']) ? (int)$_POST['day'] : $day;
+    if ($redirectDay > 0) $redirectParams['day'] = $redirectDay;
+    if ($redirectSearch !== '') $redirectParams['search'] = $redirectSearch;
+    if ($redirectFilter !== '') $redirectParams['filter'] = $redirectFilter;
+
+    $conn->begin_transaction();
+    try {
+        $stmt = $conn->prepare("SELECT * FROM slitting_product WHERE id=? FOR UPDATE");
+        $stmt->bind_param("i", $id);
+        $stmt->execute();
+        $p = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        if (!$p) throw new RuntimeException("Roll #$id not found.");
+        if ($p['status'] === 'OUT') throw new RuntimeException("Roll #$id is already transferred or status is OUT.");
+
+        $mid             = intval($p['mother_id'] ?? 0) ?: null;
+        $original_source = $p['original_source'] ?? 'raw_material';
+        $prev_status     = $p['status'];
+        $insert_length   = (float)($p['actual_length'] ?: $p['length']);
+
+        // 1. Insert into sfc table
+        $sfc_stmt = $conn->prepare("
+            INSERT INTO sfc (mother_id, product, lot_no, coil_no, roll_no, width, length, action, date_created)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'slitting', NOW())
+        ");
+        $sfc_stmt->bind_param(
+            "issssdd",
+            $mid, $p['product'], $p['lot_no'], $p['coil_no'], $p['roll_no'],
+            $p['width'], $insert_length
+        );
+        if (!$sfc_stmt->execute()) {
+            throw new Exception("Failed to insert into SFC: " . $sfc_stmt->error);
+        }
+        $sfc_id = $conn->insert_id;
+        $sfc_stmt->close();
+
+        // 2. Mark roll status OUT in slitting_product
+        $upd_stmt = $conn->prepare("UPDATE slitting_product SET status='OUT', date_out=NOW() WHERE id=?");
+        $upd_stmt->bind_param("i", $id);
+        $upd_stmt->execute();
+        $upd_stmt->close();
+
+        // 3. Process logs
+        log_process($conn, 'slitting', $id, $mid,
+            $prev_status, 'OUT', 'send_to_sfc',
+            "Sent to SFC id={$sfc_id}");
+        log_process($conn, 'sfc', $sfc_id, $mid,
+            null, 'IN', 'received_from_slitting',
+            "From slitting_product id={$id}");
+
+        // 4. Source tracking log
+        $st_stmt = $conn->prepare("
+            INSERT INTO source_tracking_log
+                (product_id, table_name, original_source, current_source, action)
+            VALUES (?, 'sfc', ?, 'sfc', 'send_to_sfc')
+        ");
+        $st_stmt->bind_param("is", $id, $original_source);
+        $st_stmt->execute();
+        $st_stmt->close();
+
+        $conn->commit();
+        header("Location: finish_product.php?" . http_build_query($redirectParams + ['success' => 'sfc']));
+        exit;
+
+    } catch (Throwable $e) {
+        $conn->rollback();
+        header("Location: finish_product.php?" . http_build_query($redirectParams + ['error' => 'sfc_failed', 'msg' => $e->getMessage()]));
+        exit;
+    }
+}
+
 // ── Card filter SQL condition + per-tab "latest first" sort column ──
 $cardCondition = '';
 $sortColumn    = 'sp.date_in';
@@ -1115,6 +1199,7 @@ table td.lot-coil-cell {
     $successMessages = [
         'recoiling'   => 'Roll sent to Recoiling successfully.',
         'reslit'      => 'Roll sent to Reslit successfully.',
+        'sfc'         => 'Roll sent to SFC Inventory successfully.',
         'stock'       => 'Actual length saved. Roll is now in Finish Good stock.',
         'palletised'  => 'Roll added to pallet successfully.',
         'sfc_sold'    => 'SFC roll sent to Finish Product (Status: IN).',
@@ -1648,9 +1733,10 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                 <!-- Stock counted, not yet on a pallet -->
                 <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
                    class="btn btn-outline-primary btn-sm w-100">Edit</a>
-                <a href="pallet.php" class="btn btn-primary btn-sm w-100">
-                    <i class="bi bi-archive me-1"></i> Add to Pallet
-                </a>
+                <button type="button" class="btn btn-primary btn-sm w-100"
+                        onclick="openSendToSfcModal(<?= (int)$row['id'] ?>, '<?= htmlspecialchars($row['product'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['lot_no'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['coil_no'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['roll_no'] ?? '', ENT_QUOTES) ?>', <?= (float)($row['width'] ?? 0) ?>, <?= (float)($row['actual_length'] ?: $row['length']) ?>)">
+                    <i class="bi bi-box-seam me-1"></i> Send to SFC
+                </button>
                 <form method="post" onsubmit="return confirm('Send to reslit?')">
                     <input type="hidden" name="action"     value="send_to_reslit">
                     <input type="hidden" name="product_id" value="<?= $row['id'] ?>">
@@ -2976,7 +3062,76 @@ function setCustomerForBatch(btn) {
     document.getElementById('mixedBulkPrintIdsInput').value = JSON.stringify(ids);
     document.getElementById('mixedBulkPrintForm').submit();
 }
+
+function openSendToSfcModal(id, product, lotNo, coilNo, rollNo, width, length) {
+    document.getElementById('sfcModalProductId').value = id;
+    document.getElementById('sfcModalProduct').textContent = product || '-';
+    document.getElementById('sfcModalLotNo').textContent = lotNo || '-';
+    document.getElementById('sfcModalCoilNo').textContent = coilNo || '-';
+    document.getElementById('sfcModalRollNo').textContent = rollNo ? rollNo.replace('R','R-') : '-';
+    document.getElementById('sfcModalWidth').textContent = width || '-';
+    document.getElementById('sfcModalLength').textContent = length || '-';
+
+    const modalEl = document.getElementById('sendToSfcModal');
+    if (modalEl) {
+        if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+            const modal = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
+            modal.show();
+        } else if (typeof $ !== 'undefined' && $.fn && $.fn.modal) {
+            $(modalEl).modal('show');
+        }
+    }
+}
 </script>
+
+<!-- ── CONFIRM SEND TO SFC MODAL ──────────────────────────────── -->
+<div class="modal fade" id="sendToSfcModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content shadow border-0">
+      <div class="modal-header bg-primary text-white py-2">
+        <h5 class="modal-title fs-6 fw-bold">
+          <i class="bi bi-box-seam me-2"></i>Confirm Send to SFC Inventory
+        </h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <form method="post" action="finish_product.php">
+        <div class="modal-body py-3">
+          <input type="hidden" name="action" value="send_to_sfc">
+          <input type="hidden" name="product_id" id="sfcModalProductId" value="">
+          <input type="hidden" name="month" value="<?= $month ?>">
+          <input type="hidden" name="year" value="<?= $year ?>">
+          <input type="hidden" name="day" value="<?= $day ?>">
+          <input type="hidden" name="search" value="<?= htmlspecialchars($search) ?>">
+          <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_card) ?>">
+
+          <div class="alert alert-primary py-2 mb-3 small d-flex align-items-center gap-2" style="background:#e0f2fe; color:#0369a1; border:1px solid #7dd3fc;">
+            <i class="bi bi-question-circle-fill fs-4 text-primary flex-shrink-0"></i>
+            <div>
+              Are you sure you want to send this coil to <strong>SFC Inventory</strong>?
+            </div>
+          </div>
+
+          <div class="card bg-light border p-3 mb-2" style="font-size:13px;">
+            <div class="row g-2">
+              <div class="col-6"><strong>Product:</strong> <span id="sfcModalProduct" class="fw-bold text-dark">-</span></div>
+              <div class="col-6"><strong>Lot No:</strong> <span id="sfcModalLotNo" class="fw-bold text-dark">-</span></div>
+              <div class="col-6"><strong>Coil No:</strong> <span id="sfcModalCoilNo" class="fw-bold text-dark">-</span></div>
+              <div class="col-6"><strong>Roll No:</strong> <span id="sfcModalRollNo" class="fw-bold text-dark">-</span></div>
+              <div class="col-6"><strong>Width:</strong> <span id="sfcModalWidth" class="fw-bold text-dark">-</span> mm</div>
+              <div class="col-6"><strong>Length:</strong> <span id="sfcModalLength" class="fw-bold text-dark">-</span> m</div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer py-2 px-3 bg-light">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary btn-sm fw-bold">
+            <i class="bi bi-box-seam me-1"></i>Confirm Send to SFC
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
 
 <div><a href="index.php" class="btn btn-secondary mt-3">← Back</a></div>
 <?php include 'footer.php'; ?>
