@@ -194,6 +194,19 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === 'update_customer_ref') {
     exit;
 }
 
+// ── AJAX: update Pallet Date (inline header edit) ─────────────────
+if (isset($_POST['ajax']) && $_POST['ajax'] === 'update_pallet_date') {
+    header('Content-Type: application/json');
+    $palletId = (int)($_POST['pallet_id'] ?? 0);
+    $newDate  = trim($_POST['date'] ?? '');
+    if ($palletId <= 0) {
+        echo json_encode(['ok' => false, 'msg' => 'Missing or invalid pallet_id.']);
+        exit;
+    }
+    echo json_encode($pm->updatePalletDate($palletId, $newDate));
+    exit;
+}
+
 // ═══════════════════════════════════════════════════════════════
 // AJAX: DELIVER BY SCAN  (Method 2 — global scan-to-deliver)
 //
@@ -634,15 +647,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'send_
     exit;
 }
 
-// ── POST: Reopen pallet for editing / corrections ───────────────
+// ── POST: Reopen pallet for editing / corrections / return to stock ──
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'reopen_pallet') {
-    $palletId = intval($_POST['pallet_id'] ?? 0);
-    $reason   = trim($_POST['reopen_reason'] ?? '');
-    $result   = $pm->reopenApprovedOrDeliveredPallet($palletId, $reason);
-    if ($result['ok']) {
-        header("Location: pallet.php?pallet_id={$palletId}&success=reopened");
+    $palletId   = intval($_POST['pallet_id'] ?? 0);
+    $reason     = trim($_POST['reopen_reason'] ?? '');
+    $returnType = trim($_POST['return_type'] ?? 'return_to_edit');
+
+    if ($returnType === 'return_to_stock') {
+        $selectedCoils = $_POST['selected_coils'] ?? [];
+        if (!is_array($selectedCoils)) {
+            $selectedCoils = [];
+        }
+        $result = $pm->returnCoilsToStock($palletId, $selectedCoils, $reason);
+        if ($result['ok']) {
+            header("Location: pallet.php?pallet_id={$palletId}&success=returned_to_stock");
+        } else {
+            header("Location: pallet.php?pallet_id={$palletId}&error=" . urlencode($result['msg']));
+        }
     } else {
-        header("Location: pallet.php?pallet_id={$palletId}&error=" . urlencode($result['msg']));
+        $result = $pm->reopenApprovedOrDeliveredPallet($palletId, $reason);
+        if ($result['ok']) {
+            header("Location: pallet.php?pallet_id={$palletId}&success=reopened");
+        } else {
+            header("Location: pallet.php?pallet_id={$palletId}&error=" . urlencode($result['msg']));
+        }
     }
     exit;
 }
@@ -774,7 +802,7 @@ if ($activePalletId) {
         $stmtAllEdit->close();
     }
     if ($isBuilding) {
-        $reopenLogs = array_values(array_filter($allEditLogs, fn($l) => ($l['action'] ?? '') === 'reopen'));
+        $reopenLogs = array_values(array_filter($allEditLogs, fn($l) => in_array($l['action'] ?? '', ['reopen', 'return_to_stock'])));
     }
 }
 ?>
@@ -1194,16 +1222,21 @@ if (isset($_GET['success'])): ?>
     <div class="col-md-7">
 
         <?php if ($isBuilding): ?>
-        <?php $isEditBuilding = ($activePallet['edit_count'] ?? 0) > 0; ?>
+        <?php 
+        $isEditBuilding  = ($activePallet['edit_count'] ?? 0) > 0;
+        $latestReopenLog = !empty($reopenLogs) ? $reopenLogs[0] : null;
+        $latestAction    = $latestReopenLog['action'] ?? 'reopen';
+        $isReturnToStock = ($isEditBuilding && $latestAction === 'return_to_stock');
+        ?>
         <!-- BUILDING STATE -->
-        <div class="card shadow-sm border-0 mb-4 <?= $isEditBuilding ? 'border border-warning' : '' ?>" style="<?= $isEditBuilding ? 'border-color:#fde047 !important;' : '' ?>">
+        <div class="card shadow-sm border-0 mb-4 <?= $isEditBuilding ? ($isReturnToStock ? 'border border-info' : 'border border-warning') : '' ?>" style="<?= $isEditBuilding ? ($isReturnToStock ? 'border-color:#38bdf8 !important;' : 'border-color:#fde047 !important;') : '' ?>">
             <div class="card-header d-flex justify-content-between align-items-center <?= $isEditBuilding ? 'text-dark' : 'bg-primary text-white' ?>"
-                 style="<?= $isEditBuilding ? 'background:#fef08a !important; color:#713f12 !important; border-bottom:1px solid #fde047 !important;' : '' ?>">
+                 style="<?= $isEditBuilding ? ($isReturnToStock ? 'background:#e0f2fe !important; color:#0369a1 !important; border-bottom:1px solid #7dd3fc !important;' : 'background:#fef08a !important; color:#713f12 !important; border-bottom:1px solid #fde047 !important;') : '' ?>">
                 <div class="d-flex align-items-center gap-2 pallet-rename-header">
                     <!-- Display mode -->
                     <span class="fw-bold pallet-rename-text" id="palletRenameDisplay"><?= htmlspecialchars($activePallet['pallet_no']) ?></span>
                     <button type="button" class="btn btn-sm <?= $isEditBuilding ? 'text-dark' : 'text-white' ?> pallet-rename-edit-btn" id="palletRenameEditBtn"
-                            title="Rename pallet" onclick="startEditPalletRename()">
+                             title="Rename pallet" onclick="startEditPalletRename()">
                         <i class="bi bi-pencil-square"></i>
                     </button>
 
@@ -1225,18 +1258,18 @@ if (isset($_GET['success'])): ?>
                     </div>
 
                     <?php if ($isEditBuilding): ?>
-                    <button type="button" class="badge border-0 ms-1 px-2 py-1 fw-bold" style="cursor:pointer; font-size:11px; background:#fffbe6; color:#92400e; border:1px solid #ffe58f !important;"
+                    <button type="button" class="badge border-0 ms-1 px-2 py-1 fw-bold" style="cursor:pointer; font-size:11px; <?= $isReturnToStock ? 'background:#f0f9ff; color:#0369a1; border:1px solid #7dd3fc !important;' : 'background:#fffbe6; color:#92400e; border:1px solid #ffe58f !important;' ?>"
                             onclick="openEditHistoryModal()" title="Click to view edit history & return reasons">
-                        <i class="bi bi-pencil-fill text-warning me-1"></i>
-                        RETURNED TO EDIT (EDIT #<?= $activePallet['edit_count'] ?>)
+                        <i class="bi <?= $isReturnToStock ? 'bi-box-arrow-down-left text-info' : 'bi-pencil-fill text-warning' ?> me-1"></i>
+                        <?= $isReturnToStock ? 'PALLET RETURN COIL TO STOCK' : 'RETURNED TO EDIT' ?> (EDIT #<?= $activePallet['edit_count'] ?>)
                     </button>
                     <?php endif; ?>
 
                     <span class="badge bg-white text-dark ms-2 shadow-sm d-inline-flex align-items-center gap-1" style="font-size:18px !important; font-weight:700; padding:4px 12px; border-radius:6px; color:#1e293b !important;" title="Active Operator">
-                        <i class="bi bi-person-fill <?= $isEditBuilding ? 'text-warning' : 'text-primary' ?>" style="font-size:18px !important;"></i> <strong><?= htmlspecialchars($activePallet['created_by'] ?: ($activeOperatorSession ?: 'N/A')) ?></strong>
+                        <i class="bi bi-person-fill <?= $isEditBuilding ? ($isReturnToStock ? 'text-info' : 'text-warning') : 'text-primary' ?>" style="font-size:18px !important;"></i> <strong><?= htmlspecialchars($activePallet['created_by'] ?: ($activeOperatorSession ?: 'N/A')) ?></strong>
                     </span>
                 </div>
-                <span class="badge <?= $isEditBuilding ? 'text-dark border' : 'bg-white text-primary' ?>" style="<?= $isEditBuilding ? 'background:#fffbe6; color:#92400e; border-color:#ffe58f !important;' : '' ?>" id="rollCountBadge">
+                <span class="badge <?= $isEditBuilding ? 'text-dark border' : 'bg-white text-primary' ?>" style="<?= $isEditBuilding ? ($isReturnToStock ? 'background:#f0f9ff; color:#0369a1; border-color:#7dd3fc !important;' : 'background:#fffbe6; color:#92400e; border-color:#ffe58f !important;') : '' ?>" id="rollCountBadge">
                     <?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?>
                 </span>
             </div>
@@ -1264,7 +1297,12 @@ if (isset($_GET['success'])): ?>
                                     </button>
                                 </td>
                                 <td class="bg-light fw-bold text-muted" style="width:15%;">Date</td>
-                                <td class="fw-bold text-dark" style="width:35%;"><?= date('d/m/Y', strtotime($activePallet['created_at'] ?? 'now')) ?></td>
+                                <td class="fw-bold text-dark" style="width:35%;">
+                                    <span class="pallet-date-text"><?= date('d/m/Y', strtotime($activePallet['created_at'] ?? 'now')) ?></span>
+                                    <button type="button" class="btn btn-sm btn-link p-0 text-primary ms-1" title="Edit Date" onclick="startEditPalletDate()">
+                                        <i class="bi bi-pencil-square"></i>
+                                    </button>
+                                </td>
                             </tr>
                             <tr>
                                 <td class="bg-light fw-bold text-muted">SOS No.</td>
@@ -1346,6 +1384,19 @@ if (isset($_GET['success'])): ?>
                 </div>
 
                 <span class="constraint-edit-error d-none" id="constraintEditError"></span>
+
+                <div class="d-none align-items-center gap-1 flex-wrap mt-2" id="palletDateEditForm">
+                    <span class="small fw-bold text-muted me-1"><i class="bi bi-calendar-event me-1"></i>Edit Date:</span>
+                    <input type="date" class="form-control form-control-sm" id="palletDateInput"
+                           value="<?= date('Y-m-d', strtotime($activePallet['created_at'] ?? 'now')) ?>" style="width:160px;" onkeydown="onPalletDateKeydown(event)">
+                    <button type="button" class="btn btn-sm btn-success" id="palletDateSaveBtn" onclick="savePalletDateEdit()">
+                        <i class="bi bi-check-lg me-1"></i> Save
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-danger" id="palletDateCancelBtn" onclick="cancelEditPalletDate()">
+                        <i class="bi bi-x-lg me-1"></i> Cancel
+                    </button>
+                    <span class="text-danger small d-none ms-1" id="palletDateEditError"></span>
+                </div>
             </div>
             <?php else: ?>
             <div id="constraintHeader" class="px-3 py-2 border-bottom bg-light">
@@ -1369,15 +1420,15 @@ if (isset($_GET['success'])): ?>
                 }
             }
             if (empty($reopenReasonText)) {
-                $reopenReasonText = 'Pallet returned to edit mode for corrections.';
+                $reopenReasonText = $isReturnToStock ? 'Pallet return coil to stock.' : 'Pallet returned to edit mode for corrections.';
             }
             ?>
-            <div class="px-4 py-3 border-bottom" style="background:#fffbe6; border-color:#ffe58f !important;">
+            <div class="px-4 py-3 border-bottom" style="<?= $isReturnToStock ? 'background:#f0f9ff; border-color:#7dd3fc !important;' : 'background:#fffbe6; border-color:#ffe58f !important;' ?>">
                 <div class="d-flex align-items-start gap-2">
-                    <i class="bi bi-chat-left-dots-fill text-warning mt-1" style="font-size:16px;"></i>
+                    <i class="bi <?= $isReturnToStock ? 'bi-box-arrow-down-left text-info' : 'bi-chat-left-dots-fill text-warning' ?> mt-1" style="font-size:16px;"></i>
                     <div>
-                        <div class="fw-bold" style="font-size:12px; color:#92400e;">
-                            Return to Edit Reason
+                        <div class="fw-bold" style="font-size:12px; color:<?= $isReturnToStock ? '#0369a1' : '#92400e' ?>;">
+                            <?= $isReturnToStock ? 'Pallet Return Coil to Stock' : 'Return to Edit Reason' ?>
                             <?php if ($latestReopenLog && !empty($latestReopenLog['performed_by'])): ?>
                                 <span class="fw-normal text-muted ms-1" style="font-size:11px;">(by <?= htmlspecialchars($latestReopenLog['performed_by']) ?><?= !empty($latestReopenLog['performed_at']) ? ' on ' . date('d/m/Y H:i', strtotime($latestReopenLog['performed_at'])) : '' ?>)</span>
                             <?php endif; ?>
@@ -1395,7 +1446,7 @@ if (isset($_GET['success'])): ?>
                 </div>
 
                 <!-- ── Total Est. Weight Summary Bar ── -->
-                <div class="weight-summary-bar" id="weightSummaryBar" style="<?= $isEditBuilding ? 'background:#fffbe6; border:1px solid #ffe58f;' : '' ?>">
+                <div class="weight-summary-bar" id="weightSummaryBar" style="<?= $isEditBuilding ? ($isReturnToStock ? 'background:#f0f9ff; border:1px solid #7dd3fc;' : 'background:#fffbe6; border:1px solid #ffe58f;') : '' ?>">
                     <div class="wgt-label">
                         <i class="bi bi-speedometer2"></i>
                         Est. Total Weight
@@ -1415,10 +1466,12 @@ if (isset($_GET['success'])): ?>
                     </div>
                 </div>
 
-                <div class="alert <?= $isEditBuilding ? 'alert-warning border-warning-subtle' : 'alert-info' ?> py-2 mb-3" style="<?= $isEditBuilding ? 'background:#fffbe6; color:#78350f;' : '' ?>">
-                    <i class="bi <?= $isEditBuilding ? 'bi-info-circle-fill text-warning' : 'bi-qr-code-scan' ?> me-1"></i>
+                <div class="alert <?= $isEditBuilding ? ($isReturnToStock ? 'alert-info border-info-subtle' : 'alert-warning border-warning-subtle') : 'alert-info' ?> py-2 mb-3" style="<?= $isEditBuilding ? ($isReturnToStock ? 'background:#f0f9ff; color:#0c4a6e;' : 'background:#fffbe6; color:#78350f;') : '' ?>">
+                    <i class="bi <?= $isEditBuilding ? ($isReturnToStock ? 'bi-info-circle-fill text-info' : 'bi-info-circle-fill text-warning') : 'bi-qr-code-scan' ?> me-1"></i>
                     <?= $isEditBuilding
-                        ? 'Pallet returned to edit mode. You can remove defective roll(s), add replacement rolls, and click <strong>Re-submit to QC</strong> when completed.'
+                        ? ($isReturnToStock
+                            ? 'Pallet return coil to stock. All coils have been returned to stock. You can scan new roll(s), or click <strong>Re-submit to QC</strong> when completed.'
+                            : 'Pallet returned to edit mode. You can remove defective roll(s), add replacement rolls, and click <strong>Re-submit to QC</strong> when completed.')
                         : 'Scan a product QR, or type the item below.' ?>
                 </div>
 
@@ -1603,7 +1656,12 @@ if (isset($_GET['success'])): ?>
                             <td class="bg-light fw-bold text-muted" style="width:15%;">Customer</td>
                             <td class="fw-bold text-dark" style="width:35%;"><?= htmlspecialchars($activePallet['customer_name'] ?: '-') ?></td>
                             <td class="bg-light fw-bold text-muted" style="width:15%;">Date</td>
-                            <td class="fw-bold text-dark" style="width:35%;"><?= date('d/m/Y', strtotime($activePallet['created_at'] ?? 'now')) ?></td>
+                            <td class="fw-bold text-dark" style="width:35%;">
+                                <span class="pallet-date-text"><?= date('d/m/Y', strtotime($activePallet['created_at'] ?? 'now')) ?></span>
+                                <button type="button" class="btn btn-sm btn-link p-0 text-primary ms-1" title="Edit Date" onclick="startEditPalletDate()">
+                                    <i class="bi bi-pencil-square"></i>
+                                </button>
+                            </td>
                         </tr>
                         <tr>
                             <td class="bg-light fw-bold text-muted">SOS No.</td>
@@ -1619,6 +1677,18 @@ if (isset($_GET['success'])): ?>
                         </tr>
                     </tbody>
                 </table>
+                <div class="d-none align-items-center gap-1 flex-wrap mt-2" id="palletDateEditForm">
+                    <span class="small fw-bold text-muted me-1"><i class="bi bi-calendar-event me-1"></i>Edit Date:</span>
+                    <input type="date" class="form-control form-control-sm" id="palletDateInput"
+                           value="<?= date('Y-m-d', strtotime($activePallet['created_at'] ?? 'now')) ?>" style="width:160px;" onkeydown="onPalletDateKeydown(event)">
+                    <button type="button" class="btn btn-sm btn-success" id="palletDateSaveBtn" onclick="savePalletDateEdit()">
+                        <i class="bi bi-check-lg me-1"></i> Save
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-danger" id="palletDateCancelBtn" onclick="cancelEditPalletDate()">
+                        <i class="bi bi-x-lg me-1"></i> Cancel
+                    </button>
+                    <span class="text-danger small d-none ms-1" id="palletDateEditError"></span>
+                </div>
             </div>
             <?php endif; ?>
 
@@ -1755,7 +1825,12 @@ if (isset($_GET['success'])): ?>
                             <td class="bg-light fw-bold text-muted" style="width:15%;">Customer</td>
                             <td class="fw-bold text-dark" style="width:35%;"><?= htmlspecialchars($activePallet['customer_name'] ?: '-') ?></td>
                             <td class="bg-light fw-bold text-muted" style="width:15%;">Date</td>
-                            <td class="fw-bold text-dark" style="width:35%;"><?= date('d/m/Y', strtotime($activePallet['created_at'] ?? 'now')) ?></td>
+                            <td class="fw-bold text-dark" style="width:35%;">
+                                <span class="pallet-date-text"><?= date('d/m/Y', strtotime($activePallet['created_at'] ?? 'now')) ?></span>
+                                <button type="button" class="btn btn-sm btn-link p-0 text-primary ms-1" title="Edit Date" onclick="startEditPalletDate()">
+                                    <i class="bi bi-pencil-square"></i>
+                                </button>
+                            </td>
                         </tr>
                         <tr>
                             <td class="bg-light fw-bold text-muted">SOS No.</td>
@@ -1886,7 +1961,12 @@ if (isset($_GET['success'])): ?>
                             <td class="bg-light fw-bold text-muted" style="width:15%;">Customer</td>
                             <td class="fw-bold text-dark" style="width:35%;"><?= htmlspecialchars($activePallet['customer_name'] ?: '-') ?></td>
                             <td class="bg-light fw-bold text-muted" style="width:15%;">Date</td>
-                            <td class="fw-bold text-dark" style="width:35%;"><?= date('d/m/Y', strtotime($activePallet['created_at'] ?? 'now')) ?></td>
+                            <td class="fw-bold text-dark" style="width:35%;">
+                                <span class="pallet-date-text"><?= date('d/m/Y', strtotime($activePallet['created_at'] ?? 'now')) ?></span>
+                                <button type="button" class="btn btn-sm btn-link p-0 text-primary ms-1" title="Edit Date" onclick="startEditPalletDate()">
+                                    <i class="bi bi-pencil-square"></i>
+                                </button>
+                            </td>
                         </tr>
                         <tr>
                             <td class="bg-light fw-bold text-muted">SOS No.</td>
@@ -1984,7 +2064,7 @@ if (isset($_GET['success'])): ?>
                     </a>
                     <button type="button" class="btn btn-outline-warning btn-sm fw-bold"
                             onclick="openReopenModal(<?= (int)$activePalletId ?>, '<?= htmlspecialchars($activePallet['pallet_no'] ?? '', ENT_QUOTES) ?>')">
-                        <i class="bi bi-arrow-counterclockwise me-1"></i> Return to Edit
+                        <i class="bi bi-arrow-counterclockwise me-1"></i> Return
                     </button>
                 </div>
 
@@ -2028,7 +2108,12 @@ if (isset($_GET['success'])): ?>
                             <td class="bg-light fw-bold text-muted" style="width:15%;">Customer</td>
                             <td class="fw-bold text-dark" style="width:35%;"><?= htmlspecialchars($activePallet['customer_name'] ?: '-') ?></td>
                             <td class="bg-light fw-bold text-muted" style="width:15%;">Date</td>
-                            <td class="fw-bold text-dark" style="width:35%;"><?= date('d/m/Y', strtotime($activePallet['created_at'] ?? 'now')) ?></td>
+                            <td class="fw-bold text-dark" style="width:35%;">
+                                <span class="pallet-date-text"><?= date('d/m/Y', strtotime($activePallet['created_at'] ?? 'now')) ?></span>
+                                <button type="button" class="btn btn-sm btn-link p-0 text-primary ms-1" title="Edit Date" onclick="startEditPalletDate()">
+                                    <i class="bi bi-pencil-square"></i>
+                                </button>
+                            </td>
                         </tr>
                         <tr>
                             <td class="bg-light fw-bold text-muted">SOS No.</td>
@@ -2124,7 +2209,7 @@ if (isset($_GET['success'])): ?>
                     </a>
                     <button type="button" class="btn btn-outline-warning btn-sm fw-bold"
                             onclick="openReopenModal(<?= (int)$activePalletId ?>, '<?= htmlspecialchars($activePallet['pallet_no'] ?? '', ENT_QUOTES) ?>')">
-                        <i class="bi bi-arrow-counterclockwise me-1"></i> Return to Edit
+                        <i class="bi bi-arrow-counterclockwise me-1"></i> Return
                     </button>
                 </div>
                 <span class="text-muted small"><i class="bi bi-lock-fill me-1"></i>Read-Only (Delivered)</span>
@@ -2238,17 +2323,19 @@ if (isset($_GET['success'])): ?>
 
         <?php if ($isBuilding && !empty($reopenLogs)): ?>
         <!-- PALLET RETURN REASON CARD (Under Pallets List Card in Sidebar) -->
-        <div class="card shadow-sm border-0 mt-3" style="border-left: 4px solid #ffc107 !important;">
-            <div class="card-header bg-warning-subtle text-dark fw-bold py-2 d-flex justify-content-between align-items-center" style="background:#fef3c7;">
+        <div class="card shadow-sm border-0 mt-3" style="<?= $isReturnToStock ? 'border-left: 4px solid #0284c7 !important;' : 'border-left: 4px solid #ffc107 !important;' ?>">
+            <div class="card-header fw-bold py-2 d-flex justify-content-between align-items-center" style="<?= $isReturnToStock ? 'background:#e0f2fe; color:#0369a1;' : 'background:#fef3c7; color:#713f12;' ?>">
                 <div class="d-flex align-items-center gap-2">
-                    <i class="bi bi-arrow-counterclockwise text-warning fs-5"></i>
-                    <span style="font-size:13.5px;">Pallet Return Reason</span>
+                    <i class="bi <?= $isReturnToStock ? 'bi-box-arrow-down-left text-info' : 'bi-arrow-counterclockwise text-warning' ?> fs-5"></i>
+                    <span style="font-size:13.5px;"><?= $isReturnToStock ? 'Pallet Return Coil to Stock' : 'Pallet Return Reason' ?></span>
                 </div>
-                <span class="badge bg-warning text-dark" style="font-size:10px;">Return to Edit</span>
+                <span class="badge <?= $isReturnToStock ? 'bg-info text-white' : 'bg-warning text-dark' ?>" style="font-size:10px;"><?= $isReturnToStock ? 'Return to Stock' : 'Return to Edit' ?></span>
             </div>
             <div class="card-body p-3">
                 <?php foreach ($reopenLogs as $idx => $log):
-                    $noteText = $log['note'] ?? '';
+                    $logAction  = $log['action'] ?? 'reopen';
+                    $logIsStock = ($logAction === 'return_to_stock');
+                    $noteText   = $log['note'] ?? '';
                     $reasonText = '';
                     if (preg_match('/Reason:\s*(.*)$/is', $noteText, $m)) {
                         $reasonText = trim($m[1]);
@@ -2263,8 +2350,8 @@ if (isset($_GET['success'])): ?>
                         <span class="small text-muted" style="font-size:11px;"><i class="bi bi-clock me-1"></i><?= $timeStr ?></span>
                     </div>
                     <?php if ($reasonText !== ''): ?>
-                    <div class="alert alert-warning py-2 px-3 mb-2 text-dark fw-bold" style="font-size:13px; background:#fffbe6; border-color:#ffe58f;">
-                        <i class="bi bi-chat-left-quote-fill text-warning me-1"></i><?= htmlspecialchars($reasonText) ?>
+                    <div class="alert py-2 px-3 mb-2 text-dark fw-bold" style="font-size:13px; <?= $logIsStock ? 'background:#f0f9ff; border-color:#7dd3fc; color:#0369a1;' : 'background:#fffbe6; border-color:#ffe58f; color:#78350f;' ?>">
+                        <i class="bi <?= $logIsStock ? 'bi-box-arrow-down-left text-info' : 'bi-chat-left-quote-fill text-warning' ?> me-1"></i><?= htmlspecialchars($reasonText) ?>
                     </div>
                     <?php endif; ?>
                     <div class="small text-muted text-break" style="font-size:11.5px;"><?= htmlspecialchars($noteText) ?></div>
@@ -2276,25 +2363,58 @@ if (isset($_GET['success'])): ?>
     </div><!-- /col-md-5 sidebar -->
 </div><!-- /row -->
 
-<!-- ── REOPEN / RETURN TO EDIT REASON MODAL ───────────────────── -->
+<!-- ── REOPEN / RETURN OPTIONS SELECTION MODAL ───────────────────── -->
 <div class="modal fade" id="reopenReasonModal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
     <div class="modal-content shadow border-0">
       <div class="modal-header text-dark py-2" style="background:#fef08a; border-bottom:1px solid #fde047;">
         <h5 class="modal-title fs-6 fw-bold" style="color:#713f12;">
-          <i class="bi bi-arrow-counterclockwise me-2 text-warning"></i>Return Pallet to Edit Mode
+          <i class="bi bi-arrow-counterclockwise me-2 text-warning"></i>Return Pallet Options
         </h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
-      <form method="post" action="pallet.php">
+      <form method="post" action="pallet.php" id="returnActionForm" onsubmit="return validateReturnForm()">
         <div class="modal-body py-3">
           <input type="hidden" name="action" value="reopen_pallet">
           <input type="hidden" name="pallet_id" id="reopenModalPalletId" value="">
-          
+
           <div class="alert py-2 mb-3 small d-flex align-items-center gap-2" style="background:#fffbe6; color:#78350f; border:1px solid #ffe58f;">
-            <i class="bi bi-exclamation-triangle-fill fs-5 text-warning flex-shrink-0"></i>
+            <i class="bi bi-exclamation-circle-fill fs-5 text-warning flex-shrink-0"></i>
             <div>
-              Returning pallet <strong id="reopenModalPalletNo"></strong> to edit mode will reset all attached rolls to <span class="badge bg-secondary">IN</span> status so corrections can be made.
+              Select return option for pallet <strong id="reopenModalPalletNo"></strong>.
+            </div>
+          </div>
+
+          <!-- Return Type Selection Radio Cards -->
+          <div class="mb-3">
+            <label class="form-label small fw-bold text-dark mb-2">Select Return Type <span class="text-danger">*</span></label>
+            <div class="row g-2">
+              <div class="col-md-6">
+                <div class="card h-100 border p-2 bg-warning-subtle border-warning cursor-pointer return-type-card" id="cardReturnEdit" onclick="selectReturnType('return_to_edit')">
+                  <div class="form-check">
+                    <input class="form-check-input" type="radio" name="return_type" id="radioReturnEdit" value="return_to_edit" checked onchange="onReturnTypeChange()">
+                    <label class="form-check-label fw-bold text-dark cursor-pointer" for="radioReturnEdit">
+                      Option i: Return to Edit
+                    </label>
+                  </div>
+                  <div class="text-muted small ms-4 mt-1" style="font-size:12px;">
+                    Used for adding/removing coils or editing pallet information. The pallet returns to building state, while associated coils remain counted in the balance.
+                  </div>
+                </div>
+              </div>
+              <div class="col-md-6">
+                <div class="card h-100 border p-2 bg-light cursor-pointer return-type-card" id="cardReturnStock" onclick="selectReturnType('return_to_stock')">
+                  <div class="form-check">
+                    <input class="form-check-input" type="radio" name="return_type" id="radioReturnStock" value="return_to_stock" onchange="onReturnTypeChange()">
+                    <label class="form-check-label fw-bold text-dark cursor-pointer" for="radioReturnStock">
+                      Option ii: Return to Stock
+                    </label>
+                  </div>
+                  <div class="text-muted small ms-4 mt-1" style="font-size:12px;">
+                    Used when a pallet is returned from customer or coils are returned to stock. All coils on this pallet will automatically return back to stock, leaving the pallet empty.
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -2302,13 +2422,13 @@ if (isset($_GET['success'])): ?>
             <label for="reopenReasonInput" class="form-label small fw-bold text-dark mb-1">
               Reason / Remark <span class="text-danger">*</span>
             </label>
-            <textarea name="reopen_reason" id="reopenReasonInput" class="form-control form-control-sm" rows="3"
-                      placeholder="Enter reason for returning to edit mode (e.g. Wrong roll assigned, quantity correction, QC feedback...)" required></textarea>
+            <textarea name="reopen_reason" id="reopenReasonInput" class="form-control form-control-sm" rows="2"
+                      placeholder="Enter reason for return (e.g. Returned from customer, quantity correction, extra coil to stock...)" required></textarea>
           </div>
         </div>
         <div class="modal-footer py-2 px-3 bg-light">
           <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
-          <button type="submit" class="btn btn-sm fw-bold" style="background:#fef08a; color:#713f12; border:1px solid #fde047;">
+          <button type="submit" class="btn btn-sm fw-bold" id="confirmReturnBtn" style="background:#fef08a; color:#713f12; border:1px solid #fde047;">
             <i class="bi bi-arrow-counterclockwise me-1 text-warning"></i>Confirm Return to Edit
           </button>
         </div>
@@ -2757,7 +2877,12 @@ function updateConstraintBadges(p) {
                             </button>
                         </td>
                         <td class="bg-light fw-bold text-muted" style="width:15%;">Date</td>
-                        <td class="fw-bold text-dark" style="width:35%;">${todayStr}</td>
+                        <td class="fw-bold text-dark" style="width:35%;">
+                            <span class="pallet-date-text">${todayStr}</span>
+                            <button type="button" class="btn btn-sm btn-link p-0 text-primary ms-1" title="Edit Date" onclick="startEditPalletDate()">
+                                <i class="bi bi-pencil-square"></i>
+                            </button>
+                        </td>
                     </tr>
                     <tr>
                         <td class="bg-light fw-bold text-muted">SOS No.</td>
@@ -2808,6 +2933,19 @@ function updateConstraintBadges(p) {
             </button>
         </div>
         <span class="constraint-edit-error d-none" id="constraintEditError"></span>
+
+        <div class="d-none align-items-center gap-1 flex-wrap mt-2" id="palletDateEditForm">
+            <span class="small fw-bold text-muted me-1"><i class="bi bi-calendar-event me-1"></i>Edit Date:</span>
+            <input type="date" class="form-control form-control-sm" id="palletDateInput"
+                   value="${new Date().toISOString().split('T')[0]}" style="width:160px;" onkeydown="onPalletDateKeydown(event)">
+            <button type="button" class="btn btn-sm btn-success" id="palletDateSaveBtn" onclick="savePalletDateEdit()">
+                <i class="bi bi-check-lg me-1"></i> Save
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-danger" id="palletDateCancelBtn" onclick="cancelEditPalletDate()">
+                <i class="bi bi-x-lg me-1"></i> Cancel
+            </button>
+            <span class="text-danger small d-none ms-1" id="palletDateEditError"></span>
+        </div>
     `;
     currentConstraintCustomer = p.customer_name || '';
     currentConstraintRefNo    = p.ref_no || '';
@@ -3853,6 +3991,44 @@ async function savePalletRename() {
     }
 }
 
+function selectReturnType(type) {
+    const radioEdit = document.getElementById('radioReturnEdit');
+    const radioStock = document.getElementById('radioReturnStock');
+    if (type === 'return_to_stock' && radioStock) {
+        radioStock.checked = true;
+    } else if (radioEdit) {
+        radioEdit.checked = true;
+    }
+    onReturnTypeChange();
+}
+
+function onReturnTypeChange() {
+    const isStock = document.getElementById('radioReturnStock')?.checked;
+    const cardEdit = document.getElementById('cardReturnEdit');
+    const cardStock = document.getElementById('cardReturnStock');
+    const confirmBtn = document.getElementById('confirmReturnBtn');
+
+    if (isStock) {
+        if (cardEdit) { cardEdit.classList.remove('bg-warning-subtle', 'border-warning'); cardEdit.classList.add('bg-light'); }
+        if (cardStock) { cardStock.classList.add('bg-warning-subtle', 'border-warning'); cardStock.classList.remove('bg-light'); }
+        if (confirmBtn) {
+            confirmBtn.innerHTML = '<i class="bi bi-box-arrow-down-left me-1 text-warning"></i>Confirm Return to Stock';
+        }
+    } else {
+        if (cardStock) { cardStock.classList.remove('bg-warning-subtle', 'border-warning'); cardStock.classList.add('bg-light'); }
+        if (cardEdit) { cardEdit.classList.add('bg-warning-subtle', 'border-warning'); cardEdit.classList.remove('bg-light'); }
+        if (confirmBtn) {
+            confirmBtn.innerHTML = '<i class="bi bi-arrow-counterclockwise me-1 text-warning"></i>Confirm Return to Edit';
+        }
+    }
+}
+
+function validateReturnForm() {
+    const reason = document.getElementById('reopenReasonInput')?.value.trim();
+    if (!reason) return false;
+    return true;
+}
+
 function openReopenModal(palletId, palletNo) {
     const pId = palletId || (typeof PALLET_ID !== 'undefined' ? PALLET_ID : 0);
     const pNo = palletNo || (typeof currentPalletNo !== 'undefined' ? currentPalletNo : '') || ('#' + pId);
@@ -3865,6 +4041,9 @@ function openReopenModal(palletId, palletNo) {
     if (noEl)        noEl.textContent = pNo;
     if (reasonInput) reasonInput.value = '';
 
+    // Reset return type selection to Option i
+    selectReturnType('return_to_edit');
+
     const modalEl = document.getElementById('reopenReasonModal');
     if (!modalEl) return;
 
@@ -3873,6 +4052,87 @@ function openReopenModal(palletId, palletNo) {
         modal.show();
     } else if (typeof $ !== 'undefined' && $.fn && $.fn.modal) {
         $(modalEl).modal('show');
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// INLINE PALLET DATE EDIT
+// ─────────────────────────────────────────────────────────────
+let palletDateSaving = false;
+
+function startEditPalletDate() {
+    const form = document.getElementById('palletDateEditForm');
+    if (!form) return;
+    form.classList.remove('d-none');
+    form.classList.add('d-flex');
+    const err = document.getElementById('palletDateEditError');
+    if (err) err.classList.add('d-none');
+    const input = document.getElementById('palletDateInput');
+    if (input) input.focus();
+}
+
+function cancelEditPalletDate() {
+    const form = document.getElementById('palletDateEditForm');
+    if (!form) return;
+    form.classList.add('d-none');
+    form.classList.remove('d-flex');
+    const err = document.getElementById('palletDateEditError');
+    if (err) err.classList.add('d-none');
+}
+
+function onPalletDateKeydown(event) {
+    if (event.key === 'Enter')  { event.preventDefault(); savePalletDateEdit(); }
+    if (event.key === 'Escape') { event.preventDefault(); cancelEditPalletDate(); }
+}
+
+async function savePalletDateEdit() {
+    if (palletDateSaving) return;
+    const input = document.getElementById('palletDateInput');
+    const err = document.getElementById('palletDateEditError');
+    const saveBtn = document.getElementById('palletDateSaveBtn');
+    const cancelBtn = document.getElementById('palletDateCancelBtn');
+    if (!input) return;
+
+    const newDate = input.value.trim();
+    if (!newDate) {
+        if (err) { err.textContent = 'Please select a date.'; err.classList.remove('d-none'); }
+        return;
+    }
+
+    palletDateSaving = true;
+    if (saveBtn) saveBtn.disabled = true;
+    if (cancelBtn) cancelBtn.disabled = true;
+    if (err) err.classList.add('d-none');
+
+    try {
+        const res = await fetch('pallet.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                ajax:      'update_pallet_date',
+                pallet_id: PALLET_ID,
+                date:      newDate,
+            }),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+            if (err) { err.textContent = data.msg || 'Could not update date.'; err.classList.remove('d-none'); }
+            return;
+        }
+
+        // Update UI date displays
+        const dateTexts = document.querySelectorAll('.pallet-date-text');
+        dateTexts.forEach(el => el.textContent = data.created_date || newDate);
+
+        cancelEditPalletDate();
+        if (typeof loadPalletList === 'function') loadPalletList();
+    } catch (e) {
+        console.error('savePalletDateEdit error:', e);
+        if (err) { err.textContent = (e && e.message) ? e.message : 'Network error.'; err.classList.remove('d-none'); }
+    } finally {
+        palletDateSaving = false;
+        if (saveBtn) saveBtn.disabled = false;
+        if (cancelBtn) cancelBtn.disabled = false;
     }
 }
 
@@ -4218,10 +4478,11 @@ function renderPalletList() {
     const tabParam = palletActiveTab && palletActiveTab !== 'all' ? `&tab=${encodeURIComponent(palletActiveTab)}` : '';
 
     scroll.innerHTML = rows.map(p => {
-        const isEditBuilding = p.status === 'building' && Number(p.edit_count || 0) > 0;
-        const badgeClass     = SUMMARY_STATUS_BADGE[p.status] || 'badge-building';
-        const isActive       = PALLET_ID && Number(p.id) === Number(PALLET_ID);
-        const pct            = Math.min(100, Math.round((p.roll_count / p.max_rolls) * 100));
+        const isEditBuilding  = p.status === 'building' && Number(p.edit_count || 0) > 0;
+        const isReturnToStock = isEditBuilding && (p.latest_action === 'return_to_stock');
+        const badgeClass      = SUMMARY_STATUS_BADGE[p.status] || 'badge-building';
+        const isActive        = PALLET_ID && Number(p.id) === Number(PALLET_ID);
+        const pct             = Math.min(100, Math.round((p.roll_count / p.max_rolls) * 100));
         return `
             <a href="pallet.php?pallet_id=${p.id}${tabParam}"
                class="pallet-card border-${escHtml(p.status)} ${isActive ? 'active' : ''} ${isEditBuilding ? 'is-edit-building' : ''}">
@@ -4231,12 +4492,14 @@ function renderPalletList() {
                             ${escHtml(p.pallet_no)}
                             ${isActive ? '<span class="pallet-card-open-pill"><i class="bi bi-eye-fill"></i> Open</span>' : ''}
                         </div>
-                        ${p.created_by ? `<div class="pallet-card-operator" style="font-size:11px; ${isActive && !isEditBuilding ? 'color:rgba(255,255,255,.9);' : (isEditBuilding ? 'color:#854d0e;' : 'color:#475569;')} font-weight:600;"><i class="bi bi-person-fill ${isEditBuilding ? 'text-warning' : (isActive ? 'text-warning' : 'text-primary')} me-1"></i>${escHtml(p.created_by)}</div>` : ''}
+                        ${p.created_by ? `<div class="pallet-card-operator" style="font-size:11px; ${isActive && !isEditBuilding ? 'color:rgba(255,255,255,.9);' : (isEditBuilding ? (isReturnToStock ? 'color:#0369a1;' : 'color:#854d0e;') : 'color:#475569;')} font-weight:600;"><i class="bi bi-person-fill ${isEditBuilding ? (isReturnToStock ? 'text-info' : 'text-warning') : (isActive ? 'text-warning' : 'text-primary')} me-1"></i>${escHtml(p.created_by)}</div>` : ''}
                         ${p.lot_nos ? `<div class="pallet-card-lot">${escHtml(p.lot_nos)}</div>` : ''}
                     </div>
                     <div class="d-flex flex-column align-items-end">
                         ${isEditBuilding 
-                            ? `<span class="badge ${isActive ? 'bg-white text-dark shadow-sm border' : 'border'}" style="${isActive ? 'border-color:#fde047 !important;' : 'background:#fffbe6; color:#92400e; border-color:#ffe58f !important;'}" title="Re-opened Building Pallet"><i class="bi bi-pencil-fill me-1 text-warning"></i>BUILDING (EDIT #${p.edit_count})</span>` 
+                            ? (isReturnToStock
+                                ? `<span class="badge ${isActive ? 'bg-white text-dark shadow-sm border' : 'border'}" style="${isActive ? 'border-color:#7dd3fc !important;' : 'background:#f0f9ff; color:#0369a1; border-color:#7dd3fc !important;'}" title="Pallet return coil to stock"><i class="bi bi-box-arrow-down-left me-1 text-info"></i>RETURN TO STOCK (EDIT #${p.edit_count})</span>`
+                                : `<span class="badge ${isActive ? 'bg-white text-dark shadow-sm border' : 'border'}" style="${isActive ? 'border-color:#fde047 !important;' : 'background:#fffbe6; color:#92400e; border-color:#ffe58f !important;'}" title="Re-opened Building Pallet"><i class="bi bi-pencil-fill me-1 text-warning"></i>BUILDING (EDIT #${p.edit_count})</span>`)
                             : `<span class="badge ${badgeClass}">${escHtml(summaryStatusLabel(p.status))}</span>`}
                         ${p.created_date ? `<div class="pallet-card-date"><i class="bi bi-calendar-event me-1"></i>${escHtml(p.created_date)}</div>` : ''}
                     </div>

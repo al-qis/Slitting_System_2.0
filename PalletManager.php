@@ -387,6 +387,261 @@ class PalletManager
         }
     }
 
+    /**
+     * @return array{ok: bool, msg: string, pallet_id?: int, created_at?: string, created_date?: string}
+     */
+    public function updatePalletDate(int $palletId, string $newDateStr): array
+    {
+        $newDateStr = trim($newDateStr);
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $newDateStr)) {
+            return ['ok' => false, 'msg' => 'Invalid date format. Expected YYYY-MM-DD.'];
+        }
+
+        $this->conn->begin_transaction();
+        try {
+            $stmt = $this->conn->prepare("SELECT * FROM pallets WHERE id = ? FOR UPDATE");
+            $stmt->bind_param("i", $palletId);
+            $stmt->execute();
+            $pallet = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+
+            if (!$pallet) {
+                throw new RuntimeException("Pallet #{$palletId} not found.");
+            }
+
+            // Extract time components
+            $curCreatedAtTime = '12:00:00';
+            if (!empty($pallet['created_at'])) {
+                $ts = strtotime($pallet['created_at']);
+                if ($ts !== false) {
+                    $curCreatedAtTime = date('H:i:s', $ts);
+                }
+            }
+            $newCreatedAt = $newDateStr . ' ' . $curCreatedAtTime;
+
+            $newDeliveredAt = null;
+            if (!empty($pallet['delivered_at'])) {
+                $ts = strtotime($pallet['delivered_at']);
+                if ($ts !== false) {
+                    $curDeliveredAtTime = date('H:i:s', $ts);
+                    $newDeliveredAt = $newDateStr . ' ' . $curDeliveredAtTime;
+                } else {
+                    $newDeliveredAt = $newDateStr . ' ' . $curCreatedAtTime;
+                }
+            }
+
+            // Update pallets table
+            if ($newDeliveredAt !== null) {
+                $upd = $this->conn->prepare("UPDATE pallets SET created_at = ?, delivered_at = ? WHERE id = ?");
+                $upd->bind_param("ssi", $newCreatedAt, $newDeliveredAt, $palletId);
+            } else {
+                $upd = $this->conn->prepare("UPDATE pallets SET created_at = ? WHERE id = ?");
+                $upd->bind_param("si", $newCreatedAt, $palletId);
+            }
+            $upd->execute();
+            $upd->close();
+
+            // Update slitting_product rolls attached to this pallet
+            $updRolls = $this->conn->prepare("
+                UPDATE slitting_product sp
+                JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+                SET sp.delivered_at = CASE WHEN sp.delivered_at IS NOT NULL THEN ? ELSE sp.delivered_at END,
+                    sp.date_out     = CASE WHEN sp.date_out IS NOT NULL THEN ? ELSE sp.date_out END
+                WHERE pi.pallet_id = ?
+            ");
+            $targetRollDate = $newDeliveredAt ?: $newCreatedAt;
+            $updRolls->bind_param("ssi", $targetRollDate, $targetRollDate, $palletId);
+            $updRolls->execute();
+            $affectedRolls = $updRolls->affected_rows;
+            $updRolls->close();
+
+            $oldDateFormatted = !empty($pallet['created_at']) ? date('d/m/Y', strtotime($pallet['created_at'])) : '-';
+            $newDateFormatted = date('d/m/Y', strtotime($newCreatedAt));
+
+            $this->writeEditLog(
+                $palletId, $pallet['pallet_no'], 'update_date', null, null,
+                "Pallet date changed from \"{$oldDateFormatted}\" to \"{$newDateFormatted}\" ({$affectedRolls} roll(s) updated)"
+            );
+
+            $this->conn->commit();
+            return [
+                'ok'            => true,
+                'msg'           => "Pallet date updated to {$newDateFormatted}.",
+                'pallet_id'     => $palletId,
+                'created_at'    => $newCreatedAt,
+                'created_date'  => $newDateFormatted,
+                'rolls_updated' => $affectedRolls,
+            ];
+        } catch (Throwable $e) {
+            $this->conn->rollback();
+            return ['ok' => false, 'msg' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Returns coil(s) back to stock from a pallet.
+     * If $productIds is empty, returns ALL coils attached to the pallet back to stock.
+     *
+     * @param int[] $productIds Array of slitting_product IDs to return to stock (empty = all coils)
+     * @return array{ok: bool, msg: string, rolls_returned?: int}
+     */
+    public function returnCoilsToStock(int $palletId, array $productIds = [], string $reason = ''): array
+    {
+        $reason = trim($reason);
+        $cleanProductIds = array_values(array_filter(array_map('intval', $productIds), fn($id) => $id > 0));
+
+        $this->conn->begin_transaction();
+        try {
+            $stmt = $this->conn->prepare("SELECT * FROM pallets WHERE id = ? FOR UPDATE");
+            $stmt->bind_param("i", $palletId);
+            $stmt->execute();
+            $pallet = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+
+            if (!$pallet) {
+                throw new RuntimeException("Pallet #{$palletId} not found.");
+            }
+
+            $oldStatus = $pallet['status'];
+            $palletNo  = $pallet['pallet_no'];
+
+            // Fetch details for the rolls to return
+            if (!empty($cleanProductIds)) {
+                $inClause = implode(',', $cleanProductIds);
+                $fetchStmt = $this->conn->prepare("
+                    SELECT sp.id, sp.status, sp.mother_id, sp.lot_no, sp.coil_no, sp.roll_no
+                    FROM slitting_product sp
+                    JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+                    WHERE pi.pallet_id = ? AND sp.id IN ({$inClause})
+                ");
+                $fetchStmt->bind_param("i", $palletId);
+            } else {
+                // Return ALL coils on this pallet
+                $fetchStmt = $this->conn->prepare("
+                    SELECT sp.id, sp.status, sp.mother_id, sp.lot_no, sp.coil_no, sp.roll_no
+                    FROM slitting_product sp
+                    JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+                    WHERE pi.pallet_id = ?
+                ");
+                $fetchStmt->bind_param("i", $palletId);
+            }
+            $fetchStmt->execute();
+            $rollsToReturn = $fetchStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $fetchStmt->close();
+
+            if (empty($rollsToReturn)) {
+                throw new RuntimeException("No active coils found on pallet {$palletNo} to return to stock.");
+            }
+
+            $actualReturnedIds = array_column($rollsToReturn, 'id');
+            $actualReturnedCount = count($actualReturnedIds);
+            $inClauseReturned = implode(',', $actualReturnedIds);
+
+            // 1. Remove from pallet_items
+            $delItems = $this->conn->prepare("
+                DELETE FROM pallet_items
+                WHERE pallet_id = ? AND slitting_product_id IN ({$inClauseReturned})
+            ");
+            $delItems->bind_param("i", $palletId);
+            $delItems->execute();
+            $delItems->close();
+
+            // 2. Reset roll status in slitting_product to IN
+            $updRolls = $this->conn->prepare("
+                UPDATE slitting_product
+                SET status       = 'IN',
+                    date_out     = NULL,
+                    delivered_at = NULL,
+                    qc_comment   = NULL
+                WHERE id IN ({$inClauseReturned})
+            ");
+            $updRolls->execute();
+            $updRolls->close();
+
+            // 3. Log process_log for each returned coil
+            $procDetail = "Coil returned to stock from Pallet {$palletNo}";
+            if ($reason !== '') {
+                $procDetail .= " (Reason: {$reason})";
+            }
+            foreach ($rollsToReturn as $r) {
+                $this->writeProcessLog(
+                    'slitting',
+                    (int)$r['id'],
+                    $r['mother_id'] ? (int)$r['mother_id'] : null,
+                    $r['status'] ?? 'UNKNOWN',
+                    'IN',
+                    $procDetail
+                );
+            }
+
+            // 4. Re-sequence remaining coils on the pallet
+            $remStmt = $this->conn->prepare("
+                SELECT id FROM pallet_items WHERE pallet_id = ? ORDER BY seq ASC
+            ");
+            $remStmt->bind_param("i", $palletId);
+            $remStmt->execute();
+            $remaining = $remStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $remStmt->close();
+
+            foreach ($remaining as $idx => $r) {
+                $newSeq = $idx + 1;
+                $u = $this->conn->prepare("UPDATE pallet_items SET seq = ? WHERE id = ?");
+                $u->bind_param("ii", $newSeq, $r['id']);
+                $u->execute();
+                $u->close();
+            }
+
+            $remCount = count($remaining);
+
+            // 5. Update pallet: set status to building, clear constraints if empty
+            if ($remCount === 0) {
+                $updPallet = $this->conn->prepare("
+                    UPDATE pallets
+                    SET status        = 'building',
+                        customer_name = '',
+                        ref_no        = '',
+                        product_type  = '',
+                        width         = 0,
+                        qc_comment    = NULL,
+                        edit_count    = edit_count + 1
+                    WHERE id = ?
+                ");
+            } else {
+                $updPallet = $this->conn->prepare("
+                    UPDATE pallets
+                    SET status     = 'building',
+                        qc_comment = NULL,
+                        edit_count = edit_count + 1
+                    WHERE id = ?
+                ");
+            }
+            $updPallet->bind_param("i", $palletId);
+            $updPallet->execute();
+            $updPallet->close();
+
+            // 6. Write audit log in pallet_edit_log
+            $editNote = "Returned {$actualReturnedCount} coil(s) back to stock from state '{$oldStatus}'."
+                . ($remCount > 0 ? " {$remCount} coil(s) remain on pallet." : " Pallet is now empty.");
+            if ($reason !== '') {
+                $editNote .= " Reason: " . $reason;
+            }
+            $this->writeEditLog(
+                $palletId, $palletNo, 'return_to_stock', null, null, $editNote
+            );
+
+            $this->conn->commit();
+            return [
+                'ok'             => true,
+                'msg'            => "{$actualReturnedCount} coil(s) returned back to stock. Pallet {$palletNo} is empty in building state.",
+                'rolls_returned' => $actualReturnedCount,
+                'remaining'      => $remCount,
+            ];
+        } catch (Throwable $e) {
+            $this->conn->rollback();
+            return ['ok' => false, 'msg' => $e->getMessage()];
+        }
+    }
+
     // =========================================================
     // 3. ADD ROLL TO PALLET
     //    — first roll seeds constraints
@@ -1369,6 +1624,7 @@ class PalletManager
                     p.created_by,
                     p.created_at,
                     p.edit_count,
+                    (SELECT action FROM pallet_edit_log WHERE pallet_id = p.id ORDER BY id DESC LIMIT 1) AS latest_action,
                     COUNT(sp.id)                                    AS roll_count,
                     COALESCE(p.updated_at, p.created_at)            AS last_activity,
                     GROUP_CONCAT(DISTINCT sp.lot_no SEPARATOR ', ') AS lot_nos
