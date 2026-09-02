@@ -57,6 +57,8 @@ $sql = "SELECT COALESCE(NULLIF(sp.product, ''), cpm.product, 'Unknown') AS produ
         ) cpm ON cpm.coil_code = SUBSTRING_INDEX(sp.coil_no, '-', 1)
         WHERE sp.status NOT IN ('OUT','DELIVERED')
           AND (sp.is_voided IS NULL OR sp.is_voided = 0)
+          AND (sp.is_reslitted = 0 OR sp.is_reslitted IS NULL)
+          AND (sp.is_recoiled = 0 OR sp.is_recoiled IS NULL)
           {$dateClause}
         ORDER BY sp.lot_no ASC, sp.coil_no ASC, sp.roll_no ASC";
 if ($res = $mysqli->query($sql)) {
