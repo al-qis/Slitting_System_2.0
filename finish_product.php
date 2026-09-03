@@ -222,7 +222,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
 
     $stmt = $conn->prepare("
         UPDATE slitting_product
-        SET actual_length=?, stock_counted=1, is_completed=1
+        SET actual_length=?, date_in=NOW(), stock_counted=1, is_completed=1
         WHERE id=?
     ");
     $stmt->bind_param("si", $actual_length, $id);
@@ -414,7 +414,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
         // Batch update for actual_length across the whole pending group
         $stmt = $conn->prepare("
             UPDATE slitting_product
-            SET actual_length=?, stock_counted=1, is_completed=1
+            SET actual_length=?, date_in=NOW(), stock_counted=1, is_completed=1
             WHERE product=? AND lot_no=? AND status='IN' AND is_completed=0
         ");
         $stmt->bind_param("sss", $actual_length, $product, $lot_no);
@@ -429,7 +429,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
 
         $stmt = $conn->prepare("
             UPDATE slitting_product
-            SET actual_length=?, stock_counted=1, is_completed=1
+            SET actual_length=?, date_in=NOW(), stock_counted=1, is_completed=1
             WHERE id=?
         ");
         $stmt->bind_param("si", $actual_length, $id);
