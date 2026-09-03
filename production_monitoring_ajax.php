@@ -302,12 +302,27 @@ if ($action === 'get_data') {
         }
     }
 
+    $shift_counts = getMotherCoilShiftCounts($conn);
+    $shiftTargetMeters = floatval(getSystemSetting($conn, 'shift_target_meters', '5200'));
+    $target24hMeters    = $shiftTargetMeters * 3;
+    $lengthProduced24h  = get24HourProductionLength($conn);
+    $weeklyTotalMeters  = getWeeklyProductionLength($conn);
+    $progressPercentage = ($target24hMeters > 0) ? min(100.0, round(($lengthProduced24h / $target24hMeters) * 100, 1)) : 0.0;
+
     echo json_encode([
-        'success'      => true,
-        'timestamp'    => date('Y-m-d H:i:s'),
-        'running'      => $running_data,
-        'waiting_list' => $waiting_list,
-        'waiting_count'=> count($waiting_list)
+        'success'         => true,
+        'timestamp'       => date('Y-m-d H:i:s'),
+        'running'         => $running_data,
+        'waiting_list'    => $waiting_list,
+        'waiting_count'   => count($waiting_list),
+        'shift_summary'   => $shift_counts,
+        'length_tracking' => [
+            'length_produced_24h' => $lengthProduced24h,
+            'shift_target_meters' => $shiftTargetMeters,
+            'target_24h_meters'   => $target24hMeters,
+            'progress_percentage' => $progressPercentage,
+            'weekly_total_meters' => $weeklyTotalMeters
+        ]
     ]);
     exit;
 }
