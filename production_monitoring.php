@@ -241,7 +241,12 @@ document.addEventListener('DOMContentLoaded', () => {
 // Fetch live monitoring data via AJAX
 function fetchMonitoringData() {
     fetch('production_monitoring_ajax.php?action=get_data')
-        .then(response => response.json())
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('HTTP error ' + response.status);
+            }
+            return response.json();
+        })
         .then(data => {
             if (data.success) {
                 renderSectionA(data.running);
@@ -257,9 +262,21 @@ function fetchMonitoringData() {
                     if (s3) s3.innerText = 'Shift 3: ' + data.shift_summary.shift3;
                     if (st) st.innerText = 'Total Today: ' + data.shift_summary.total;
                 }
+            } else {
+                if (data.message === 'Unauthorized') {
+                    window.location.href = 'login.php';
+                } else {
+                    renderSectionA(null);
+                    renderSectionB([]);
+                }
             }
         })
-        .catch(err => console.error('Error fetching monitoring data:', err));
+        .catch(err => {
+            console.error('Error fetching monitoring data:', err);
+            // Fallback render to clear infinite loading spinner on connection error
+            renderSectionA(null);
+            renderSectionB([]);
+        });
 }
 
 // Render 24-Hour Length Tracking Progress Bar
