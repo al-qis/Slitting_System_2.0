@@ -83,12 +83,14 @@ foreach ($rawSelections as $sel) {
     // client's number blindly.
     $copies = intval($sel['copies'] ?? 3);
     if ($copies < 1 || $copies > 3) { $copies = 3; }
+    $length = isset($sel['length']) ? (float)$sel['length'] : 0;
 
     // Last one wins if the client somehow sent the same id twice.
     $selectionsById[$id] = [
         'id'                    => $id,
         'customer'              => $customer,
         'ref_no'                => $ref_no,
+        'length'                => $length,
         'copies'                => $copies,
         'nci_resolved_customer' => trim((string)($sel['nci_resolved_customer'] ?? '')),
     ];
@@ -124,13 +126,19 @@ $clean  = [];
 $errors = [];
 $foundIds = [];
 
+$from = trim($_POST['from'] ?? $_GET['from'] ?? '');
+
 foreach ($rows as $r) {
     $rid = (int)$r['id'];
     $foundIds[] = $rid;
     $sel = $selectionsById[$rid];
 
-    $isPrintable = !in_array($r['status'], ['WAITING', 'REJECTED'], true)
-        && !($r['status'] === 'IN' && ($r['is_completed'] == 0 || $r['pallet_id']));
+    if ($from === 'slitting_product') {
+        $isPrintable = true;
+    } else {
+        $isPrintable = !in_array($r['status'], ['WAITING', 'REJECTED'], true)
+            && !($r['status'] === 'IN' && ($r['is_completed'] == 0 || $r['pallet_id']));
+    }
 
     if (!$isPrintable) {
         $reason = $r['status'] === 'IN'
@@ -150,6 +158,7 @@ foreach ($rows as $r) {
         'prior_print_count'   => (int)$r['print_count'],
         'customer'         => $sel['customer'],
         'ref_no'           => $sel['ref_no'],
+        'length'           => $sel['length'],
         'copies'           => $sel['copies'],
         'nci_resolved_customer' => $sel['nci_resolved_customer'],
     ];
@@ -168,7 +177,8 @@ if (empty($clean)) {
 // ── Save each roll's OWN customer/ref_no, mark print-tracking, and
 //    audit log — per row now, instead of one global pair for everyone ──
 $performedBy = $_SESSION['role'] ?? 'system';
-$stmtUpd = $conn->prepare("UPDATE slitting_product SET customer_name = ?, ref_no = ? WHERE id = ?");
+$stmtUpdLength = $conn->prepare("UPDATE slitting_product SET customer_name = ?, ref_no = ?, actual_length = ? WHERE id = ?");
+$stmtUpdNormal = $conn->prepare("UPDATE slitting_product SET customer_name = ?, ref_no = ? WHERE id = ?");
 $stmtPrint = $conn->prepare("
     UPDATE slitting_product
     SET is_printed = 1,
@@ -180,8 +190,13 @@ $stmtPrint = $conn->prepare("
 ");
 
 foreach ($clean as $row) {
-    $stmtUpd->bind_param("ssi", $row['customer'], $row['ref_no'], $row['id']);
-    $stmtUpd->execute();
+    if (isset($row['length']) && $row['length'] > 0) {
+        $stmtUpdLength->bind_param("ssdi", $row['customer'], $row['ref_no'], $row['length'], $row['id']);
+        $stmtUpdLength->execute();
+    } else {
+        $stmtUpdNormal->bind_param("ssi", $row['customer'], $row['ref_no'], $row['id']);
+        $stmtUpdNormal->execute();
+    }
 
     $stmtPrint->bind_param("isi", $row['copies'], $performedBy, $row['id']);
     $stmtPrint->execute();
@@ -192,25 +207,37 @@ foreach ($clean as $row) {
         $row['mother_id'],
         'mixed_batch_print',
         "Mixed bulk print — Customer: {$row['customer']} · Ref: {$row['ref_no']} · {$row['copies']}x copies"
+        . ($row['length'] > 0 ? " · Length: {$row['length']}m" : "")
         . ($row['was_already_printed'] ? " · REPRINT (was {$row['prior_print_count']}x)" : " · first print")
     );
 }
-$stmtUpd->close();
+if ($stmtUpdLength) $stmtUpdLength->close();
+if ($stmtUpdNormal) $stmtUpdNormal->close();
 $stmtPrint->close();
 
 // ── Back-to-list URL, preserving tab/filter/search state ──────────
-$backMonth  = intval($_POST['month'] ?? date('m'));
-$backYear   = intval($_POST['year']  ?? date('Y'));
-$backDay    = intval($_POST['day']   ?? 0);
-$backSearch = trim($_POST['search'] ?? '');
-$backFilter = trim($_POST['filter'] ?? '');
-$backUrl = 'finish_product.php?' . http_build_query(array_filter([
-    'month'  => $backMonth,
-    'year'   => $backYear,
-    'day'    => $backDay > 0 ? $backDay : null,
-    'search' => $backSearch !== '' ? $backSearch : null,
-    'filter' => $backFilter !== '' ? $backFilter : null,
-]));
+$from = trim($_POST['from'] ?? $_GET['from'] ?? '');
+if ($from === 'slitting_product') {
+    $backSearch      = trim($_POST['search'] ?? '');
+    $backPrintFilter = trim($_POST['print_status'] ?? '');
+    $backUrl = 'slitting_product.php?' . http_build_query(array_filter([
+        'search'       => $backSearch !== '' ? $backSearch : null,
+        'print_status' => $backPrintFilter !== '' ? $backPrintFilter : null,
+    ]));
+} else {
+    $backMonth  = intval($_POST['month'] ?? date('m'));
+    $backYear   = intval($_POST['year']  ?? date('Y'));
+    $backDay    = intval($_POST['day']   ?? 0);
+    $backSearch = trim($_POST['search'] ?? '');
+    $backFilter = trim($_POST['filter'] ?? '');
+    $backUrl = 'finish_product.php?' . http_build_query(array_filter([
+        'month'  => $backMonth,
+        'year'   => $backYear,
+        'day'    => $backDay > 0 ? $backDay : null,
+        'search' => $backSearch !== '' ? $backSearch : null,
+        'filter' => $backFilter !== '' ? $backFilter : null,
+    ]));
+}
 ?>
 <!DOCTYPE html>
 <html>

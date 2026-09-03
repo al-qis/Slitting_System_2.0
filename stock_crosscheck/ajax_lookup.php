@@ -88,6 +88,26 @@ $result = $stmt->get_result();
 $row = $result->fetch_assoc();
 $stmt->close();
 
+// Fallback search if exact match fails (handles variations in padding or formatting e.g. CH-2 vs CH-02, roll 1 vs 01)
+if (!$row) {
+    $coilFormattedAlt = formatCoil($coil);
+    $rollPaddedAlt    = str_pad($roll, 2, '0', STR_PAD_LEFT);
+    $rollUnpaddedAlt  = ltrim($roll, '0') ?: '0';
+
+    $stmtAlt = $mysqli->prepare(
+        'SELECT product, width, actual_length FROM slitting_product
+         WHERE LOWER(TRIM(lot_no)) = LOWER(TRIM(?))
+           AND (LOWER(TRIM(coil_no)) = LOWER(TRIM(?)) OR LOWER(TRIM(coil_no)) = LOWER(TRIM(?)))
+           AND (LOWER(TRIM(roll_no)) = LOWER(TRIM(?)) OR LOWER(TRIM(roll_no)) = LOWER(TRIM(?)) OR LOWER(TRIM(roll_no)) = LOWER(TRIM(?)))
+         LIMIT 1'
+    );
+    $stmtAlt->bind_param('ssssss', $lot, $coil, $coilFormattedAlt, $roll, $rollPaddedAlt, $rollUnpaddedAlt);
+    $stmtAlt->execute();
+    $resultAlt = $stmtAlt->get_result();
+    $row = $resultAlt->fetch_assoc();
+    $stmtAlt->close();
+}
+
 if (!$row) {
     respond(false, [], "No matching record for Lot \"$lot\", Coil \"$coil\", Roll \"$roll\" in slitting_product table.");
 }

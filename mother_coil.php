@@ -225,6 +225,27 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'get_product') {
 }
 
 /* ──────────────────────────────────────────────────────────────
+   AJAX endpoint: mother_coil.php?ajax=get_slitting_plan&mother_id=...
+   Returns existing slitting_plans for edit modal
+────────────────────────────────────────────────────────────── */
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'get_slitting_plan') {
+    header('Content-Type: application/json; charset=utf-8');
+
+    $mother_id = intval($_GET['mother_id'] ?? 0);
+    $plans = [];
+    if ($mother_id > 0) {
+        $stmt = $conn->prepare("SELECT roll_seq, planned_width, customer_name, ref_no FROM slitting_plans WHERE mother_coil_id = ? ORDER BY sort_order ASC, id ASC");
+        $stmt->bind_param("i", $mother_id);
+        $stmt->execute();
+        $plans = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+    }
+
+    echo json_encode(['ok' => true, 'plans' => $plans]);
+    exit;
+}
+
+/* ──────────────────────────────────────────────────────────────
    Session / auth guard
 ────────────────────────────────────────────────────────────── */
 session_start();
@@ -261,6 +282,21 @@ $success_messages = [
         : '✅ Mother coil updated successfully.',
 ];
 
+$knownCustomers = ['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA','NIPPON','NTC','SGC','STAMPING','YANTAI','NIPP','NVC','NSJ','NIP','YTEC','NSA','NCI 2','STOCK','TRIAL'];
+
+if (!function_exists('sanitizeCustomerCode')) {
+    function sanitizeCustomerCode($cust, $knownCustomers) {
+        $cust = strtoupper(trim((string)$cust));
+        if ($cust === '') return null;
+        foreach ($knownCustomers as $k) {
+            if (strtoupper($k) === $cust) {
+                return $k;
+            }
+        }
+        return null;
+    }
+}
+
 /* ──────────────────────────────────────────────────────────────
    POST ACTIONS (ADD / UPDATE)
 ────────────────────────────────────────────────────────────── */
@@ -289,19 +325,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (is_array($planRowsRaw)) {
             $order = 0;
             foreach ($planRowsRaw as $pr) {
-                $seq  = trim($pr['seq']   ?? '');
-                $wRaw = trim($pr['width'] ?? '');
+                $seq   = trim($pr['seq']   ?? '');
+                $wRaw  = trim($pr['width'] ?? '');
+                $cRaw  = trim($pr['customer'] ?? '');
+                $refNo = trim($pr['ref_no']   ?? '');
                 if ($seq === '' || $wRaw === '' || !is_numeric($wRaw)) continue;
                 $order++;
-                $sharedPlanRows[] = ['seq' => $seq, 'width' => (float)$wRaw, 'order' => $order];
+                $cust = sanitizeCustomerCode($cRaw, $knownCustomers);
+                $sharedPlanRows[] = ['seq' => $seq, 'width' => (float)$wRaw, 'customer' => $cust, 'ref_no' => $refNo, 'order' => $order];
             }
         }
 
         $planStmt = null;
         if (!empty($sharedPlanRows)) {
             $planStmt = $conn->prepare("
-                INSERT INTO slitting_plans (mother_coil_id, roll_seq, planned_width, sort_order)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO slitting_plans (mother_coil_id, roll_seq, planned_width, customer_name, ref_no, sort_order)
+                VALUES (?, ?, ?, ?, ?, ?)
             ");
         }
 
@@ -345,7 +384,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // Apply the shared plan to this mother coil, if one was provided
             if ($planStmt && !empty($sharedPlanRows)) {
                 foreach ($sharedPlanRows as $pr) {
-                    $planStmt->bind_param("isdi", $newMotherId, $pr['seq'], $pr['width'], $pr['order']);
+                    $planStmt->bind_param("isdssi", $newMotherId, $pr['seq'], $pr['width'], $pr['customer'], $pr['ref_no'], $pr['order']);
                     $planStmt->execute();
                 }
             }
@@ -416,26 +455,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                The plan only stores roll widths — the operator picks Normal
                vs. Cut Into 2 on the floor in add_slitting.php; whichever
                they pick, the plan's roll count and widths are applied. */
-            $planSeqs   = $_POST['plan_seq']   ?? [];
-            $planWidths = $_POST['plan_width'] ?? [];
+            $planSeqs      = $_POST['plan_seq']      ?? [];
+            $planWidths    = $_POST['plan_width']    ?? [];
+            $planCustomers = $_POST['plan_customer'] ?? [];
+            $planRefs      = $_POST['plan_ref']      ?? [];
 
             if (is_array($planSeqs) && is_array($planWidths)) {
                 $planStmt = $conn->prepare("
-                    INSERT INTO slitting_plans (mother_coil_id, roll_seq, planned_width, sort_order)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO slitting_plans (mother_coil_id, roll_seq, planned_width, customer_name, ref_no, sort_order)
+                    VALUES (?, ?, ?, ?, ?, ?)
                 ");
                 if (!$planStmt) throw new Exception("Prepare failed (plan): " . $conn->error);
 
                 $order = 0;
                 foreach ($planSeqs as $i => $seqRaw) {
-                    $seq  = trim($seqRaw);
-                    $wRaw = trim($planWidths[$i] ?? '');
+                    $seq   = trim($seqRaw);
+                    $wRaw  = trim($planWidths[$i] ?? '');
+                    $cRaw  = trim($planCustomers[$i] ?? '');
+                    $refNo = trim($planRefs[$i] ?? '');
 
                     if ($seq === '' || $wRaw === '' || !is_numeric($wRaw)) continue;
 
                     $order++;
                     $widthVal = (float)$wRaw;
-                    $planStmt->bind_param("isdi", $newMotherId, $seq, $widthVal, $order);
+                    $cust = sanitizeCustomerCode($cRaw, $knownCustomers);
+                    $planStmt->bind_param("isdssi", $newMotherId, $seq, $widthVal, $cust, $refNo, $order);
                     if (!$planStmt->execute()) {
                         throw new Exception("Failed to insert slitting plan row: " . $planStmt->error);
                     }
@@ -454,9 +498,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'update' && $id > 0) {
-        // Fetch the CURRENT lot_no before overwriting it — we need the OLD
-        // value to know what prefix to look for on child rolls.
-        $curStmt = $conn->prepare("SELECT lot_no FROM mother_coil WHERE id = ?");
+        // Fetch the CURRENT lot_no, coil_no, product before overwriting — we need the OLD
+        // values to update all downstream child records across tables.
+        $curStmt = $conn->prepare("SELECT lot_no, coil_no, product FROM mother_coil WHERE id = ?");
         $curStmt->bind_param("i", $id);
         $curStmt->execute();
         $curRow = $curStmt->get_result()->fetch_assoc();
@@ -465,8 +509,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$curRow) {
             die("Mother coil not found.");
         }
-        $oldLotNo     = $curRow['lot_no'];
-        $lotNoChanged = ($oldLotNo !== $lot_no);
+        $oldLotNo       = $curRow['lot_no'];
+        $oldCoilNo      = $curRow['coil_no'];
+        $oldProduct     = $curRow['product'];
+
+        $lotNoChanged   = ($oldLotNo   !== $lot_no);
+        $coilNoChanged  = ($oldCoilNo  !== $coil_no);
+        $productChanged = ($oldProduct !== $product);
 
         $conn->begin_transaction();
         try {
@@ -483,21 +532,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             $stmt->close();
 
+            // Update slitting_plans for this mother_coil
+            $delPlan = $conn->prepare("DELETE FROM slitting_plans WHERE mother_coil_id = ?");
+            if ($delPlan) {
+                $delPlan->bind_param("i", $id);
+                $delPlan->execute();
+                $delPlan->close();
+            }
+
+            $planSeqs      = $_POST['plan_seq']      ?? [];
+            $planWidths    = $_POST['plan_width']    ?? [];
+            $planCustomers = $_POST['plan_customer'] ?? [];
+            $planRefs      = $_POST['plan_ref']      ?? [];
+
+            if (is_array($planSeqs) && is_array($planWidths)) {
+                $insPlan = $conn->prepare("
+                    INSERT INTO slitting_plans (mother_coil_id, roll_seq, planned_width, customer_name, ref_no, sort_order)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ");
+                if ($insPlan) {
+                    $order = 0;
+                    foreach ($planSeqs as $i => $seqRaw) {
+                        $seq   = trim($seqRaw);
+                        $wRaw  = trim($planWidths[$i] ?? '');
+                        $cRaw  = trim($planCustomers[$i] ?? '');
+                        $refNo = trim($planRefs[$i] ?? '');
+                        if ($seq === '' || $wRaw === '' || !is_numeric($wRaw)) continue;
+                        $order++;
+                        $widthVal = (float)$wRaw;
+                        $cust = sanitizeCustomerCode($cRaw, $knownCustomers);
+                        $insPlan->bind_param("isdssi", $id, $seq, $widthVal, $cust, $refNo, $order);
+                        $insPlan->execute();
+                    }
+                    $insPlan->close();
+                }
+            }
+
             $childrenUpdated = 0;
 
-            // 2. Cascade the lot_no rename to every child slitting_product row
-            //    linked to this mother — this is the "Finished Product" stage
-            //    the mismatch was reported at.
-            //
-            //    IMPORTANT: a child's lot_no is not always identical to the
-            //    mother's — reslit/recoiled children pick up a letter suffix
-            //    (e.g. mother "826604" -> child "826604a"). A blind overwrite
-            //    would destroy that suffix, so instead we replace only the OLD
-            //    lot_no PREFIX and keep whatever comes after it intact:
-            //    "826604a" -> "{new lot_no}a".
-            if ($lotNoChanged) {
+            // 2. Cascade changes (coil_no, lot_no, product) to child records in slitting_product
+            if ($lotNoChanged || $coilNoChanged || $productChanged) {
                 $childStmt = $conn->prepare("
-                    SELECT id, lot_no FROM slitting_product
+                    SELECT id, lot_no, coil_no, product FROM slitting_product
                     WHERE mother_id = ? AND (is_voided = 0 OR is_voided IS NULL)
                 ");
                 $childStmt->bind_param("i", $id);
@@ -505,61 +581,144 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $childRows = $childStmt->get_result()->fetch_all(MYSQLI_ASSOC);
                 $childStmt->close();
 
-                $updChild = $conn->prepare("UPDATE slitting_product SET lot_no = ? WHERE id = ?");
+                $updChild = $conn->prepare("
+                    UPDATE slitting_product
+                    SET lot_no = ?, coil_no = ?, product = ?, is_printed = 0
+                    WHERE id = ?
+                ");
 
                 foreach ($childRows as $child) {
-                    $childLot = $child['lot_no'] ?? '';
+                    $childLot   = $child['lot_no'] ?? '';
+                    $newChildLot = $childLot;
 
-                    // Only touch rows whose lot_no actually starts with the OLD
-                    // mother lot_no. This is what preserves any suffix, and it
-                    // also defensively skips anything that doesn't match the
-                    // expected pattern rather than guessing and risking
-                    // corrupting unrelated data.
-                    if (strpos($childLot, $oldLotNo) !== 0) {
-                        continue;
+                    if ($lotNoChanged && strpos($childLot, $oldLotNo) === 0) {
+                        $suffix      = substr($childLot, strlen($oldLotNo));
+                        $newChildLot = $lot_no . $suffix;
                     }
 
-                    $suffix      = substr($childLot, strlen($oldLotNo));
-                    $newChildLot = $lot_no . $suffix;
+                    $newCoil = $coilNoChanged ? $coil_no : $child['coil_no'];
+                    $newProd = $productChanged ? $product : $child['product'];
 
-                    if ($newChildLot === $childLot) {
-                        continue; // no actual change for this row
-                    }
-
-                    $updChild->bind_param("si", $newChildLot, $child['id']);
+                    $updChild->bind_param("sssi", $newChildLot, $newCoil, $newProd, $child['id']);
                     if (!$updChild->execute()) {
-                        // Most likely cause: renaming this child would collide
-                        // with the (lot_no, coil_no, roll_no) UNIQUE KEY of some
-                        // unrelated existing row. Abort the whole cascade rather
-                        // than leave it half-applied.
                         throw new Exception(
-                            "Could not rename child roll (old lot: {$childLot}) to " .
-                            "\"{$newChildLot}\" — likely a duplicate Lot/Coil/Roll " .
-                            "combination already exists. " . $updChild->error
+                            "Could not update child roll (old lot: {$childLot}) — " .
+                            "likely a duplicate Lot/Coil/Roll combination already exists. " . $updChild->error
                         );
                     }
                     $childrenUpdated++;
 
-                    // Lightweight audit trail — logged per child roll using
-                    // entity_type='slitting' (a value process_log already
-                    // accepts elsewhere in the app). 'mother_coil' is not a
-                    // valid entity_type, so we don't log a separate parent-
-                    // level entry; each renamed child gets its own line
-                    // instead, which is arguably more useful anyway.
                     if (function_exists('log_process')) {
                         log_process($conn, 'slitting', (int)$child['id'], $id,
-                            $childLot, $newChildLot, 'lot_no_cascade_rename',
-                            "Cascaded from mother_coil id={$id} lot_no rename " .
-                            "(\"{$oldLotNo}\" -> \"{$lot_no}\")"
+                            $childLot, $newChildLot, 'mother_coil_cascade_update',
+                            "Cascaded from mother_coil id={$id} update (lot: \"{$oldLotNo}\" -> \"{$lot_no}\", coil: \"{$oldCoilNo}\" -> \"{$coil_no}\")"
                         );
                     }
                 }
                 $updChild->close();
             }
 
+            // 3. Cascade updates to stock_raw_material
+            if ($coilNoChanged || $lotNoChanged) {
+                $stStmt = $conn->prepare("SELECT id, lot_no FROM stock_raw_material WHERE source_id = ?");
+                if ($stStmt) {
+                    $stStmt->bind_param("i", $id);
+                    $stStmt->execute();
+                    $stRows = $stStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                    $stStmt->close();
+
+                    $stUpd = $conn->prepare("UPDATE stock_raw_material SET coil_no = ?, lot_no = ? WHERE id = ?");
+                    foreach ($stRows as $stRow) {
+                        $stLot = $stRow['lot_no'] ?? '';
+                        $newStLot = $stLot;
+                        if ($lotNoChanged && strpos($stLot, $oldLotNo) === 0) {
+                            $suffix   = substr($stLot, strlen($oldLotNo));
+                            $newStLot = $lot_no . $suffix;
+                        }
+                        $stUpd->bind_param("ssi", $coil_no, $newStLot, $stRow['id']);
+                        $stUpd->execute();
+                    }
+                    $stUpd->close();
+                }
+            }
+
+            // 4. Cascade updates to sfc
+            if ($coilNoChanged || $lotNoChanged || $productChanged) {
+                $sfcStmt = $conn->prepare("SELECT sfc_id, lot_no FROM sfc WHERE mother_id = ?");
+                if ($sfcStmt) {
+                    $sfcStmt->bind_param("i", $id);
+                    $sfcStmt->execute();
+                    $sfcRows = $sfcStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                    $sfcStmt->close();
+
+                    $sfcUpd = $conn->prepare("UPDATE sfc SET coil_no = ?, product = ?, lot_no = ? WHERE sfc_id = ?");
+                    foreach ($sfcRows as $sfcRow) {
+                        $sfcLot = $sfcRow['lot_no'] ?? '';
+                        $newSfcLot = $sfcLot;
+                        if ($lotNoChanged && strpos($sfcLot, $oldLotNo) === 0) {
+                            $suffix    = substr($sfcLot, strlen($oldLotNo));
+                            $newSfcLot = $lot_no . $suffix;
+                        }
+                        $sfcUpd->bind_param("sssi", $coil_no, $product, $newSfcLot, $sfcRow['sfc_id']);
+                        $sfcUpd->execute();
+                    }
+                    $sfcUpd->close();
+                }
+            }
+
+            // 5. Cascade updates to recoiling_product
+            if ($coilNoChanged || $lotNoChanged || $productChanged) {
+                $recStmt = $conn->prepare("SELECT id, lot_no FROM recoiling_product WHERE mother_id = ?");
+                if ($recStmt) {
+                    $recStmt->bind_param("i", $id);
+                    $recStmt->execute();
+                    $recRows = $recStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                    $recStmt->close();
+
+                    $recUpd = $conn->prepare("UPDATE recoiling_product SET coil_no = ?, product = ?, lot_no = ? WHERE id = ?");
+                    foreach ($recRows as $recRow) {
+                        $recLot = $recRow['lot_no'] ?? '';
+                        $newRecLot = $recLot;
+                        if ($lotNoChanged && strpos($recLot, $oldLotNo) === 0) {
+                            $suffix    = substr($recLot, strlen($oldLotNo));
+                            $newRecLot = $lot_no . $suffix;
+                        }
+                        $recUpd->bind_param("sssi", $coil_no, $product, $newRecLot, $recRow['id']);
+                        $recUpd->execute();
+                    }
+                    $recUpd->close();
+                }
+            }
+
+            // 6. Cascade updates to reslit_product
+            if ($coilNoChanged || $lotNoChanged || $productChanged) {
+                $resStmt = $conn->prepare("SELECT id, lot_no FROM reslit_product WHERE mother_id = ?");
+                if ($resStmt) {
+                    $resStmt->bind_param("i", $id);
+                    $resStmt->execute();
+                    $resRows = $resStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                    $resStmt->close();
+
+                    $resUpd = $conn->prepare("UPDATE reslit_product SET coil_no = ?, product = ?, lot_no = ? WHERE id = ?");
+                    foreach ($resRows as $resRow) {
+                        $resLot = $resRow['lot_no'] ?? '';
+                        $newResLot = $resLot;
+                        if ($lotNoChanged && strpos($resLot, $oldLotNo) === 0) {
+                            $suffix    = substr($resLot, strlen($oldLotNo));
+                            $newResLot = $lot_no . $suffix;
+                        }
+                        $resUpd->bind_param("sssi", $coil_no, $product, $newResLot, $resRow['id']);
+                        $resUpd->execute();
+                    }
+                    $resUpd->close();
+                }
+            }
+
             $conn->commit();
             $successParams = 'success=update';
-            if ($lotNoChanged) { $successParams .= '&children_updated=' . $childrenUpdated; }
+            if ($lotNoChanged || $coilNoChanged || $productChanged) {
+                $successParams .= '&children_updated=' . $childrenUpdated;
+            }
             header("Location: mother_coil.php?{$successParams}");
             exit;
 
@@ -791,126 +950,142 @@ include 'header.php';
      ADD MODAL
 ══════════════════════════════════════════ -->
 <div class="modal fade" id="addMotherModal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog">
-    <div class="modal-content">
+  <div class="modal-dialog modal-xl modal-dialog-centered">
+    <div class="modal-content border-0 shadow-lg">
       <form method="post" action="mother_coil.php" id="addMotherForm">
         <input type="hidden" name="action" value="add">
 
-        <div class="modal-header">
-          <h5 class="modal-title"><i class="bi bi-plus-circle me-2"></i>Add Mother Coil</h5>
+        <div class="modal-header bg-light py-3 px-4">
+          <h5 class="modal-title fw-bold text-dark"><i class="bi bi-plus-circle-fill text-primary me-2"></i>Add Mother Coil</h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
         </div>
 
-        <div class="modal-body">
+        <div class="modal-body p-4">
 
-          <!-- Excel paste shortcut (add-on; manual fields below remain fully usable) -->
-          <div class="mb-3">
-            <label class="form-label fw-semibold">Shortcut: Paste Excel Row Here to Auto-Fill</label>
-            <textarea id="add_paste_zone" class="form-control" rows="2"
+          <!-- Excel paste shortcut -->
+          <div class="p-3 bg-light rounded-3 border mb-4">
+            <label class="form-label fw-semibold text-dark mb-1">
+              <i class="bi bi-file-earmark-spreadsheet-fill text-success me-1"></i> Shortcut: Paste Excel Row Here to Auto-Fill
+            </label>
+            <textarea id="add_paste_zone" class="form-control form-control-sm border-secondary-subtle" rows="2"
                       placeholder="Copy a row from Excel (without headers) and paste it here…"></textarea>
-            <div class="form-text">Tab-separated row from Excel — 10 columns including blank spacer cells (Product, [blank], Width, Lot No., [blank], Material Length, Actual Length, Slitting Date, [blank], Grade); Actual Length, Slitting Date and the blank spacer cells are ignored — auto-fills Product, Lot No, Coil No, Width, Length and Grade below.</div>
-            <div class="alert alert-warning mt-2 mb-0 d-none" id="add_paste_warning">
+            <div class="form-text text-muted small mt-1">
+              Auto-fills Lot No, Coil No, Product, Grade, Width, and Length below.
+            </div>
+            <div class="alert alert-warning py-1 px-2 mt-2 mb-0 small d-none" id="add_paste_warning">
               Format mismatch. Please ensure you copied a valid row from the spreadsheet.
             </div>
           </div>
 
-          <!-- Lot No (first — unlocks Coil No) -->
-          <div class="mb-3">
-            <label class="form-label fw-semibold">Lot No <span class="text-danger">*</span></label>
-            <input type="text" name="lot_no" id="add_lot_no" class="form-control" required
-                   maxlength="8" pattern="^[a-zA-Z0-9]{4,8}$"
-                   title="4–8 alphanumeric characters"
-                   placeholder="e.g. 5001">
-            <div class="form-text">4–8 characters, letters and numbers only.</div>
-          </div>
-
-          <!-- Coil No (unlocks after Lot No) -->
-          <div class="mb-3">
-            <label class="form-label fw-semibold">Coil No <span class="text-danger">*</span></label>
-            <input type="text" name="coil_no" id="add_coil_no" class="form-control" required
-                   disabled placeholder="Enter coil number">
-            <div class="form-text" id="add_coil_hint">Enter coil number then click elsewhere to look up product.</div>
-          </div>
-
-          <!-- Product display (auto-filled or chosen) -->
-          <div class="mb-3" id="add_product_wrap">
-            <label class="form-label fw-semibold">Product <span class="text-danger">*</span></label>
-
-            <!-- CASE 1: single match → readonly display, hidden input carries value -->
-            <div id="add_product_auto_wrap">
-              <input type="text" id="add_product_display" class="form-control state-empty"
-                     readonly placeholder="Will auto-fill after Coil No is entered">
+          <!-- 2-Column Grid for Mother Coil Details -->
+          <div class="row g-3 mb-4">
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Lot No <span class="text-danger">*</span></label>
+              <input type="text" name="lot_no" id="add_lot_no" class="form-control" required
+                     maxlength="8" pattern="^[a-zA-Z0-9]{4,8}$"
+                     title="4–8 alphanumeric characters"
+                     placeholder="e.g. 5001">
+              <div class="form-text">4–8 characters, letters and numbers only.</div>
             </div>
 
-            <!-- CASE 2: multiple matches → dropdown -->
-            <div id="add_product_select_wrap">
-              <div class="product-choice-badge">
-                <i class="bi bi-info-circle"></i>
-                Multiple products found — please select one
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Coil No <span class="text-danger">*</span></label>
+              <input type="text" name="coil_no" id="add_coil_no" class="form-control" required
+                     disabled placeholder="Enter coil number">
+              <div class="form-text" id="add_coil_hint">Enter coil number then click elsewhere to look up product.</div>
+            </div>
+
+            <div class="col-md-6" id="add_product_wrap">
+              <label class="form-label fw-semibold">Product <span class="text-danger">*</span></label>
+
+              <div id="add_product_auto_wrap">
+                <input type="text" id="add_product_display" class="form-control state-empty"
+                       readonly placeholder="Will auto-fill after Coil No is entered">
               </div>
-              <select name="product" id="add_product_select" class="form-select" required>
-                <option value="">-- Select Product --</option>
-              </select>
+
+              <div id="add_product_select_wrap">
+                <div class="product-choice-badge mb-1 small text-primary">
+                  <i class="bi bi-info-circle me-1"></i>Multiple products found — please select one
+                </div>
+                <select name="product" id="add_product_select" class="form-select" required>
+                  <option value="">-- Select Product --</option>
+                </select>
+              </div>
+
+              <input type="hidden" name="product" id="add_product_hidden">
             </div>
 
-            <!-- Hidden input used when auto-fill (single match) -->
-            <input type="hidden" name="product" id="add_product_hidden">
-          </div>
-
-          <!-- Grade (unlocks after product resolved) -->
-          <div class="mb-3">
-            <label class="form-label fw-semibold">Grade <span class="text-danger">*</span></label>
-            <input type="text" name="grade" id="add_grade" class="form-control" required
-                   disabled placeholder="e.g. SS400">
-          </div>
-
-          <!-- Width -->
-          <div class="mb-3">
-            <label class="form-label fw-semibold">Width (mm) <span class="text-danger">*</span></label>
-            <input type="number" step="0.01" name="width" id="add_width" class="form-control" required
-                   disabled placeholder="e.g. 1250">
-          </div>
-
-          <!-- Length -->
-          <div class="mb-3">
-            <label class="form-label fw-semibold">Length (mtr) <span class="text-danger">*</span></label>
-            <input type="number" step="0.01" name="length" id="add_length" class="form-control" required
-                   disabled placeholder="e.g. 500">
-          </div>
-
-          <!-- Optional Slitting Plan: manual rows and/or Excel paste both
-               feed the same plan_seq[]/plan_width[] inputs below, which
-               simply submit as-is (or stay empty) with the rest of the form. -->
-          <hr>
-          <div class="mb-3">
-            <label class="form-label fw-semibold">
-              <i class="bi bi-list-ol me-1"></i>Slitting Plan <span class="text-muted fw-normal">(optional)</span>
-            </label>
-            <div class="form-text mb-2">
-              Give the floor operator a head start by planning the cut widths now. Leave this blank to skip —
-              the operator will fill everything in manually, exactly as before.
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Grade <span class="text-danger">*</span></label>
+              <input type="text" name="grade" id="add_grade" class="form-control" required
+                     disabled placeholder="e.g. SS400">
             </div>
 
-            <textarea id="plan_paste_zone" class="form-control form-control-sm mb-2" rows="2"
-                      placeholder="Paste directly from Excel — Seq (tab) Width, one roll per line, e.g.&#10;R1&#9;415&#10;R2&#9;109.5"></textarea>
-            <div class="alert alert-warning py-1 px-2 small mt-1 mb-2 d-none" id="plan_paste_warning">
-              Couldn't read that as Seq + Width pairs — check the format.
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Width (mm) <span class="text-danger">*</span></label>
+              <input type="number" step="0.01" name="width" id="add_width" class="form-control" required
+                     disabled placeholder="e.g. 1250">
             </div>
 
-            <div id="planRowsContainer" class="mb-2"></div>
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Length (mtr) <span class="text-danger">*</span></label>
+              <input type="number" step="0.01" name="length" id="add_length" class="form-control" required
+                     disabled placeholder="e.g. 500">
+            </div>
+          </div>
 
-            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="addPlanRow()">
+          <!-- Slitting Plan Section -->
+          <hr class="my-4">
+          <div class="mb-3">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <label class="form-label fw-bold fs-6 text-dark mb-0">
+                <i class="bi bi-list-ol text-primary me-2"></i>Slitting Plan <span class="badge bg-secondary-subtle text-secondary ms-1">Optional</span>
+              </label>
+            </div>
+            <div class="form-text text-muted mb-3">
+              Give floor operators a head start by planning cut widths, customer codes, and ref numbers now.
+            </div>
+
+            <!-- Quick Paste Area -->
+            <div class="p-3 bg-light rounded-3 border mb-3">
+              <label class="form-label fw-semibold small text-secondary mb-1">
+                <i class="bi bi-clipboard-plus me-1"></i> Quick Excel / CSV Slitting Plan Paste
+              </label>
+              <textarea id="plan_paste_zone" class="form-control form-control-sm border-secondary-subtle" rows="2"
+                        placeholder="Paste from Excel/CSV — Roll, Width, Customer, Ref No, e.g.&#10;R1, 125, NAE, SO-26-0110&#10;R2, 125, STAMPING, STOCK"></textarea>
+              <div class="alert alert-warning py-1 px-2 small mt-2 mb-0 d-none" id="plan_paste_warning">
+                Couldn't read that as Seq + Width pairs — check the format.
+              </div>
+            </div>
+
+            <!-- Structured Table / Grid for Slitting Plan Rows -->
+            <div class="card border shadow-sm mb-3">
+              <div class="card-header bg-light py-2 px-3">
+                <div class="row g-2 align-items-center text-secondary fw-bold small text-uppercase">
+                  <div style="width: 85px;">Seq</div>
+                  <div style="width: 125px;">Width (mm)</div>
+                  <div style="width: 230px;">Customer Code</div>
+                  <div class="col">Customer Ref No</div>
+                  <div style="width: 40px;" class="text-end"></div>
+                </div>
+              </div>
+              <div class="card-body p-2" id="planRowsContainer" style="max-height: 280px; overflow-y: auto;">
+                <!-- Rows injected dynamically -->
+              </div>
+            </div>
+
+            <button type="button" class="btn btn-outline-primary btn-sm px-3" onclick="addPlanRow()">
               <i class="bi bi-plus-lg me-1"></i>Add Row Manually
             </button>
           </div>
 
         </div><!-- /modal-body -->
 
-        <div class="modal-footer">
-          <button type="submit" class="btn btn-success" id="add_submit_btn" disabled>
-            <i class="bi bi-save me-1"></i> Save
+        <div class="modal-footer bg-light px-4 py-3">
+          <button type="button" class="btn btn-secondary px-4" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-success px-4" id="add_submit_btn" disabled>
+            <i class="bi bi-check-circle me-1"></i> Save Mother Coil
           </button>
-          <button type="button" class="btn btn-danger" data-bs-dismiss="modal">Cancel</button>
         </div>
       </form>
     </div>
@@ -921,55 +1096,103 @@ include 'header.php';
      EDIT MODAL
 ══════════════════════════════════════════ -->
 <div class="modal fade" id="editMotherModal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog">
-    <div class="modal-content">
+  <div class="modal-dialog modal-xl modal-dialog-centered">
+    <div class="modal-content border-0 shadow-lg">
       <form method="post" action="mother_coil.php">
         <input type="hidden" name="action" value="update">
         <input type="hidden" name="id" id="edit_id">
 
-        <div class="modal-header">
-          <h5 class="modal-title"><i class="bi bi-pencil me-2"></i>Edit Mother Coil</h5>
+        <div class="modal-header bg-light py-3 px-4">
+          <h5 class="modal-title fw-bold text-dark"><i class="bi bi-pencil-square text-warning me-2"></i>Edit Mother Coil</h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
         </div>
 
-        <div class="modal-body">
-          <div class="mb-3">
-            <label class="form-label fw-semibold">Product</label>
-            <select name="product" id="edit_product" class="form-select" required>
-              <option value="">-- Select Product --</option>
-              <?php foreach ($all_products as $p): ?>
-                <option value="<?= htmlspecialchars($p) ?>"><?= htmlspecialchars($p) ?></option>
-              <?php endforeach; ?>
-            </select>
+        <div class="modal-body p-4">
+          <!-- 2-Column Grid for Mother Coil Details -->
+          <div class="row g-3 mb-4">
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Lot No</label>
+              <input type="text" name="lot_no" id="edit_lot_no" class="form-control" required
+                     maxlength="8" pattern="^[a-zA-Z0-9]{4,8}$">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Coil No</label>
+              <input type="text" name="coil_no" id="edit_coil_no" class="form-control" required>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Product</label>
+              <select name="product" id="edit_product" class="form-select" required>
+                <option value="">-- Select Product --</option>
+                <?php foreach ($all_products as $p): ?>
+                  <option value="<?= htmlspecialchars($p) ?>"><?= htmlspecialchars($p) ?></option>
+                <?php endforeach; ?>
+              </select>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Grade</label>
+              <input type="text" name="grade" id="edit_grade" class="form-control" required>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Width (mm)</label>
+              <input type="number" step="0.01" name="width" id="edit_width" class="form-control" required>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Length (mtr)</label>
+              <input type="number" step="0.01" name="length" id="edit_length" class="form-control" required>
+            </div>
           </div>
+
+          <!-- Slitting Plan (optional / editable) -->
+          <hr class="my-4">
           <div class="mb-3">
-            <label class="form-label fw-semibold">Lot No</label>
-            <input type="text" name="lot_no" id="edit_lot_no" class="form-control" required
-                   maxlength="8" pattern="^[a-zA-Z0-9]{4,8}$">
-          </div>
-          <div class="mb-3">
-            <label class="form-label fw-semibold">Coil No</label>
-            <input type="text" name="coil_no" id="edit_coil_no" class="form-control" required>
-          </div>
-          <div class="mb-3">
-            <label class="form-label fw-semibold">Grade</label>
-            <input type="text" name="grade" id="edit_grade" class="form-control" required>
-          </div>
-          <div class="mb-3">
-            <label class="form-label fw-semibold">Width (mm)</label>
-            <input type="number" step="0.01" name="width" id="edit_width" class="form-control" required>
-          </div>
-          <div class="mb-3">
-            <label class="form-label fw-semibold">Length (mtr)</label>
-            <input type="number" step="0.01" name="length" id="edit_length" class="form-control" required>
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <label class="form-label fw-bold fs-6 text-dark mb-0">
+                <i class="bi bi-list-ol text-primary me-2"></i>Slitting Plan <span class="badge bg-secondary-subtle text-secondary ms-1">Optional</span>
+              </label>
+            </div>
+            <div class="form-text text-muted mb-3">
+              Modify or add planned cut widths, customer codes, and ref numbers for this mother coil.
+            </div>
+
+            <!-- Quick Paste Area -->
+            <div class="p-3 bg-light rounded-3 border mb-3">
+              <label class="form-label fw-semibold small text-secondary mb-1">
+                <i class="bi bi-clipboard-plus me-1"></i> Quick Excel / CSV Slitting Plan Paste
+              </label>
+              <textarea id="edit_plan_paste_zone" class="form-control form-control-sm border-secondary-subtle" rows="2"
+                        placeholder="Paste from Excel/CSV — Roll, Width, Customer, Ref No, e.g.&#10;R1, 125, NAE, SO-26-0110&#10;R2, 125, STAMPING, STOCK"></textarea>
+              <div class="alert alert-warning py-1 px-2 small mt-2 mb-0 d-none" id="edit_plan_paste_warning">
+                Couldn't read that as Seq + Width pairs — check the format.
+              </div>
+            </div>
+
+            <!-- Structured Table / Grid for Slitting Plan Rows -->
+            <div class="card border shadow-sm mb-3">
+              <div class="card-header bg-light py-2 px-3">
+                <div class="row g-2 align-items-center text-secondary fw-bold small text-uppercase">
+                  <div style="width: 85px;">Seq</div>
+                  <div style="width: 125px;">Width (mm)</div>
+                  <div style="width: 230px;">Customer Code</div>
+                  <div class="col">Customer Ref No</div>
+                  <div style="width: 40px;" class="text-end"></div>
+                </div>
+              </div>
+              <div class="card-body p-2" id="editPlanRowsContainer" style="max-height: 280px; overflow-y: auto;">
+                <!-- Dynamic rows injected here -->
+              </div>
+            </div>
+
+            <button type="button" class="btn btn-outline-primary btn-sm px-3" onclick="addEditPlanRow()">
+              <i class="bi bi-plus-lg me-1"></i>Add Row Manually
+            </button>
           </div>
         </div>
 
-        <div class="modal-footer">
-          <button type="submit" class="btn btn-success">
-            <i class="bi bi-save me-1"></i> Update
+        <div class="modal-footer bg-light px-4 py-3">
+          <button type="button" class="btn btn-secondary px-4" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-success px-4">
+            <i class="bi bi-check-circle me-1"></i> Update Mother Coil
           </button>
-          <button type="button" class="btn btn-danger" data-bs-dismiss="modal">Cancel</button>
         </div>
       </form>
     </div>
@@ -1019,26 +1242,46 @@ include 'header.php';
 
         <!-- Shared Slitting Plan: entered ONCE, applied to every mother coil
              saved from this batch (same roll widths for all of them). -->
-        <hr>
-        <div class="mb-2">
-          <label class="form-label fw-semibold">
-            <i class="bi bi-list-ol me-1"></i>Slitting Plan
-            <span class="text-muted fw-normal">(optional — applies to ALL rows in this batch)</span>
-          </label>
-          <div class="form-text mb-2">
-            Enter the plan once here and every mother coil saved from this batch will share the same roll widths.
-            Leave blank to skip — operators will fill everything in manually as usual.
+        <hr class="my-4">
+        <div class="mb-3">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <label class="form-label fw-bold fs-6 text-dark mb-0">
+              <i class="bi bi-list-ol text-primary me-2"></i>Shared Slitting Plan <span class="badge bg-secondary-subtle text-secondary ms-1">Applies to ALL rows in batch</span>
+            </label>
+          </div>
+          <div class="form-text text-muted mb-3">
+            Enter the plan once here and every mother coil saved from this batch will share the same cut widths, customer codes, and ref numbers.
           </div>
 
-          <textarea id="bulk_plan_paste_zone" class="form-control form-control-sm mb-2" rows="2"
-                    placeholder="Paste directly from Excel — Seq (tab) Width, one roll per line, e.g.&#10;R1&#9;415&#10;R2&#9;109.5"></textarea>
-          <div class="alert alert-warning py-1 px-2 small mt-1 mb-2 d-none" id="bulk_plan_paste_warning">
-            Couldn't read that as Seq + Width pairs — check the format.
+          <!-- Quick Paste Area -->
+          <div class="p-3 bg-light rounded-3 border mb-3">
+            <label class="form-label fw-semibold small text-secondary mb-1">
+              <i class="bi bi-clipboard-plus me-1"></i> Quick Excel / CSV Slitting Plan Paste
+            </label>
+            <textarea id="bulk_plan_paste_zone" class="form-control form-control-sm border-secondary-subtle" rows="2"
+                      placeholder="Paste from Excel/CSV — Roll, Width, Customer, Ref No, e.g.&#10;R1, 125, NAE, SO-26-0110&#10;R2, 125, STAMPING, STOCK"></textarea>
+            <div class="alert alert-warning py-1 px-2 small mt-2 mb-0 d-none" id="bulk_plan_paste_warning">
+              Couldn't read that as Seq + Width pairs — check the format.
+            </div>
           </div>
 
-          <div id="bulkPlanRowsContainer" class="mb-2"></div>
+          <!-- Structured Table / Grid for Slitting Plan Rows -->
+          <div class="card border shadow-sm mb-3">
+            <div class="card-header bg-light py-2 px-3">
+              <div class="row g-2 align-items-center text-secondary fw-bold small text-uppercase">
+                <div style="width: 85px;">Seq</div>
+                <div style="width: 125px;">Width (mm)</div>
+                <div style="width: 230px;">Customer Code</div>
+                <div class="col">Customer Ref No</div>
+                <div style="width: 40px;" class="text-end"></div>
+              </div>
+            </div>
+            <div class="card-body p-2" id="bulkPlanRowsContainer" style="max-height: 280px; overflow-y: auto;">
+              <!-- Dynamic rows injected here -->
+            </div>
+          </div>
 
-          <button type="button" class="btn btn-outline-secondary btn-sm" onclick="addBulkPlanRow()">
+          <button type="button" class="btn btn-outline-primary btn-sm px-3" onclick="addBulkPlanRow()">
             <i class="bi bi-plus-lg me-1"></i>Add Row Manually
           </button>
         </div>
@@ -1053,6 +1296,29 @@ include 'header.php';
     </div>
   </div>
 </div>
+
+<datalist id="validCustomerList">
+  <option value="NAE">NICHIAS AUTOPARTS EUROPE (NAE)</option>
+  <option value="NAX">NAX MFG, SA.DE C.V</option>
+  <option value="NCI MFG">NCI MFG., INC.</option>
+  <option value="TAIHO">TAIHO MFG OF TN. INC</option>
+  <option value="NRI">PT NICHIAS ROCKWOOL IND.</option>
+  <option value="ASHUKA">ASHUKA TECHNOLOGIES SDN. BHD.</option>
+  <option value="NIPPON">NTC(NIPPON GASKET)</option>
+  <option value="NTC">NICHIAS THAILAND</option>
+  <option value="SGC">SHANGHAI XINGSHENG</option>
+  <option value="STAMPING">MK STAMPING</option>
+  <option value="YANTAI">NICHIAS (SHANGHAI) AUTOPARTS TRADING</option>
+  <option value="NIPP">NICHIAS IND.PRODUCTS PVT. LTD.</option>
+  <option value="NVC">NICHIAS VIETNAM CO., LTD</option>
+  <option value="NSJ">NC-PT NICHIAS SUNIJAYA</option>
+  <option value="NIP">SUZHOU NICHIAS IND. PRODUCTS</option>
+  <option value="YTEC">YTEC CO., LTD.</option>
+  <option value="NSA">NICHIAS SOUTH EAST ASIA (UP PACKING)</option>
+  <option value="NCI 2">NCI MFG (LINE 2)</option>
+  <option value="STOCK">STOCK</option>
+  <option value="TRIAL">TRIAL</option>
+</datalist>
 
 <!-- ================================================================
      BULK PRINT FOR SLITTING PLAN MODAL
@@ -1311,42 +1577,112 @@ function planEsc(s) {
         c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+const VALID_CUSTOMERS = ['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA','NIPPON','NTC','SGC','STAMPING','YANTAI','NIPP','NVC','NSJ','NIP','YTEC','NSA','NCI 2','STOCK','TRIAL'];
+
+function normalizeCustomerCode(input) {
+    if (!input) return '';
+    const clean = input.trim().toUpperCase();
+    const found = VALID_CUSTOMERS.find(c => c.toUpperCase() === clean);
+    return found || '';
+}
+
+function validatePlanCustomerInput(input) {
+    const val = input.value.trim().toUpperCase();
+    if (!val) {
+        input.classList.remove('is-invalid');
+        input.title = "";
+        return;
+    }
+    const isValid = VALID_CUSTOMERS.some(c => c.toUpperCase() === val);
+    if (!isValid) {
+        input.classList.add('is-invalid');
+        input.title = "Invalid Customer Code! Must be one of: " + VALID_CUSTOMERS.join(', ');
+    } else {
+        input.classList.remove('is-invalid');
+        input.title = "";
+    }
+}
+
 /* Shared by both the single-add plan and the bulk-add shared plan below.
-   Format: "R1 \t 415 \n R2 \t 109.5" — tab-separated seq+width per line.
-   Falls back to whitespace-splitting so a manually typed "R1 415" line
-   still works. */
+   Format: "R1, 125, NAE, SO-26-0110" or "R1 \t 125 \t NAE \t SO-26-0110" — comma/tab/space separated per line. */
 function parsePlanPasteText(text) {
     const lines  = text.trim().split(/\r?\n/).filter(l => l.trim() !== '');
     const parsed = [];
 
     for (const line of lines) {
-        let cols = line.split('\t').map(c => c.trim()).filter(c => c !== '');
-        if (cols.length < 2) cols = line.trim().split(/\s+/);
+        let cols = [];
+        if (line.includes(',')) {
+            cols = line.split(',').map(c => c.trim());
+        } else if (line.includes('\t')) {
+            cols = line.split('\t').map(c => c.trim()).filter(c => c !== '');
+        } else {
+            cols = line.trim().split(/\s+/);
+        }
+
         if (cols.length < 2) continue;
 
-        const seq   = cols[0];
+        const seq   = cols[0].trim();
         const width = parseFloat(cols[1]);
         if (seq === '' || isNaN(width)) continue;
 
-        parsed.push({ seq, width });
+        const rawCustomer = (cols.length >= 3) ? cols[2].trim() : '';
+        const customer    = normalizeCustomerCode(rawCustomer);
+        const refNo       = (cols.length >= 4) ? cols[3].trim() : '';
+        const rawCustInvalid = (rawCustomer !== '' && customer === '');
+
+        parsed.push({ seq, width, customer, refNo, rawCustomer, rawCustInvalid });
     }
 
     return parsed;
 }
 
-function addPlanRow(seq = '', width = '') {
+function addPlanRow(seq = '', width = '', customer = '', refNo = '', rawCustomer = '', rawCustInvalid = false) {
+    if (!seq) {
+        let maxNum = 0;
+        elPlanRows.querySelectorAll('.plan-row input[name="plan_seq[]"]').forEach(input => {
+            const m = input.value.trim().match(/^R(\d+)$/i);
+            if (m) {
+                const num = parseInt(m[1], 10);
+                if (num > maxNum) maxNum = num;
+            }
+        });
+        if (maxNum === 0) {
+            maxNum = elPlanRows.querySelectorAll('.plan-row').length;
+        }
+        seq = 'R' + (maxNum + 1);
+    }
+
+    const custVal = customer || rawCustomer;
+    const invalidClass = rawCustInvalid ? 'is-invalid' : '';
+    const invalidTitle = rawCustInvalid ? `Invalid Customer Code '${rawCustomer}'` : '';
+
     const row = document.createElement('div');
-    row.className = 'input-group input-group-sm mb-1 plan-row';
+    row.className = 'row g-2 align-items-center mb-2 plan-row';
     row.innerHTML = `
-        <span class="input-group-text">Seq</span>
-        <input type="text" name="plan_seq[]" class="form-control" placeholder="R1" value="${planEsc(seq)}">
-        <span class="input-group-text">Width (mm)</span>
-        <input type="number" step="0.01" name="plan_width[]" class="form-control" placeholder="e.g. 415" value="${planEsc(width)}">
-        <button type="button" class="btn btn-outline-danger" onclick="this.closest('.plan-row').remove()">
-            <i class="bi bi-x-lg"></i>
-        </button>
+        <div style="width: 85px;">
+            <input type="text" name="plan_seq[]" class="form-control form-control-sm text-center fw-bold bg-light" placeholder="R1" value="${planEsc(seq)}">
+        </div>
+        <div style="width: 125px;">
+            <input type="number" step="0.01" name="plan_width[]" class="form-control form-control-sm plan-width-input" placeholder="125" value="${planEsc(width)}">
+        </div>
+        <div style="width: 230px;">
+            <input type="text" name="plan_customer[]" class="form-control form-control-sm text-uppercase ${invalidClass}" list="validCustomerList" placeholder="e.g. NAE" value="${planEsc(custVal)}" title="${invalidTitle}" oninput="validatePlanCustomerInput(this)">
+        </div>
+        <div class="col">
+            <input type="text" name="plan_ref[]" class="form-control form-control-sm" placeholder="e.g. SO-26-0110" value="${planEsc(refNo)}">
+        </div>
+        <div style="width: 40px;" class="text-end">
+            <button type="button" class="btn btn-sm btn-outline-danger border-0 px-2" title="Remove Roll" onclick="this.closest('.plan-row').remove()">
+                <i class="bi bi-trash3-fill"></i>
+            </button>
+        </div>
     `;
     elPlanRows.appendChild(row);
+
+    if (!width) {
+        const widthInput = row.querySelector('.plan-width-input');
+        if (widthInput) widthInput.focus();
+    }
 }
 
 function clearPlanRows() {
@@ -1362,7 +1698,7 @@ elPlanPaste.addEventListener('input', function () {
 
     elPlanWarning.classList.add('d-none');
     clearPlanRows();
-    parsed.forEach(p => addPlanRow(p.seq, p.width));
+    parsed.forEach(p => addPlanRow(p.seq, p.width, p.customer, p.refNo, p.rawCustomer, p.rawCustInvalid));
 });
 
 /* ════════════════════════════════════════════════════════════
@@ -1376,19 +1712,53 @@ const elBulkPlanPaste   = document.getElementById('bulk_plan_paste_zone');
 const elBulkPlanRows    = document.getElementById('bulkPlanRowsContainer');
 const elBulkPlanWarning = document.getElementById('bulk_plan_paste_warning');
 
-function addBulkPlanRow(seq = '', width = '') {
+function addBulkPlanRow(seq = '', width = '', customer = '', refNo = '', rawCustomer = '', rawCustInvalid = false) {
+    if (!seq) {
+        let maxNum = 0;
+        elBulkPlanRows.querySelectorAll('.plan-row .bulk-plan-seq').forEach(input => {
+            const m = input.value.trim().match(/^R(\d+)$/i);
+            if (m) {
+                const num = parseInt(m[1], 10);
+                if (num > maxNum) maxNum = num;
+            }
+        });
+        if (maxNum === 0) {
+            maxNum = elBulkPlanRows.querySelectorAll('.plan-row').length;
+        }
+        seq = 'R' + (maxNum + 1);
+    }
+
+    const custVal = customer || rawCustomer;
+    const invalidClass = rawCustInvalid ? 'is-invalid' : '';
+    const invalidTitle = rawCustInvalid ? `Invalid Customer Code '${rawCustomer}'` : '';
+
     const row = document.createElement('div');
-    row.className = 'input-group input-group-sm mb-1 plan-row';
+    row.className = 'row g-2 align-items-center mb-2 plan-row';
     row.innerHTML = `
-        <span class="input-group-text">Seq</span>
-        <input type="text" class="form-control bulk-plan-seq" placeholder="R1" value="${planEsc(seq)}">
-        <span class="input-group-text">Width (mm)</span>
-        <input type="number" step="0.01" class="form-control bulk-plan-width" placeholder="e.g. 415" value="${planEsc(width)}">
-        <button type="button" class="btn btn-outline-danger" onclick="this.closest('.plan-row').remove()">
-            <i class="bi bi-x-lg"></i>
-        </button>
+        <div style="width: 85px;">
+            <input type="text" class="form-control form-control-sm text-center fw-bold bg-light bulk-plan-seq" placeholder="R1" value="${planEsc(seq)}">
+        </div>
+        <div style="width: 125px;">
+            <input type="number" step="0.01" class="form-control form-control-sm bulk-plan-width" placeholder="125" value="${planEsc(width)}">
+        </div>
+        <div style="width: 230px;">
+            <input type="text" class="form-control form-control-sm bulk-plan-customer text-uppercase ${invalidClass}" list="validCustomerList" placeholder="e.g. NAE" value="${planEsc(custVal)}" title="${invalidTitle}" oninput="validatePlanCustomerInput(this)">
+        </div>
+        <div class="col">
+            <input type="text" class="form-control form-control-sm bulk-plan-ref" placeholder="e.g. SO-26-0110" value="${planEsc(refNo)}">
+        </div>
+        <div style="width: 40px;" class="text-end">
+            <button type="button" class="btn btn-sm btn-outline-danger border-0 px-2" title="Remove Roll" onclick="this.closest('.plan-row').remove()">
+                <i class="bi bi-trash3-fill"></i>
+            </button>
+        </div>
     `;
     elBulkPlanRows.appendChild(row);
+
+    if (!width) {
+        const widthInput = row.querySelector('.bulk-plan-width');
+        if (widthInput) widthInput.focus();
+    }
 }
 
 function clearBulkPlanRows() {
@@ -1398,8 +1768,10 @@ function clearBulkPlanRows() {
 function getBulkPlanRows() {
     return Array.from(elBulkPlanRows.querySelectorAll('.plan-row'))
         .map(r => ({
-            seq:   r.querySelector('.bulk-plan-seq').value.trim(),
-            width: r.querySelector('.bulk-plan-width').value.trim()
+            seq:      r.querySelector('.bulk-plan-seq').value.trim(),
+            width:    r.querySelector('.bulk-plan-width').value.trim(),
+            customer: (r.querySelector('.bulk-plan-customer')?.value || '').trim().toUpperCase(),
+            ref_no:   (r.querySelector('.bulk-plan-ref')?.value || '').trim()
         }))
         .filter(r => r.seq !== '' && r.width !== '' && !isNaN(parseFloat(r.width)));
 }
@@ -1413,7 +1785,7 @@ elBulkPlanPaste.addEventListener('input', function () {
 
     elBulkPlanWarning.classList.add('d-none');
     clearBulkPlanRows();
-    parsed.forEach(p => addBulkPlanRow(p.seq, p.width));
+    parsed.forEach(p => addBulkPlanRow(p.seq, p.width, p.customer, p.refNo, p.rawCustomer, p.rawCustInvalid));
 });
 
 /* Reset the whole product area */
@@ -1567,11 +1939,83 @@ document.getElementById('addMotherModal').addEventListener('shown.bs.modal', fun
 });
 
 /* ════════════════════════════════════════════════════════════
-   EDIT MODAL — populate fields
+   EDIT MODAL — populate fields & slitting plan
 ════════════════════════════════════════════════════════════ */
+const elEditPlanPaste   = document.getElementById('edit_plan_paste_zone');
+const elEditPlanRows    = document.getElementById('editPlanRowsContainer');
+const elEditPlanWarning = document.getElementById('edit_plan_paste_warning');
+
+function addEditPlanRow(seq = '', width = '', customer = '', refNo = '', rawCustomer = '', rawCustInvalid = false) {
+    if (!seq) {
+        let maxNum = 0;
+        elEditPlanRows.querySelectorAll('.plan-row input[name="plan_seq[]"]').forEach(input => {
+            const m = input.value.trim().match(/^R(\d+)$/i);
+            if (m) {
+                const num = parseInt(m[1], 10);
+                if (num > maxNum) maxNum = num;
+            }
+        });
+        if (maxNum === 0) {
+            maxNum = elEditPlanRows.querySelectorAll('.plan-row').length;
+        }
+        seq = 'R' + (maxNum + 1);
+    }
+
+    const custVal = customer || rawCustomer;
+    const invalidClass = rawCustInvalid ? 'is-invalid' : '';
+    const invalidTitle = rawCustInvalid ? `Invalid Customer Code '${rawCustomer}'` : '';
+
+    const row = document.createElement('div');
+    row.className = 'row g-2 align-items-center mb-2 plan-row';
+    row.innerHTML = `
+        <div style="width: 85px;">
+            <input type="text" name="plan_seq[]" class="form-control form-control-sm text-center fw-bold bg-light" placeholder="R1" value="${planEsc(seq)}">
+        </div>
+        <div style="width: 125px;">
+            <input type="number" step="0.01" name="plan_width[]" class="form-control form-control-sm plan-width-input" placeholder="125" value="${planEsc(width)}">
+        </div>
+        <div style="width: 230px;">
+            <input type="text" name="plan_customer[]" class="form-control form-control-sm text-uppercase ${invalidClass}" list="validCustomerList" placeholder="e.g. NAE" value="${planEsc(custVal)}" title="${invalidTitle}" oninput="validatePlanCustomerInput(this)">
+        </div>
+        <div class="col">
+            <input type="text" name="plan_ref[]" class="form-control form-control-sm" placeholder="e.g. SO-26-0110" value="${planEsc(refNo)}">
+        </div>
+        <div style="width: 40px;" class="text-end">
+            <button type="button" class="btn btn-sm btn-outline-danger border-0 px-2" title="Remove Roll" onclick="this.closest('.plan-row').remove()">
+                <i class="bi bi-trash3-fill"></i>
+            </button>
+        </div>
+    `;
+    elEditPlanRows.appendChild(row);
+
+    if (!width) {
+        const widthInput = row.querySelector('.plan-width-input');
+        if (widthInput) widthInput.focus();
+    }
+}
+
+function clearEditPlanRows() {
+    elEditPlanRows.innerHTML = '';
+}
+
+if (elEditPlanPaste) {
+    elEditPlanPaste.addEventListener('input', function () {
+        const text = this.value.trim();
+        if (!text) { elEditPlanWarning.classList.add('d-none'); return; }
+
+        const parsed = parsePlanPasteText(text);
+        if (parsed.length === 0) { elEditPlanWarning.classList.remove('d-none'); return; }
+
+        elEditPlanWarning.classList.add('d-none');
+        clearEditPlanRows();
+        parsed.forEach(p => addEditPlanRow(p.seq, p.width, p.customer, p.refNo, p.rawCustomer, p.rawCustInvalid));
+    });
+}
+
 document.querySelectorAll('.editBtn').forEach(btn => {
-    btn.addEventListener('click', () => {
-        document.getElementById('edit_id').value      = btn.dataset.id;
+    btn.addEventListener('click', async () => {
+        const motherId = btn.dataset.id;
+        document.getElementById('edit_id').value      = motherId;
         document.getElementById('edit_lot_no').value  = btn.dataset.lot_no  || '';
         document.getElementById('edit_coil_no').value = btn.dataset.coil_no || '';
         document.getElementById('edit_grade').value   = btn.dataset.grade   || '';
@@ -1587,6 +2031,21 @@ document.querySelectorAll('.editBtn').forEach(btn => {
             opt.value = opt.textContent = btn.dataset.product;
             sel.appendChild(opt);
             sel.value = btn.dataset.product;
+        }
+
+        // Fetch slitting plan for this mother coil
+        elEditPlanPaste.value = '';
+        elEditPlanWarning.classList.add('d-none');
+        clearEditPlanRows();
+
+        try {
+            const res = await fetch('mother_coil.php?ajax=get_slitting_plan&mother_id=' + motherId);
+            const data = await res.json();
+            if (data.ok && Array.isArray(data.plans)) {
+                data.plans.forEach(p => addEditPlanRow(p.roll_seq, p.planned_width, p.customer_name, p.ref_no));
+            }
+        } catch (e) {
+            console.error('Error loading slitting plan:', e);
         }
     });
 });

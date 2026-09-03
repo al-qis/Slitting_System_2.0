@@ -90,7 +90,9 @@ if (!isset($_GET['id'])) {
     die("Product ID required");
 }
 
-$id = intval($_GET['id']);
+$id   = intval($_GET['id']);
+$from = trim($_GET['from'] ?? $_POST['from'] ?? '');
+$backUrl = ($from === 'slitting_product') ? 'slitting_product.php' : 'finish_product.php';
 
 // ── Fetch product ───────────────────────────────────────────────
 $result = $conn->query("SELECT * FROM slitting_product WHERE id=$id");
@@ -270,6 +272,7 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
 
     <form method="POST" action="print_product.php" id="mainForm">
         <input type="hidden" name="id" value="<?= $id ?>">
+        <input type="hidden" name="from" value="<?= htmlspecialchars($from) ?>">
 
         <!-- Line A/B flag — toggled by the Line A button below -->
         <input type="hidden" name="line" id="lineInput" value="B">
@@ -329,16 +332,16 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
                         <option value="SGC"     <?= $savedCustomer==='SGC'     ?'selected':'' ?>>SHANGHAI XINGSHENG</option>
                         <option value="STAMPING"<?= $savedCustomer==='STAMPING'?'selected':'' ?>>MK STAMPING</option>
                         <option value="YANTAI"  <?= $savedCustomer==='YANTAI'  ?'selected':'' ?>>NICHIAS (SHANGHAI) AUTOPARTS TRADING</option>
-                        <option value="NIP"     <?= $savedCustomer==='NIP'     ?'selected':'' ?>>NICHIAS IND.PRODUCTS PVT. LTD.</option>
+                        <option value="NIPP"    <?= $savedCustomer==='NIPP'    ?'selected':'' ?>>NICHIAS IND.PRODUCTS PVT. LTD.</option>
                         <option value="NVC"     <?= $savedCustomer==='NVC'     ?'selected':'' ?>>NICHIAS VIETNAM CO., LTD</option>
-                        <option value="NCS"     <?= $savedCustomer==='NCS'     ?'selected':'' ?>>NC-PT NICHIAS SUNIJAYA</option>
-                        <option value="SNP"     <?= $savedCustomer==='SNP'     ?'selected':'' ?>>SUZHOU NICHIAS IND. PRODUCTS</option>
+                        <option value="NSJ"     <?= $savedCustomer==='NSJ'     ?'selected':'' ?>>NC-PT NICHIAS SUNIJAYA</option>
+                        <option value="NIP"     <?= $savedCustomer==='NIP'     ?'selected':'' ?>>SUZHOU NICHIAS IND. PRODUCTS</option>
                         <option value="YTEC"    <?= $savedCustomer==='YTEC'    ?'selected':'' ?>>YTEC CO., LTD.</option>
-                        <option value="NSEA"    <?= $savedCustomer==='NSEA'    ?'selected':'' ?>>NICHIAS SOUTH EAST ASIA (UP PACKING)</option>
+                        <option value="NSA"    <?= $savedCustomer==='NSA'    ?'selected':'' ?>>NICHIAS SOUTH EAST ASIA (UP PACKING)</option>
                         <option value="NCI 2"   <?= $savedCustomer==='NCI 2'   ?'selected':'' ?>>NCI 2</option>
                         <option value="STOCK"   <?= ($savedCustomer==='' || $savedCustomer==='STOCK') ?'selected':'' ?>>STOCK</option>
                         <option value="TRIAL"   <?= $savedCustomer==='TRIAL'   ?'selected':'' ?>>TRIAL</option>
-                        <option value="OTHER"   <?= ($savedCustomer!=='' && !in_array($savedCustomer,['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA','NIPPON','NTC','SGC','STAMPING','YANTAI','NIP','NVC','NCS','SNP','YTEC','NSEA','NCI 2','STOCK','TRIAL'])) ?'selected':'' ?>>OTHER (type below)</option>
+                        <option value="OTHER"   <?= ($savedCustomer!=='' && !in_array($savedCustomer,['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA','NIPPON','NTC','SGC','STAMPING','YANTAI','NIPP','NVC','NSJ','NIP','YTEC','NSA','NCI 2','STOCK','TRIAL'])) ?'selected':'' ?>>OTHER (type below)</option>
                     </select>
                     <input type="text" name="custom_customer" id="custom_customer"
                            class="form-control mt-2" placeholder="Enter customer name"
@@ -381,7 +384,7 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
             <button type="submit" class="btn-action btn-print">
                 <i class="bi bi-printer-fill"></i> Print Sticker
             </button>
-            <a href="finish_product.php" class="btn-action btn-back">
+            <a href="<?= htmlspecialchars($backUrl) ?>" class="btn-action btn-back">
                 <i class="bi bi-arrow-left"></i> Back to List
             </a>
         </div>
@@ -631,8 +634,8 @@ document.getElementById('mainForm').addEventListener('submit', (e) => {
 // On load: restore state
 (function () {
     const knownOptions = ['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA',
-                          'NIPPON','NTC','SGC','STAMPING','YANTAI','NIP',
-                          'NVC','NCS','SNP','YTEC','NSEA','NCI 2','STOCK','TRIAL',''];
+                          'NIPPON','NTC','SGC','STAMPING','YANTAI','NIPP',
+                          'NVC','NSJ','NIP','YTEC','NSA','NCI 2','STOCK','TRIAL',''];
     const saved = <?= json_encode($savedCustomer) ?>;
     if (saved !== '' && !knownOptions.includes(saved)) {
         const customEl = document.getElementById('custom_customer');

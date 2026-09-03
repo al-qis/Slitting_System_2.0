@@ -2,13 +2,15 @@
 // qc_dashboard.php — v5: passes top_product_id to backend for top-roll persistence
 session_start();
 require_once 'config.php';
+require_once 'PalletManager.php';
 
 function getPalletItems(mysqli $conn, int $pallet_id): array {
     $stmt = $conn->prepare("
-        SELECT pi.seq, pi.added_at,
+        SELECT pi.seq, pi.added_at, pi.stock_code,
                sp.id AS product_id,
                sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
                sp.width, sp.length, sp.actual_length, sp.status,
+               sp.nod_length,
                COALESCE(sw.std_weight, 0) AS std_weight
         FROM pallet_items pi
         JOIN slitting_product sp ON sp.id = pi.slitting_product_id
@@ -21,6 +23,12 @@ function getPalletItems(mysqli $conn, int $pallet_id): array {
     $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     $stmt->close();
     return $rows;
+}
+
+function formatWidthDisplay($val): string {
+    if ($val === null || $val === '') return '-';
+    $f = (float)$val;
+    return ($f == (int)$f) ? number_format($f, 0) : (string)$f;
 }
 
 function calcEstWeight(float $l, float $w, float $s): float {
@@ -41,31 +49,71 @@ $inspStmt->execute();
 $inspectors = $inspStmt->get_result()->fetch_all(MYSQLI_ASSOC);
 $inspStmt->close();
 
-// Pending pallets
-$result = $conn->query("
+$activeInspectorSession = $_SESSION['active_qc_inspector'] ?? '';
+
+// Ensure coil_width column exists in pallet_items table
+$colCheck = $conn->query("SHOW COLUMNS FROM pallet_items LIKE 'coil_width'");
+if ($colCheck && $colCheck->num_rows === 0) {
+    $conn->query("ALTER TABLE pallet_items ADD COLUMN coil_width TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = Coil Width checkbox was ticked by QC inspector' AFTER hairy_rubber");
+}
+
+// Pending pallets date filtering (single date)
+$filter_date = trim($_GET['filter_date'] ?? $_GET['date'] ?? '');
+
+$where  = "WHERE p.status = 'pending_qc'";
+$params = [];
+$types  = '';
+
+if ($filter_date !== '') {
+    $where .= " AND DATE(p.updated_at) = ?";
+    $params[] = $filter_date;
+    $types   .= 's';
+}
+
+$sql = "
     SELECT p.id, p.pallet_no, p.status,
            p.customer_name, p.ref_no, p.product_type, p.width,
            p.created_at, p.updated_at,
            COUNT(pi.id) AS roll_count
     FROM pallets p
     JOIN pallet_items pi ON pi.pallet_id = p.id
-    WHERE p.status = 'pending_qc'
+    $where
     GROUP BY p.id
     ORDER BY p.updated_at DESC
-");
+";
+
+if (!empty($params)) {
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param($types, ...$params);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $stmt->close();
+} else {
+    $result = $conn->query($sql);
+}
 
 $pallets = [];
 if ($result) {
     while ($row = $result->fetch_assoc()) {
-        $items    = getPalletItems($conn, (int)$row['id']);
-        $totalWgt = 0.0;
-        foreach ($items as $item) {
+        $items        = getPalletItems($conn, (int)$row['id']);
+        $totalWgt     = 0.0;
+        $nodCoilCount = 0;
+        foreach ($items as &$item) {
             $len      = (float)($item['actual_length'] ?: $item['length']);
             $totalWgt += calcEstWeight($len, (float)$item['width'], (float)$item['std_weight']);
+            $nodLen   = 0.0;
+            if (!empty($item['nod_length']) && (float)$item['nod_length'] > 0) {
+                $nodCoilCount++;
+                $nodLen = (float)$item['nod_length'];
+            }
+            $netLen = max(0.0, $len - $nodLen);
+            $item['stock_code'] = PalletManager::formatStockCode($item['coil_no'], $item['width'], $netLen);
         }
-        $row['items']     = $items;
-        $row['total_wgt'] = $totalWgt;
-        $pallets[]        = $row;
+        unset($item);
+        $row['items']          = $items;
+        $row['total_wgt']      = $totalWgt;
+        $row['nod_coil_count'] = $nodCoilCount;
+        $pallets[]             = $row;
     }
 }
 
@@ -82,7 +130,7 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
     <style>
         body { background-color:#f4f7f9; font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif; }
-        .navbar { background-color:#2c3e50; }
+        .navbar { background-color:#2c3e50; position:sticky; top:0; z-index:1030; box-shadow:0 4px 12px rgba(0,0,0,0.15); }
         .card  { border:none; border-radius:10px; box-shadow:0 0.125rem 0.25rem rgba(0,0,0,.075); }
         .table thead th {
             background-color:#f8f9fa; text-transform:uppercase;
@@ -182,16 +230,52 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
         /* approve disabled */
         .btn-approve-pallet:disabled,
         .btn-approve-pallet[disabled]{ opacity:.4; cursor:not-allowed; pointer-events:none; }
+
+        /* Scanning Row Highlights & Focus Effects */
+        .scan-row-highlight {
+            outline: 3px solid #2563eb !important;
+            background-color: #eff6ff !important;
+            transition: all 0.3s ease;
+            animation: scanRowPulse 1.8s ease-in-out 3;
+        }
+        @keyframes scanRowPulse {
+            0%   { background-color: #dbeafe; box-shadow: inset 0 0 12px rgba(37,99,235,0.4); }
+            50%  { background-color: #bfdbfe; box-shadow: inset 0 0 20px rgba(37,99,235,0.7); }
+            100% { background-color: #eff6ff; box-shadow: none; }
+        }
+        .scan-focus-checklist {
+            border: 2px solid #2563eb !important;
+            background-color: #f0f9ff !important;
+            border-radius: 6px;
+            padding: 6px;
+            box-shadow: 0 0 12px rgba(37,99,235,0.35);
+            animation: checklistPulse 2s infinite alternate;
+        }
+        @keyframes checklistPulse {
+            from { box-shadow: 0 0 6px rgba(37,99,235,0.2); }
+            to   { box-shadow: 0 0 14px rgba(37,99,235,0.6); }
+        }
     </style>
 </head>
 <body>
-<nav class="navbar navbar-dark mb-4">
+<nav class="navbar navbar-dark sticky-top mb-4">
     <div class="container">
         <a class="navbar-brand fw-bold" href="#">
             <i class="bi bi-shield-check"></i> NICHIAS QC MANAGEMENT
         </a>
-        <div class="d-flex align-items-center gap-2">
-            <span class="navbar-text text-light">QC: <?= htmlspecialchars($_SESSION['role'] ?? 'qc') ?></span>
+        <div class="d-flex align-items-center gap-3">
+            <div class="d-flex align-items-center bg-white bg-opacity-10 border border-light border-opacity-25 rounded-3 px-3 py-1 text-light">
+                <i class="bi bi-person-badge-fill text-warning me-2" style="font-size:18px !important;"></i>
+                <label for="globalQcInspectorSelect" class="me-2 mb-0 fw-semibold text-white" style="font-size:15px !important;">Active QC:</label>
+                <select id="globalQcInspectorSelect" class="form-select border-0 shadow font-monospace fw-bold text-dark" style="width: auto; background:#fff3cd; font-size:18px !important; color:#856404; padding:6px 36px 6px 14px !important; height:auto !important;" onchange="updateGlobalQcInspector(this.value)">
+                    <option value="">-- Select Active Inspector --</option>
+                    <?php foreach ($inspectors as $insp): ?>
+                    <option value="<?= htmlspecialchars($insp['name'], ENT_QUOTES) ?>" <?= ($activeInspectorSession === $insp['name']) ? 'selected' : '' ?>>
+                        <?= htmlspecialchars($insp['name']) ?>
+                    </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
             <a href="qc_manage_inspectors.php" class="btn btn-outline-light btn-sm" title="Manage Inspector Names">
                 <i class="bi bi-gear-fill me-1"></i> Inspectors
             </a>
@@ -232,6 +316,66 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
         <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
     </div>
     <?php endif; ?>
+
+    <!-- Rapid Barcode/QR Scanning Bar -->
+    <div class="card mb-4 border-0 shadow-sm bg-white rounded-3">
+        <div class="card-body p-3">
+            <div class="d-flex flex-wrap align-items-center justify-content-between gap-2">
+                <div class="d-flex align-items-center gap-2 flex-grow-1" style="min-width: 280px;">
+                    <div class="input-group">
+                        <span class="input-group-text bg-primary text-white border-primary">
+                            <i class="bi bi-qr-code-scan"></i>
+                        </span>
+                        <input type="text" id="qcScanInput" class="form-control font-monospace"
+                               placeholder="Scan product coil barcode / QR code or Pallet No (Hardware scanner ready)..."
+                               autocomplete="off" autocorrect="off" spellcheck="false"
+                               onkeydown="if(event.key==='Enter'){ handleQCScan(this.value); this.value=''; }">
+                        <button type="button" class="btn btn-primary fw-bold" onclick="var el=document.getElementById('qcScanInput'); handleQCScan(el.value); el.value='';">
+                            <i class="bi bi-search me-1"></i> Scan Lookup
+                        </button>
+                    </div>
+                </div>
+                <div class="d-flex align-items-center gap-2">
+                    <span class="badge bg-success bg-opacity-10 text-success border border-success border-opacity-25 px-2 py-2 d-none d-md-inline-flex align-items-center gap-1" title="Hardware scanner gun automatically detected">
+                        <i class="bi bi-keyboard-fill"></i> USB/BT Gun Ready
+                    </span>
+                </div>
+            </div>
+            <!-- Alert / Toast Banner for Scan Feedback -->
+            <div id="qcScanAlert" class="alert alert-dismissible fade show mt-2 mb-0 d-none" role="alert">
+                <span id="qcScanAlertMsg"></span>
+                <button type="button" class="btn-close" onclick="document.getElementById('qcScanAlert').classList.add('d-none');"></button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Date Filter Bar -->
+    <div class="card mb-4 border-0 shadow-sm bg-white rounded-3">
+        <div class="card-body p-3">
+            <form method="GET" action="qc_dashboard.php" id="qcDateFilterForm" class="row g-2 align-items-center">
+                <div class="col-auto">
+                    <span class="fw-bold text-dark small me-1">
+                        <i class="bi bi-calendar3 text-primary me-1"></i>Filter by Date:
+                    </span>
+                </div>
+                <div class="col-md-3 col-sm-6">
+                    <input type="date" id="filter_date" name="filter_date" class="form-control form-control-sm" value="<?= htmlspecialchars($filter_date) ?>" onchange="document.getElementById('qcDateFilterForm').submit()">
+                </div>
+                <div class="col-auto d-flex flex-wrap gap-2 align-items-center">
+                    <button type="submit" class="btn btn-primary btn-sm px-3 fw-bold">
+                        <i class="bi bi-funnel-fill me-1"></i> Filter
+                    </button>
+                    <?php if ($filter_date !== ''): ?>
+                    <a href="qc_dashboard.php" class="btn btn-outline-secondary btn-sm px-3 fw-semibold">
+                        <i class="bi bi-x-circle me-1"></i> Clear
+                    </a>
+                    <?php endif; ?>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" onclick="setSingleDatePreset('today')">Today</button>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" onclick="setSingleDatePreset('yesterday')">Yesterday</button>
+                </div>
+            </form>
+        </div>
+    </div>
 
     <!-- summary cards -->
     <div class="row g-3 mb-4">
@@ -286,8 +430,14 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
 
     <!-- pallets table -->
     <div class="card shadow-sm">
-        <div class="card-header bg-white py-3">
+        <div class="card-header bg-white py-3 d-flex flex-wrap align-items-center justify-content-between gap-2">
             <h5 class="card-title mb-0 fw-bold"><i class="bi bi-archive me-2"></i>Pending Pallets</h5>
+            <?php if ($filter_date !== ''): ?>
+            <span class="badge bg-primary bg-opacity-10 text-primary border border-primary border-opacity-25 px-3 py-2 rounded-pill font-monospace" style="font-size: 12px;">
+                <i class="bi bi-funnel-fill me-1"></i> Date Filtered:
+                <?= date('d M Y', strtotime($filter_date)) ?>
+            </span>
+            <?php endif; ?>
         </div>
 
         <?php if (empty($pallets)): ?>
@@ -313,7 +463,7 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
                 <?php foreach ($pallets as $pallet):
                     $pid = (int)$pallet['id'];
                 ?>
-                <tr class="pallet-row expand-toggle" onclick="toggleRolls(<?= $pid ?>)">
+                <tr class="pallet-row expand-toggle" id="pallet-row-<?= $pid ?>" data-pallet-id="<?= $pid ?>" data-pallet-no="<?= htmlspecialchars($pallet['pallet_no'], ENT_QUOTES) ?>" onclick="toggleRolls(<?= $pid ?>)">
                     <td class="text-center">
                         <i class="bi bi-chevron-right" id="chevron<?= $pid ?>" style="transition:transform .2s;"></i>
                     </td>
@@ -322,12 +472,17 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
                         <div style="font-size:11px;color:#9ca3af;">ID #<?= $pid ?></div>
                     </td>
                     <td>
-                        <div class="d-flex flex-wrap gap-1">
+                        <div class="d-flex flex-wrap gap-1 align-items-center">
                             <?php if (!empty(trim($pallet['customer_name']))): ?>
                             <span class="constraint-chip"><i class="bi bi-person me-1"></i><?= htmlspecialchars($pallet['customer_name']) ?></span>
                             <span class="constraint-chip"><i class="bi bi-hash me-1"></i><?= htmlspecialchars($pallet['ref_no']) ?></span>
                             <span class="constraint-chip"><i class="bi bi-tag me-1"></i><?= htmlspecialchars($pallet['product_type']) ?></span>
-                            <span class="constraint-chip"><?= number_format((float)$pallet['width']) ?> mm</span>
+                            <span class="constraint-chip"><?= formatWidthDisplay($pallet['width']) ?> mm</span>
+                            <?php if (!empty($pallet['nod_coil_count']) && $pallet['nod_coil_count'] > 0): ?>
+                            <span class="constraint-chip nod-alert-chip" style="background:#fef08a; color:#854d0e; border:1px solid #fde047; font-weight:700;" title="Notice of Defect (NOD) recorded on <?= $pallet['nod_coil_count'] ?> coil<?= $pallet['nod_coil_count'] > 1 ? 's' : '' ?>">
+                                <i class="bi bi-exclamation-triangle-fill me-1" style="color:#d97706 !important;"></i>NOD=<?= $pallet['nod_coil_count'] ?> coil<?= $pallet['nod_coil_count'] > 1 ? 's' : '' ?>
+                            </span>
+                            <?php endif; ?>
                             <?php else: ?>
                             <span class="text-muted" style="font-size:11px;">—</span>
                             <?php endif; ?>
@@ -369,9 +524,40 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
                 <!-- Expandable content -->
                 <tr id="rollsRow<?= $pid ?>" style="display:none;">
                     <td colspan="7" style="padding:0 0 14px 50px;background:#f8faff;">
+                        <!-- Warehousing Slip Header Grid -->
+                        <div class="table-responsive my-3 me-3 border rounded bg-white p-3 shadow-sm">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <span class="fw-bold text-secondary" style="font-size:12px;">
+                                    <i class="bi bi-file-text me-1"></i> WAREHOUSING SLIP HEADER
+                                </span>
+                                <span class="badge bg-secondary">MS-WH-01(QR)</span>
+                            </div>
+                            <table class="table table-sm table-bordered align-middle mb-0" style="font-size:13px; background:#fff; border-color:#cbd5e1;">
+                                <tbody>
+                                    <tr>
+                                        <td class="bg-light fw-bold text-muted" style="width:15%;">Customer</td>
+                                        <td class="fw-bold text-dark" style="width:35%;"><?= htmlspecialchars(($pallet['customer_name'] ?? '') ?: '-') ?></td>
+                                        <td class="bg-light fw-bold text-muted" style="width:15%;">Date</td>
+                                        <td class="fw-bold text-dark" style="width:35%;"><?= date('d/m/Y', strtotime($pallet['created_at'] ?? 'now')) ?></td>
+                                    </tr>
+                                    <tr>
+                                        <td class="bg-light fw-bold text-muted">SOS No.</td>
+                                        <td class="fw-bold text-dark"><?= htmlspecialchars(($pallet['ref_no'] ?? '') ?: '-') ?></td>
+                                        <td class="bg-light fw-bold text-muted">Serial No.</td>
+                                        <td class="fw-bold text-primary"><?= htmlspecialchars(($pallet['pallet_no'] ?? '') ?: '-') ?></td>
+                                    </tr>
+                                    <tr>
+                                        <td class="bg-light fw-bold text-muted">Product Type :</td>
+                                        <td class="fw-bold text-dark"><?= htmlspecialchars(($pallet['product_type'] ?? '') ?: '-') ?></td>
+                                        <td class="bg-light fw-bold text-muted">Width (mm)</td>
+                                        <td class="fw-bold text-dark"><?= !empty($pallet['width']) ? formatWidthDisplay($pallet['width']) . ' mm' : '-' ?></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
 
                         <?php if ($pallet['total_wgt']>0): ?>
-                        <div class="pallet-wgt-bar mt-2 me-3">
+                        <div class="pallet-wgt-bar me-3">
                             <div class="label"><i class="bi bi-speedometer2"></i>Est. Total Weight</div>
                             <div style="display:flex;align-items:baseline;gap:5px;">
                                 <span class="total"><?= number_format($pallet['total_wgt'],2) ?></span>
@@ -385,20 +571,15 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
                         </div>
                         <?php endif; ?>
 
-                        <!-- Checked By bar -->
-                        <div class="checked-by-bar me-3" id="checkedByBar<?= $pid ?>">
-                            <label for="inspectorSelect<?= $pid ?>">
-                                <i class="bi bi-person-badge-fill"></i> Checked By:
+                        <!-- Checked By Indicator Bar -->
+                        <div class="checked-by-bar me-3 p-2 rounded" id="checkedByBar<?= $pid ?>" style="background:#f8fafc; border:1px solid #e2e8f0;">
+                            <label class="mb-0 font-monospace text-secondary fw-semibold">
+                                <i class="bi bi-person-badge-fill me-1 text-primary"></i> Checked By (Header Inspector):
                             </label>
-                            <select id="inspectorSelect<?= $pid ?>" onchange="evalChecklist(<?= $pid ?>,null)">
-                                <option value="">-- Select Inspector Name --</option>
-                                <?php foreach ($inspectors as $insp): ?>
-                                <option value="<?= htmlspecialchars($insp['name']) ?>">
-                                    <?= htmlspecialchars($insp['name']) ?>
-                                </option>
-                                <?php endforeach; ?>
-                            </select>
-                            <span class="cb-hint" id="cbHint<?= $pid ?>">Required before Approve or Reject</span>
+                            <span id="activeInspectorBadge<?= $pid ?>" class="fw-bold font-monospace px-2 py-1 bg-white rounded border text-dark ms-1">
+                                -- Select in Header --
+                            </span>
+                            <span class="cb-hint ms-2" id="cbHint<?= $pid ?>">Select in header bar above</span>
                         </div>
 
                         <!-- Checklist hint -->
@@ -406,67 +587,85 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
                             <i class="bi bi-clipboard2-check"></i>
                             <span>
                                 <strong>QC Checklist required:</strong>
-                                Tick <em>both</em> checkboxes on <em>at least one</em> product row,
+                                Tick <em>all 3</em> boxes (Winding Condition, No Hairy Rubber, Coil Width) on <em>at least one</em> product row,
                                 and select an inspector above.
                             </span>
                         </div>
 
-                        <!-- Roll table -->
-                        <table class="roll-sub-table table table-sm mb-0 me-3">
-                            <thead>
-                                <tr>
-                                    <th>#</th><th>Product</th><th>Lot · Coil · Roll</th>
-                                    <th>Width (mm)</th><th>Actual Length (m)</th><th>Est. Weight</th>
-                                    <th class="text-center" style="background:#e8f5e9;color:#166534;">
-                                        <i class="bi bi-check2-circle me-1"></i>QC Checklist
-                                    </th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                            <?php foreach ($pallet['items'] as $item):
-                                $itemLen   = (float)($item['actual_length'] ?: $item['length']);
-                                $itemWgt   = calcEstWeight($itemLen,(float)$item['width'],(float)$item['std_weight']);
-                                $productId = (int)$item['product_id'];
-                            ?>
-                                <tr class="roll-check-row" id="checkRow_<?= $pid ?>_<?= $productId ?>">
-                                    <td><?= $item['seq'] ?></td>
-                                    <td><?= htmlspecialchars($item['product']??'—') ?></td>
-                                    <td class="roll-ref">
-                                        <?= htmlspecialchars($item['lot_no']) ?>
-                                        <?= htmlspecialchars($item['coil_no']) ?>
-                                        – <?= str_replace('R','R-',htmlspecialchars($item['roll_no'])) ?>
-                                    </td>
-                                    <td><?= number_format((float)$item['width']) ?></td>
-                                    <td>
-                                        <?php $len=$item['actual_length']?:$item['length']; ?>
-                                        <?= number_format((float)$len,1) ?>
-                                        <?php if($item['actual_length']): ?>
-                                        <span style="font-size:10px;background:#dcfce7;color:#166534;padding:1px 5px;border-radius:8px;">ACTUAL</span>
-                                        <?php endif; ?>
-                                    </td>
-                                    <td>
-                                        <?php if($itemWgt>0): ?>
-                                        <span class="wgt-chip-roll"><i class="bi bi-speedometer2"></i><?= number_format($itemWgt,2) ?> kg</span>
-                                        <?php else: ?><span class="text-muted" style="font-size:11px;">N/A</span><?php endif; ?>
-                                    </td>
-                                    <td class="checklist-cell text-center">
-                                        <div class="checklist-item">
-                                            <input type="checkbox"
-                                                   id="winding_<?= $pid ?>_<?= $productId ?>"
-                                                   onchange="evalChecklist(<?= $pid ?>,<?= $productId ?>)">
-                                            <label for="winding_<?= $pid ?>_<?= $productId ?>">Winding Condition</label>
-                                        </div>
-                                        <div class="checklist-item">
-                                            <input type="checkbox"
-                                                   id="hairy_<?= $pid ?>_<?= $productId ?>"
-                                                   onchange="evalChecklist(<?= $pid ?>,<?= $productId ?>)">
-                                            <label for="hairy_<?= $pid ?>_<?= $productId ?>">Hairy Rubber</label>
-                                        </div>
-                                    </td>
-                                </tr>
-                            <?php endforeach; ?>
-                            </tbody>
-                        </table>
+                        <!-- Warehousing Slip Roll Items Table -->
+                        <div class="table-responsive me-3">
+                            <table class="roll-sub-table table table-sm table-bordered table-hover align-middle text-center mb-0" style="font-size:13px; border-color:#cbd5e1; background:#fff;">
+                                <thead class="table-light border-bottom border-secondary" style="font-size:12px;">
+                                    <tr>
+                                        <th rowspan="2" class="align-middle text-start ps-3" style="width: 18%;">Stock Code :</th>
+                                        <th rowspan="2" class="align-middle" style="width: 18%;">Lot No.</th>
+                                        <th colspan="2" class="align-middle">Size</th>
+                                        <th rowspan="2" class="align-middle" style="width: 6%;">Coils</th>
+                                        <th rowspan="2" class="align-middle" style="width: 10%;">Roll No.</th>
+                                        <th rowspan="2" class="align-middle" style="width: 14%;">Nett Wgt (kg)</th>
+                                        <th rowspan="2" class="align-middle text-center" style="background:#e8f5e9;color:#166534;width: 22%;">
+                                            <i class="bi bi-check2-circle me-1"></i>QC Checklist
+                                        </th>
+                                    </tr>
+                                    <tr>
+                                        <th style="width: 11%;">Length (mtr)</th>
+                                        <th style="width: 11%;">width (mm)</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                <?php foreach ($pallet['items'] as $item):
+                                    $itemLen   = (float)($item['actual_length'] ?: $item['length']);
+                                    $itemWgt   = calcEstWeight($itemLen,(float)$item['width'],(float)$item['std_weight']);
+                                    $productId = (int)$item['product_id'];
+                                    $hasNod    = !empty($item['nod_length']) && (float)$item['nod_length'] > 0;
+                                ?>
+                                    <tr class="roll-check-row <?= $hasNod ? 'table-warning' : '' ?>" id="checkRow_<?= $pid ?>_<?= $productId ?>" data-pallet-id="<?= $pid ?>" data-product-id="<?= $productId ?>" data-lot="<?= htmlspecialchars($item['lot_no'], ENT_QUOTES) ?>" data-coil="<?= htmlspecialchars($item['coil_no'], ENT_QUOTES) ?>" data-roll="<?= htmlspecialchars($item['roll_no'], ENT_QUOTES) ?>">
+                                        <td class="fw-bold text-start ps-3" style="font-family:monospace; font-size:12px;"><?= htmlspecialchars(($item['stock_code'] ?? '') ?: '-') ?></td>
+                                        <td><?= htmlspecialchars($item['lot_no']) ?> <?= htmlspecialchars($item['coil_no']) ?></td>
+                                        <td>
+                                            <?= number_format((float)$itemLen, 1) ?>
+                                            <?php if($item['actual_length']): ?>
+                                            <span style="font-size:10px;background:#dcfce7;color:#166534;padding:1px 5px;border-radius:8px;">ACTUAL</span>
+                                            <?php endif; ?>
+                                            <?php if ($hasNod): ?>
+                                            <br><span class="badge ms-1" style="font-size:10px; background:#fef08a !important; color:#854d0e !important; border:1px solid #fde047 !important;" title="Notice of Defect length: <?= (float)$item['nod_length'] ?>m">
+                                                <i class="bi bi-exclamation-triangle-fill me-1" style="color:#d97706 !important;"></i>NOD <?= (float)$item['nod_length'] ?>m
+                                            </span>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td><?= formatWidthDisplay($item['width']) ?></td>
+                                        <td>1</td>
+                                        <td class="fw-bold"><?= str_replace('R','R-',htmlspecialchars($item['roll_no'])) ?></td>
+                                        <td class="fw-bold text-end pe-3 text-primary">
+                                            <?php if($itemWgt>0): ?>
+                                            <span class="wgt-chip-roll"><i class="bi bi-speedometer2"></i><?= number_format($itemWgt,2) ?> kg</span>
+                                            <?php else: ?><span class="text-muted" style="font-size:11px;">N/A</span><?php endif; ?>
+                                        </td>
+                                        <td class="checklist-cell text-center" id="checklistCell_<?= $pid ?>_<?= $productId ?>">
+                                            <div class="checklist-item">
+                                                <input type="checkbox"
+                                                       id="winding_<?= $pid ?>_<?= $productId ?>"
+                                                       onchange="evalChecklist(<?= $pid ?>,<?= $productId ?>)">
+                                                <label for="winding_<?= $pid ?>_<?= $productId ?>">Winding Condition</label>
+                                            </div>
+                                            <div class="checklist-item">
+                                                <input type="checkbox"
+                                                       id="hairy_<?= $pid ?>_<?= $productId ?>"
+                                                       onchange="evalChecklist(<?= $pid ?>,<?= $productId ?>)">
+                                                <label for="hairy_<?= $pid ?>_<?= $productId ?>">No Hairy Rubber</label>
+                                            </div>
+                                            <div class="checklist-item">
+                                                <input type="checkbox"
+                                                       id="coilwidth_<?= $pid ?>_<?= $productId ?>"
+                                                       onchange="evalChecklist(<?= $pid ?>,<?= $productId ?>)">
+                                                <label for="coilwidth_<?= $pid ?>_<?= $productId ?>">Coil Width</label>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
                     </td>
                 </tr>
 
@@ -513,14 +712,9 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
                 </div>
                 <?php endif; ?>
 
-                <div class="mb-3">
-                    <label class="form-label fw-bold">Checked By <span class="text-danger">*</span></label>
-                    <select class="form-select form-select-sm" id="rejectInspectorSelect<?= $pid ?>" required>
-                        <option value="">-- Select Inspector Name --</option>
-                        <?php foreach ($inspectors as $insp): ?>
-                        <option value="<?= htmlspecialchars($insp['name']) ?>"><?= htmlspecialchars($insp['name']) ?></option>
-                        <?php endforeach; ?>
-                    </select>
+                <div class="mb-3 p-2 bg-light border rounded" style="font-size:13px;">
+                    <span class="text-secondary fw-semibold">Inspector (Checked By):</span>
+                    <span id="rejectModalInspectorName<?= $pid ?>" class="fw-bold font-monospace text-primary ms-1">-- Select in Header --</span>
                 </div>
                 <div>
                     <label class="form-label fw-bold">Reason for Rejection <span class="text-danger">*</span></label>
@@ -543,7 +737,61 @@ $grandTotalWgt   = array_sum(array_column($pallets, 'total_wgt'));
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 /* ─────────────────────────────────────────────────────────────
-   toggleRolls — unchanged
+   Global QC Inspector Persistence & State Management
+───────────────────────────────────────────────────────────── */
+function escHtml(str) {
+    if (!str) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function updateGlobalQcInspector(val) {
+    val = (val || '').trim();
+    localStorage.setItem('active_qc_inspector', val);
+
+    const fd = new FormData();
+    fd.append('action', 'set_active_inspector');
+    fd.append('name', val);
+    fetch('qc_inspectors_ajax.php', { method: 'POST', body: fd }).catch(() => {});
+
+    evalAllChecklists();
+}
+
+function getGlobalQcInspector() {
+    const sel = document.getElementById('globalQcInspectorSelect');
+    if (sel && sel.value) return sel.value.trim();
+    return localStorage.getItem('active_qc_inspector') || '';
+}
+
+function evalAllChecklists() {
+    document.querySelectorAll('[id^="rollsRow"]').forEach(row => {
+        const pid = row.id.replace('rollsRow', '');
+        evalChecklist(parseInt(pid, 10), null);
+    });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const sel = document.getElementById('globalQcInspectorSelect');
+    if (sel) {
+        const saved = localStorage.getItem('active_qc_inspector');
+        if (saved && (!sel.value || sel.value === '')) {
+            for (let opt of sel.options) {
+                if (opt.value === saved) {
+                    sel.value = saved;
+                    updateGlobalQcInspector(saved);
+                    break;
+                }
+            }
+        }
+    }
+    evalAllChecklists();
+});
+
+/* ─────────────────────────────────────────────────────────────
+   toggleRolls
 ───────────────────────────────────────────────────────────── */
 function toggleRolls(pid) {
     const row     = document.getElementById('rollsRow' + pid);
@@ -555,67 +803,69 @@ function toggleRolls(pid) {
 
 /* ─────────────────────────────────────────────────────────────
    evalChecklist(palletId, productId)
-
-   NEW: tracks which product row passed (topProductId) and
-   writes it into the approve and reject hidden fields.
 ───────────────────────────────────────────────────────────── */
 function evalChecklist(pid, productId) {
-
-    // Update row highlight for the changed row
     if (productId !== null) {
-        const windEl = document.getElementById('winding_' + pid + '_' + productId);
-        const hairEl = document.getElementById('hairy_'   + pid + '_' + productId);
-        const rowEl  = document.getElementById('checkRow_' + pid + '_' + productId);
-        if (windEl && hairEl && rowEl) {
-            rowEl.classList.toggle('row-passed', windEl.checked && hairEl.checked);
+        const windEl  = document.getElementById('winding_'   + pid + '_' + productId);
+        const hairEl  = document.getElementById('hairy_'     + pid + '_' + productId);
+        const widthEl = document.getElementById('coilwidth_' + pid + '_' + productId);
+        const rowEl   = document.getElementById('checkRow_'  + pid + '_' + productId);
+        if (windEl && hairEl && widthEl && rowEl) {
+            rowEl.classList.toggle('row-passed', windEl.checked && hairEl.checked && widthEl.checked);
         }
     }
 
-    // Find which product row (if any) has both boxes ticked
     const allWindingBoxes = document.querySelectorAll('[id^="winding_' + pid + '_"]');
     let checklistPassed = false;
-    let topProductId    = 0;   // ← NEW: the product whose row passed
+    let topProductId    = 0;
 
     Array.from(allWindingBoxes).forEach(function(windBox) {
-        const parts   = windBox.id.split('_');
-        const pId     = parts[parts.length - 1];
-        const hairBox = document.getElementById('hairy_' + pid + '_' + pId);
-        if (windBox.checked && hairBox && hairBox.checked) {
+        const parts    = windBox.id.split('_');
+        const pId      = parts[parts.length - 1];
+        const hairBox  = document.getElementById('hairy_'     + pid + '_' + pId);
+        const widthBox = document.getElementById('coilwidth_' + pid + '_' + pId);
+        if (windBox.checked && hairBox && hairBox.checked && widthBox && widthBox.checked) {
             checklistPassed = true;
             topProductId    = parseInt(pId, 10);
         }
     });
 
-    // Inspector selection
-    const inspSel      = document.getElementById('inspectorSelect' + pid);
-    const inspectorOk  = inspSel && inspSel.value !== '';
+    const inspectorVal = getGlobalQcInspector();
+    const inspectorOk  = inspectorVal !== '';
     const canApprove   = checklistPassed && inspectorOk;
 
-    // ── Sync hidden fields for APPROVE form ──────────────────
-    const approveCheckedBy  = document.getElementById('approveCheckedBy'  + pid);
-    const approveTopProduct = document.getElementById('approveTopProduct' + pid);
-    if (approveCheckedBy)  approveCheckedBy.value  = inspSel ? inspSel.value : '';
-    if (approveTopProduct) approveTopProduct.value = topProductId > 0 ? topProductId : '';
-
-    // ── Pre-fill reject modal inspector if already chosen ────
-    if (inspSel && inspSel.value) {
-        const rejectSel = document.getElementById('rejectInspectorSelect' + pid);
-        if (rejectSel && rejectSel.value === '') rejectSel.value = inspSel.value;
+    // Sync active inspector badge in row
+    const badge = document.getElementById('activeInspectorBadge' + pid);
+    if (badge) {
+        badge.textContent = inspectorOk ? inspectorVal : '-- Select in Header --';
+        badge.className   = inspectorOk ? 'fw-bold font-monospace px-2 py-1 bg-white rounded border text-success ms-1' : 'fw-bold font-monospace px-2 py-1 bg-white rounded border text-danger ms-1';
     }
 
-    // ── Approve button enable / disable ──────────────────────
+    // Sync hidden fields for APPROVE form
+    const approveCheckedBy  = document.getElementById('approveCheckedBy'  + pid);
+    const approveTopProduct = document.getElementById('approveTopProduct' + pid);
+    if (approveCheckedBy)  approveCheckedBy.value  = inspectorVal;
+    if (approveTopProduct) approveTopProduct.value = topProductId > 0 ? topProductId : '';
+
+    // Sync hidden fields for REJECT form
+    const rejectCheckedBy   = document.getElementById('rejectCheckedBy'   + pid);
+    const rejectModalInsp   = document.getElementById('rejectModalInspectorName' + pid);
+    if (rejectCheckedBy)  rejectCheckedBy.value = inspectorVal;
+    if (rejectModalInsp)  rejectModalInsp.textContent = inspectorOk ? inspectorVal : 'None Selected (Select in Header)';
+
+    // Approve button enable / disable
     const approveBtn = document.getElementById('approveBtn' + pid);
     if (approveBtn) approveBtn.disabled = !canApprove;
 
-    // ── Inspector hint text & bar colour ─────────────────────
+    // Inspector hint text & bar colour
     const cbHint = document.getElementById('cbHint' + pid);
     if (cbHint) {
         if (!inspectorOk) {
             cbHint.style.color = '#ef4444';
-            cbHint.textContent = 'Please select an inspector ↑';
+            cbHint.textContent = 'Please select active inspector in header navigation bar ↑';
         } else {
             cbHint.style.color = '#16a34a';
-            cbHint.textContent = '✓ Inspector selected';
+            cbHint.textContent = '✓ Active inspector selected';
         }
     }
     const cbBar = document.getElementById('checkedByBar' + pid);
@@ -626,25 +876,25 @@ function evalChecklist(pid, productId) {
         if (lbl) lbl.style.color = inspectorOk ? '#166534' : '#991b1b';
     }
 
-    // ── Checklist hint banner ─────────────────────────────────
+    // Checklist hint banner
     const hintEl = document.getElementById('checklistHint' + pid);
     if (!hintEl) return;
     if (canApprove) {
         hintEl.classList.add('hint-ok');
         hintEl.innerHTML = '<i class="bi bi-check-circle-fill"></i>' +
-            '<span><strong>All checks passed ✓</strong> — Inspector selected and checklist complete. Approve button is now unlocked.</span>';
+            '<span><strong>All 3 checks passed ✓</strong> — Inspector set (' + escHtml(inspectorVal) + ') and checklist complete. Approve button unlocked.</span>';
     } else if (checklistPassed && !inspectorOk) {
         hintEl.classList.remove('hint-ok');
         hintEl.innerHTML = '<i class="bi bi-person-x"></i>' +
-            '<span><strong>Checklist done — select an inspector</strong> to unlock the Approve button.</span>';
+            '<span><strong>Checklist done — select active inspector in header bar</strong> to unlock Approve.</span>';
     } else if (!checklistPassed && inspectorOk) {
         hintEl.classList.remove('hint-ok');
         hintEl.innerHTML = '<i class="bi bi-clipboard2-check"></i>' +
-            '<span><strong>Inspector selected — complete the checklist:</strong> tick <em>both</em> boxes on at least one product row.</span>';
+            '<span><strong>Inspector set (' + escHtml(inspectorVal) + ') — complete checklist:</strong> tick <em>all 3</em> boxes (Winding, No Hairy Rubber, Coil Width) on at least one product row.</span>';
     } else {
         hintEl.classList.remove('hint-ok');
         hintEl.innerHTML = '<i class="bi bi-clipboard2-check"></i>' +
-            '<span><strong>QC Checklist required:</strong> Select an inspector <em>and</em> tick both checkboxes on at least one product row.</span>';
+            '<span><strong>QC Checklist required:</strong> Select active inspector in header bar <em>and</em> tick all 3 checkboxes on at least one product row.</span>';
     }
 }
 
@@ -652,10 +902,12 @@ function evalChecklist(pid, productId) {
    confirmApprove — final client-side gate
 ───────────────────────────────────────────────────────────── */
 function confirmApprove(pid, palletNo, totalWgt) {
-    const inspSel   = document.getElementById('inspectorSelect' + pid);
-    const inspector = inspSel ? inspSel.value : '';
-    if (!inspector) { alert('Please select an inspector before approving.'); return false; }
-    const wgtLine   = totalWgt > 0 ? '\nEst. Total Weight: ' + Number(totalWgt).toFixed(2) + ' kg' : '';
+    const inspector = getGlobalQcInspector();
+    if (!inspector) {
+        alert('Please select an active QC Inspector in the header navigation bar first.');
+        return false;
+    }
+    const wgtLine = totalWgt > 0 ? '\nEst. Total Weight: ' + Number(totalWgt).toFixed(2) + ' kg' : '';
     return confirm('Approve all rolls on pallet ' + palletNo + '?' + wgtLine + '\nChecked By: ' + inspector);
 }
 
@@ -663,17 +915,13 @@ function confirmApprove(pid, palletNo, totalWgt) {
    openRejectModal — syncs inspector + topProductId then shows
 ───────────────────────────────────────────────────────────── */
 function openRejectModal(pid) {
-    const expandSel = document.getElementById('inspectorSelect'   + pid);
-    const modalSel  = document.getElementById('rejectInspectorSelect' + pid);
-    if (expandSel && modalSel && expandSel.value) modalSel.value = expandSel.value;
-
-    // Sync top_product_id into reject modal hidden field
-    const approveTopProduct = document.getElementById('approveTopProduct' + pid);
-    const rejectTopProduct  = document.getElementById('rejectTopProduct'  + pid);
-    if (approveTopProduct && rejectTopProduct) {
-        rejectTopProduct.value = approveTopProduct.value;
+    const inspector = getGlobalQcInspector();
+    if (!inspector) {
+        alert('Please select an active QC Inspector in the header navigation bar first before rejecting.');
+        return false;
     }
 
+    evalChecklist(pid, null);
     new bootstrap.Modal(document.getElementById('rejectModal' + pid)).show();
 }
 
@@ -681,19 +929,195 @@ function openRejectModal(pid) {
    syncRejectFields — validates and syncs before reject submit
 ───────────────────────────────────────────────────────────── */
 function syncRejectFields(pid) {
-    const modalSel = document.getElementById('rejectInspectorSelect' + pid);
-    if (!modalSel || !modalSel.value) {
-        alert('Please select an inspector before rejecting.'); return false;
+    const inspector = getGlobalQcInspector();
+    if (!inspector) {
+        alert('Please select an active QC Inspector in the header navigation bar first.');
+        return false;
     }
     const hiddenCB  = document.getElementById('rejectCheckedBy'   + pid);
     const hiddenTP  = document.getElementById('rejectTopProduct'  + pid);
     const approveTP = document.getElementById('approveTopProduct' + pid);
-    if (hiddenCB)  hiddenCB.value  = modalSel.value;
+    if (hiddenCB)  hiddenCB.value  = inspector;
     if (hiddenTP && approveTP) hiddenTP.value = approveTP.value;
 
-    // top_product_id is optional for reject (inspector didn't need to tick checklist)
-    // but if they did tick it, we record it. No block if 0.
     return true;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   QC Dashboard Barcode/QR Scanning Engine
+───────────────────────────────────────────────────────────── */
+
+// Audio feedback (Web Audio API)
+function playAudioBeep(type) {
+    try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+        const ctx = new AudioCtx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        if (type === 'success') {
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(880, ctx.currentTime);
+            osc.frequency.setValueAtTime(1174.66, ctx.currentTime + 0.1);
+            gain.gain.setValueAtTime(0.3, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.25);
+            osc.start(ctx.currentTime);
+            osc.stop(ctx.currentTime + 0.25);
+        } else {
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(220, ctx.currentTime);
+            osc.frequency.setValueAtTime(164.81, ctx.currentTime + 0.12);
+            gain.gain.setValueAtTime(0.4, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+            osc.start(ctx.currentTime);
+            osc.stop(ctx.currentTime + 0.35);
+        }
+    } catch (e) {
+        console.warn('Audio feedback failed:', e);
+    }
+}
+
+// Visual Toast/Alert Banner
+function showScanAlert(msg, type) {
+    const alertBox = document.getElementById('qcScanAlert');
+    const alertMsg = document.getElementById('qcScanAlertMsg');
+    if (!alertBox || !alertMsg) return;
+
+    alertBox.className = 'alert alert-dismissible fade show mt-2 mb-0 alert-' + (type === 'success' ? 'success' : type === 'info' ? 'info' : 'danger');
+    alertMsg.innerHTML = (type === 'success' ? '<i class="bi bi-check-circle-fill me-2"></i>' : type === 'info' ? '<i class="bi bi-info-circle-fill me-2"></i>' : '<i class="bi bi-exclamation-triangle-fill me-2"></i>') + msg;
+    alertBox.classList.remove('d-none');
+
+    clearTimeout(window.qcScanAlertTimer);
+    if (type !== 'info') {
+        window.qcScanAlertTimer = setTimeout(function() {
+            alertBox.classList.add('d-none');
+        }, 6000);
+    }
+}
+
+// Core scan lookup trigger
+function handleQCScan(scannedText) {
+    if (!scannedText || !scannedText.trim()) return;
+    const text = scannedText.trim();
+
+    showScanAlert('Searching for "' + escHtml(text) + '"…', 'info');
+
+    const fd = new FormData();
+    fd.append('qr', text);
+
+    fetch('qc_scan_lookup.php', {
+        method: 'POST',
+        body: fd
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.ok) {
+            playAudioBeep('success');
+            showScanAlert('<strong>Matched Pallet ' + escHtml(data.pallet_no) + '!</strong> Please inspect and tick checklist items.', 'success');
+            highlightAndOpenPallet(data.pallet_id, data.slitting_product_id);
+        } else {
+            playAudioBeep('error');
+            showScanAlert(data.msg || 'Pallet/Coil not found or already processed.', 'danger');
+        }
+    })
+    .catch(err => {
+        console.error('Scan lookup error:', err);
+        if (!searchLocalDOM(text)) {
+            playAudioBeep('error');
+            showScanAlert('Pallet/Coil not found or network lookup failed.', 'danger');
+        }
+    });
+}
+
+// Client-side DOM fallback
+function searchLocalDOM(text) {
+    text = text.toUpperCase().trim();
+    const palletRows = document.querySelectorAll('[data-pallet-no]');
+    for (let pRow of palletRows) {
+        const pNo = (pRow.getAttribute('data-pallet-no') || '').toUpperCase();
+        if (pNo === text || pNo.includes(text)) {
+            const pid = parseInt(pRow.getAttribute('data-pallet-id'), 10);
+            playAudioBeep('success');
+            showScanAlert('<strong>Matched Pallet ' + escHtml(pRow.getAttribute('data-pallet-no')) + '!</strong>', 'success');
+            highlightAndOpenPallet(pid, null);
+            return true;
+        }
+    }
+    const rollRows = document.querySelectorAll('[data-lot]');
+    for (let rRow of rollRows) {
+        const lot  = (rRow.getAttribute('data-lot') || '').toUpperCase();
+        const coil = (rRow.getAttribute('data-coil') || '').toUpperCase();
+        if (lot && coil && text.includes(lot) && text.includes(coil)) {
+            const pid = parseInt(rRow.getAttribute('data-pallet-id'), 10);
+            const prodId = parseInt(rRow.getAttribute('data-product-id'), 10);
+            playAudioBeep('success');
+            showScanAlert('<strong>Matched Roll on Pallet!</strong> Please inspect checklist items.', 'success');
+            highlightAndOpenPallet(pid, prodId);
+            return true;
+        }
+    }
+    return false;
+}
+
+// Highlight & navigate to target pallet and roll
+function highlightAndOpenPallet(pid, productId) {
+    document.querySelectorAll('.scan-row-highlight').forEach(el => el.classList.remove('scan-row-highlight'));
+    document.querySelectorAll('.scan-focus-checklist').forEach(el => el.classList.remove('scan-focus-checklist'));
+
+    const palletRow = document.getElementById('pallet-row-' + pid);
+    const rollsRow  = document.getElementById('rollsRow' + pid);
+
+    if (!palletRow) return;
+
+    if (rollsRow && rollsRow.style.display === 'none') {
+        toggleRolls(pid);
+    }
+
+    palletRow.classList.add('scan-row-highlight');
+    palletRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    if (productId) {
+        const rollRow = document.getElementById('checkRow_' + pid + '_' + productId);
+        const cell    = document.getElementById('checklistCell_' + pid + '_' + productId);
+        const windBox = document.getElementById('winding_' + pid + '_' + productId);
+
+        if (rollRow) rollRow.classList.add('scan-row-highlight');
+        if (cell)    cell.classList.add('scan-focus-checklist');
+
+        // Focus the first checkbox for QC user to manually inspect and tick
+        if (windBox) {
+            setTimeout(function() { windBox.focus(); }, 450);
+        }
+    }
+}
+
+// Single date preset helper function
+function setSingleDatePreset(preset) {
+    const dateInput = document.getElementById('filter_date');
+    if (!dateInput) return;
+
+    const d = new Date();
+    if (preset === 'today') {
+        dateInput.value = d.toISOString().split('T')[0];
+    } else if (preset === 'yesterday') {
+        d.setDate(d.getDate() - 1);
+        dateInput.value = d.toISOString().split('T')[0];
+    }
+    const form = document.getElementById('qcDateFilterForm');
+    if (form) form.submit();
+}
+</script>
+<script src="camera_scanner.js?v=8"></script>
+<script>
+if (typeof initCameraScanner === 'function') {
+    initCameraScanner({
+        onScan: function(text) {
+            handleQCScan(text);
+        }
+    });
 }
 </script>
 </body>

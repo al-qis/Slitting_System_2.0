@@ -1,6 +1,6 @@
 <?php
 // sticker_patterns/pattern2.php
-// Used by: NAX, TAIHO, ASHUKA, NTC, STOCK, NCI MFG, NIP, SFC, MTX, NVC, NCS, SNP
+// Used by: NAX, TAIHO, ASHUKA, NTC, STOCK, NCI MFG, NIPP, SFC, MTX, NVC, NSJ, NIP
 
 $colourLabel = ucfirst(strtolower($colorName ?? 'WHITE'));
 
@@ -246,16 +246,16 @@ function getCustomerFullName($code) {
         'SGC'     => 'SHANGHAI XINGSHENG',
         'STAMPING'=> 'MK STAMPING',
         'YANTAI'  => 'NICHIAS (SHANGHAI) AUTOPARTS TRADING',
-        'NIP'     => 'NICHIAS IND. PRODUCTS PVT. LTD.',
+        'NIPP'    => 'NICHIAS IND. PRODUCTS PVT. LTD.',
         'STOCK'   => 'STOCK',
         'TRIAL'   => 'TRIAL',
         'SFC'     => 'SFC',
         'MTX'     => 'NC-PT NRI(FORWARD MATRIX)',
         'YTEC'    => 'YTEC CO., LTD.',
         'NVC'     => 'NICHIAS VIETNAM CO., LTD',
-        'NCS'     => 'NC-PT NICHIAS SUNIJAYA',
-        'SNP'     => 'SUZHOU NICHIAS IND. PRODUCTS',
-        'NSEA'    => 'NICHIAS SOUTH EAST ASIA (UP PACKING)',
+        'NSJ'     => 'NC-PT NICHIAS SUNIJAYA',
+        'NIP'     => 'SUZHOU NICHIAS IND. PRODUCTS',
+        'NSA'     => 'NICHIAS SOUTH EAST ASIA (UP PACKING)',
     ];
     return $customers[$code] ?? $code;
 }

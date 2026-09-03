@@ -14,12 +14,21 @@ $search        = trim($_GET['search']    ?? '');
 $date_from     = $_GET['date_from'] ?? '';
 $date_to       = $_GET['date_to']   ?? '';
 
-$where  = "WHERE p.status IN ('approved','rejected')";
+// Fetch active inspectors for navbar
+$stmtIns = $conn->prepare("SELECT id, name FROM qc_inspectors WHERE is_active = 1 ORDER BY name ASC");
+$stmtIns->execute();
+$inspectors = $stmtIns->get_result()->fetch_all(MYSQLI_ASSOC);
+$stmtIns->close();
+
+$activeInspectorSession = $_SESSION['active_qc_inspector'] ?? '';
+
+$where  = "WHERE p.status IN ('approved','rejected','delivered')";
 $params = [];
 $types  = '';
 
 if ($filter_status === 'approved') { $where .= " AND p.status = 'approved'"; }
 elseif ($filter_status === 'rejected') { $where .= " AND p.status = 'rejected'"; }
+elseif ($filter_status === 'delivered') { $where .= " AND p.status = 'delivered'"; }
 
 if ($search !== '') {
     $where   .= " AND (p.pallet_no LIKE ? OR p.customer_name LIKE ? OR p.product_type LIKE ? OR p.checked_by LIKE ?)";
@@ -53,6 +62,12 @@ $stmt->close();
 $rollsByPallet = [];
 $palletIds = array_column($palletRows, 'pallet_id');
 
+// Ensure coil_width column exists in pallet_items table
+$colCheck = $conn->query("SHOW COLUMNS FROM pallet_items LIKE 'coil_width'");
+if ($colCheck && $colCheck->num_rows === 0) {
+    $conn->query("ALTER TABLE pallet_items ADD COLUMN coil_width TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = Coil Width checkbox was ticked by QC inspector' AFTER hairy_rubber");
+}
+
 if (!empty($palletIds)) {
     $ph       = implode(',', array_fill(0, count($palletIds), '?'));
     $phTypes  = str_repeat('i', count($palletIds));
@@ -63,6 +78,7 @@ if (!empty($palletIds)) {
             pi.seq,
             pi.winding_condition,
             pi.hairy_rubber,
+            pi.coil_width,
             pi.qc_checked_at,
             sp.id           AS product_id,
             sp.lot_no,
@@ -89,16 +105,19 @@ if (!empty($palletIds)) {
 }
 
 // ── KPI — pallet counts ───────────────────────────────────────
-$kpiStmt = $conn->prepare("SELECT status, COUNT(*) AS total FROM pallets WHERE status IN ('approved','rejected') GROUP BY status");
+$kpiStmt = $conn->prepare("SELECT status, COUNT(*) AS total FROM pallets WHERE status IN ('approved','rejected','delivered') GROUP BY status");
 $kpiStmt->execute();
-$total_approved = 0; $total_rejected = 0;
+$total_approved = 0; $total_rejected = 0; $total_delivered = 0;
 foreach ($kpiStmt->get_result()->fetch_all(MYSQLI_ASSOC) as $k) {
-    if ($k['status'] === 'approved') $total_approved = (int)$k['total'];
-    if ($k['status'] === 'rejected') $total_rejected = (int)$k['total'];
+    if ($k['status'] === 'approved')  $total_approved  = (int)$k['total'];
+    if ($k['status'] === 'rejected')  $total_rejected  = (int)$k['total'];
+    if ($k['status'] === 'delivered') $total_delivered = (int)$k['total'];
 }
 $kpiStmt->close();
-$total   = $total_approved + $total_rejected;
-$pass_rate = $total > 0 ? round(($total_approved / $total) * 100, 1) : 0;
+// "Passed QC" = approved (still on-site) + delivered (already shipped) — both cleared inspection.
+$total_passed = $total_approved + $total_delivered;
+$total        = $total_passed + $total_rejected;
+$pass_rate    = $total > 0 ? round(($total_passed / $total) * 100, 1) : 0;
 
 function fmtDate(?string $dt, string $f='d M Y'): string { return $dt ? date($f,strtotime($dt)) : '—'; }
 function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)) : ''; }
@@ -113,7 +132,7 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
     <style>
         body { background:#f4f7f9; font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif; font-size:14px; }
-        .navbar { background:#2c3e50; }
+        .navbar { background:#2c3e50; position:sticky; top:0; z-index:1030; box-shadow:0 4px 12px rgba(0,0,0,0.15); }
 
         .page-header { display:flex; align-items:flex-start; justify-content:space-between;
                        flex-wrap:wrap; gap:12px; margin-bottom:24px; }
@@ -121,7 +140,7 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
         .page-header p  { margin:0; color:#6c757d; font-size:13px; }
 
         /* KPI */
-        .kpi-row  { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-bottom:22px; }
+        .kpi-row  { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:22px; }
         .kpi-card {
             background:#fff; border-radius:10px; box-shadow:0 1px 6px rgba(0,0,0,.07);
             border-left:5px solid var(--kc);
@@ -133,9 +152,10 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
         .kpi-num   { font-size:2rem; font-weight:800; color:var(--kc); line-height:1; }
         .kpi-label { font-size:10px; font-weight:700; text-transform:uppercase;
                      letter-spacing:.8px; color:#9ca3af; margin-top:3px; }
-        .kpi-approved { --kc:#059669; --ki-bg:#ecfdf5; }
-        .kpi-rejected { --kc:#dc2626; --ki-bg:#fef2f2; }
-        .kpi-rate     { --kc:#2563eb; --ki-bg:#eff6ff; }
+        .kpi-approved  { --kc:#059669; --ki-bg:#ecfdf5; }
+        .kpi-delivered { --kc:#7c3aed; --ki-bg:#f5f3ff; }
+        .kpi-rejected  { --kc:#dc2626; --ki-bg:#fef2f2; }
+        .kpi-rate      { --kc:#2563eb; --ki-bg:#eff6ff; }
 
         /* Filter */
         .filter-bar { background:#fff; border-radius:10px; padding:16px 20px;
@@ -176,8 +196,9 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
                         font-size:11px; font-weight:700; letter-spacing:.4px;
                         text-transform:uppercase; padding:4px 12px; border-radius:20px;
                         white-space:nowrap; }
-        .badge-approved { background:#d1fae5; color:#065f46; }
-        .badge-rejected { background:#fee2e2; color:#991b1b; }
+        .badge-approved  { background:#d1fae5; color:#065f46; }
+        .badge-delivered { background:#ede9fe; color:#5b21b6; }
+        .badge-rejected  { background:#fee2e2; color:#991b1b; }
 
         .checked-by-chip { display:inline-flex; align-items:center; gap:5px;
                            font-size:12px; font-weight:600; color:#1e40af;
@@ -275,16 +296,29 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
 </head>
 <body>
 
-<nav class="navbar navbar-dark mb-4">
+<nav class="navbar navbar-dark sticky-top mb-4">
     <div class="container-fluid px-4">
         <a class="navbar-brand fw-bold" href="qc_dashboard.php">
             <i class="bi bi-shield-check"></i> NICHIAS QC MANAGEMENT
         </a>
-        <div class="d-flex align-items-center gap-2">
-            <span class="navbar-text text-light small">
-                Logged in as: <?= htmlspecialchars($_SESSION['role']??'qc') ?>
-            </span>
-            <a href="logout.php" class="btn btn-outline-light btn-sm">Logout</a>
+        <div class="d-flex align-items-center gap-3">
+            <div class="d-flex align-items-center bg-white bg-opacity-10 border border-light border-opacity-25 rounded-3 px-3 py-1 text-light">
+                <i class="bi bi-person-badge-fill text-warning me-2" style="font-size:18px !important;"></i>
+                <label for="globalQcInspectorSelect" class="me-2 mb-0 fw-semibold text-white" style="font-size:15px !important;">Active QC:</label>
+                <select id="globalQcInspectorSelect" class="form-select border-0 shadow font-monospace fw-bold text-dark" style="width: auto; background:#fff3cd; font-size:18px !important; color:#856404; padding:6px 36px 6px 14px !important; height:auto !important;" onchange="updateGlobalQcInspector(this.value)">
+                    <option value="">-- Select Active Inspector --</option>
+                    <?php foreach ($inspectors as $insp): ?>
+                    <option value="<?= htmlspecialchars($insp['name'], ENT_QUOTES) ?>" <?= ($activeInspectorSession === $insp['name']) ? 'selected' : '' ?>>
+                        <?= htmlspecialchars($insp['name']) ?>
+                    </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <a href="qc_manage_inspectors.php" class="btn btn-outline-light btn-sm" title="Manage Inspector Names">
+                <i class="bi bi-gear-fill me-1"></i> Inspectors
+            </a>
+            <a href="qc_dashboard.php" class="btn btn-outline-light btn-sm">Dashboard</a>
+            <a href="logout.php"  class="btn btn-outline-light btn-sm">Logout</a>
         </div>
     </div>
 </nav>
@@ -294,7 +328,7 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
     <div class="page-header">
         <div>
             <h2><i class="bi bi-clock-history me-2 text-secondary"></i>QC Inspection Log</h2>
-            <p>Full history of approved and rejected pallets. Expand a row to see individual rolls.</p>
+            <p>Full history of approved, delivered, and rejected pallets. Expand a row to see individual rolls.</p>
         </div>
         <a href="qc_dashboard.php" class="btn btn-outline-secondary shadow-sm btn-sm px-3">
             <i class="bi bi-arrow-left me-1"></i> Back to Dashboard
@@ -305,7 +339,11 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
     <div class="kpi-row">
         <div class="kpi-card kpi-approved">
             <div class="kpi-icon"><i class="bi bi-check-circle"></i></div>
-            <div><div class="kpi-num"><?= $total_approved ?></div><div class="kpi-label">Total Approved</div></div>
+            <div><div class="kpi-num"><?= $total_approved ?></div><div class="kpi-label">Approved (On-site)</div></div>
+        </div>
+        <div class="kpi-card kpi-delivered">
+            <div class="kpi-icon"><i class="bi bi-truck"></i></div>
+            <div><div class="kpi-num"><?= $total_delivered ?></div><div class="kpi-label">Delivered</div></div>
         </div>
         <div class="kpi-card kpi-rejected">
             <div class="kpi-icon"><i class="bi bi-x-circle"></i></div>
@@ -329,9 +367,10 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
             <div class="col-md-2">
                 <label>Status</label>
                 <select name="status" class="form-select form-select-sm">
-                    <option value="all"      <?= $filter_status==='all'      ?'selected':'' ?>>All</option>
-                    <option value="approved" <?= $filter_status==='approved' ?'selected':'' ?>>Approved</option>
-                    <option value="rejected" <?= $filter_status==='rejected' ?'selected':'' ?>>Rejected</option>
+                    <option value="all"       <?= $filter_status==='all'       ?'selected':'' ?>>All</option>
+                    <option value="approved"  <?= $filter_status==='approved'  ?'selected':'' ?>>Approved (On-site)</option>
+                    <option value="delivered" <?= $filter_status==='delivered' ?'selected':'' ?>>Delivered</option>
+                    <option value="rejected"  <?= $filter_status==='rejected'  ?'selected':'' ?>>Rejected</option>
                 </select>
             </div>
             <div class="col-md-2">
@@ -400,11 +439,14 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
         </div>
 
         <?php foreach ($palletRows as $idx => $pallet):
-            $pid        = (int)$pallet['pallet_id'];
-            $isApproved = strtolower($pallet['pallet_status']) === 'approved';
-            $isLast     = ($idx === count($palletRows) - 1);
-            $checkedBy  = trim($pallet['checked_by'] ?? '');
-            $rolls      = $rollsByPallet[$pid] ?? [];
+            $pid         = (int)$pallet['pallet_id'];
+            $statusLower = strtolower($pallet['pallet_status']);
+            $isRejected  = $statusLower === 'rejected';
+            $isDelivered = $statusLower === 'delivered';
+            $isApproved  = !$isRejected; // approved AND delivered both mean "passed QC"
+            $isLast      = ($idx === count($palletRows) - 1);
+            $checkedBy   = trim($pallet['checked_by'] ?? '');
+            $rolls       = $rollsByPallet[$pid] ?? [];
         ?>
 
         <div class="pallet-row <?= $isLast?'last':'' ?>"
@@ -435,18 +477,20 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
             </div>
 
             <div>
-                <?php if ($isApproved): ?>
-                    <span class="status-badge badge-approved"><i class="bi bi-check-lg"></i> Approved</span>
-                <?php else: ?>
+                <?php if ($isRejected): ?>
                     <span class="status-badge badge-rejected"><i class="bi bi-x-lg"></i> Rejected</span>
+                <?php elseif ($isDelivered): ?>
+                    <span class="status-badge badge-delivered"><i class="bi bi-truck"></i> Delivered</span>
+                <?php else: ?>
+                    <span class="status-badge badge-approved"><i class="bi bi-check-lg"></i> Approved</span>
                 <?php endif; ?>
             </div>
 
             <div>
                 <?php if ($checkedBy !== ''): ?>
-                    <span class="checked-by-chip <?= $isApproved?'':'rejected-chip' ?>">
+                    <span class="checked-by-chip <?= $isRejected?'rejected-chip':'' ?>">
                         <i class="bi bi-person-check"></i>
-                        <?= $isApproved?'Approved by':'Rejected by' ?>:
+                        <?= $isRejected?'Rejected by':'Approved by' ?>:
                         <strong><?= htmlspecialchars($checkedBy) ?></strong>
                     </span>
                 <?php else: ?>
@@ -455,7 +499,7 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
             </div>
 
             <div>
-                <?php if (!$isApproved && !empty($pallet['rejection_reason'])): ?>
+                <?php if ($isRejected && !empty($pallet['rejection_reason'])): ?>
                     <div class="rejection-wrap">
                         <i class="bi bi-chat-left-text me-1"></i>
                         <?= htmlspecialchars($pallet['rejection_reason']) ?>
@@ -477,7 +521,7 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
             <div class="d-flex align-items-center gap-2 mt-2 mb-2"
                  style="font-size:11px; color:#374151;">
                 <span class="top-roll-badge"><i class="bi bi-star-fill"></i> Top Roll Inspected</span>
-                <span>— The roll physically on top of the pallet; both Winding Condition &amp; Hairy Rubber were verified.</span>
+                <span>— The roll physically on top of the pallet; Winding Condition, No Hairy Rubber &amp; Coil Width were verified.</span>
             </div>
 
             <table class="roll-table">
@@ -489,7 +533,8 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
                         <th>Width (mm)</th>
                         <th>Length (m)</th>
                         <th>Winding</th>
-                        <th>Hairy Rubber</th>
+                        <th>No Hairy Rubber</th>
+                        <th>Coil Width</th>
                         <th>Roll Status</th>
                         
                     </tr>
@@ -497,7 +542,8 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
                 <tbody>
                 <?php foreach ($rolls as $roll):
                     $isTopRoll = ((int)($roll['winding_condition']??0) === 1)
-                              && ((int)($roll['hairy_rubber']??0) === 1);
+                              && ((int)($roll['hairy_rubber']??0) === 1)
+                              && ((int)($roll['coil_width']??0) === 1);
                 ?>
                 <tr <?= $isTopRoll ? 'class="tr-top-roll"' : '' ?>>
                     <td style="color:#9ca3af;"><?= $roll['seq'] ?></td>
@@ -509,7 +555,7 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
                         </span>
                         <?php if ($isTopRoll): ?>
                             <span class="top-roll-badge"
-                                  title="Both Winding Condition &amp; Hairy Rubber were verified on this roll during inspection">
+                                  title="Winding Condition, No Hairy Rubber &amp; Coil Width were verified on this roll during inspection">
                                 <i class="bi bi-star-fill"></i> Top Roll Inspected
                             </span>
                         <?php endif; ?>
@@ -533,10 +579,18 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
                             <i class="bi bi-dash-circle check-dash" title="Not checked"></i>
                         <?php endif; ?>
                     </td>
-                    <!-- Hairy Rubber tick -->
+                    <!-- No Hairy Rubber tick -->
                     <td class="text-center">
                         <?php if ((int)($roll['hairy_rubber']??0)===1): ?>
-                            <i class="bi bi-check-circle-fill check-tick" title="Hairy Rubber verified"></i>
+                            <i class="bi bi-check-circle-fill check-tick" title="No Hairy Rubber verified"></i>
+                        <?php else: ?>
+                            <i class="bi bi-dash-circle check-dash" title="Not checked"></i>
+                        <?php endif; ?>
+                    </td>
+                    <!-- Coil Width tick -->
+                    <td class="text-center">
+                        <?php if ((int)($roll['coil_width']??0)===1): ?>
+                            <i class="bi bi-check-circle-fill check-tick" title="Coil Width verified"></i>
                         <?php else: ?>
                             <i class="bi bi-dash-circle check-dash" title="Not checked"></i>
                         <?php endif; ?>
@@ -567,6 +621,32 @@ function fmtTime(?string $dt): string { return $dt ? date('H:i:s',strtotime($dt)
 </div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
+function updateGlobalQcInspector(val) {
+    val = (val || '').trim();
+    localStorage.setItem('active_qc_inspector', val);
+
+    const fd = new FormData();
+    fd.append('action', 'set_active_inspector');
+    fd.append('name', val);
+    fetch('qc_inspectors_ajax.php', { method: 'POST', body: fd }).catch(() => {});
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const sel = document.getElementById('globalQcInspectorSelect');
+    if (sel) {
+        const saved = localStorage.getItem('active_qc_inspector');
+        if (saved && (!sel.value || sel.value === '')) {
+            for (let opt of sel.options) {
+                if (opt.value === saved) {
+                    sel.value = saved;
+                    updateGlobalQcInspector(saved);
+                    break;
+                }
+            }
+        }
+    }
+});
+
 function togglePallet(pid) {
     const content = document.getElementById('accordion' + pid);
     const chevron = document.getElementById('chevron'   + pid);

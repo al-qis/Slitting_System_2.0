@@ -2,7 +2,6 @@
 /vendor/
 
 # Environment/DB Configs (Crucial for security)
-config.php
 db.php.txt
 
 # Debug and Log files

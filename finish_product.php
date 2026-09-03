@@ -200,37 +200,10 @@ if ($day > $daysInSelectedMonth) { $day = 0; }
 //                to the same broad per-token OR match as a normal filter.
 //   3+ tokens -> per-token OR match (e.g. "826613 QA-1 R-6" narrows to
 //                that exact roll via AND-across-tokens).
+// ── Search Tokenization ──────────────────────────────────────────
 $searchTokens = ($search !== '')
     ? preg_split('/\s+/', $search, -1, PREG_SPLIT_NO_EMPTY)
     : [];
-
-// ── Batch Setup & Print detection ──────────────────────────────
-// Exactly 2 tokens + they form a real, existing Lot+Coil combination ->
-// don't redirect away immediately (that removed the ability to just
-// look at the coil's rolls first) — instead, let the table filter
-// normally (the per-token search below already narrows to this Lot+Coil
-// on its own), and surface an explicit "Batch Setup & Print" button near
-// the results so the user can launch it when ready. A 2-word search that
-// ISN'T a real Lot+Coil pairing (e.g. a two-word product description)
-// just behaves as a normal filtered search, no button shown.
-$batchSetupLot  = '';
-$batchSetupCoil = '';
-if (count($searchTokens) === 2) {
-    $chkStmt = $conn->prepare("
-        SELECT 1 FROM slitting_product
-        WHERE is_voided = 0 AND LOWER(lot_no) = LOWER(?) AND LOWER(coil_no) = LOWER(?)
-        LIMIT 1
-    ");
-    $chkStmt->bind_param("ss", $searchTokens[0], $searchTokens[1]);
-    $chkStmt->execute();
-    $isRealLotCoil = $chkStmt->get_result()->num_rows > 0;
-    $chkStmt->close();
-
-    if ($isRealLotCoil) {
-        $batchSetupLot  = $searchTokens[0];
-        $batchSetupCoil = $searchTokens[1];
-    }
-}
 
 // ── Helper: build tab URL preserving all params ────────────────
 function cardUrl(string $filterVal, int $month, int $year, string $search): string {
@@ -249,7 +222,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
 
     $stmt = $conn->prepare("
         UPDATE slitting_product
-        SET actual_length=?, stock_counted=1, is_completed=1
+        SET actual_length=?, date_in=NOW(), stock_counted=1, is_completed=1
         WHERE id=?
     ");
     $stmt->bind_param("si", $actual_length, $id);
@@ -441,7 +414,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
         // Batch update for actual_length across the whole pending group
         $stmt = $conn->prepare("
             UPDATE slitting_product
-            SET actual_length=?, stock_counted=1, is_completed=1
+            SET actual_length=?, date_in=NOW(), stock_counted=1, is_completed=1
             WHERE product=? AND lot_no=? AND status='IN' AND is_completed=0
         ");
         $stmt->bind_param("sss", $actual_length, $product, $lot_no);
@@ -456,7 +429,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
 
         $stmt = $conn->prepare("
             UPDATE slitting_product
-            SET actual_length=?, stock_counted=1, is_completed=1
+            SET actual_length=?, date_in=NOW(), stock_counted=1, is_completed=1
             WHERE id=?
         ");
         $stmt->bind_param("si", $actual_length, $id);
@@ -687,6 +660,90 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     } catch (Throwable $e) {
         $conn->rollback();
         header("Location: finish_product.php?" . http_build_query($redirectParams + ['error' => 'reslit_failed', 'msg' => $e->getMessage()]));
+        exit;
+    }
+}
+
+// ── Send to SFC ───────────────────────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST'
+    && isset($_POST['action'])
+    && $_POST['action'] === 'send_to_sfc') {
+
+    $id = intval($_POST['product_id']);
+
+    $redirectMonth  = isset($_POST['month'])  ? (int)$_POST['month']  : $month;
+    $redirectYear   = isset($_POST['year'])   ? (int)$_POST['year']   : $year;
+    $redirectFilter = $_POST['filter'] ?? $filter_card;
+    $redirectSearch = $_POST['search'] ?? $search;
+    $redirectParams = ['month' => $redirectMonth, 'year' => $redirectYear];
+    $redirectDay    = isset($_POST['day']) ? (int)$_POST['day'] : $day;
+    if ($redirectDay > 0) $redirectParams['day'] = $redirectDay;
+    if ($redirectSearch !== '') $redirectParams['search'] = $redirectSearch;
+    if ($redirectFilter !== '') $redirectParams['filter'] = $redirectFilter;
+
+    $conn->begin_transaction();
+    try {
+        $stmt = $conn->prepare("SELECT * FROM slitting_product WHERE id=? FOR UPDATE");
+        $stmt->bind_param("i", $id);
+        $stmt->execute();
+        $p = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        if (!$p) throw new RuntimeException("Roll #$id not found.");
+        if ($p['status'] === 'OUT') throw new RuntimeException("Roll #$id is already transferred or status is OUT.");
+
+        $mid             = intval($p['mother_id'] ?? 0) ?: null;
+        $original_source = $p['original_source'] ?? 'raw_material';
+        $prev_status     = $p['status'];
+        $insert_length   = (float)($p['actual_length'] ?: $p['length']);
+
+        // 1. Insert into sfc table
+        $sfc_stmt = $conn->prepare("
+            INSERT INTO sfc (mother_id, product, lot_no, coil_no, roll_no, width, length, action, date_created)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'slitting', NOW())
+        ");
+        $sfc_stmt->bind_param(
+            "issssdd",
+            $mid, $p['product'], $p['lot_no'], $p['coil_no'], $p['roll_no'],
+            $p['width'], $insert_length
+        );
+        if (!$sfc_stmt->execute()) {
+            throw new Exception("Failed to insert into SFC: " . $sfc_stmt->error);
+        }
+        $sfc_id = $conn->insert_id;
+        $sfc_stmt->close();
+
+        // 2. Mark roll status OUT in slitting_product
+        $upd_stmt = $conn->prepare("UPDATE slitting_product SET status='OUT', date_out=NOW() WHERE id=?");
+        $upd_stmt->bind_param("i", $id);
+        $upd_stmt->execute();
+        $upd_stmt->close();
+
+        // 3. Process logs
+        log_process($conn, 'slitting', $id, $mid,
+            $prev_status, 'OUT', 'send_to_sfc',
+            "Sent to SFC id={$sfc_id}");
+        log_process($conn, 'sfc', $sfc_id, $mid,
+            null, 'IN', 'received_from_slitting',
+            "From slitting_product id={$id}");
+
+        // 4. Source tracking log
+        $st_stmt = $conn->prepare("
+            INSERT INTO source_tracking_log
+                (product_id, table_name, original_source, current_source, action)
+            VALUES (?, 'sfc', ?, 'sfc', 'send_to_sfc')
+        ");
+        $st_stmt->bind_param("is", $id, $original_source);
+        $st_stmt->execute();
+        $st_stmt->close();
+
+        $conn->commit();
+        header("Location: finish_product.php?" . http_build_query($redirectParams + ['success' => 'sfc']));
+        exit;
+
+    } catch (Throwable $e) {
+        $conn->rollback();
+        header("Location: finish_product.php?" . http_build_query($redirectParams + ['error' => 'sfc_failed', 'msg' => $e->getMessage()]));
         exit;
     }
 }
@@ -979,10 +1036,39 @@ $nodMonthCount = (int)$stmtNOD->get_result()->fetch_assoc()['total'];
 $stmtNOD->close();
 
 $editData = null;
+$batchRolls = [];
 if (isset($_GET['edit'])) {
     $eid = intval($_GET['edit']);
     $res = $conn->query("SELECT * FROM slitting_product WHERE id=$eid");
-    if ($res->num_rows > 0) $editData = $res->fetch_assoc();
+    if ($res && $res->num_rows > 0) {
+        $editData = $res->fetch_assoc();
+
+        $lotNoFetch  = trim($editData['lot_no'] ?? '');
+        $coilNoFetch = trim($editData['coil_no'] ?? '');
+
+        if ($lotNoFetch !== '' && $coilNoFetch !== '') {
+            $stmtBR = $conn->prepare("
+                SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
+                       sp.width, sp.length, sp.actual_length, sp.status,
+                       sp.is_completed, sp.customer_name, sp.ref_no,
+                       sp.is_printed, sp.print_count, sp.last_printed_at, sp.last_printed_by,
+                       pi.pallet_id
+                FROM slitting_product sp
+                LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+                WHERE sp.is_voided = 0
+                  AND sp.lot_no  = ?
+                  AND sp.coil_no = ?
+                ORDER BY sp.roll_no ASC, sp.id ASC
+            ");
+            $stmtBR->bind_param("ss", $lotNoFetch, $coilNoFetch);
+            $stmtBR->execute();
+            $batchRolls = $stmtBR->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmtBR->close();
+        }
+        if (empty($batchRolls)) {
+            $batchRolls = [$editData];
+        }
+    }
 }
 
 $page_title = 'Finish Product';
@@ -1113,8 +1199,10 @@ table td.lot-coil-cell {
     $successMessages = [
         'recoiling'   => 'Roll sent to Recoiling successfully.',
         'reslit'      => 'Roll sent to Reslit successfully.',
+        'sfc'         => 'Roll sent to SFC Inventory successfully.',
         'stock'       => 'Actual length saved. Roll is now in Finish Good stock.',
         'palletised'  => 'Roll added to pallet successfully.',
+        'sfc_sold'    => 'SFC roll sent to Finish Product (Status: IN).',
     ];
     echo htmlspecialchars($successMessages[$_GET['success']] ?? 'Action completed successfully.');
     ?>
@@ -1197,32 +1285,6 @@ table td.lot-coil-cell {
                 <a href="?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>" class="btn btn-outline-secondary">Clear</a>
             <?php endif; ?>
         </form>
-        <?php if ($batchSetupLot !== '' && $batchSetupCoil !== ''): ?>
-            <div class="mt-2">
-                <?php
-                    $batchParams = [
-                        'lot_no'  => $batchSetupLot,
-                        'coil_no' => $batchSetupCoil,
-                        'month'   => $month,
-                        'year'    => $year,
-                    ];
-                    if ($day > 0) $batchParams['day'] = $day;
-                    if ($filter_card !== '') $batchParams['filter'] = $filter_card;
-                    if ($filter_origin !== '') $batchParams['origin'] = $filter_origin;
-                    if ($filter_nod !== '') $batchParams['nod'] = $filter_nod;
-                ?>
-                <a href="batch_setup.php?<?= http_build_query($batchParams) ?>" class="btn btn-danger btn-sm">
-                    <i class="bi bi-printer-fill me-1"></i> Batch Setup &amp; Print — all rolls in
-                    Lot <?= htmlspecialchars($batchSetupLot) ?> / Coil <?= htmlspecialchars($batchSetupCoil) ?>
-                </a>
-            </div>
-        <?php else: ?>
-            <div class="form-text ps-1">
-                Tip: type <strong>Lot No + Coil No</strong> together (e.g. <code>826604 A-6</code>) to filter to that
-                coil AND reveal a <strong>Batch Setup &amp; Print</strong> button for every roll under it —
-                or add a Roll No too (e.g. <code>826613 QA-1 R-6</code>) to find one exact roll instead.
-            </div>
-        <?php endif; ?>
     </div>
 </div>
 
@@ -1656,9 +1718,6 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                 <!-- No actual length yet — must update first -->
                 <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
                    class="btn btn-primary btn-sm w-100">Update</a>
-                <a href="select_customer.php?id=<?= $row['id'] ?>" class="btn btn-secondary btn-sm w-100 mt-1">
-                    <i class="bi bi-printer-fill me-1"></i>Print
-                </a>
 
             <?php elseif ($row['pallet_id']): ?>
                 <!-- Already palletised — hide Reslit/Recoiling to prevent mistakes -->
@@ -1674,9 +1733,10 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                 <!-- Stock counted, not yet on a pallet -->
                 <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
                    class="btn btn-outline-primary btn-sm w-100">Edit</a>
-                <a href="pallet.php" class="btn btn-primary btn-sm w-100">
-                    <i class="bi bi-archive me-1"></i> Add to Pallet
-                </a>
+                <button type="button" class="btn btn-primary btn-sm w-100"
+                        onclick="openSendToSfcModal(<?= (int)$row['id'] ?>, '<?= htmlspecialchars($row['product'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['lot_no'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['coil_no'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['roll_no'] ?? '', ENT_QUOTES) ?>', <?= (float)($row['width'] ?? 0) ?>, <?= (float)($row['actual_length'] ?: $row['length']) ?>)">
+                    <i class="bi bi-box-seam me-1"></i> Send to SFC
+                </button>
                 <form method="post" onsubmit="return confirm('Send to reslit?')">
                     <input type="hidden" name="action"     value="send_to_reslit">
                     <input type="hidden" name="product_id" value="<?= $row['id'] ?>">
@@ -1697,7 +1757,7 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                     <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_card) ?>">
                     <button type="submit" class="btn btn-info btn-sm w-100 text-white">Recoiling</button>
                 </form>
-<?php if (!empty($row['is_printed'])): ?>
+                <?php if (!empty($row['is_printed'])): ?>
                     <span class="badge bg-success w-100 mb-1"
                           title="Last printed <?= htmlspecialchars($row['last_printed_at'] ? date('d M Y H:i', strtotime($row['last_printed_at'])) : '') ?> by <?= htmlspecialchars($row['last_printed_by'] ?? '') ?>">
                         <i class="bi bi-printer-fill"></i> Printed (<?= (int)$row['print_count'] ?>×)
@@ -1705,7 +1765,6 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                 <?php else: ?>
                     <span class="badge bg-secondary w-100 mb-1">Not Printed</span>
                 <?php endif; ?>
-                <a href="select_customer.php?id=<?= $row['id'] ?>" class="btn btn-secondary btn-sm w-100">Print Only</a>
             <?php endif; ?>
 
         </div>
@@ -1745,126 +1804,678 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
 
 <!-- Actual Length Edit Modal -->
 <?php if ($editData): ?>
+<script src="https://unpkg.com/imask"></script>
 <div class="modal fade show" id="updateModal"
-     style="display:block; background: rgba(0,0,0,0.5);" tabindex="-1">
-    <div class="modal-dialog">
-        <form class="modal-content" method="post">
-            <input type="hidden" name="action" value="batch_update_actual_length">
-            <input type="hidden" name="id"      value="<?= $editData['id'] ?>">
-            <input type="hidden" name="product" value="<?= htmlspecialchars($editData['product'] ?? '') ?>">
-            <input type="hidden" name="lot_no"  value="<?= htmlspecialchars(trim($editData['lot_no'] ?? '')) ?>">
-            <input type="hidden" name="month"   value="<?= $month ?>">
-            <input type="hidden" name="year"    value="<?= $year ?>">
-            <input type="hidden" name="day" value="<?= $day ?>">
-            <input type="hidden" name="search"  value="<?= htmlspecialchars($search) ?>">
-            <input type="hidden" name="filter"  value="<?= htmlspecialchars($filter_card) ?>">
-            <div class="modal-header bg-primary text-white">
-                <h5>Edit Product</h5>
-                <a href="finish_product.php?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
-                   class="btn-close"></a>
+     style="display:block; background: rgba(0,0,0,0.6);" tabindex="-1">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content shadow-lg border-0">
+            <!-- Modal Header -->
+            <div class="modal-header bg-dark text-white py-3">
+                <div>
+                    <h5 class="modal-title mb-1 text-white">
+                        <i class="bi bi-box-seam-fill me-2 text-warning"></i>
+                        Manage Product &amp; Lot Batch — Lot <strong><?= htmlspecialchars(trim($editData['lot_no'] ?? '')) ?></strong> / Coil <strong><?= htmlspecialchars(trim($editData['coil_no'] ?? '')) ?></strong>
+                    </h5>
+                    <div class="small text-light-50">
+                        Selected Item: <strong><?= htmlspecialchars($editData['product'] ?? '') ?> (<?= htmlspecialchars(str_replace('R', 'R-', $editData['roll_no'] ?? '')) ?>)</strong> · Total <strong><?= count($batchRolls) ?></strong> roll(s) in this Lot &amp; Coil
+                    </div>
+                </div>
+                <div class="d-flex align-items-center gap-2">
+                    <a href="batch_setup.php?lot_no=<?= urlencode(trim($editData['lot_no'] ?? '')) ?>&coil_no=<?= urlencode(trim($editData['coil_no'] ?? '')) ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?>&filter=<?= urlencode($filter_card) ?>"
+                       class="btn btn-outline-light btn-sm" title="Open in dedicated full page">
+                        <i class="bi bi-box-arrow-up-right me-1"></i> Full Page View
+                    </a>
+                    <a href="finish_product.php?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
+                       class="btn-close btn-close-white" title="Close modal"></a>
+                </div>
             </div>
-            <div class="modal-body">
-                <p>
-                    <strong>Product:</strong>
-                    <?= htmlspecialchars($editData['product'] ?? '') ?>
-                    (<?= $editData['roll_no'] ?>)
-                </p>
-                <div class="mb-3">
-                    <label class="form-label">Lot No</label>
-                    <input type="text" name="new_lot_no" id="lotNoInput" class="form-control"
-                           value="<?= htmlspecialchars(trim($editData['lot_no'] ?? '')) ?>">
-                    <small class="text-muted">
-                        <i class="bi bi-pencil-square me-1"></i>Fix a typo here if needed — this only corrects <strong>this roll</strong>, not other rolls sharing the same Product &amp; Lot No.
-                    </small>
+
+            <!-- Modal Body -->
+            <div class="modal-body p-3 bg-light">
+                <!-- Consolidated Batch Assignment Panel Toolbar (Copy to All Rows) -->
+                <div class="card mb-3 shadow-sm border-danger-subtle" style="background: #fff8f8;">
+                    <div class="card-header bg-danger-subtle fw-bold py-2 text-danger-emphasis d-flex justify-content-between align-items-center">
+                        <span><i class="bi bi-sliders me-1"></i> Batch Assignment Toolbar — Copy to All Rows</span>
+                        <span class="badge bg-danger text-white"><?= htmlspecialchars($editData['product'] ?? '') ?></span>
+                    </div>
+                    <div class="card-body py-2">
+                        <div class="row g-2 align-items-end">
+                            <div class="col-6 col-md-3">
+                                <label class="small fw-bold mb-1">Actual Length (meters)</label>
+                                <input type="number" step="0.01" min="0" class="form-control form-control-sm" id="modalCopyAllActualLength"
+                                       placeholder="e.g. 500" value="<?= htmlspecialchars((string)($editData['actual_length'] ?? '')) ?>">
+                            </div>
+                            <div class="col-12 col-md-3">
+                                <label class="small fw-bold mb-1">Customer</label>
+                                <select class="form-select form-select-sm" id="modalCopyAllCustomer">
+                                    <option value="">-- Select Customer --</option>
+                                    <option value="NAE">NICHIAS AUTOPARTS EUROPE (NAE)</option>
+                                    <option value="NAX">NAX MFG, SA.DE C.V</option>
+                                    <option value="NCI MFG">NCI MFG., INC.</option>
+                                    <option value="TAIHO">TAIHO MFG OF TN. INC</option>
+                                    <option value="NRI">PT NICHIAS ROCKWOOL IND.</option>
+                                    <option value="ASHUKA">ASHUKA TECHNOLOGIES SDN. BHD.</option>
+                                    <option value="NIPPON">NTC(NIPPON GASKET)</option>
+                                    <option value="NTC">NICHIAS THAILAND</option>
+                                    <option value="SGC">SHANGHAI XINGSHENG</option>
+                                    <option value="STAMPING">MK STAMPING</option>
+                                    <option value="YANTAI">NICHIAS (SHANGHAI) AUTOPARTS TRADING</option>
+                                    <option value="NIPP">NICHIAS IND.PRODUCTS PVT. LTD.</option>
+                                    <option value="NVC">NICHIAS VIETNAM CO., LTD</option>
+                                    <option value="NSJ">NC-PT NICHIAS SUNIJAYA</option>
+                                    <option value="NIP">SUZHOU NICHIAS IND. PRODUCTS</option>
+                                    <option value="YTEC">YTEC CO., LTD.</option>
+                                    <option value="NSA">NICHIAS SOUTH EAST ASIA (UP PACKING)</option>
+                                    <option value="NCI 2">NCI 2</option>
+                                    <option value="STOCK">STOCK</option>
+                                    <option value="TRIAL">TRIAL</option>
+                                    <option value="OTHER">OTHER (type below)</option>
+                                </select>
+                                <input type="text" class="form-control form-control-sm mt-1" id="modalCopyAllCustomOther"
+                                       placeholder="Customer name (if OTHER)" style="display:none;">
+                            </div>
+                            <div class="col-8 col-md-3">
+                                <label class="small fw-bold mb-1">Ref No</label>
+                                <input type="text" class="form-control form-control-sm" id="modalCopyAllRefNo" value="SO-" placeholder="SO-00-0000">
+                            </div>
+                            <div class="col-4 col-md-1">
+                                <label class="small fw-bold mb-1">Copies</label>
+                                <select class="form-select form-select-sm" id="modalCopyAllCopies">
+                                    <option value="">—</option>
+                                    <option value="0">0 (skip)</option>
+                                    <option value="1">1</option>
+                                    <option value="2">2</option>
+                                    <option value="3">3</option>
+                                    <option value="4">4</option>
+                                </select>
+                            </div>
+                            <div class="col-12 col-md-2">
+                                <button type="button" class="btn btn-outline-danger btn-sm w-100 fw-bold" onclick="modalCopyToAllRows()">
+                                    <i class="bi bi-arrow-down-square me-1"></i> Copy to All
+                                </button>
+                            </div>
+                        </div>
+                        <div class="form-text mb-0">Fills every row below with Customer, Ref No, Actual Length, and Print Copies — then adjust any row if needed.</div>
+                    </div>
                 </div>
-                <div class="mb-3">
-                    <label class="form-label">Coil No</label>
-                    <input type="text" name="coil_no" id="coilNoInput" class="form-control"
-                           value="<?= htmlspecialchars(trim($editData['coil_no'] ?? '')) ?>">
-                    <small class="text-muted">
-                        <i class="bi bi-pencil-square me-1"></i>Fix a typo here if needed — this only corrects <strong>this roll</strong>, not other rolls sharing the same Product &amp; Lot No.
-                    </small>
+
+                <!-- Section 3: All Rolls Grid for Lot & Coil Match -->
+                <div class="card shadow-sm border-secondary-subtle">
+                    <div class="card-header bg-dark text-white py-2 d-flex justify-content-between align-items-center">
+                        <span class="fw-bold"><i class="bi bi-list-check me-1"></i> Associated Rolls Grid (Lot <?= htmlspecialchars(trim($editData['lot_no'] ?? '')) ?> / Coil <?= htmlspecialchars(trim($editData['coil_no'] ?? '')) ?>)</span>
+                        <span class="badge bg-secondary"><?= count($batchRolls) ?> Roll(s) Found</span>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive" style="max-height: 380px;">
+                            <table class="table table-bordered table-hover table-sm mb-0 align-middle" id="modalBatchGridTable">
+                                <thead class="table-dark sticky-top" style="z-index: 5;">
+                                    <tr>
+                                        <th style="width:14%;">Roll No &amp; Product</th>
+                                        <th style="width:14%;">Width / Actual Length</th>
+                                        <th style="width:28%;">Customer</th>
+                                        <th style="width:26%;">Ref No.</th>
+                                        <th style="width:9%;">Copies</th>
+                                        <th style="width:9%;">Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($batchRolls as $idx => $r): ?>
+                                    <tr data-id="<?= $r['id'] ?>" data-row="<?= $idx ?>"
+                                        data-is-printed="<?= !empty($r['is_printed']) ? 1 : 0 ?>"
+                                        data-print-count="<?= (int)($r['print_count'] ?? 0) ?>"
+                                        class="<?= ((int)$r['id'] === (int)$editData['id']) ? 'table-warning' : '' ?>">
+                                        <td>
+                                            <strong><?= htmlspecialchars(str_replace('R', 'R-', $r['roll_no'] ?? '')) ?></strong>
+                                            <?php if ((int)$r['id'] === (int)$editData['id']): ?>
+                                                <span class="badge bg-primary ms-1" style="font-size:9px;">Selected</span>
+                                            <?php endif; ?>
+                                            <div class="text-muted small"><?= htmlspecialchars($r['product'] ?? '') ?></div>
+                                            <?php if (!empty($r['is_printed'])): ?>
+                                                <span class="badge bg-success" style="font-size:10px;"
+                                                      title="Last printed <?= htmlspecialchars($r['last_printed_at'] ? date('d M Y H:i', strtotime($r['last_printed_at'])) : '') ?> by <?= htmlspecialchars($r['last_printed_by'] ?? '') ?>">
+                                                    <i class="bi bi-printer-fill"></i> Printed (<?= (int)$r['print_count'] ?>×)
+                                                </span>
+                                            <?php else: ?>
+                                                <span class="badge bg-secondary" style="font-size:10px;">Not Printed</span>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td>
+                                            <span class="fw-semibold"><?= number_format((float)$r['width'], 0) ?> mm</span>
+                                            <?php $curLength = (!empty($r['actual_length']) && $r['actual_length'] > 0) ? $r['actual_length'] : $r['length']; ?>
+                                            <div class="input-group input-group-sm mt-1">
+                                                <input type="number" step="0.01" min="0"
+                                                       class="form-control form-control-sm modal-row-length" data-row="<?= $idx ?>"
+                                                       value="<?= htmlspecialchars($curLength ?? '') ?>">
+                                                <span class="input-group-text px-1" style="font-size:10px;">m</span>
+                                            </div>
+                                        </td>
+                                        <td>
+                                            <?php
+                                                $saved = trim($r['customer_name'] ?? '');
+                                                $knownCustomers = ['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA','NIPPON','NTC','SGC','STAMPING','YANTAI','NIPP','NVC','NSJ','NIP','YTEC','NSA','NCI 2','STOCK','TRIAL'];
+                                                $isOther = ($saved !== '' && !in_array($saved, $knownCustomers, true));
+
+                                                $rawRefNo = trim($r['ref_no'] ?? '');
+                                                $isStock = ($saved === 'STOCK' || $rawRefNo === 'STOCK');
+                                                $displayRefNo = $isStock ? 'STOCK' : ($rawRefNo !== '' ? $rawRefNo : 'SO-');
+                                            ?>
+                                            <select class="form-select form-select-sm modal-row-customer" data-row="<?= $idx ?>"
+                                                    onchange="modalHandleRowCustomerChange(<?= $idx ?>)">
+                                                <option value=""         <?= $saved===''         ?'selected':'' ?>>-- Select Customer --</option>
+                                                <option value="NAE"      <?= $saved==='NAE'      ?'selected':'' ?>>NICHIAS AUTOPARTS EUROPE (NAE)</option>
+                                                <option value="NAX"      <?= $saved==='NAX'      ?'selected':'' ?>>NAX MFG, SA.DE C.V</option>
+                                                <option value="NCI MFG"  <?= $saved==='NCI MFG'  ?'selected':'' ?>>NCI MFG., INC.</option>
+                                                <option value="TAIHO"    <?= $saved==='TAIHO'    ?'selected':'' ?>>TAIHO MFG OF TN. INC</option>
+                                                <option value="NRI"      <?= $saved==='NRI'      ?'selected':'' ?>>PT NICHIAS ROCKWOOL IND.</option>
+                                                <option value="ASHUKA"   <?= $saved==='ASHUKA'   ?'selected':'' ?>>ASHUKA TECHNOLOGIES SDN. BHD.</option>
+                                                <option value="NIPPON"   <?= $saved==='NIPPON'   ?'selected':'' ?>>NTC(NIPPON GASKET)</option>
+                                                <option value="NTC"      <?= $saved==='NTC'      ?'selected':'' ?>>NICHIAS THAILAND</option>
+                                                <option value="SGC"      <?= $saved==='SGC'      ?'selected':'' ?>>SHANGHAI XINGSHENG</option>
+                                                <option value="STAMPING" <?= $saved==='STAMPING' ?'selected':'' ?>>MK STAMPING</option>
+                                                <option value="YANTAI"   <?= $saved==='YANTAI'   ?'selected':'' ?>>NICHIAS (SHANGHAI) AUTOPARTS TRADING</option>
+                                                <option value="NIPP"     <?= $saved==='NIPP'     ?'selected':'' ?>>NICHIAS IND.PRODUCTS PVT. LTD.</option>
+                                                <option value="NVC"      <?= $saved==='NVC'      ?'selected':'' ?>>NICHIAS VIETNAM CO., LTD</option>
+                                                <option value="NSJ"      <?= $saved==='NSJ'      ?'selected':'' ?>>NC-PT NICHIAS SUNIJAYA</option>
+                                                <option value="NIP"      <?= $saved==='NIP'      ?'selected':'' ?>>SUZHOU NICHIAS IND. PRODUCTS</option>
+                                                <option value="YTEC"     <?= $saved==='YTEC'     ?'selected':'' ?>>YTEC CO., LTD.</option>
+                                                <option value="NSA"     <?= $saved==='NSA'     ?'selected':'' ?>>NICHIAS SOUTH EAST ASIA (UP PACKING)</option>
+                                                <option value="NCI 2"    <?= $saved==='NCI 2'    ?'selected':'' ?>>NCI 2</option>
+                                                <option value="STOCK"    <?= $saved==='STOCK'    ?'selected':'' ?>>STOCK</option>
+                                                <option value="TRIAL"    <?= $saved==='TRIAL'    ?'selected':'' ?>>TRIAL</option>
+                                                <option value="OTHER"    <?= $isOther            ?'selected':'' ?>>OTHER (type below)</option>
+                                            </select>
+                                            <input type="text" class="form-control form-control-sm modal-row-custom-customer mt-1" data-row="<?= $idx ?>"
+                                                   placeholder="Enter customer name" style="display:<?= $isOther?'block':'none' ?>;"
+                                                   value="<?= $isOther ? htmlspecialchars($saved) : '' ?>">
+                                            <div class="text-muted modal-nci-note mt-1" data-row="<?= $idx ?>" style="display:none; font-size:11px;"></div>
+                                        </td>
+                                        <td>
+                                            <div class="form-check mb-1">
+                                                <input class="form-check-input modal-row-stock-override" type="checkbox"
+                                                       id="modalRowStock<?= $idx ?>" data-row="<?= $idx ?>" <?= $isStock ? 'checked' : '' ?>>
+                                                <label class="form-check-label small" for="modalRowStock<?= $idx ?>">Set to STOCK</label>
+                                            </div>
+                                            <input type="text" class="form-control form-control-sm modal-row-refno" data-row="<?= $idx ?>"
+                                                   value="<?= htmlspecialchars($displayRefNo) ?>" placeholder="SO-00-0000" <?= $isStock ? 'readonly' : '' ?>>
+                                        </td>
+                                        <td>
+                                            <select class="form-select form-select-sm modal-row-copies" data-row="<?= $idx ?>">
+                                                <option value="0">0 (skip)</option>
+                                                <option value="1">1</option>
+                                                <option value="2">2</option>
+                                                <option value="3" selected>3</option>
+                                                <option value="4">4</option>
+                                            </select>
+                                        </td>
+                                        <td class="modal-row-status text-muted small" data-row="<?= $idx ?>">
+                                            <?php if ((int)$r['is_completed'] === 0): ?>
+                                                <span class="badge bg-info">Pending</span>
+                                            <?php else: ?>
+                                                <span class="badge bg-primary">Stock</span>
+                                            <?php endif; ?>
+                                        </td>
+                                    </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
                 </div>
-                <div class="mb-3">
-                    <label class="form-label">Actual Length (meter)</label>
-                    <input type="number" step="0.01" name="actual_length"
-                           id="actualLengthInput" class="form-control"
-                           value="<?= $editData['actual_length'] ?>" required autofocus
-                           data-self-id="<?= $editData['id'] ?>"
-                           data-product="<?= htmlspecialchars($editData['product'] ?? '') ?>"
-                           data-lot="<?= htmlspecialchars(trim($editData['lot_no'] ?? '')) ?>"
-                           data-is-completed="<?= (int)($editData['is_completed'] ?? 0) ?>">
-                    <small class="text-muted" id="syncNote" style="display:none;">
-                        This will also update other rolls sharing the same Product &amp; Lot No.
-                    </small>
-                    <small class="text-muted" id="correctionNote" style="display:none;">
-                        <i class="bi bi-info-circle me-1"></i>This roll is already completed — saving will correct <strong>only this roll</strong>, not the rest of the group.
-                    </small>
-                </div>
-                <div class="d-grid">
-                    <button type="submit" class="btn btn-success" id="saveStockBtn" disabled>
-                        Save to Stock
+            </div>
+
+            <!-- Modal Footer -->
+            <div class="modal-footer bg-light py-2 d-flex justify-content-between align-items-center">
+                <div id="modalSaveAllFeedback" class="small"></div>
+                <div class="d-flex gap-2">
+                    <button type="button" class="btn btn-primary" id="modalSaveAllBtn" onclick="modalSaveAllRows()">
+                        <i class="bi bi-floppy-fill me-1"></i> Save All to Stock
                     </button>
+                    <button type="button" class="btn btn-danger" id="modalPrintAllBtn" onclick="modalPrintAllStickers()">
+                        <i class="bi bi-printer-fill me-1"></i> Save &amp; Print All Stickers
+                    </button>
+                    <a href="finish_product.php?month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
+                       class="btn btn-secondary">Close</a>
                 </div>
             </div>
-        </form>
+        </div>
     </div>
 </div>
+
+<!-- Hidden form used to POST the batch print job in a new tab -->
+<form id="modalBatchPrintForm" method="post" action="batch_print_action.php" target="_blank" style="display:none;">
+    <input type="hidden" name="selections" id="modalBatchPrintSelectionsInput">
+    <input type="hidden" name="lot_no"  value="<?= htmlspecialchars(trim($editData['lot_no'] ?? '')) ?>">
+    <input type="hidden" name="coil_no" value="<?= htmlspecialchars(trim($editData['coil_no'] ?? '')) ?>">
+    <input type="hidden" name="month"   value="<?= $month ?>">
+    <input type="hidden" name="year"    value="<?= $year ?>">
+    <input type="hidden" name="day"     value="<?= $day ?>">
+    <input type="hidden" name="search"  value="<?= htmlspecialchars($search) ?>">
+    <input type="hidden" name="filter"  value="<?= htmlspecialchars($filter_card) ?>">
+</form>
+
 <script>
-    const inputLength = document.getElementById('actualLengthInput');
-    const inputCoil   = document.getElementById('coilNoInput');
-    const inputLot    = document.getElementById('lotNoInput');
-    const btnSave     = document.getElementById('saveStockBtn');
-    const syncNote    = document.getElementById('syncNote');
-    const correctionNote = document.getElementById('correctionNote');
-    const isCompleted = inputLength.dataset.isCompleted === '1';
+const MODAL_NCI_CUSTOMERS = ['NCI MFG', 'NCI 2'];
+const modalRefNoMasks = {};
 
-    function findMatchingRows() {
-        const product = inputLength.dataset.product;
-        const lot      = inputLength.dataset.lot;
-        const selfId   = inputLength.dataset.selfId;
-        return Array.from(document.querySelectorAll('tr[data-id]')).filter(tr =>
-            tr.dataset.id !== selfId &&
-            tr.dataset.product === product &&
-            tr.dataset.lot === lot
+function modalDestroyRefMaskForRow(idx) {
+    if (modalRefNoMasks[idx]) { modalRefNoMasks[idx].destroy(); modalRefNoMasks[idx] = null; }
+}
+
+function modalApplyMaskForRow(idx, val) {
+    modalDestroyRefMaskForRow(idx);
+    const refEl   = document.querySelector(`.modal-row-refno[data-row="${idx}"]`);
+    const stockEl = document.querySelector(`.modal-row-stock-override[data-row="${idx}"]`);
+    if (!refEl) return;
+
+    if (stockEl?.checked || MODAL_NCI_CUSTOMERS.includes(val)) {
+        return;
+    }
+
+    if (val === 'STAMPING') {
+        modalRefNoMasks[idx] = IMask(refEl, {
+            mask: 'MS-0000000[ a]',
+            blocks: { a: { mask: /[A-Z]/ } },
+            prepareChar: (str) => str.toUpperCase()
+        });
+        if (!modalRefNoMasks[idx].value || modalRefNoMasks[idx].value === 'SO-' || modalRefNoMasks[idx].value === 'STOCK') {
+            modalRefNoMasks[idx].value = 'MS-';
+        }
+    } else {
+        modalRefNoMasks[idx] = IMask(refEl, { mask: 'SO-00-0000' });
+        if (!modalRefNoMasks[idx].value || modalRefNoMasks[idx].value === 'STOCK') {
+            modalRefNoMasks[idx].value = 'SO-';
+        }
+    }
+}
+
+function modalRefNoMatchesActiveRuleForRow(idx) {
+    const refEl   = document.querySelector(`.modal-row-refno[data-row="${idx}"]`);
+    const custEl  = document.querySelector(`.modal-row-customer[data-row="${idx}"]`);
+    const stockEl = document.querySelector(`.modal-row-stock-override[data-row="${idx}"]`);
+    if (!refEl || !custEl) return true;
+
+    if (stockEl?.checked) return true;
+    const val = refEl.value.trim();
+    const cust = custEl.value;
+
+    if (MODAL_NCI_CUSTOMERS.includes(cust)) return val !== '';
+    if (cust === 'STAMPING') return /^MS-\d{7}( [A-Z])?$/.test(val);
+    return /^SO-\d{2}-\d{4}$/.test(val);
+}
+
+function modalGetRowCount() {
+    return document.querySelectorAll('#modalBatchGridTable tbody tr').length;
+}
+
+async function modalHandleRowCustomerChange(rowIdx) {
+    const sel      = document.querySelector(`.modal-row-customer[data-row="${rowIdx}"]`);
+    const otherEl  = document.querySelector(`.modal-row-custom-customer[data-row="${rowIdx}"]`);
+    const noteEl   = document.querySelector(`.modal-nci-note[data-row="${rowIdx}"]`);
+    const refEl    = document.querySelector(`.modal-row-refno[data-row="${rowIdx}"]`);
+    const stockEl  = document.querySelector(`.modal-row-stock-override[data-row="${rowIdx}"]`);
+    const tr       = document.querySelectorAll('#modalBatchGridTable tbody tr')[rowIdx];
+    const productId = tr ? tr.dataset.id : null;
+    const val = sel.value;
+
+    otherEl.style.display = (val === 'OTHER') ? 'block' : 'none';
+
+    if (val === 'STOCK') {
+        modalDestroyRefMaskForRow(rowIdx);
+        if (stockEl) stockEl.checked = true;
+        refEl.value = 'STOCK';
+        refEl.readOnly = true;
+        noteEl.style.display = 'none';
+        noteEl.innerHTML = '';
+        return;
+    }
+
+    if (stockEl) stockEl.checked = false;
+    refEl.readOnly = false;
+    if (refEl.value === 'STOCK' || !refEl.value.trim()) {
+        refEl.value = 'SO-';
+    }
+
+    modalApplyMaskForRow(rowIdx, val);
+
+    if (!MODAL_NCI_CUSTOMERS.includes(val)) {
+        noteEl.style.display = 'none';
+        noteEl.innerHTML = '';
+        return;
+    }
+
+    noteEl.style.display = 'block';
+    noteEl.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Looking up Ref No…';
+
+    try {
+        const res  = await fetch(`select_customer.php?ajax=nci_lookup&id=${productId}`);
+        const data = await res.json();
+        if (!data.ok) {
+            noteEl.innerHTML = `<span class="text-danger"><i class="bi bi-exclamation-triangle me-1"></i>${data.msg} — fill Ref No manually.</span>`;
+            return;
+        }
+        refEl.value = data.part_no_full;
+        refEl.dataset.nciResolvedCustomer = data.customer_info;
+        noteEl.innerHTML = `<i class="bi bi-check-circle me-1"></i>Customer on sticker: <strong>${data.customer_info}</strong>`;
+    } catch (e) {
+        noteEl.innerHTML = '<span class="text-danger">Network error during lookup.</span>';
+    }
+}
+
+document.getElementById('modalCopyAllCustomer')?.addEventListener('change', function () {
+    const val = this.value;
+    document.getElementById('modalCopyAllCustomOther').style.display =
+        (val === 'OTHER') ? 'block' : 'none';
+    const copyAllRefEl = document.getElementById('modalCopyAllRefNo');
+    if (copyAllRefEl) {
+        if (val === 'STOCK') {
+            copyAllRefEl.value = 'STOCK';
+        } else if (copyAllRefEl.value === 'STOCK') {
+            copyAllRefEl.value = 'SO-';
+        }
+    }
+});
+
+document.querySelectorAll('.modal-row-stock-override').forEach((cb) => {
+    const idx = cb.dataset.row;
+    cb.addEventListener('change', () => {
+        const refEl  = document.querySelector(`.modal-row-refno[data-row="${idx}"]`);
+        const custEl = document.querySelector(`.modal-row-customer[data-row="${idx}"]`);
+        if (cb.checked) {
+            modalDestroyRefMaskForRow(idx);
+            refEl.value = 'STOCK';
+            refEl.readOnly = true;
+            if (custEl && custEl.value === '') {
+                custEl.value = 'STOCK';
+            }
+        } else {
+            refEl.readOnly = false;
+            refEl.value = 'SO-';
+            if (custEl && custEl.value === 'STOCK') {
+                custEl.value = '';
+            }
+            modalApplyMaskForRow(idx, custEl.value);
+        }
+    });
+});
+
+(function initModalRowRefNoMasks() {
+    const rowCount = modalGetRowCount();
+    for (let idx = 0; idx < rowCount; idx++) {
+        const custEl  = document.querySelector(`.modal-row-customer[data-row="${idx}"]`);
+        const refEl   = document.querySelector(`.modal-row-refno[data-row="${idx}"]`);
+        const stockEl = document.querySelector(`.modal-row-stock-override[data-row="${idx}"]`);
+        if (!custEl || !refEl) continue;
+
+        if (stockEl?.checked || refEl.value.trim() === 'STOCK') {
+            if (stockEl) stockEl.checked = true;
+            refEl.value = 'STOCK';
+            refEl.readOnly = true;
+        } else {
+            if (!refEl.value.trim()) {
+                refEl.value = 'SO-';
+            }
+            modalApplyMaskForRow(idx, custEl.value);
+        }
+    }
+})();
+
+async function modalCopyToAllRows() {
+    const sel       = document.getElementById('modalCopyAllCustomer');
+    const otherEl   = document.getElementById('modalCopyAllCustomOther');
+    const refEl     = document.getElementById('modalCopyAllRefNo');
+    const lengthEl  = document.getElementById('modalCopyAllActualLength');
+    const copiesEl  = document.getElementById('modalCopyAllCopies');
+
+    const customerVal = sel ? sel.value : '';
+    const refVal      = refEl ? refEl.value.trim().replace(/\s+/g, '') : '';
+    const lengthVal   = lengthEl ? lengthEl.value.trim() : '';
+    const copiesVal   = copiesEl ? copiesEl.value : '';
+
+    if (!customerVal && !lengthVal) {
+        alert('Set Customer or Actual Length to copy to all rows.');
+        return;
+    }
+    if (customerVal === 'OTHER' && !otherEl.value.trim()) { alert('Enter the customer name.'); return; }
+
+    const rowCount = modalGetRowCount();
+    for (let idx = 0; idx < rowCount; idx++) {
+        const rowSel      = document.querySelector(`.modal-row-customer[data-row="${idx}"]`);
+        const rowOtherEl  = document.querySelector(`.modal-row-custom-customer[data-row="${idx}"]`);
+        const rowRefEl    = document.querySelector(`.modal-row-refno[data-row="${idx}"]`);
+        const rowLengthEl = document.querySelector(`.modal-row-length[data-row="${idx}"]`);
+        const rowCopiesEl = document.querySelector(`.modal-row-copies[data-row="${idx}"]`);
+        const rowStockEl  = document.querySelector(`.modal-row-stock-override[data-row="${idx}"]`);
+
+        if (customerVal) {
+            rowSel.value = customerVal;
+            if (customerVal === 'OTHER') rowOtherEl.value = otherEl.value.trim();
+
+            if (customerVal === 'STOCK') {
+                if (rowStockEl) rowStockEl.checked = true;
+                rowRefEl.readOnly = true;
+                if (refVal !== '') rowRefEl.value = refVal;
+            } else {
+                if (rowStockEl) rowStockEl.checked = false;
+                rowRefEl.readOnly = false;
+                if (refVal !== '') rowRefEl.value = refVal;
+            }
+            await modalHandleRowCustomerChange(idx);
+        }
+
+        if (lengthVal !== '' && rowLengthEl) {
+            rowLengthEl.value = lengthVal;
+        }
+
+        if (copiesVal && rowCopiesEl) {
+            rowCopiesEl.value = copiesVal;
+        }
+    }
+}
+
+function modalSetRowStatus(rowIdx, text, isError) {
+    const el = document.querySelector(`.modal-row-status[data-row="${rowIdx}"]`);
+    if (!el) return;
+    el.textContent = text;
+    el.className = 'modal-row-status small ' + (isError ? 'text-danger fw-bold' : 'text-success fw-bold');
+}
+
+function modalCollectSelections() {
+    const trs = Array.from(document.querySelectorAll('#modalBatchGridTable tbody tr'));
+    const selections = [];
+    let hasError = false;
+
+    trs.forEach((tr, idx) => {
+        const sel      = document.querySelector(`.modal-row-customer[data-row="${idx}"]`);
+        const otherEl  = document.querySelector(`.modal-row-custom-customer[data-row="${idx}"]`);
+        const refEl    = document.querySelector(`.modal-row-refno[data-row="${idx}"]`);
+        const copiesEl = document.querySelector(`.modal-row-copies[data-row="${idx}"]`);
+        const lengthEl = document.querySelector(`.modal-row-length[data-row="${idx}"]`);
+        const stockEl  = document.querySelector(`.modal-row-stock-override[data-row="${idx}"]`);
+
+        let customer = sel.value;
+        if (customer === 'OTHER') customer = otherEl.value.trim();
+
+        let ref_no = refEl.value.trim();
+        if (stockEl?.checked) {
+            ref_no = 'STOCK';
+        }
+
+        const parsedCopies = parseInt(copiesEl.value, 10);
+        const copies = isNaN(parsedCopies) ? 1 : parsedCopies;
+        const length = parseFloat(lengthEl.value);
+
+        if (!customer) { modalSetRowStatus(idx, 'Select customer', true); hasError = true; return; }
+        if (!ref_no)   { modalSetRowStatus(idx, 'Ref No required', true);   hasError = true; return; }
+        if (!stockEl?.checked && !modalRefNoMatchesActiveRuleForRow(idx)) {
+            modalSetRowStatus(idx, 'Format invalid', true);
+            hasError = true;
+            return;
+        }
+        if (isNaN(length) || length <= 0) { modalSetRowStatus(idx, 'Length must be > 0', true); hasError = true; return; }
+
+        modalSetRowStatus(idx, copies === 0 ? 'Saved (skip print)' : 'Ready', false);
+        selections.push({
+            id:                    tr.dataset.id,
+            customer:              customer,
+            ref_no:                ref_no,
+            copies:                copies,
+            length:                length,
+            nci_resolved_customer: refEl.dataset.nciResolvedCustomer || '',
+        });
+    });
+
+    return hasError ? null : selections;
+}
+
+async function modalSaveAllRows() {
+    const feedback = document.getElementById('modalSaveAllFeedback');
+    const selections = modalCollectSelections();
+    if (!selections) {
+        feedback.innerHTML = '<span class="text-danger fw-bold"><i class="bi bi-exclamation-circle me-1"></i>Fix highlighted row errors first.</span>';
+        return;
+    }
+
+    const btn = document.getElementById('modalSaveAllBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Saving…';
+
+    try {
+        const resp = await fetch('batch_setup_save.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            body: JSON.stringify({ selections }),
+        });
+        const result = await resp.json();
+        if (result.ok) {
+            feedback.innerHTML = `<span class="text-success fw-bold"><i class="bi bi-check-circle me-1"></i>${result.msg} Reloading page...</span>`;
+            setTimeout(() => {
+                const params = new URLSearchParams(window.location.search);
+                params.set('success', 'stock');
+                params.delete('edit');
+                window.location.search = params.toString();
+            }, 600);
+        } else {
+            feedback.innerHTML = `<span class="text-danger fw-bold"><i class="bi bi-exclamation-circle me-1"></i>${result.msg}</span>`;
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-floppy-fill me-1"></i> Save All to Stock';
+        }
+    } catch (e) {
+        feedback.innerHTML = '<span class="text-danger fw-bold">Network error while saving.</span>';
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-floppy-fill me-1"></i> Save All to Stock';
+    }
+}
+
+async function modalPrintAllStickers() {
+    const feedback = document.getElementById('modalSaveAllFeedback');
+    const selections = modalCollectSelections();
+    if (!selections) {
+        if (feedback) {
+            feedback.innerHTML = '<span class="text-danger fw-bold"><i class="bi bi-exclamation-circle me-1"></i>Fix highlighted row errors before printing.</span>';
+        }
+        return;
+    }
+
+    const trs = Array.from(document.querySelectorAll('#modalBatchGridTable tbody tr'));
+    const alreadyPrinted = [];
+    selections.forEach((sel, idx) => {
+        if (sel.copies > 0) {
+            const tr = trs[idx];
+            if (tr && tr.dataset.isPrinted === '1') {
+                const rollLabel = tr.querySelector('strong')?.textContent?.trim() || `Roll #${sel.id}`;
+                alreadyPrinted.push(`${rollLabel} (printed ${tr.dataset.printCount}×)`);
+            }
+        }
+    });
+
+    if (alreadyPrinted.length > 0) {
+        const proceed = confirm(
+            `${alreadyPrinted.length} roll(s) in this batch were already printed:\n\n` +
+            alreadyPrinted.join('\n') +
+            `\n\nPrint again anyway?`
         );
+        if (!proceed) return;
     }
 
-    function refreshSaveButton() {
-        btnSave.disabled = (inputLength.value === "" || parseFloat(inputLength.value) <= 0);
+    if (feedback) {
+        feedback.innerHTML = '<span class="text-primary fw-bold"><span class="spinner-border spinner-border-sm me-1"></span> Saving all updates to stock inventory before printing…</span>';
     }
 
-    if (isCompleted) {
-        // Already completed — Save now only corrects this one roll, so
-        // there's nothing to batch-sync or preview elsewhere.
-        correctionNote.style.display = 'block';
+    try {
+        const saveResp = await fetch('batch_setup_save.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            body: JSON.stringify({ selections }),
+        });
+        const saveResult = await saveResp.json();
+        if (!saveResult.ok) {
+            if (feedback) {
+                feedback.innerHTML = `<span class="text-danger fw-bold"><i class="bi bi-exclamation-circle me-1"></i>Save failed: ${saveResult.msg}</span>`;
+            }
+            return;
+        }
+    } catch (e) {
+        if (feedback) {
+            feedback.innerHTML = '<span class="text-danger fw-bold">Network error saving to stock prior to print.</span>';
+        }
+        return;
     }
 
+    if (feedback) {
+        feedback.innerHTML = '<span class="text-success fw-bold"><i class="bi bi-check-circle me-1"></i>Saved to stock! Opening batch print view…</span>';
+    }
+
+    document.getElementById('modalBatchPrintSelectionsInput').value = JSON.stringify(selections);
+    document.getElementById('modalBatchPrintForm').submit();
+}
+
+// Single roll quick sync behavior
+const inputLength = document.getElementById('actualLengthInput');
+const inputCoil   = document.getElementById('coilNoInput');
+const inputLot    = document.getElementById('lotNoInput');
+const btnSave     = document.getElementById('saveStockBtn');
+const syncNote    = document.getElementById('syncNote');
+const correctionNote = document.getElementById('correctionNote');
+const isCompleted = inputLength ? inputLength.dataset.isCompleted === '1' : false;
+
+function findMatchingRows() {
+    if (!inputLength) return [];
+    const product = inputLength.dataset.product;
+    const lot      = inputLength.dataset.lot;
+    const selfId   = inputLength.dataset.selfId;
+    return Array.from(document.querySelectorAll('tr[data-id]')).filter(tr =>
+        tr.dataset.id !== selfId &&
+        tr.dataset.product === product &&
+        tr.dataset.lot === lot
+    );
+}
+
+function refreshSaveButton() {
+    if (!inputLength || !btnSave) return;
+    btnSave.disabled = (inputLength.value === "" || parseFloat(inputLength.value) <= 0);
+}
+
+if (isCompleted && correctionNote) {
+    correctionNote.style.display = 'block';
+}
+
+if (inputLength) {
     inputLength.addEventListener('input', () => {
         refreshSaveButton();
-
         if (!isCompleted) {
             const matches = findMatchingRows();
-            syncNote.style.display = matches.length > 0 ? 'inline' : 'none';
-
-            // Live preview: instantly reflect the new value on matching visible rows
+            if (syncNote) syncNote.style.display = matches.length > 0 ? 'inline' : 'none';
             matches.forEach(tr => {
                 const cell = document.getElementById('actual-display-' + tr.dataset.id);
                 if (cell) cell.textContent = inputLength.value;
             });
         }
     });
+}
 
-    // Editing the Coil No / Lot No fields alone (without touching Actual
-    // Length) should still be able to save — they weren't wired to the
-    // button before.
-    inputCoil.addEventListener('input', refreshSaveButton);
-    inputLot.addEventListener('input', refreshSaveButton);
-
-    // Actual Length is pre-filled with a valid value when the modal opens,
-    // so the button shouldn't start disabled until the person actually
-    // clears it.
-    refreshSaveButton();
+if (inputCoil) inputCoil.addEventListener('input', refreshSaveButton);
+if (inputLot) inputLot.addEventListener('input', refreshSaveButton);
+refreshSaveButton();
 </script>
 <?php endif; ?>
 
@@ -2071,7 +2682,7 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
 
             <div class="col-md-4">
               <label class="form-label">Roll No <span class="text-danger">*</span></label>
-              <input type="text" name="roll_no" id="isu_roll_no" class="form-control" required disabled>
+              <input type="text" name="roll_no" id="isu_roll_no" class="form-control" required disabled placeholder="e.g. R1">
             </div>
 
             <div class="col-md-4">
@@ -2428,7 +3039,99 @@ function goToMixedBatchSetup() {
     document.getElementById('mixedBulkPrintIdsInput').value = JSON.stringify(ids);
     document.getElementById('mixedBulkPrintForm').submit();
 }
+
+// ── Set Customer for whole Mother Coil batch ─────────────────────────
+// Reuses the same mixed_batch_setup.php pipeline as "Bulk Print
+// Selected" — the button's data-batch-ids already carries every
+// sibling roll id (same mother_id, filtered for voided/recoiled/
+// reslitted), so this is just a one-click version of checking those
+// boxes and hitting Bulk Print. Works the same whether the batch is
+// one roll or many — mixed_batch_setup.php already handles per-roll
+// Customer/Ref No entry for any batch size.
+function setCustomerForBatch(btn) {
+    let ids = [];
+    try {
+        ids = JSON.parse(btn.dataset.batchIds || '[]');
+    } catch (e) {
+        ids = [];
+    }
+    if (!ids.length) {
+        alert('No eligible rolls found for this Mother Coil batch.');
+        return;
+    }
+    document.getElementById('mixedBulkPrintIdsInput').value = JSON.stringify(ids);
+    document.getElementById('mixedBulkPrintForm').submit();
+}
+
+function openSendToSfcModal(id, product, lotNo, coilNo, rollNo, width, length) {
+    document.getElementById('sfcModalProductId').value = id;
+    document.getElementById('sfcModalProduct').textContent = product || '-';
+    document.getElementById('sfcModalLotNo').textContent = lotNo || '-';
+    document.getElementById('sfcModalCoilNo').textContent = coilNo || '-';
+    document.getElementById('sfcModalRollNo').textContent = rollNo ? rollNo.replace('R','R-') : '-';
+    document.getElementById('sfcModalWidth').textContent = width || '-';
+    document.getElementById('sfcModalLength').textContent = length || '-';
+
+    const modalEl = document.getElementById('sendToSfcModal');
+    if (modalEl) {
+        if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+            const modal = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
+            modal.show();
+        } else if (typeof $ !== 'undefined' && $.fn && $.fn.modal) {
+            $(modalEl).modal('show');
+        }
+    }
+}
 </script>
+
+<!-- ── CONFIRM SEND TO SFC MODAL ──────────────────────────────── -->
+<div class="modal fade" id="sendToSfcModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content shadow border-0">
+      <div class="modal-header bg-primary text-white py-2">
+        <h5 class="modal-title fs-6 fw-bold">
+          <i class="bi bi-box-seam me-2"></i>Confirm Send to SFC Inventory
+        </h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <form method="post" action="finish_product.php">
+        <div class="modal-body py-3">
+          <input type="hidden" name="action" value="send_to_sfc">
+          <input type="hidden" name="product_id" id="sfcModalProductId" value="">
+          <input type="hidden" name="month" value="<?= $month ?>">
+          <input type="hidden" name="year" value="<?= $year ?>">
+          <input type="hidden" name="day" value="<?= $day ?>">
+          <input type="hidden" name="search" value="<?= htmlspecialchars($search) ?>">
+          <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_card) ?>">
+
+          <div class="alert alert-primary py-2 mb-3 small d-flex align-items-center gap-2" style="background:#e0f2fe; color:#0369a1; border:1px solid #7dd3fc;">
+            <i class="bi bi-question-circle-fill fs-4 text-primary flex-shrink-0"></i>
+            <div>
+              Are you sure you want to send this coil to <strong>SFC Inventory</strong>?
+            </div>
+          </div>
+
+          <div class="card bg-light border p-3 mb-2" style="font-size:13px;">
+            <div class="row g-2">
+              <div class="col-6"><strong>Product:</strong> <span id="sfcModalProduct" class="fw-bold text-dark">-</span></div>
+              <div class="col-6"><strong>Lot No:</strong> <span id="sfcModalLotNo" class="fw-bold text-dark">-</span></div>
+              <div class="col-6"><strong>Coil No:</strong> <span id="sfcModalCoilNo" class="fw-bold text-dark">-</span></div>
+              <div class="col-6"><strong>Roll No:</strong> <span id="sfcModalRollNo" class="fw-bold text-dark">-</span></div>
+              <div class="col-6"><strong>Width:</strong> <span id="sfcModalWidth" class="fw-bold text-dark">-</span> mm</div>
+              <div class="col-6"><strong>Length:</strong> <span id="sfcModalLength" class="fw-bold text-dark">-</span> m</div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer py-2 px-3 bg-light">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary btn-sm fw-bold">
+            <i class="bi bi-box-seam me-1"></i>Confirm Send to SFC
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
 
 <div><a href="index.php" class="btn btn-secondary mt-3">← Back</a></div>
 <?php include 'footer.php'; ?>

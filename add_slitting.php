@@ -96,7 +96,7 @@ $isLeftoverCut = $from_stock && (($source_data['source_type'] ?? '') === 'slitti
 $slittingPlan = [];
 if (!$isLeftoverCut && $mother_id) {
     $planStmt = $conn->prepare("
-        SELECT roll_seq, planned_width
+        SELECT roll_seq, planned_width, customer_name, ref_no
         FROM slitting_plans
         WHERE mother_coil_id = ?
         ORDER BY sort_order ASC, id ASC

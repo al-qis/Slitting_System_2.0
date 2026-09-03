@@ -134,8 +134,12 @@ $stmt->close();
     <div class="card copy-all-card mb-3">
         <div class="card-body py-2">
             <div class="row g-2 align-items-end">
-                <div class="col-12 col-md-4">
-                    <label class="small fw-bold mb-1">Copy to All Rows — Customer</label>
+                <div class="col-6 col-md-3">
+                    <label class="small fw-bold mb-1">Actual Length (meters)</label>
+                    <input type="number" step="0.01" min="0" class="form-control form-control-sm" id="copyAllActualLength" placeholder="e.g. 500">
+                </div>
+                <div class="col-12 col-md-3">
+                    <label class="small fw-bold mb-1">Customer</label>
                     <select class="form-select form-select-sm" id="copyAllCustomer">
                         <option value="">-- Select Customer --</option>
                         <option value="NAE">NICHIAS AUTOPARTS EUROPE (NAE)</option>
@@ -149,12 +153,12 @@ $stmt->close();
                         <option value="SGC">SHANGHAI XINGSHENG</option>
                         <option value="STAMPING">MK STAMPING</option>
                         <option value="YANTAI">NICHIAS (SHANGHAI) AUTOPARTS TRADING</option>
-                        <option value="NIP">NICHIAS IND.PRODUCTS PVT. LTD.</option>
+                        <option value="NIPP">NICHIAS IND.PRODUCTS PVT. LTD.</option>
                         <option value="NVC">NICHIAS VIETNAM CO., LTD</option>
-                        <option value="NCS">NC-PT NICHIAS SUNIJAYA</option>
-                        <option value="SNP">SUZHOU NICHIAS IND. PRODUCTS</option>
+                        <option value="NSJ">NC-PT NICHIAS SUNIJAYA</option>
+                        <option value="NIP">SUZHOU NICHIAS IND. PRODUCTS</option>
                         <option value="YTEC">YTEC CO., LTD.</option>
-                        <option value="NSEA">NICHIAS SOUTH EAST ASIA (UP PACKING)</option>
+                        <option value="NSA">NICHIAS SOUTH EAST ASIA (UP PACKING)</option>
                         <option value="NCI 2">NCI 2</option>
                         <option value="STOCK">STOCK</option>
                         <option value="TRIAL">TRIAL</option>
@@ -163,9 +167,9 @@ $stmt->close();
                     <input type="text" class="form-control form-control-sm mt-1" id="copyAllCustomOther"
                            placeholder="Customer name (if OTHER)" style="display:none;">
                 </div>
-                <div class="col-8 col-md-5">
+                <div class="col-8 col-md-3">
                     <label class="small fw-bold mb-1">Ref No</label>
-                    <input type="text" class="form-control form-control-sm" id="copyAllRefNo" placeholder="Ref No">
+                    <input type="text" class="form-control form-control-sm" id="copyAllRefNo" value="SO-" placeholder="SO-00-0000">
                 </div>
                 <div class="col-4 col-md-1">
                     <label class="small fw-bold mb-1">Copies</label>
@@ -179,12 +183,12 @@ $stmt->close();
                     </select>
                 </div>
                 <div class="col-12 col-md-2">
-                    <button type="button" class="btn btn-outline-danger btn-sm w-100" onclick="copyToAllRows()">
-                        <i class="bi bi-arrow-down-square me-1"></i> Copy to All Rows
+                    <button type="button" class="btn btn-outline-danger btn-sm w-100 fw-bold" onclick="copyToAllRows()">
+                        <i class="bi bi-arrow-down-square me-1"></i> Copy to All
                     </button>
                 </div>
             </div>
-            <div class="form-text mb-0">Fills every row below with the same Customer/Ref No — then adjust any row that differs.</div>
+            <div class="form-text mb-0">Fills every row below with Customer, Ref No, Actual Length, and Print Copies — then adjust any row if needed.</div>
         </div>
     </div>
 
@@ -240,12 +244,16 @@ $stmt->close();
                     <td>
                         <?php
                             $saved = trim($r['customer_name'] ?? '');
-                            $knownCustomers = ['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA','NIPPON','NTC','SGC','STAMPING','YANTAI','NIP','NVC','NCS','SNP','YTEC','NSEA','NCI 2','STOCK','TRIAL'];
+                            $knownCustomers = ['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA','NIPPON','NTC','SGC','STAMPING','YANTAI','NIPP','NVC','NSJ','NIP','YTEC','NSA','NCI 2','STOCK','TRIAL'];
                             $isOther = ($saved !== '' && !in_array($saved, $knownCustomers, true));
+
+                            $rawRefNo = trim($r['ref_no'] ?? '');
+                            $isStock = ($saved === 'STOCK' || $rawRefNo === 'STOCK');
+                            $displayRefNo = $isStock ? 'STOCK' : ($rawRefNo !== '' ? $rawRefNo : 'SO-');
                         ?>
                         <select class="form-select form-select-sm row-customer" data-row="<?= $idx ?>"
                                 onchange="handleRowCustomerChange(<?= $idx ?>)">
-                            <option value="">-- Select Customer --</option>
+                            <option value=""         <?= $saved===''         ?'selected':'' ?>>-- Select Customer --</option>
                             <option value="NAE"      <?= $saved==='NAE'      ?'selected':'' ?>>NICHIAS AUTOPARTS EUROPE (NAE)</option>
                             <option value="NAX"      <?= $saved==='NAX'      ?'selected':'' ?>>NAX MFG, SA.DE C.V</option>
                             <option value="NCI MFG"  <?= $saved==='NCI MFG'  ?'selected':'' ?>>NCI MFG., INC.</option>
@@ -257,16 +265,16 @@ $stmt->close();
                             <option value="SGC"      <?= $saved==='SGC'      ?'selected':'' ?>>SHANGHAI XINGSHENG</option>
                             <option value="STAMPING" <?= $saved==='STAMPING' ?'selected':'' ?>>MK STAMPING</option>
                             <option value="YANTAI"   <?= $saved==='YANTAI'   ?'selected':'' ?>>NICHIAS (SHANGHAI) AUTOPARTS TRADING</option>
-                            <option value="NIP"      <?= $saved==='NIP'      ?'selected':'' ?>>NICHIAS IND.PRODUCTS PVT. LTD.</option>
+                            <option value="NIPP"     <?= $saved==='NIPP'     ?'selected':'' ?>>NICHIAS IND.PRODUCTS PVT. LTD.</option>
                             <option value="NVC"      <?= $saved==='NVC'      ?'selected':'' ?>>NICHIAS VIETNAM CO., LTD</option>
-                            <option value="NCS"      <?= $saved==='NCS'      ?'selected':'' ?>>NC-PT NICHIAS SUNIJAYA</option>
-                            <option value="SNP"      <?= $saved==='SNP'      ?'selected':'' ?>>SUZHOU NICHIAS IND. PRODUCTS</option>
+                            <option value="NSJ"      <?= $saved==='NSJ'      ?'selected':'' ?>>NC-PT NICHIAS SUNIJAYA</option>
+                            <option value="NIP"      <?= $saved==='NIP'      ?'selected':'' ?>>SUZHOU NICHIAS IND. PRODUCTS</option>
                             <option value="YTEC"     <?= $saved==='YTEC'     ?'selected':'' ?>>YTEC CO., LTD.</option>
-                            <option value="NSEA"     <?= $saved==='NSEA'     ?'selected':'' ?>>NICHIAS SOUTH EAST ASIA (UP PACKING)</option>
+                            <option value="NSA"     <?= $saved==='NSA'     ?'selected':'' ?>>NICHIAS SOUTH EAST ASIA (UP PACKING)</option>
                             <option value="NCI 2"    <?= $saved==='NCI 2'    ?'selected':'' ?>>NCI 2</option>
-                            <option value="STOCK"    <?= ($saved===''||$saved==='STOCK')?'selected':'' ?>>STOCK</option>
+                            <option value="STOCK"    <?= $saved==='STOCK'    ?'selected':'' ?>>STOCK</option>
                             <option value="TRIAL"    <?= $saved==='TRIAL'    ?'selected':'' ?>>TRIAL</option>
-                            <option value="OTHER"    <?= $isOther ?'selected':'' ?>>OTHER (type below)</option>
+                            <option value="OTHER"    <?= $isOther            ?'selected':'' ?>>OTHER (type below)</option>
                         </select>
                         <input type="text" class="form-control form-control-sm row-custom-customer mt-1" data-row="<?= $idx ?>"
                                placeholder="Enter customer name" style="display:<?= $isOther?'block':'none' ?>;"
@@ -276,11 +284,11 @@ $stmt->close();
                     <td>
                         <div class="form-check mb-1">
                             <input class="form-check-input row-stock-override" type="checkbox"
-                                   id="rowStock<?= $idx ?>" data-row="<?= $idx ?>">
+                                   id="rowStock<?= $idx ?>" data-row="<?= $idx ?>" <?= $isStock ? 'checked' : '' ?>>
                             <label class="form-check-label small" for="rowStock<?= $idx ?>">Set to STOCK</label>
                         </div>
                         <input type="text" class="form-control form-control-sm row-refno" data-row="<?= $idx ?>"
-                               value="<?= htmlspecialchars(trim($r['ref_no'] ?? '')) ?>" placeholder="Ref No">
+                               value="<?= htmlspecialchars($displayRefNo) ?>" placeholder="SO-00-0000" <?= $isStock ? 'readonly' : '' ?>>
                     </td>
                     <td>
                         <select class="form-select form-select-sm row-copies" data-row="<?= $idx ?>">
@@ -358,13 +366,13 @@ function applyMaskForRow(idx, val) {
             blocks: { a: { mask: /[A-Z]/ } },
             prepareChar: (str) => str.toUpperCase()
         });
-        if (!refEl.value || refEl.value === 'STOCK') {
+        if (!refNoMasks[idx].value || refNoMasks[idx].value === 'SO-' || refNoMasks[idx].value === 'STOCK') {
             refNoMasks[idx].value = 'MS-';
         }
     } else {
         // Default rule: SO-XX-XXXX (no spaces)
         refNoMasks[idx] = IMask(refEl, { mask: 'SO-00-0000' });
-        if (!refEl.value || refEl.value === 'STOCK') {
+        if (!refNoMasks[idx].value || refNoMasks[idx].value === 'STOCK') {
             refNoMasks[idx].value = 'SO-';
         }
     }
@@ -376,12 +384,11 @@ function refNoMatchesActiveRuleForRow(idx) {
     const stockEl = document.querySelector(`.row-stock-override[data-row="${idx}"]`);
     if (!refEl || !custEl) return true;
 
-    const val  = refEl.value.trim();
+    if (stockEl?.checked) return true;
+    const val = refEl.value.trim();
     const cust = custEl.value;
 
-    if (stockEl?.checked) return val === 'STOCK';
-    if (NCI_CUSTOMERS.includes(cust)) return val !== ''; // dedicated logic, just require non-empty
-
+    if (NCI_CUSTOMERS.includes(cust)) return val !== '';
     if (cust === 'STAMPING') return /^MS-\d{7}( [A-Z])?$/.test(val);
     return /^SO-\d{2}-\d{4}$/.test(val);
 }
@@ -401,11 +408,29 @@ async function handleRowCustomerChange(rowIdx) {
     const otherEl  = document.querySelector(`.row-custom-customer[data-row="${rowIdx}"]`);
     const noteEl   = document.querySelector(`.nci-note[data-row="${rowIdx}"]`);
     const refEl    = document.querySelector(`.row-refno[data-row="${rowIdx}"]`);
+    const stockEl  = document.querySelector(`.row-stock-override[data-row="${rowIdx}"]`);
     const tr       = document.querySelectorAll('#batchGridTable tbody tr')[rowIdx];
     const productId = tr ? tr.dataset.id : null;
     const val = sel.value;
 
     otherEl.style.display = (val === 'OTHER') ? 'block' : 'none';
+
+    if (val === 'STOCK') {
+        destroyRefMaskForRow(rowIdx);
+        if (stockEl) stockEl.checked = true;
+        refEl.value = 'STOCK';
+        refEl.readOnly = true;
+        noteEl.style.display = 'none';
+        noteEl.innerHTML = '';
+        return;
+    }
+
+    if (stockEl) stockEl.checked = false;
+    refEl.readOnly = false;
+    if (refEl.value === 'STOCK' || !refEl.value.trim()) {
+        refEl.value = 'SO-';
+    }
+
     applyMaskForRow(rowIdx, val);
 
     if (!NCI_CUSTOMERS.includes(val)) {
@@ -433,8 +458,17 @@ async function handleRowCustomerChange(rowIdx) {
 }
 
 document.getElementById('copyAllCustomer')?.addEventListener('change', function () {
+    const val = this.value;
     document.getElementById('copyAllCustomOther').style.display =
-        (this.value === 'OTHER') ? 'block' : 'none';
+        (val === 'OTHER') ? 'block' : 'none';
+    const copyAllRefEl = document.getElementById('copyAllRefNo');
+    if (copyAllRefEl) {
+        if (val === 'STOCK') {
+            copyAllRefEl.value = 'STOCK';
+        } else if (copyAllRefEl.value === 'STOCK') {
+            copyAllRefEl.value = 'SO-';
+        }
+    }
 });
 
 // ── Per-row "Set to STOCK" checkbox ────────────────────────────────
@@ -447,9 +481,15 @@ document.querySelectorAll('.row-stock-override').forEach((cb) => {
             destroyRefMaskForRow(idx);
             refEl.value = 'STOCK';
             refEl.readOnly = true;
+            if (custEl && custEl.value === '') {
+                custEl.value = 'STOCK';
+            }
         } else {
             refEl.readOnly = false;
-            refEl.value = '';
+            refEl.value = 'SO-';
+            if (custEl && custEl.value === 'STOCK') {
+                custEl.value = '';
+            }
             applyMaskForRow(idx, custEl.value);
         }
     });
@@ -464,10 +504,14 @@ document.querySelectorAll('.row-stock-override').forEach((cb) => {
         const stockEl = document.querySelector(`.row-stock-override[data-row="${idx}"]`);
         if (!custEl || !refEl) continue;
 
-        if (custEl.value === 'STOCK' || refEl.value.trim() === 'STOCK') {
+        if (stockEl?.checked || refEl.value.trim() === 'STOCK') {
             if (stockEl) stockEl.checked = true;
+            refEl.value = 'STOCK';
             refEl.readOnly = true;
         } else {
+            if (!refEl.value.trim()) {
+                refEl.value = 'SO-';
+            }
             applyMaskForRow(idx, custEl.value);
         }
     }
@@ -475,18 +519,18 @@ document.querySelectorAll('.row-stock-override').forEach((cb) => {
 
 // ── Copy to All Rows ─────────────────────────────────────────────
 async function copyToAllRows() {
-    const sel      = document.getElementById('copyAllCustomer');
-    const otherEl  = document.getElementById('copyAllCustomOther');
-    const refEl    = document.getElementById('copyAllRefNo');
-    const copiesEl = document.getElementById('copyAllCopies');
+    const sel       = document.getElementById('copyAllCustomer');
+    const otherEl   = document.getElementById('copyAllCustomOther');
+    const refEl     = document.getElementById('copyAllRefNo');
+    const lengthEl  = document.getElementById('copyAllActualLength');
+    const copiesEl  = document.getElementById('copyAllCopies');
 
-    const customerVal = sel.value;
-    // Strip spaces so a pasted "SO - 26 - 1062" doesn't get copied as-is —
-    // same rule as select_customer.php / normalize_ref_no.php.
-    const refVal       = refEl.value.trim().replace(/\s+/g, '');
-    const copiesVal    = copiesEl.value;
+    const customerVal = sel ? sel.value : '';
+    const refVal      = refEl ? refEl.value.trim().replace(/\s+/g, '') : '';
+    const lengthVal   = lengthEl ? lengthEl.value.trim() : '';
+    const copiesVal   = copiesEl ? copiesEl.value : '';
 
-    if (!customerVal) { alert('Select a customer to copy to all rows first.'); return; }
+    if (!customerVal && !lengthVal) { alert('Set Customer or Actual Length to copy to all rows.'); return; }
     if (customerVal === 'OTHER' && !otherEl.value.trim()) { alert('Enter the customer name.'); return; }
 
     const rowCount = getRowCount();
@@ -494,18 +538,33 @@ async function copyToAllRows() {
         const rowSel      = document.querySelector(`.row-customer[data-row="${idx}"]`);
         const rowOtherEl  = document.querySelector(`.row-custom-customer[data-row="${idx}"]`);
         const rowRefEl    = document.querySelector(`.row-refno[data-row="${idx}"]`);
+        const rowLengthEl = document.querySelector(`.row-length[data-row="${idx}"]`);
         const rowCopiesEl = document.querySelector(`.row-copies[data-row="${idx}"]`);
         const rowStockEl  = document.querySelector(`.row-stock-override[data-row="${idx}"]`);
 
-        rowSel.value = customerVal;
-        if (customerVal === 'OTHER') rowOtherEl.value = otherEl.value.trim();
-        // Don't stomp a row that's deliberately locked to STOCK.
-        if (refVal !== '' && !rowStockEl?.checked) rowRefEl.value = refVal;
-        if (copiesVal) rowCopiesEl.value = copiesVal;
+        if (customerVal) {
+            rowSel.value = customerVal;
+            if (customerVal === 'OTHER') rowOtherEl.value = otherEl.value.trim();
 
-        // Applies the same masking/validation + NCI auto-lookup used for
-        // single-row edits, instead of pasting the Ref No in raw.
-        await handleRowCustomerChange(idx);
+            if (customerVal === 'STOCK') {
+                if (rowStockEl) rowStockEl.checked = true;
+                rowRefEl.readOnly = true;
+                if (refVal !== '') rowRefEl.value = refVal;
+            } else {
+                if (rowStockEl) rowStockEl.checked = false;
+                rowRefEl.readOnly = false;
+                if (refVal !== '') rowRefEl.value = refVal;
+            }
+            await handleRowCustomerChange(idx);
+        }
+
+        if (lengthVal !== '' && rowLengthEl) {
+            rowLengthEl.value = lengthVal;
+        }
+
+        if (copiesVal && rowCopiesEl) {
+            rowCopiesEl.value = copiesVal;
+        }
     }
 }
 
@@ -528,20 +587,23 @@ function collectSelections() {
         const refEl    = document.querySelector(`.row-refno[data-row="${idx}"]`);
         const copiesEl = document.querySelector(`.row-copies[data-row="${idx}"]`);
         const lengthEl = document.querySelector(`.row-length[data-row="${idx}"]`);
+        const stockEl  = document.querySelector(`.row-stock-override[data-row="${idx}"]`);
 
         let customer = sel.value;
         if (customer === 'OTHER') customer = otherEl.value.trim();
-        const ref_no = refEl.value.trim();
-        // NOTE: `|| 1` here would silently turn a deliberate "0 (skip)"
-        // selection back into 1, since 0 is falsy in JS — use isNaN
-        // instead so 0 is preserved as a valid, meaningful value.
+
+        let ref_no = refEl.value.trim();
+        if (stockEl?.checked) {
+            ref_no = 'STOCK';
+        }
+
         const parsedCopies = parseInt(copiesEl.value, 10);
         const copies = isNaN(parsedCopies) ? 1 : parsedCopies;
         const length = parseFloat(lengthEl.value);
 
         if (!customer) { setRowStatus(idx, 'Select a customer', true); hasError = true; return; }
         if (!ref_no)   { setRowStatus(idx, 'Ref No required', true);   hasError = true; return; }
-        if (!refNoMatchesActiveRuleForRow(idx)) {
+        if (!stockEl?.checked && !refNoMatchesActiveRuleForRow(idx)) {
             setRowStatus(idx, 'Ref No format invalid for this customer', true);
             hasError = true;
             return;
@@ -594,18 +656,17 @@ async function saveAllRows() {
 }
 
 // ── Print All Stickers (saves, then opens consolidated print job) ──
-function printAllStickers() {
+async function printAllStickers() {
+    const feedback = document.getElementById('saveAllFeedback');
     const selections = collectSelections();
     if (!selections) {
-        document.getElementById('saveAllFeedback').innerHTML =
-            '<span class="text-danger">Fix the highlighted rows before printing.</span>';
+        if (feedback) {
+            feedback.innerHTML = '<span class="text-danger">Fix the highlighted rows before printing.</span>';
+        }
         return;
     }
 
     // ── Warn if any selected roll (with copies > 0) was already printed ──
-    // collectSelections() pushes one entry per row, in the same order as
-    // the table rows, skipping none (an error would have returned null
-    // above) — so selections[i] always corresponds to trs[i].
     const trs = Array.from(document.querySelectorAll('#batchGridTable tbody tr'));
     const alreadyPrinted = [];
     selections.forEach((sel, idx) => {
@@ -625,6 +686,34 @@ function printAllStickers() {
             `\n\nPrint again anyway?`
         );
         if (!proceed) return;
+    }
+
+    if (feedback) {
+        feedback.innerHTML = '<span class="text-primary fw-bold"><span class="spinner-border spinner-border-sm me-1"></span> Saving all updates to stock inventory before printing…</span>';
+    }
+
+    try {
+        const saveResp = await fetch('batch_setup_save.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            body: JSON.stringify({ selections }),
+        });
+        const saveResult = await saveResp.json();
+        if (!saveResult.ok) {
+            if (feedback) {
+                feedback.innerHTML = `<span class="text-danger fw-bold"><i class="bi bi-exclamation-circle me-1"></i>Save failed: ${saveResult.msg}</span>`;
+            }
+            return;
+        }
+    } catch (e) {
+        if (feedback) {
+            feedback.innerHTML = '<span class="text-danger fw-bold">Network error saving to stock prior to print.</span>';
+        }
+        return;
+    }
+
+    if (feedback) {
+        feedback.innerHTML = '<span class="text-success fw-bold"><i class="bi bi-check-circle me-1"></i>Saved to stock! Opening batch print view…</span>';
     }
 
     document.getElementById('batchPrintSelectionsInput').value = JSON.stringify(selections);

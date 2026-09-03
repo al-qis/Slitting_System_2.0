@@ -22,12 +22,13 @@ $search        = trim($_GET['search']    ?? '');
 $date_from     = $_GET['date_from'] ?? '';
 $date_to       = $_GET['date_to']   ?? '';
 
-$where  = "WHERE p.status IN ('approved','rejected')";
+$where  = "WHERE p.status IN ('approved','rejected','delivered')";
 $params = [];
 $types  = '';
 
 if ($filter_status === 'approved') { $where .= " AND p.status = 'approved'"; }
 elseif ($filter_status === 'rejected') { $where .= " AND p.status = 'rejected'"; }
+elseif ($filter_status === 'delivered') { $where .= " AND p.status = 'delivered'"; }
 if ($search !== '') {
     $where .= " AND (p.pallet_no LIKE ? OR p.customer_name LIKE ? OR p.product_type LIKE ? OR p.checked_by LIKE ?)";
     $like   = '%' . $search . '%';
@@ -36,6 +37,12 @@ if ($search !== '') {
 }
 if ($date_from !== '') { $where .= " AND DATE(p.updated_at) >= ?"; $params[] = $date_from; $types .= 's'; }
 if ($date_to   !== '') { $where .= " AND DATE(p.updated_at) <= ?"; $params[] = $date_to;   $types .= 's'; }
+
+// Ensure coil_width column exists in pallet_items table
+$colCheck = $conn->query("SHOW COLUMNS FROM pallet_items LIKE 'coil_width'");
+if ($colCheck && $colCheck->num_rows === 0) {
+    $conn->query("ALTER TABLE pallet_items ADD COLUMN coil_width TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = Coil Width checkbox was ticked by QC inspector' AFTER hairy_rubber");
+}
 
 // ── Query ─────────────────────────────────────────────────────
 $sql = "
@@ -50,6 +57,7 @@ $sql = "
         sp.width,
         pi.winding_condition,
         pi.hairy_rubber,
+        pi.coil_width,
         p.checked_by,
         p.status                                AS pallet_status,
         pi.seq,
@@ -104,6 +112,8 @@ $C_GRID     = 'CBD5E1';
 
 $C_APPR_ODD = 'D1FAE5';
 $C_APPR_EVN = 'ECFDF5';
+$C_DELV_ODD = 'EDE9FE';
+$C_DELV_EVN = 'F5F3FF';
 $C_RJCT_ODD = 'FEE2E2';
 $C_RJCT_EVN = 'FFF5F5';
 
@@ -164,7 +174,7 @@ $headers = [
     'F' => 'Length (m)',
     'G' => 'Width (mm)',
     'H' => 'Winding Condition',
-    'I' => 'Hairy Rubber',
+    'I' => 'No Hairy Rubber',
     'J' => 'Checked By',
 ];
 foreach ($headers as $col => $label) {
@@ -200,7 +210,7 @@ $sheet->freezePane('A5');
 //   E = Lot, Coil, Roll
 //   F = Length (m)
 //   H = Winding Condition  ← show only if ticked
-//   I = Hairy Rubber       ← show only if ticked
+//   I = No Hairy Rubber       ← show only if ticked
 
 $rowNum         = 5;
 $totalRollsAll  = 0;
@@ -219,10 +229,13 @@ $applyBase = function(string $range, string $bg) use ($sheet, $C_GRID) {
 };
 
 foreach ($pallets as $pid => $pallet) {
-    $meta       = $pallet['meta'];
-    $rolls      = $pallet['rolls'];
-    $rollCount  = count($rolls);
-    $isApproved = strtolower($meta['pallet_status']) === 'approved';
+    $meta        = $pallet['meta'];
+    $rolls       = $pallet['rolls'];
+    $rollCount   = count($rolls);
+    $statusLower = strtolower($meta['pallet_status']);
+    $isRejected  = $statusLower === 'rejected';
+    $isDelivered = $statusLower === 'delivered';
+    $isApproved  = !$isRejected; // approved AND delivered both mean "passed QC"
     $totalRollsAll += $rollCount;
 
     // First and last row index for this pallet's rolls
@@ -230,8 +243,13 @@ foreach ($pallets as $pid => $pallet) {
     $lastRow  = $rowNum + $rollCount - 1;
 
     // Alternating bg colours for this pallet's rolls
-    $bgOdd = $isApproved ? $C_APPR_ODD : $C_RJCT_ODD;
-    $bgEvn = $isApproved ? $C_APPR_EVN : $C_RJCT_EVN;
+    if ($isRejected) {
+        $bgOdd = $C_RJCT_ODD; $bgEvn = $C_RJCT_EVN;
+    } elseif ($isDelivered) {
+        $bgOdd = $C_DELV_ODD; $bgEvn = $C_DELV_EVN;
+    } else {
+        $bgOdd = $C_APPR_ODD; $bgEvn = $C_APPR_EVN;
+    }
 
     // ── Write every roll row first ────────────────────────────
     $altIdx = 0;
@@ -239,9 +257,10 @@ foreach ($pallets as $pid => $pallet) {
         $altIdx++;
         $bg = ($altIdx % 2 === 1) ? $bgOdd : $bgEvn;
 
-        // Is this the inspected top roll? (both checkboxes ticked)
-        $isTopRoll = ((int)$roll['winding_condition'] === 1)
-                  && ((int)$roll['hairy_rubber']      === 1);
+        // Is this the inspected top roll? (all 3 checkboxes ticked)
+        $isTopRoll = ((int)($roll['winding_condition'] ?? 0) === 1)
+                  && ((int)($roll['hairy_rubber']      ?? 0) === 1)
+                  && ((int)($roll['coil_width']        ?? 0) === 1);
 
         $lcr = trim($roll['lot_no']) . ' ' . trim($roll['coil_no'])
              . ' – ' . str_replace('R', 'R-', trim($roll['roll_no']));
@@ -269,7 +288,7 @@ foreach ($pallets as $pid => $pallet) {
             $applyBase("H{$rowNum}", $isTopRoll ? $C_TOP_BG : $bg);
         }
 
-        // ── I: Hairy Rubber ───────────────────────────────────
+        // ── I: No Hairy Rubber ───────────────────────────────────
         if ((int)$roll['hairy_rubber'] === 1) {
             $sheet->setCellValue("I{$rowNum}", '✔  Ticked');
             $sheet->getStyle("I{$rowNum}")->applyFromArray([
@@ -323,8 +342,16 @@ foreach ($pallets as $pid => $pallet) {
         : '—';
 
     // Status suffix on the date cell
-    $statusTag  = $isApproved ? '  ✔ APPROVED' : '  ✘ REJECTED';
-    $statusFg   = $isApproved ? '065F46'       : '991B1B';
+    if ($isRejected) {
+        $statusTag = '  ✘ REJECTED';
+        $statusFg  = '991B1B';
+    } elseif ($isDelivered) {
+        $statusTag = '  📦 DELIVERED';
+        $statusFg  = '5B21B6';
+    } else {
+        $statusTag = '  ✔ APPROVED';
+        $statusFg  = '065F46';
+    }
 
     // Background for merged columns — use the odd-row colour of this pallet
     $mergeBg = $bgOdd;
@@ -425,7 +452,7 @@ $colWidths = [
     'F' => 12,  // Length
     'G' => 11,  // Width
     'H' => 16,  // Winding
-    'I' => 14,  // Hairy Rubber
+    'I' => 14,  // No Hairy Rubber
     'J' => 16,  // Checked By
 ];
 foreach ($colWidths as $col => $w) {

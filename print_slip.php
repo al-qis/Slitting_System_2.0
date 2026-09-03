@@ -50,7 +50,7 @@ if (!$pallet) {
 $stmt = $conn->prepare("
     SELECT pi.seq, pi.stock_code,
            sp.lot_no, sp.coil_no, sp.roll_no, sp.product,
-           sp.width, sp.length, sp.actual_length,
+           sp.width, sp.length, sp.actual_length, sp.nod_length,
            COALESCE(sw.std_weight, 0) AS std_weight
     FROM pallet_items pi
     JOIN slitting_product sp ON sp.id = pi.slitting_product_id
@@ -71,15 +71,12 @@ function calcNettWeight(float $lengthM, float $widthMm, float $stdWeight): float
 
 $rows = [];
 foreach ($items as $it) {
-    $lenVal = (!empty($it['actual_length']) && $it['actual_length'] > 0)
+    $rawLen = (!empty($it['actual_length']) && $it['actual_length'] > 0)
         ? (float)$it['actual_length'] : (float)$it['length'];
+    $nodLen = !empty($it['nod_length']) ? (float)$it['nod_length'] : 0.0;
+    $lenVal = max(0.0, $rawLen - $nodLen);
 
-    // Trust the value stored on pallet_items; only recompute for legacy
-    // rows added before the stock_code column existed.
-    $stockCode = $it['stock_code'];
-    if (empty($stockCode)) {
-        $stockCode = PalletManager::formatStockCode($it['coil_no'], $it['width'], $lenVal);
-    }
+    $stockCode = PalletManager::formatStockCode($it['coil_no'], $it['width'], $lenVal);
 
     $rows[] = [
         'stock_code' => $stockCode ?: '-',
@@ -159,7 +156,7 @@ function fmtNum($v): string {
         margin-bottom: 2mm;
     }
     table.info-table td {
-        border: 1px solid #bebebe;
+        border: 1px solid #000000;
         padding: 1mm 2mm;
         font-size: 10pt;
         vertical-align: middle;
@@ -180,7 +177,7 @@ function fmtNum($v): string {
         margin-bottom: 2mm;
     }
     table.data-table th, table.data-table td {
-        border: 1px solid #bebebe;
+        border: 1px solid #000000;
         padding: 0.8mm 1mm;
         text-align: center;
         font-size: 9.5pt;
@@ -267,7 +264,7 @@ function fmtNum($v): string {
 
     /* ── Print rules ────────────────────────────────────── */
     @media print {
-        @page { size: 8.5in 5.5in; margin: 4mm; }
+        @page { size: 21.5cm 14cm; margin: 3mm; }
         body { background: #fff; padding: 0; }
         .sheet { width: 100%; padding: 0; }
         .no-print { display: none !important; }

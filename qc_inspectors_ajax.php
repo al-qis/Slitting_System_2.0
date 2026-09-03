@@ -31,6 +31,14 @@ if ($action === 'list') {
     exit;
 }
 
+// ── POST: set active QC inspector session ─────────────────────
+if ($action === 'set_active_inspector') {
+    $name = trim($_POST['name'] ?? '');
+    $_SESSION['active_qc_inspector'] = $name;
+    echo json_encode(['ok' => true, 'active_qc_inspector' => $name]);
+    exit;
+}
+
 // ── POST: add inspector ───────────────────────────────────────
 if ($action === 'add') {
     $name = trim($_POST['name'] ?? '');
@@ -109,6 +117,64 @@ if ($action === 'delete') {
         'msg' => $affected > 0
             ? 'Inspector removed from dropdown.'
             : 'Inspector not found or already removed.',
+    ]);
+    exit;
+}
+
+// ── POST: edit inspector ───────────────────────────────────────
+if ($action === 'edit') {
+    $id   = intval($_POST['id'] ?? 0);
+    $name = trim($_POST['name'] ?? '');
+
+    if ($id <= 0) {
+        echo json_encode(['ok' => false, 'msg' => 'Invalid ID.']);
+        exit;
+    }
+    if ($name === '') {
+        echo json_encode(['ok' => false, 'msg' => 'Name cannot be empty.']);
+        exit;
+    }
+    if (mb_strlen($name) > 100) {
+        echo json_encode(['ok' => false, 'msg' => 'Name is too long (max 100 characters).']);
+        exit;
+    }
+
+    // Check duplicate name on OTHER inspectors
+    $chk = $conn->prepare(
+        "SELECT id FROM qc_inspectors WHERE LOWER(name) = LOWER(?) AND id != ?"
+    );
+    $chk->bind_param("si", $name, $id);
+    $chk->execute();
+    $existing = $chk->get_result()->fetch_assoc();
+    $chk->close();
+
+    if ($existing) {
+        echo json_encode(['ok' => false, 'msg' => "Inspector name \"$name\" is already in use."]);
+        exit;
+    }
+
+    // Fetch old name to update session if active
+    $oldStmt = $conn->prepare("SELECT name FROM qc_inspectors WHERE id = ?");
+    $oldStmt->bind_param("i", $id);
+    $oldStmt->execute();
+    $oldRow = $oldStmt->get_result()->fetch_assoc();
+    $oldStmt->close();
+    $oldName = $oldRow['name'] ?? '';
+
+    $upd = $conn->prepare("UPDATE qc_inspectors SET name = ? WHERE id = ?");
+    $upd->bind_param("si", $name, $id);
+    $ok = $upd->execute();
+    $upd->close();
+
+    if ($ok && isset($_SESSION['active_qc_inspector']) && $_SESSION['active_qc_inspector'] === $oldName) {
+        $_SESSION['active_qc_inspector'] = $name;
+    }
+
+    echo json_encode([
+        'ok'   => $ok,
+        'msg'  => $ok ? "Inspector renamed to \"$name\"." : 'Database error: ' . $conn->error,
+        'id'   => $id,
+        'name' => $name,
     ]);
     exit;
 }

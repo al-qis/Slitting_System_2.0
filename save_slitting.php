@@ -162,6 +162,28 @@ try {
         $conn->query("UPDATE raw_material_log SET status='OUT', date_out=NOW() WHERE mother_id=$mother_id LIMIT 1");
     }
 
+    // ── Fetch Slitting Plan (if any) to map customer & ref_no by roll sequence ──────
+    $planCustomerMap = [];
+    $planRefMap      = [];
+    if ($mother_id) {
+        $planRes = $conn->query("SELECT roll_seq, customer_name, ref_no FROM slitting_plans WHERE mother_coil_id = " . intval($mother_id) . " ORDER BY sort_order ASC, id ASC");
+        if ($planRes) {
+            $pIdx = 0;
+            while ($pRow = $planRes->fetch_assoc()) {
+                $cName = trim($pRow['customer_name'] ?? '');
+                $rNo   = trim($pRow['ref_no'] ?? '');
+                $seqKey = strtoupper(trim($pRow['roll_seq']));
+                if ($seqKey !== '') {
+                    if ($cName !== '') $planCustomerMap[$seqKey] = $cName;
+                    if ($rNo !== '')   $planRefMap[$seqKey]      = $rNo;
+                }
+                if ($cName !== '') $planCustomerMap['idx_' . $pIdx] = $cName;
+                if ($rNo !== '')   $planRefMap['idx_' . $pIdx]      = $rNo;
+                $pIdx++;
+            }
+        }
+    }
+
     // ── Process each roll ───────────────────────────────────────
     foreach ($roll_nos as $index => $roll_no) {
         $length       = floatval($lengths[$index]  ?? 0);
@@ -169,6 +191,20 @@ try {
         $cut_letter   = trim($cut_letters[$index]  ?? '');
         $roll_lot_no  = $lot_no . $cut_letter;
         $roll_no_safe = $roll_no;
+
+        $plannedCustomer = null;
+        $plannedRefNo    = null;
+        $roll_seq_key = strtoupper(trim($roll_no_safe));
+        if (isset($planCustomerMap[$roll_seq_key])) {
+            $plannedCustomer = $planCustomerMap[$roll_seq_key];
+        } elseif (isset($planCustomerMap['idx_' . $index])) {
+            $plannedCustomer = $planCustomerMap['idx_' . $index];
+        }
+        if (isset($planRefMap[$roll_seq_key])) {
+            $plannedRefNo = $planRefMap[$roll_seq_key];
+        } elseif (isset($planRefMap['idx_' . $index])) {
+            $plannedRefNo = $planRefMap['idx_' . $index];
+        }
 
         // ── Resolve this roll's product code (TS/RS dynamic naming) ──
         $resolved     = resolveSlitProductCode($product, $isVCoil, $width);
@@ -229,19 +265,19 @@ try {
             "INSERT INTO slitting_product
                  (product, lot_no, coil_no, roll_no, width, length,
                   mother_id, status, cut_type, slit_quantity,
-                  {$leftover_col}, parent_slit_id, date_in, source)
+                  customer_name, ref_no, {$leftover_col}, parent_slit_id, date_in, source)
              VALUES
-                 (?, ?, ?, ?, ?, ?, ?, 'IN', ?, ?, NULL, NULL, NOW(), ?)"
+                 (?, ?, ?, ?, ?, ?, ?, 'IN', ?, ?, ?, ?, NULL, NULL, NOW(), ?)"
         );
         if (!$insert_stmt) {
             throw new Exception("Prepare failed: " . $conn->error);
         }
-        // types: s s s s d d i s d s
+        // types: s s s s d d i s d s s s
         $insert_stmt->bind_param(
-            "ssssddisds",
+            "ssssddisdsss",
             $roll_product, $roll_lot_no, $coil_no, $roll_no_safe,
             $width, $length, $mother_id,
-            $cut_type, $slit_quantity_val,
+            $cut_type, $slit_quantity_val, $plannedCustomer, $plannedRefNo,
             $source_type
         );
         if (!$insert_stmt->execute()) {
