@@ -159,6 +159,7 @@ include 'header.php';
                                     <th>Coil ID / Barcode</th>
                                     <th>Product Type</th>
                                     <th>Customer Name</th>
+                                    <th>Status</th>
                                     <th>Received</th>
                                 </tr>
                             </thead>
@@ -367,7 +368,7 @@ function renderSectionB(waitingList) {
     if (!waitingList || waitingList.length === 0) {
         tbody.innerHTML = `
             <tr>
-                <td colspan="5" class="text-center py-4 text-muted">
+                <td colspan="6" class="text-center py-4 text-muted">
                     <i class="bi bi-inbox fs-3 d-block mb-1 text-secondary"></i>
                     No mother coils currently in Waiting List queue.
                 </td>
@@ -378,6 +379,8 @@ function renderSectionB(waitingList) {
 
     let html = '';
     waitingList.forEach(item => {
+        const badgeClass = item.status_badge_class || 'bg-secondary text-white';
+        const statusLabel = item.status_label || 'Waiting';
         html += `
             <tr>
                 <td class="text-center">
@@ -388,6 +391,7 @@ function renderSectionB(waitingList) {
                 <td class="fw-bold text-dark">${item.coil_id_display}</td>
                 <td><span class="badge bg-secondary">${item.product_type}</span></td>
                 <td class="fw-semibold text-secondary">${item.customer_name}</td>
+                <td><span class="badge ${badgeClass} fs-7">${statusLabel}</span></td>
                 <td class="small text-muted">${item.received_formatted}</td>
             </tr>
         `;
