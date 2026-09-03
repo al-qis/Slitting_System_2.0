@@ -10,7 +10,7 @@
 // Database Credentials
 $host   = 'localhost'; 
 $user   = 'root';
-$pass   = 'MIS_1990'; 
+$pass   = 'MIS_1'; 
 $dbname = 'slitting_db'; 
 
 // Initialize MySQLi Connection
@@ -183,15 +183,33 @@ if (!function_exists('setSystemSetting')) {
 
 if (!function_exists('get24HourProductionLength')) {
     function get24HourProductionLength(mysqli $conn): float {
+        $prodDate = getCurrentProductionDate();
+        $s1_start = "{$prodDate} 07:00:00";
         $stmt = $conn->query("
-            SELECT COALESCE(SUM(COALESCE(actual_length, length, 0)), 0) AS total_len
-            FROM slitting_product
-            WHERE (is_voided = 0 OR is_voided IS NULL)
-              AND (is_completed = 1 OR (actual_length IS NOT NULL AND actual_length > 0))
+            SELECT COALESCE(SUM(COALESCE(sp.actual_length, sp.length, 0)), 0) AS total_len
+            FROM slitting_product sp
+            WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
               AND (
-                  (date_in IS NOT NULL AND date_in >= NOW() - INTERVAL 24 HOUR)
-                  OR (updated_at IS NOT NULL AND updated_at >= NOW() - INTERVAL 24 HOUR)
-                  OR (date_out IS NOT NULL AND date_out >= NOW() - INTERVAL 24 HOUR)
+                  (
+                      (sp.is_completed = 1 OR (sp.actual_length IS NOT NULL AND sp.actual_length > 0))
+                      AND (
+                          (sp.date_in IS NOT NULL AND sp.date_in >= '$s1_start')
+                          OR (sp.date_in IS NOT NULL AND sp.date_in >= NOW() - INTERVAL 24 HOUR)
+                          OR (sp.updated_at IS NOT NULL AND sp.updated_at >= NOW() - INTERVAL 24 HOUR)
+                          OR (sp.date_out IS NOT NULL AND sp.date_out >= NOW() - INTERVAL 24 HOUR)
+                      )
+                  )
+                  OR (
+                      sp.is_completed = 0
+                      AND sp.mother_id = (
+                          SELECT sp_run.mother_id 
+                          FROM slitting_product sp_run 
+                          WHERE (sp_run.is_voided = 0 OR sp_run.is_voided IS NULL)
+                            AND (sp_run.is_completed = 0 OR sp_run.actual_length IS NULL OR sp_run.actual_length = 0)
+                          ORDER BY sp_run.date_in ASC, sp_run.id ASC
+                          LIMIT 1
+                      )
+                  )
               )
         ");
         if ($stmt && $row = $stmt->fetch_assoc()) {
@@ -206,14 +224,29 @@ if (!function_exists('getWeeklyProductionLength')) {
         $mondayTs = strtotime('monday this week');
         $mondayStr = date('Y-m-d 00:00:00', $mondayTs);
         $stmt = $conn->prepare("
-            SELECT COALESCE(SUM(COALESCE(actual_length, length, 0)), 0) AS total_len
-            FROM slitting_product
-            WHERE (is_voided = 0 OR is_voided IS NULL)
-              AND (is_completed = 1 OR (actual_length IS NOT NULL AND actual_length > 0))
+            SELECT COALESCE(SUM(COALESCE(sp.actual_length, sp.length, 0)), 0) AS total_len
+            FROM slitting_product sp
+            WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
               AND (
-                  (date_in IS NOT NULL AND date_in >= ?)
-                  OR (updated_at IS NOT NULL AND updated_at >= ?)
-                  OR (date_out IS NOT NULL AND date_out >= ?)
+                  (
+                      (sp.is_completed = 1 OR (sp.actual_length IS NOT NULL AND sp.actual_length > 0))
+                      AND (
+                          (sp.date_in IS NOT NULL AND sp.date_in >= ?)
+                          OR (sp.updated_at IS NOT NULL AND sp.updated_at >= ?)
+                          OR (sp.date_out IS NOT NULL AND sp.date_out >= ?)
+                      )
+                  )
+                  OR (
+                      sp.is_completed = 0
+                      AND sp.mother_id = (
+                          SELECT sp_run.mother_id 
+                          FROM slitting_product sp_run 
+                          WHERE (sp_run.is_voided = 0 OR sp_run.is_voided IS NULL)
+                            AND (sp_run.is_completed = 0 OR sp_run.actual_length IS NULL OR sp_run.actual_length = 0)
+                          ORDER BY sp_run.date_in ASC, sp_run.id ASC
+                          LIMIT 1
+                      )
+                  )
               )
         ");
         if ($stmt) {
