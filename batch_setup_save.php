@@ -30,7 +30,7 @@ if (!is_array($selections) || empty($selections)) {
     exit;
 }
 
-$stmt = $conn->prepare("UPDATE slitting_product SET customer_name = ?, ref_no = ?, actual_length = ?, stock_counted = 1, is_completed = 1 WHERE id = ?");
+$stmt = $conn->prepare("UPDATE slitting_product SET customer_name = ?, ref_no = ?, actual_length = ?, date_in = NOW(), stock_counted = 1, is_completed = 1 WHERE id = ?");
 if (!$stmt) {
     echo json_encode(['ok' => false, 'msg' => 'DB prepare failed: ' . $conn->error]);
     exit;

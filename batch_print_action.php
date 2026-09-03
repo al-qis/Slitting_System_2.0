@@ -117,7 +117,7 @@ foreach ($infoRows as $ir) { $infoById[(int)$ir['id']] = $ir; }
 
 // ── Save customer / ref_no / actual_length for each roll, mark print-tracking, + audit log ──
 $performedBy = $_SESSION['role'] ?? 'system';
-$stmtUpdLength = $conn->prepare("UPDATE slitting_product SET customer_name = ?, ref_no = ?, actual_length = ?, stock_counted = 1, is_completed = 1 WHERE id = ?");
+$stmtUpdLength = $conn->prepare("UPDATE slitting_product SET customer_name = ?, ref_no = ?, actual_length = ?, date_in = NOW(), stock_counted = 1, is_completed = 1 WHERE id = ?");
 $stmtUpdNormal = $conn->prepare("UPDATE slitting_product SET customer_name = ?, ref_no = ? WHERE id = ?");
 $stmtPrint = $conn->prepare("
     UPDATE slitting_product
