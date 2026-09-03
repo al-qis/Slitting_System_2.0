@@ -10,7 +10,7 @@
 // Database Credentials
 $host   = 'localhost'; 
 $user   = 'root';
-$pass   = 'MIS_1'; 
+$pass   = 'MIS_1990'; 
 $dbname = 'slitting_db'; 
 
 // Initialize MySQLi Connection
@@ -197,6 +197,11 @@ if (!function_exists('get24HourProductionLength')) {
                           OR (sp.date_in IS NOT NULL AND sp.date_in >= NOW() - INTERVAL 24 HOUR)
                           OR (sp.updated_at IS NOT NULL AND sp.updated_at >= NOW() - INTERVAL 24 HOUR)
                           OR (sp.date_out IS NOT NULL AND sp.date_out >= NOW() - INTERVAL 24 HOUR)
+                          OR sp.mother_id IN (
+                              SELECT mc.id FROM mother_coil mc 
+                              WHERE mc.date_out IS NOT NULL 
+                                AND (mc.date_out >= '$s1_start' OR mc.date_out >= NOW() - INTERVAL 24 HOUR)
+                          )
                       )
                   )
                   OR (
@@ -234,6 +239,10 @@ if (!function_exists('getWeeklyProductionLength')) {
                           (sp.date_in IS NOT NULL AND sp.date_in >= ?)
                           OR (sp.updated_at IS NOT NULL AND sp.updated_at >= ?)
                           OR (sp.date_out IS NOT NULL AND sp.date_out >= ?)
+                          OR sp.mother_id IN (
+                              SELECT mc.id FROM mother_coil mc 
+                              WHERE mc.date_out IS NOT NULL AND mc.date_out >= ?
+                          )
                       )
                   )
                   OR (
@@ -250,7 +259,7 @@ if (!function_exists('getWeeklyProductionLength')) {
               )
         ");
         if ($stmt) {
-            $stmt->bind_param("sss", $mondayStr, $mondayStr, $mondayStr);
+            $stmt->bind_param("ssss", $mondayStr, $mondayStr, $mondayStr, $mondayStr);
             $stmt->execute();
             $res = $stmt->get_result();
             if ($row = $res->fetch_assoc()) {
