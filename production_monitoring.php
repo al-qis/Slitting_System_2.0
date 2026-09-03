@@ -124,6 +124,55 @@ include 'header.php';
         </div>
     </div>
 
+    <!-- 24-HOUR LENGTH TRACKING PROGRESS BAR -->
+    <div class="card shadow-sm border-0 mb-4 rounded-3" style="background: #ffffff;">
+        <div class="card-body p-3 p-md-4">
+            <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
+                <div class="d-flex align-items-center gap-2">
+                    <div class="p-2 rounded-3 bg-success bg-opacity-10 text-success">
+                        <i class="bi bi-speedometer fs-4"></i>
+                    </div>
+                    <div>
+                        <h5 class="fw-bold m-0 text-dark">24-Hour Production Performance</h5>
+                        <p class="text-muted small m-0">Real-time total length tracking vs. 24-hour target (3 shifts multiplier)</p>
+                    </div>
+                </div>
+                <div class="text-end">
+                    <span class="fs-5 fw-bold text-dark" id="len24hProduced">0 m</span>
+                    <span class="text-muted fs-6"> / </span>
+                    <span class="text-muted fs-6 fw-semibold" id="len24hTarget">15,600 m</span>
+                    <span class="badge bg-info text-dark fs-6 ms-2" id="lenProgressBadge">0.0%</span>
+                </div>
+            </div>
+
+            <!-- Main Progress Bar Track -->
+            <div class="progress rounded-pill shadow-inner my-2" style="height: 22px; background: #e2e8f0;">
+                <div class="progress-bar progress-bar-striped progress-bar-animated rounded-pill" 
+                     id="lenProgressBar" 
+                     role="progressbar" 
+                     style="width: 0%; background: linear-gradient(90deg, #0284c7, #38bdf8); transition: width 0.8s ease-in-out;" 
+                     aria-valuenow="0" 
+                     aria-valuemin="0" 
+                     aria-valuemax="100">
+                </div>
+            </div>
+
+            <!-- Footer Details -->
+            <div class="d-flex flex-wrap align-items-center justify-content-between small text-muted pt-1">
+                <div>
+                    <i class="bi bi-gear me-1"></i>
+                    Shift Target (8h): <strong id="lenShiftTarget" class="text-dark">5,200 m</strong> 
+                    <span class="mx-1">&bull;</span> 
+                    24h Target (3 Shifts): <strong id="len24hMaxFormula" class="text-dark">15,600 m</strong>
+                </div>
+                <div>
+                    <i class="bi bi-calendar-week me-1"></i>
+                    Weekly Cumulative (Mon - Sun): <strong id="lenWeeklyTotal" class="text-success">0 m</strong>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="row g-4">
         <!-- ════════════════════════════════════════════════════════════════ -->
         <!-- SECTION A: CURRENT RUNNING COIL (ACTIVE PRODUCTION)             -->
@@ -197,9 +246,63 @@ function fetchMonitoringData() {
             if (data.success) {
                 renderSectionA(data.running);
                 renderSectionB(data.waiting_list);
+                renderLengthTracking(data.length_tracking);
+                if (data.shift_summary) {
+                    const s1 = document.getElementById('s1Badge');
+                    const s2 = document.getElementById('s2Badge');
+                    const s3 = document.getElementById('s3Badge');
+                    const st = document.getElementById('sTotalBadge');
+                    if (s1) s1.innerText = 'Shift 1: ' + data.shift_summary.shift1;
+                    if (s2) s2.innerText = 'Shift 2: ' + data.shift_summary.shift2;
+                    if (s3) s3.innerText = 'Shift 3: ' + data.shift_summary.shift3;
+                    if (st) st.innerText = 'Total Today: ' + data.shift_summary.total;
+                }
             }
         })
         .catch(err => console.error('Error fetching monitoring data:', err));
+}
+
+// Render 24-Hour Length Tracking Progress Bar
+function renderLengthTracking(tracking) {
+    if (!tracking) return;
+    
+    const produced = parseFloat(tracking.length_produced_24h) || 0;
+    const target24h = parseFloat(tracking.target_24h_meters) || 15600;
+    const shiftTarget = parseFloat(tracking.shift_target_meters) || 5200;
+    const weeklyTotal = parseFloat(tracking.weekly_total_meters) || 0;
+    const pct = parseFloat(tracking.progress_percentage) || 0;
+
+    const elProd = document.getElementById('len24hProduced');
+    const elTgt = document.getElementById('len24hTarget');
+    const elShiftTgt = document.getElementById('lenShiftTarget');
+    const el24hMax = document.getElementById('len24hMaxFormula');
+    const elWkTotal = document.getElementById('lenWeeklyTotal');
+    const badge = document.getElementById('lenProgressBadge');
+    const bar = document.getElementById('lenProgressBar');
+
+    if (elProd) elProd.innerText = Math.round(produced).toLocaleString() + ' m';
+    if (elTgt) elTgt.innerText = Math.round(target24h).toLocaleString() + ' m';
+    if (elShiftTgt) elShiftTgt.innerText = Math.round(shiftTarget).toLocaleString() + ' m';
+    if (el24hMax) el24hMax.innerText = Math.round(target24h).toLocaleString() + ' m';
+    if (elWkTotal) elWkTotal.innerText = Math.round(weeklyTotal).toLocaleString() + ' m';
+    
+    if (badge) badge.innerText = pct.toFixed(1) + '%';
+
+    if (bar) {
+        bar.style.width = Math.min(100, Math.max(0, pct)) + '%';
+        bar.setAttribute('aria-valuenow', pct);
+
+        if (pct >= 90) {
+            bar.style.background = 'linear-gradient(90deg, #059669, #34d399)';
+            if (badge) badge.className = 'badge bg-success fs-6 ms-2';
+        } else if (pct >= 50) {
+            bar.style.background = 'linear-gradient(90deg, #d97706, #fbbf24)';
+            if (badge) badge.className = 'badge bg-warning text-dark fs-6 ms-2';
+        } else {
+            bar.style.background = 'linear-gradient(90deg, #0284c7, #38bdf8)';
+            if (badge) badge.className = 'badge bg-info text-dark fs-6 ms-2';
+        }
+    }
 }
 
 // Render Section A: Current Running Coil (Read-Only Display)

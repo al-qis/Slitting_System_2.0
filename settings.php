@@ -282,6 +282,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         exit;
     }
 
+    /* ── 8. Update Production Target Setting ───────── */
+    if ($action === 'update_shift_target') {
+        $shift_target = floatval($_POST['shift_target_meters'] ?? 0);
+        if ($shift_target <= 0) {
+            echo json_encode(['ok' => false, 'msg' => 'Shift target length must be greater than 0 meters.']);
+            exit;
+        }
+
+        $ok = setSystemSetting($conn, 'shift_target_meters', (string)$shift_target);
+        echo json_encode([
+            'ok'           => $ok,
+            'msg'          => $ok ? 'Shift target length updated successfully.' : 'Failed to update setting.',
+            'shift_target' => $shift_target,
+            'target_24h'   => $shift_target * 3
+        ]);
+        exit;
+    }
+
     echo json_encode(['ok'=>false,'msg'=>'Unknown action.']);
     exit;
 }
@@ -302,6 +320,8 @@ while ($r = $mappings->fetch_assoc()) $mapping_rows[] = $r;
 $nci_rows = [];
 $nci_res  = $conn->query("SELECT * FROM nci_product_mapping ORDER BY internal_code");
 while ($r = $nci_res->fetch_assoc()) $nci_rows[] = $r;
+
+$shift_target_meters = floatval(getSystemSetting($conn, 'shift_target_meters', '5200'));
 
 $page_title = "Settings";
 include 'header.php';
@@ -619,6 +639,53 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
           </div>
           <button class="btn-prim" style="background:#059669;" onclick="doChangePassword()">
             <i class="bi bi-lock"></i> Change Password
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     TAB — PRODUCTION TARGET SCALE
+══════════════════════════════════════════════════════════ -->
+<div class="tab-panel" id="panel-target">
+  <div class="row g-3">
+    <div class="col-md-8 col-lg-6">
+      <div class="s-card">
+        <div class="s-card-head">
+          <div class="s-card-icon" style="background:#E0F2FE;color:#0284C7;">
+            <i class="bi bi-speedometer2"></i>
+          </div>
+          <div>
+            <div class="s-card-title">24-Hour Production Target Scale</div>
+            <div class="s-card-sub">Configure base length target per 8-hour shift</div>
+          </div>
+        </div>
+        <div class="s-card-body">
+          <div class="mb-3">
+            <label class="f-label">Base Target per Shift (8 Hours)</label>
+            <div class="input-group">
+              <input class="f-ctrl" type="number" step="100" id="inp-shift-target" 
+                     value="<?= htmlspecialchars($shift_target_meters) ?>" 
+                     placeholder="e.g. 5200" oninput="calc24hTarget()">
+              <span class="input-group-text bg-light text-muted fw-bold">Meters</span>
+            </div>
+            <div class="form-text small text-muted mt-1">Default benchmark: 5,200m per 8-hour shift.</div>
+          </div>
+
+          <div class="p-3 mb-4 rounded-3" style="background:#F8FAFC; border:1px solid #E2E8F0;">
+            <div class="d-flex justify-content-between align-items-center mb-1">
+              <span class="small text-muted fw-semibold">Calculated 24-Hour Max Target (3 Shifts):</span>
+              <span class="fs-5 fw-bold text-primary" id="lbl-24h-target"><?= number_format($shift_target_meters * 3, 0) ?> m</span>
+            </div>
+            <div class="small text-muted" style="font-size:11px;">
+              Formula: <code>Shift Target (<?= number_format($shift_target_meters) ?>m) &times; 3 Shifts = <span id="formula-result"><?= number_format($shift_target_meters * 3) ?>m</span></code>
+            </div>
+          </div>
+
+          <button class="btn-prim" style="background:#0284C7;" onclick="doUpdateShiftTarget()">
+            <i class="bi bi-check-circle me-1"></i> Save Target Scale
           </button>
         </div>
       </div>
@@ -1450,6 +1517,27 @@ window.addEventListener('beforeunload', e => {
 });
 
 /* ── Helpers ─────────────────────────────────────────────────── */
+function calc24hTarget() {
+  const val = parseFloat(document.getElementById('inp-shift-target').value) || 0;
+  const target24h = val * 3;
+  document.getElementById('lbl-24h-target').innerText = target24h.toLocaleString() + ' m';
+  document.getElementById('formula-result').innerText = target24h.toLocaleString() + 'm';
+}
+
+async function doUpdateShiftTarget() {
+  const targetVal = parseFloat(document.getElementById('inp-shift-target').value);
+  if (!targetVal || targetVal <= 0) {
+    toast('Please enter a valid shift target length (> 0 meters).', false);
+    return;
+  }
+
+  const r = await post({ action: 'update_shift_target', shift_target_meters: targetVal });
+  toast(r.msg, r.ok);
+  if (r.ok) {
+    setTimeout(() => location.reload(), 1000);
+  }
+}
+
 function escHtml(s) {
   return String(s ?? '').replace(
     /[&<>"']/g,
