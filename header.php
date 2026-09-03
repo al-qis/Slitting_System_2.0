@@ -28,6 +28,7 @@
 <body>
 <div class="container-fluid">
     <div class="row">
+<?php if (empty($hide_sidebar)): ?>
         <div class="col-md-2 bg-dark text-white min-vh-100 p-3 shadow no-print sidebar">
             <div class="d-flex align-items-center justify-content-center sidebar-logo">
                 <img src="assets/nichiaslogo.jpg" alt="Logo" style="max-width: 35px;" class="me-2 rounded shadow-sm">
@@ -82,3 +83,6 @@
         </div>
 
         <div class="col-md-10 p-4" style="background: #f8f9fa; min-height: 100vh;">
+<?php else: ?>
+        <div class="col-12 p-4" style="background: #f8f9fa; min-height: 100vh;">
+<?php endif; ?>
