@@ -51,9 +51,38 @@ if (!preg_match('/^[A-Za-z0-9]{4,7}$/', $lot)) {
     respond(false, [], "Invalid Lot No \"$lot\" - must be 4-7 alphanumeric characters.");
 }
 
+// ---- Helper functions -----------------------------------------------------
+function formatCoil($coil) {
+    if (preg_match('/^(.*?)-(\d+)$/', $coil, $m)) {
+        return $m[1] . '-' . str_pad($m[2], 2, '0', STR_PAD_LEFT);
+    }
+    return $coil;
+}
+
+function coilPrefix($coil) {
+    if (preg_match('/^([A-Za-z]+)/', $coil, $m)) {
+        return $m[1];
+    }
+    return $coil;
+}
+
 // ---- 3. Server-side dedupe (authoritative, DB-wide across all devices) ----
-$stmt = $mysqli->prepare('SELECT id FROM stock_crosscheck_scans WHERE raw = ? LIMIT 1');
-$stmt->bind_param('s', $raw);
+// Checks raw QR string OR (lot, coil, roll) combination to prevent duplicate entry
+// even if scanned via QR (3-field / 5-field) or entered manually.
+$coilFormattedAlt = formatCoil($coil);
+$rollPaddedAlt    = str_pad($roll, 2, '0', STR_PAD_LEFT);
+$rollUnpaddedAlt  = ltrim($roll, '0') ?: '0';
+
+$stmt = $mysqli->prepare(
+    'SELECT id FROM stock_crosscheck_scans
+     WHERE raw = ?
+        OR (LOWER(TRIM(lot)) = LOWER(TRIM(?))
+            AND (LOWER(TRIM(coil)) = LOWER(TRIM(?)) OR LOWER(TRIM(coil)) = LOWER(TRIM(?)))
+            AND (LOWER(TRIM(roll)) = LOWER(TRIM(?)) OR LOWER(TRIM(roll)) = LOWER(TRIM(?)) OR LOWER(TRIM(roll)) = LOWER(TRIM(?)))
+        )
+     LIMIT 1'
+);
+$stmt->bind_param('sssssss', $raw, $lot, $coil, $coilFormattedAlt, $roll, $rollPaddedAlt, $rollUnpaddedAlt);
 $stmt->execute();
 $stmt->store_result();
 $alreadyScanned = $stmt->num_rows > 0;
@@ -63,14 +92,7 @@ if ($alreadyScanned) {
     respond(false, ['duplicate' => true], 'Already Scanned');
 }
 
-// ---- 4a. Coil prefix - still needed to trigger the ED special format ------
-// (e.g. "CH-2" -> "CH"). No longer used to determine the product code itself.
-function coilPrefix($coil) {
-    if (preg_match('/^([A-Za-z]+)/', $coil, $m)) {
-        return $m[1];
-    }
-    return $coil; // fall back unchanged if it doesn't start with letters
-}
+// ---- 4a. Coil prefix ------------------------------------------------------
 $coilCode = coilPrefix($coil);
 
 // ---- 4b. Product code + Width/Length ALWAYS come from slitting_product ----
@@ -140,12 +162,6 @@ $d365ProductAliases = [
 $d365ProductCode = $d365ProductAliases[$productCode] ?? $productCode;
 
 // ---- 5. Format Coil to two digits (CH-2 -> CH-02) -------------------------
-function formatCoil($coil) {
-    if (preg_match('/^(.*?)-(\d+)$/', $coil, $m)) {
-        return $m[1] . '-' . str_pad($m[2], 2, '0', STR_PAD_LEFT);
-    }
-    return $coil; // fall back unchanged if it doesn't match the expected pattern
-}
 $coilFormatted = formatCoil($coil);
 
 // ---- 6. Build D365 fields ---------------------------------------------------

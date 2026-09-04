@@ -1627,6 +1627,38 @@ function parseQR(raw) {
   return data;
 }
 
+function isAlreadyScanned(lot, coil, roll, raw) {
+  if (raw && scannedRecords.some(r => r.raw === raw)) return true;
+
+  const cleanLot  = (lot || '').trim().toLowerCase();
+  const cleanCoil = (coil || '').trim().toLowerCase();
+  const cleanRoll = (roll || '').trim().toLowerCase();
+  if (!cleanLot || !cleanCoil || !cleanRoll) return false;
+
+  const formatCoilJs = (c) => {
+    const m = c.match(/^(.*?)-(\d+)$/);
+    return m ? m[1] + '-' + m[2].padStart(2, '0') : c;
+  };
+  const coilAlt = formatCoilJs(cleanCoil);
+
+  const rollPadded   = cleanRoll.padStart(2, '0');
+  const rollUnpadded = cleanRoll.replace(/^0+/, '') || '0';
+
+  return scannedRecords.some(r => {
+    const rLot  = (r.lot || '').trim().toLowerCase();
+    const rCoil = (r.coil || '').trim().toLowerCase();
+    const rRoll = (r.roll || '').trim().toLowerCase();
+    const rRollPadded   = rRoll.padStart(2, '0');
+    const rRollUnpadded = rRoll.replace(/^0+/, '') || '0';
+
+    const lotMatch  = (rLot === cleanLot);
+    const coilMatch = (rCoil === cleanCoil || rCoil === coilAlt || formatCoilJs(rCoil) === coilAlt);
+    const rollMatch = (rRoll === cleanRoll || rRollPadded === rollPadded || rRollUnpadded === rollUnpadded);
+
+    return lotMatch && coilMatch && rollMatch;
+  });
+}
+
 scanInput.addEventListener('keydown', function (e) {
   if (e.key !== 'Enter') return;
   e.preventDefault();
@@ -1634,17 +1666,18 @@ scanInput.addEventListener('keydown', function (e) {
   scanInput.value = '';
   if (!raw) return;
 
-  // Client-side instant dedupe check (server re-checks authoritatively too)
-  if (scannedRecords.some(r => r.raw === raw)) {
-    showWarning('Already Scanned');
-    return;
-  }
-
   const fields = parseQR(raw);
   if (!fields.LOT || !fields.COIL || !fields.ROLL) {
     showWarning('Invalid QR code: missing LOT/COIL/ROLL.');
     return;
   }
+
+  // Client-side instant dedupe check by raw AND (lot, coil, roll)
+  if (isAlreadyScanned(fields.LOT, fields.COIL, fields.ROLL, raw)) {
+    showWarning('Already Scanned');
+    return;
+  }
+
   if (!/^[A-Za-z0-9]{4,7}$/.test(fields.LOT)) {
     showWarning('Invalid Lot No format.');
     return;
@@ -1835,7 +1868,7 @@ manualEntryForm?.addEventListener('submit', function (e) {
               (width ? `;WIDTH=${width}` : '') +
               (length ? `;LENGTH=${length}` : '');
 
-  if (scannedRecords.some(r => r.raw === raw)) {
+  if (isAlreadyScanned(lot, coil, roll, raw)) {
     showWarning('Already Scanned');
     return;
   }
