@@ -62,6 +62,30 @@ function resolveCustomerName($conn, $mother_id, $lot_no, $coil_no, $width = null
     return '-';
 }
 
+// Helper: Resolve Process Details (Slitting vs Recoiling vs Reslit)
+function resolveProcessDetails($is_recoiled, $is_reslitted, $original_source) {
+    $src = strtolower((string)$original_source);
+    if ($is_recoiled == 1 || $src === 'recoiling') {
+        return [
+            'process_type'        => 'Recoiling',
+            'process_badge_class' => 'bg-warning text-dark',
+            'process_icon'        => 'bi-arrow-repeat'
+        ];
+    }
+    if ($is_reslitted == 1 || $src === 'reslit') {
+        return [
+            'process_type'        => 'Reslit',
+            'process_badge_class' => 'bg-purple text-white',
+            'process_icon'        => 'bi-intersect'
+        ];
+    }
+    return [
+        'process_type'        => 'Slitting',
+        'process_badge_class' => 'bg-info text-dark',
+        'process_icon'        => 'bi-scissors'
+    ];
+}
+
 $action = $_REQUEST['action'] ?? 'get_data';
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -79,7 +103,10 @@ if ($action === 'get_data') {
             MAX(sp.customer_name) AS customer_name,
             MIN(sp.date_in) AS start_time,
             COUNT(sp.id) AS total_rolls,
-            SUM(CASE WHEN sp.is_completed = 1 AND sp.actual_length IS NOT NULL AND sp.actual_length > 0 THEN 1 ELSE 0 END) AS completed_rolls
+            SUM(CASE WHEN sp.is_completed = 1 AND sp.actual_length IS NOT NULL AND sp.actual_length > 0 THEN 1 ELSE 0 END) AS completed_rolls,
+            MAX(sp.is_recoiled) AS is_recoiled,
+            MAX(sp.is_reslitted) AS is_reslitted,
+            MAX(sp.original_source) AS original_source
         FROM slitting_product sp
         WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
           AND (sp.is_completed = 0 OR sp.actual_length IS NULL OR sp.actual_length = 0)
@@ -114,26 +141,35 @@ if ($action === 'get_data') {
         $startTimestamp = $startTimeStr ? strtotime($startTimeStr) : time();
         $elapsedSec     = time() - $startTimestamp;
 
+        $proc = resolveProcessDetails(
+            $active_item['is_recoiled'] ?? 0,
+            $active_item['is_reslitted'] ?? 0,
+            $active_item['original_source'] ?? ''
+        );
+
         $running_data = [
-            'has_running'       => true,
-            'mother_id'         => $mother_id,
-            'lot_no'            => $lot_no,
-            'coil_no'           => $coil_no,
-            'coil_id_display'   => $lot_no . ' - ' . $coil_no,
-            'product_type'      => $active_item['product'] ?: 'N/A',
-            'customer_name'     => $cust_name,
-            'status'            => 'Running',
-            'sub_status'        => 'IN (pending)',
-            'status_badge_class'=> 'bg-primary text-white',
-            'start_time'        => $startTimeStr ? date('Y-m-d H:i:s', $startTimestamp) : '-',
-            'start_time_fmt'    => $startTimeStr ? date('h:i A', $startTimestamp) : '-',
-            'start_timestamp'   => $startTimestamp,
-            'elapsed_seconds'   => max(0, $elapsedSec),
-            'elapsed_formatted' => formatElapsedTime($elapsedSec),
-            'is_packing'        => false,
+            'has_running'          => true,
+            'mother_id'            => $mother_id,
+            'lot_no'               => $lot_no,
+            'coil_no'              => $coil_no,
+            'coil_id_display'      => $lot_no . ' - ' . $coil_no,
+            'product_type'         => $active_item['product'] ?: 'N/A',
+            'customer_name'        => $cust_name,
+            'process_type'         => $proc['process_type'],
+            'process_badge_class'  => $proc['process_badge_class'],
+            'process_icon'         => $proc['process_icon'],
+            'status'               => 'Running',
+            'sub_status'           => 'IN (pending)',
+            'status_badge_class'   => 'bg-primary text-white',
+            'start_time'           => $startTimeStr ? date('Y-m-d H:i:s', $startTimestamp) : '-',
+            'start_time_fmt'       => $startTimeStr ? date('h:i A', $startTimestamp) : '-',
+            'start_timestamp'      => $startTimestamp,
+            'elapsed_seconds'      => max(0, $elapsedSec),
+            'elapsed_formatted'    => formatElapsedTime($elapsedSec),
+            'is_packing'           => false,
             'packing_remaining_seconds' => 0,
-            'total_rolls'       => (int)$active_item['total_rolls'],
-            'completed_rolls'   => (int)$active_item['completed_rolls']
+            'total_rolls'          => (int)$active_item['total_rolls'],
+            'completed_rolls'      => (int)$active_item['completed_rolls']
         ];
 
         // Remaining IN (pending) coils (index 1 onwards) wait in the Queue
@@ -231,6 +267,12 @@ if ($action === 'get_data') {
         $date_str = $item['start_time'];
         $time_fmt = $date_str ? date('d M Y, h:i A', strtotime($date_str)) : '-';
 
+        $proc = resolveProcessDetails(
+            $item['is_recoiled'] ?? 0,
+            $item['is_reslitted'] ?? 0,
+            $item['original_source'] ?? ''
+        );
+
         $waiting_list[] = [
             'pos'               => $pos++,
             'stock_id'          => 0,
@@ -240,6 +282,9 @@ if ($action === 'get_data') {
             'coil_no'           => $c_no,
             'product_type'      => $item['product'] ?: 'N/A',
             'customer_name'     => $cust,
+            'process_type'      => $proc['process_type'],
+            'process_badge_class'=> $proc['process_badge_class'],
+            'process_icon'      => $proc['process_icon'],
             'received_at'       => $date_str,
             'received_formatted'=> $time_fmt,
             'status_label'      => 'IN (pending)',
@@ -293,6 +338,9 @@ if ($action === 'get_data') {
                 'coil_no'           => $c_no,
                 'product_type'      => $w['mother_product'] ?: 'N/A',
                 'customer_name'     => $cust,
+                'process_type'      => 'Slitting',
+                'process_badge_class'=> 'bg-info text-dark',
+                'process_icon'      => 'bi-scissors',
                 'received_at'       => $date_str,
                 'received_formatted'=> $time_fmt,
                 'status_label'      => 'Waiting',

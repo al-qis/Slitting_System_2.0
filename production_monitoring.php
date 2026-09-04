@@ -206,6 +206,7 @@ include 'header.php';
                                 <tr>
                                     <th class="text-center" style="width: 50px;">Pos</th>
                                     <th>Coil ID / Barcode</th>
+                                    <th>Process Operation</th>
                                     <th>Product Type</th>
                                     <th>Customer Name</th>
                                     <th>Status</th>
@@ -214,7 +215,7 @@ include 'header.php';
                             </thead>
                             <tbody id="waitingTableBody">
                                 <tr>
-                                    <td colspan="5" class="text-center py-4 text-muted">
+                                    <td colspan="7" class="text-center py-4 text-muted">
                                         <div class="spinner-border spinner-border-sm text-secondary me-2"></div> Loading queue...
                                     </td>
                                 </tr>
@@ -418,6 +419,10 @@ function renderSectionA(running) {
         container.className = 'card monitoring-card h-100 running-hero-card';
         currentStartTimestamp = running.start_timestamp;
 
+        const processBadgeClass = running.process_badge_class || 'bg-info text-dark';
+        const processIcon = running.process_icon || 'bi-scissors';
+        const processType = running.process_type || 'Slitting';
+
         body.innerHTML = `
             <div>
                 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -425,7 +430,10 @@ function renderSectionA(running) {
                         <span class="badge bg-primary status-badge-running">
                             <i class="bi bi-gear-wide-connected me-1"></i> RUNNING
                         </span>
-                        <span class="badge bg-warning text-dark ms-2 fs-6">${running.sub_status}</span>
+                        <span class="badge ${processBadgeClass} ms-2 fs-6 fw-bold">
+                            <i class="bi ${processIcon} me-1"></i> ${processType}
+                        </span>
+                        <span class="badge bg-secondary ms-2 fs-6">${running.sub_status}</span>
                     </div>
                     <div class="text-end">
                         <span class="text-light small">Started: ${running.start_time_fmt}</span>
@@ -438,11 +446,15 @@ function renderSectionA(running) {
                 </div>
 
                 <div class="row g-3 mb-4">
-                    <div class="col-6 col-md-6">
+                    <div class="col-4 col-md-4">
+                        <div class="text-uppercase small text-light fw-semibold">Process Operation</div>
+                        <div class="display-product-type"><span class="badge ${processBadgeClass} fs-6"><i class="bi ${processIcon} me-1"></i>${processType}</span></div>
+                    </div>
+                    <div class="col-4 col-md-4">
                         <div class="text-uppercase small text-light fw-semibold">Product Type</div>
                         <div class="display-product-type">${running.product_type}</div>
                     </div>
-                    <div class="col-6 col-md-6">
+                    <div class="col-4 col-md-4">
                         <div class="text-uppercase small text-light fw-semibold">Customer Name</div>
                         <div class="display-customer">${running.customer_name}</div>
                     </div>
@@ -488,7 +500,7 @@ function renderSectionB(waitingList) {
     if (!waitingList || waitingList.length === 0) {
         tbody.innerHTML = `
             <tr>
-                <td colspan="6" class="text-center py-4 text-muted">
+                <td colspan="7" class="text-center py-4 text-muted">
                     <i class="bi bi-inbox fs-3 d-block mb-1 text-secondary"></i>
                     No mother coils currently in Waiting List queue.
                 </td>
@@ -501,6 +513,10 @@ function renderSectionB(waitingList) {
     waitingList.forEach(item => {
         const badgeClass = item.status_badge_class || 'bg-secondary text-white';
         const statusLabel = item.status_label || 'Waiting';
+        const procClass = item.process_badge_class || 'bg-info text-dark';
+        const procIcon  = item.process_icon || 'bi-scissors';
+        const procType  = item.process_type || 'Slitting';
+
         html += `
             <tr>
                 <td class="text-center">
@@ -509,6 +525,7 @@ function renderSectionB(waitingList) {
                     </span>
                 </td>
                 <td class="fw-bold text-dark">${item.coil_id_display}</td>
+                <td><span class="badge ${procClass} fs-7"><i class="bi ${procIcon} me-1"></i>${procType}</span></td>
                 <td><span class="badge bg-secondary">${item.product_type}</span></td>
                 <td class="fw-semibold text-secondary">${item.customer_name}</td>
                 <td><span class="badge ${badgeClass} fs-7">${statusLabel}</span></td>
