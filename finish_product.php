@@ -2002,8 +2002,8 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                                             <select class="form-select form-select-sm modal-row-copies" data-row="<?= $idx ?>">
                                                 <option value="0">0 (skip)</option>
                                                 <option value="1">1</option>
-                                                <option value="2">2</option>
-                                                <option value="3" selected>3</option>
+                                                <option value="2" selected>2</option>
+                                                <option value="3">3</option>
                                                 <option value="4">4</option>
                                             </select>
                                         </td>
@@ -2301,7 +2301,7 @@ function modalCollectSelections() {
         }
 
         const parsedCopies = parseInt(copiesEl.value, 10);
-        const copies = isNaN(parsedCopies) ? 1 : parsedCopies;
+        const copies = isNaN(parsedCopies) ? 2 : parsedCopies;
         const length = parseFloat(lengthEl.value);
 
         if (!customer) { modalSetRowStatus(idx, 'Select customer', true); hasError = true; return; }

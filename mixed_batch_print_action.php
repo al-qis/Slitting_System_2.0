@@ -78,11 +78,11 @@ foreach ($rawSelections as $sel) {
     $ref_no   = trim((string)($sel['ref_no']   ?? ''));
     if ($customer === '' || $ref_no === '') continue; // validated client-side too; skip silently rather than die on one bad row
 
-    // Copies: 1, 2, or 3 per roll — default 3 (matches the grid's
+    // Copies: 1, 2, or 3 per roll — default 2 (matches the grid's
     // default) if missing or out of range, rather than trusting the
     // client's number blindly.
-    $copies = intval($sel['copies'] ?? 3);
-    if ($copies < 1 || $copies > 3) { $copies = 3; }
+    $copies = intval($sel['copies'] ?? 2);
+    if ($copies < 1 || $copies > 3) { $copies = 2; }
     $length = isset($sel['length']) ? (float)$sel['length'] : 0;
 
     // Last one wins if the client somehow sent the same id twice.

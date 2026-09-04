@@ -251,8 +251,8 @@ usort($rolls, function ($a, $b) {
                     <select class="form-select form-select-sm" id="copyAllCopies">
                         <option value="">—</option>
                         <option value="1">1</option>
-                        <option value="2">2</option>
-                        <option value="3" selected>3</option>
+                        <option value="2" selected>2</option>
+                        <option value="3">3</option>
                     </select>
                 </div>
                 <div class="col-12 col-md-2">
@@ -364,8 +364,8 @@ usort($rolls, function ($a, $b) {
                     <td>
                         <select class="form-select form-select-sm row-copies" data-row="<?= $idx ?>">
                             <option value="1">1</option>
-                            <option value="2">2</option>
-                            <option value="3" selected>3</option>
+                            <option value="2" selected>2</option>
+                            <option value="3">3</option>
                         </select>
                     </td>
                     <td class="row-status text-muted" data-row="<?= $idx ?>">—</td>
@@ -542,7 +542,7 @@ function collectSelections() {
         if (customer === 'OTHER') customer = otherEl.value.trim();
         const ref_no = refEl.value.trim();
         const parsedCopies = parseInt(copiesEl.value, 10);
-        const copies = (parsedCopies >= 1 && parsedCopies <= 3) ? parsedCopies : 3;
+        const copies = (parsedCopies >= 1 && parsedCopies <= 3) ? parsedCopies : 2;
         const length = lengthEl ? parseFloat(lengthEl.value) : 0;
 
         if (!customer) { setRowStatus(idx, 'Select a customer', true); hasError = true; return; }

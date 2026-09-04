@@ -294,8 +294,8 @@ $stmt->close();
                         <select class="form-select form-select-sm row-copies" data-row="<?= $idx ?>">
                             <option value="0">0 (skip)</option>
                             <option value="1">1</option>
-                            <option value="2">2</option>
-                            <option value="3" selected>3</option>
+                            <option value="2" selected>2</option>
+                            <option value="3">3</option>
                              <option value="4" >4</option>
                         </select>
                     </td>
@@ -598,7 +598,7 @@ function collectSelections() {
         }
 
         const parsedCopies = parseInt(copiesEl.value, 10);
-        const copies = isNaN(parsedCopies) ? 1 : parsedCopies;
+        const copies = isNaN(parsedCopies) ? 2 : parsedCopies;
         const length = parseFloat(lengthEl.value);
 
         if (!customer) { setRowStatus(idx, 'Select a customer', true); hasError = true; return; }
