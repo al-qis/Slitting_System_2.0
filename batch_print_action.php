@@ -70,7 +70,7 @@ foreach ($selections as $sel) {
     // 0 is a valid, deliberate choice — "save the customer/ref no, but
     // skip printing a sticker for this roll in this batch". Only clamp
     // the upper bound and reject negative/garbage input.
-    $copies   = max(0, min(4, intval($sel['copies'] ?? 4)));
+    $copies   = max(0, min(4, intval($sel['copies'] ?? 2)));
     $nciResolved = trim($sel['nci_resolved_customer'] ?? '');
 
     if ($id <= 0)         { $errors[] = "Invalid roll ID."; continue; }
