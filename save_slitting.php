@@ -307,38 +307,6 @@ try {
             $conn->query("UPDATE stock_raw_material SET status='OUT', updated_at=NOW() WHERE id=$stock_id");
         }
 
-        // Optional SFC balance width entry
-        if ($sfc_balance_width > 0) {
-            $balance_length  = floatval($lengths[0] ?? 0);
-            $balance_roll_no = "BALANCE";
-
-            // Resolve TS/RS naming for the balance-width entry too
-            $balance_resolved = resolveSlitProductCode($product, $isVCoil, $sfc_balance_width);
-            $balance_product  = $balance_resolved['code'];
-
-            $sfc_bal = $conn->prepare(
-                "INSERT INTO sfc
-                     (mother_id, product, lot_no, coil_no, roll_no,
-                      width, length, action, date_created)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, 'slitting_balance', NOW())"
-            );
-            // types: i s s s s d d
-            $sfc_bal->bind_param(
-                "issssdd",
-                $mother_id, $balance_product, $lot_no, $coil_no,
-                $balance_roll_no, $sfc_balance_width, $balance_length
-            );
-            if (!$sfc_bal->execute()) {
-                throw new Exception("Failed to insert SFC balance: " . $sfc_bal->error);
-            }
-            $sfc_bal_id = $conn->insert_id;
-            $sfc_bal->close();
-
-            log_process($conn, 'sfc', $sfc_bal_id, $mother_id,
-                null, 'IN', 'balance_width_to_sfc',
-                "Balance width {$sfc_balance_width}mm saved to SFC product={$balance_product}");
-        }
-
         $conn->query(
             "INSERT INTO mother_coil_audit_log
                  (mother_id, action_type, performed_at, remark)
@@ -349,6 +317,38 @@ try {
     // ── Cut Into 2: mark mother OUT ─────────────────────────────
     if ($cut_type === 'cut_into_2') {
         $conn->query("UPDATE mother_coil SET stock=0, status='OUT', date_out=NOW() WHERE id=$mother_id");
+    }
+
+    // ── Optional SFC balance width entry ────────────────────────
+    if ($sfc_balance_width > 0) {
+        $balance_length  = floatval($lengths[0] ?? 0);
+        $balance_roll_no = "BALANCE";
+
+        // Resolve TS/RS naming for the balance-width entry too
+        $balance_resolved = resolveSlitProductCode($product, $isVCoil, $sfc_balance_width);
+        $balance_product  = $balance_resolved['code'];
+
+        $sfc_bal = $conn->prepare(
+            "INSERT INTO sfc
+                 (mother_id, product, lot_no, coil_no, roll_no,
+                  width, length, action, date_created)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'slitting_balance', NOW())"
+        );
+        // types: i s s s s d d
+        $sfc_bal->bind_param(
+            "issssdd",
+            $mother_id, $balance_product, $lot_no, $coil_no,
+            $balance_roll_no, $sfc_balance_width, $balance_length
+        );
+        if (!$sfc_bal->execute()) {
+            throw new Exception("Failed to insert SFC balance: " . $sfc_bal->error);
+        }
+        $sfc_bal_id = $conn->insert_id;
+        $sfc_bal->close();
+
+        log_process($conn, 'sfc', $sfc_bal_id, $mother_id,
+            null, 'IN', 'balance_width_to_sfc',
+            "Balance width {$sfc_balance_width}mm saved to SFC product={$balance_product}");
     }
 
     $conn->commit();
