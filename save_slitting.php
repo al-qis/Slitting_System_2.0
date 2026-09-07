@@ -249,6 +249,39 @@ try {
         // ── PATH B: Go to Finished Products ─────────────────
         $slit_quantity_val = floatval($_POST['slit_quantity'] ?? 0);
 
+        // ── Keep roll_no clean for UI/stickers/reports & generate unique DB roll_key ────
+        $display_roll_no = $roll_no_safe; // Clean roll name e.g. "R3"
+        $base_roll_key   = $roll_lot_no . $coil_no . $display_roll_no;
+        $target_roll_key = $base_roll_key;
+
+        $check_key_stmt = $conn->prepare(
+            "SELECT id FROM slitting_product 
+             WHERE roll_key = ? AND (is_voided = 0 OR is_voided IS NULL)"
+        );
+        $check_key_stmt->bind_param("s", $target_roll_key);
+        $check_key_stmt->execute();
+        $dup_res = $check_key_stmt->get_result();
+        if ($dup_res && $dup_res->num_rows > 0) {
+            $suffix_num = 1;
+            while (true) {
+                $candidate_key = $base_roll_key . "_" . $suffix_num;
+                $chk = $conn->prepare(
+                    "SELECT id FROM slitting_product 
+                     WHERE roll_key = ? AND (is_voided = 0 OR is_voided IS NULL)"
+                );
+                $chk->bind_param("s", $candidate_key);
+                $chk->execute();
+                if ($chk->get_result()->num_rows === 0) {
+                    $target_roll_key = $candidate_key;
+                    $chk->close();
+                    break;
+                }
+                $chk->close();
+                $suffix_num++;
+            }
+        }
+        $check_key_stmt->close();
+
         // Check if leftover_length column exists (migration may not have run yet)
         // Use a safe fallback: try leftover_length first, fall back to stock column name
         $col_check = $conn->query(
@@ -263,19 +296,19 @@ try {
         // Build insert dynamically based on which column exists
         $insert_stmt = $conn->prepare(
             "INSERT INTO slitting_product
-                 (product, lot_no, coil_no, roll_no, width, length,
+                 (product, lot_no, coil_no, roll_no, roll_key, width, length,
                   mother_id, status, cut_type, slit_quantity,
                   customer_name, ref_no, {$leftover_col}, parent_slit_id, date_in, source)
              VALUES
-                 (?, ?, ?, ?, ?, ?, ?, 'IN', ?, ?, ?, ?, NULL, NULL, NOW(), ?)"
+                 (?, ?, ?, ?, ?, ?, ?, ?, 'IN', ?, ?, ?, ?, NULL, NULL, NOW(), ?)"
         );
         if (!$insert_stmt) {
             throw new Exception("Prepare failed: " . $conn->error);
         }
-        // types: s s s s d d i s d s s s
+        // types: s s s s s d d i s d s s s
         $insert_stmt->bind_param(
-            "ssssddisdsss",
-            $roll_product, $roll_lot_no, $coil_no, $roll_no_safe,
+            "sssssddisdsss",
+            $roll_product, $roll_lot_no, $coil_no, $display_roll_no, $target_roll_key,
             $width, $length, $mother_id,
             $cut_type, $slit_quantity_val, $plannedCustomer, $plannedRefNo,
             $source_type

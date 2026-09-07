@@ -245,6 +245,7 @@ if (!$isLeftoverCut && $mother_id) {
         <input type="hidden" name="product" value="<?= htmlspecialchars($mother_data['product'] ?? '') ?>">
         <input type="hidden" name="lot_no" value="<?= htmlspecialchars($source_data['lot_no'] ?? '') ?>">
         <input type="hidden" name="coil_no" value="<?= htmlspecialchars($source_data['coil_no'] ?? '') ?>">
+        <input type="hidden" name="source_width" value="<?= floatval($source_data['width'] ?? $mother_data['width'] ?? 0) ?>">
 
         <div class="card shadow-sm mb-4">
             <div class="card-body">
