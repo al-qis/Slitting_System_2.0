@@ -1038,6 +1038,23 @@ if ($activePalletId) {
     border-radius: 6px;
     padding: 3px 9px;
 }
+.weight-summary-bar.is-overweight {
+    background: linear-gradient(135deg, #fef2f2 0%, #fff1f2 100%) !important;
+    border: 1px solid #fca5a5 !important;
+}
+.weight-summary-bar.is-overweight .wgt-label {
+    color: #991b1b !important;
+}
+.weight-summary-bar.is-overweight .wgt-total {
+    color: #dc2626 !important;
+}
+.weight-summary-bar.is-overweight .wgt-unit {
+    color: #dc2626 !important;
+}
+.weight-summary-bar.is-overweight .wgt-avg {
+    color: #991b1b !important;
+    background: rgba(254, 226, 226, 0.8) !important;
+}
 
 /* Progress bar */
 .pallet-progress     { height:8px; border-radius:4px; background:#e9ecef; overflow:hidden; }
@@ -1445,8 +1462,9 @@ if (isset($_GET['success'])): ?>
                          style="width:<?= (count($activeItems) / $MAX * 100) ?>%"></div>
                 </div>
 
+                <?php $isOverweight = ($totalEstWgt > 1300); ?>
                 <!-- ── Total Est. Weight Summary Bar ── -->
-                <div class="weight-summary-bar" id="weightSummaryBar" style="<?= $isEditBuilding ? ($isReturnToStock ? 'background:#f0f9ff; border:1px solid #7dd3fc;' : 'background:#fffbe6; border:1px solid #ffe58f;') : '' ?>">
+                <div class="weight-summary-bar <?= $isOverweight ? 'is-overweight' : '' ?>" id="weightSummaryBar" style="<?= $isEditBuilding ? ($isReturnToStock ? 'background:#f0f9ff; border:1px solid #7dd3fc;' : 'background:#fffbe6; border:1px solid #ffe58f;') : '' ?>">
                     <div class="wgt-label">
                         <i class="bi bi-speedometer2"></i>
                         Est. Total Weight
@@ -1463,6 +1481,17 @@ if (isset($_GET['success'])): ?>
                         <?php else: ?>
                             no weight data
                         <?php endif; ?>
+                    </div>
+                </div>
+
+                <!-- ── Overweight Warning Card ── -->
+                <div class="alert alert-danger d-flex align-items-center mb-3 py-2 px-3 <?= $isOverweight ? '' : 'd-none' ?>" id="palletWeightWarningCard" style="border-left: 4px solid #dc2626; background: #fef2f2; border-color: #fca5a5; color: #991b1b;">
+                    <i class="bi bi-exclamation-triangle-fill fs-4 me-2 text-danger flex-shrink-0"></i>
+                    <div>
+                        <strong class="text-danger"><i class="bi bi-shield-exclamation me-1"></i>Warning: Est. Total Weight Exceeds 1300 kg Limit!</strong>
+                        <div style="font-size:12.5px;" class="mt-1">
+                            Estimated total weight is <strong><span id="warningWeightVal"><?= number_format($totalEstWgt, 2) ?></span> kg</strong>, which exceeds the maximum limit of <strong>1300.00 kg</strong>. Rolls can still be scanned and added to this pallet.
+                        </div>
                     </div>
                 </div>
 
@@ -1713,7 +1742,7 @@ if (isset($_GET['success'])): ?>
                 }
                 ?>
                 <?php if ($rejectedTotalWgt > 0): ?>
-                <div class="weight-summary-bar mb-3">
+                <div class="weight-summary-bar mb-3 <?= $rejectedTotalWgt > 1300 ? 'is-overweight' : '' ?>">
                     <div class="wgt-label"><i class="bi bi-speedometer2"></i> Est. Total Weight</div>
                     <div style="display:flex; align-items:baseline; gap:6px;">
                         <span class="wgt-total"><?= number_format($rejectedTotalWgt, 2) ?></span>
@@ -1721,6 +1750,17 @@ if (isset($_GET['success'])): ?>
                     </div>
                     <div class="wgt-avg"><?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?></div>
                 </div>
+                <?php if ($rejectedTotalWgt > 1300): ?>
+                <div class="alert alert-danger d-flex align-items-center mb-3 py-2 px-3" style="border-left: 4px solid #dc2626; background: #fef2f2; border-color: #fca5a5; color: #991b1b;">
+                    <i class="bi bi-exclamation-triangle-fill fs-4 me-2 text-danger flex-shrink-0"></i>
+                    <div>
+                        <strong class="text-danger"><i class="bi bi-shield-exclamation me-1"></i>Warning: Est. Total Weight Exceeds 1300 kg Limit!</strong>
+                        <div style="font-size:12.5px;" class="mt-1">
+                            Estimated total weight is <strong><?= number_format($rejectedTotalWgt, 2) ?> kg</strong>, which exceeds the maximum limit of <strong>1300.00 kg</strong>.
+                        </div>
+                    </div>
+                </div>
+                <?php endif; ?>
                 <?php endif; ?>
 
                 <p class="text-muted mb-3" style="font-size:13px;">
@@ -1858,7 +1898,7 @@ if (isset($_GET['success'])): ?>
                 }
                 ?>
                 <?php if ($pendingTotalWgt > 0): ?>
-                <div class="weight-summary-bar mb-3">
+                <div class="weight-summary-bar mb-3 <?= $pendingTotalWgt > 1300 ? 'is-overweight' : '' ?>">
                     <div class="wgt-label"><i class="bi bi-speedometer2"></i> Est. Total Weight</div>
                     <div style="display:flex; align-items:baseline; gap:6px;">
                         <span class="wgt-total"><?= number_format($pendingTotalWgt, 2) ?></span>
@@ -1866,6 +1906,17 @@ if (isset($_GET['success'])): ?>
                     </div>
                     <div class="wgt-avg"><?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?></div>
                 </div>
+                <?php if ($pendingTotalWgt > 1300): ?>
+                <div class="alert alert-danger d-flex align-items-center mb-3 py-2 px-3" style="border-left: 4px solid #dc2626; background: #fef2f2; border-color: #fca5a5; color: #991b1b;">
+                    <i class="bi bi-exclamation-triangle-fill fs-4 me-2 text-danger flex-shrink-0"></i>
+                    <div>
+                        <strong class="text-danger"><i class="bi bi-shield-exclamation me-1"></i>Warning: Est. Total Weight Exceeds 1300 kg Limit!</strong>
+                        <div style="font-size:12.5px;" class="mt-1">
+                            Estimated total weight is <strong><?= number_format($pendingTotalWgt, 2) ?> kg</strong>, which exceeds the maximum limit of <strong>1300.00 kg</strong>.
+                        </div>
+                    </div>
+                </div>
+                <?php endif; ?>
                 <?php endif; ?>
 
                 <div class="alert alert-warning py-2 mb-3" style="font-size:13px; background:#fffbe8; border-color:#fde68a; color:#92400e;">
@@ -1994,7 +2045,7 @@ if (isset($_GET['success'])): ?>
                 }
                 ?>
                 <?php if ($approvedTotalWgt > 0): ?>
-                <div class="weight-summary-bar mb-3">
+                <div class="weight-summary-bar mb-3 <?= $approvedTotalWgt > 1300 ? 'is-overweight' : '' ?>">
                     <div class="wgt-label"><i class="bi bi-speedometer2"></i> Est. Total Weight</div>
                     <div style="display:flex; align-items:baseline; gap:6px;">
                         <span class="wgt-total"><?= number_format($approvedTotalWgt, 2) ?></span>
@@ -2002,6 +2053,17 @@ if (isset($_GET['success'])): ?>
                     </div>
                     <div class="wgt-avg"><?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?></div>
                 </div>
+                <?php if ($approvedTotalWgt > 1300): ?>
+                <div class="alert alert-danger d-flex align-items-center mb-3 py-2 px-3" style="border-left: 4px solid #dc2626; background: #fef2f2; border-color: #fca5a5; color: #991b1b;">
+                    <i class="bi bi-exclamation-triangle-fill fs-4 me-2 text-danger flex-shrink-0"></i>
+                    <div>
+                        <strong class="text-danger"><i class="bi bi-shield-exclamation me-1"></i>Warning: Est. Total Weight Exceeds 1300 kg Limit!</strong>
+                        <div style="font-size:12.5px;" class="mt-1">
+                            Estimated total weight is <strong><?= number_format($approvedTotalWgt, 2) ?> kg</strong>, which exceeds the maximum limit of <strong>1300.00 kg</strong>.
+                        </div>
+                    </div>
+                </div>
+                <?php endif; ?>
                 <?php endif; ?>
 
                 <p class="text-muted mb-3" style="font-size:13px;">
@@ -2141,7 +2203,7 @@ if (isset($_GET['success'])): ?>
                 }
                 ?>
                 <?php if ($deliveredTotalWgt > 0): ?>
-                <div class="weight-summary-bar mb-3">
+                <div class="weight-summary-bar mb-3 <?= $deliveredTotalWgt > 1300 ? 'is-overweight' : '' ?>">
                     <div class="wgt-label"><i class="bi bi-speedometer2"></i> Est. Total Weight</div>
                     <div style="display:flex; align-items:baseline; gap:6px;">
                         <span class="wgt-total"><?= number_format($deliveredTotalWgt, 2) ?></span>
@@ -2149,6 +2211,17 @@ if (isset($_GET['success'])): ?>
                     </div>
                     <div class="wgt-avg"><?= count($activeItems) ?> roll<?= count($activeItems) != 1 ? 's' : '' ?></div>
                 </div>
+                <?php if ($deliveredTotalWgt > 1300): ?>
+                <div class="alert alert-danger d-flex align-items-center mb-3 py-2 px-3" style="border-left: 4px solid #dc2626; background: #fef2f2; border-color: #fca5a5; color: #991b1b;">
+                    <i class="bi bi-exclamation-triangle-fill fs-4 me-2 text-danger flex-shrink-0"></i>
+                    <div>
+                        <strong class="text-danger"><i class="bi bi-shield-exclamation me-1"></i>Warning: Est. Total Weight Exceeds 1300 kg Limit!</strong>
+                        <div style="font-size:12.5px;" class="mt-1">
+                            Estimated total weight is <strong><?= number_format($deliveredTotalWgt, 2) ?> kg</strong>, which exceeds the maximum limit of <strong>1300.00 kg</strong>.
+                        </div>
+                    </div>
+                </div>
+                <?php endif; ?>
                 <?php endif; ?>
 
                 <div class="alert alert-success py-2 mb-3" style="font-size:13px; background:#d1fae5; border-color:#a7f3d0; color:#065f46;">
@@ -2824,9 +2897,12 @@ function recalcTotalWeight() {
         if (w > 0) { total += w; count++; }
     });
 
-    const dispEl = document.getElementById('totalWeightDisplay');
-    const unitEl = dispEl ? dispEl.nextElementSibling : null;
-    const avgEl  = document.getElementById('avgWeightDisplay');
+    const barEl     = document.getElementById('weightSummaryBar');
+    const dispEl    = document.getElementById('totalWeightDisplay');
+    const unitEl    = dispEl ? dispEl.nextElementSibling : null;
+    const avgEl     = document.getElementById('avgWeightDisplay');
+    const warnEl    = document.getElementById('palletWeightWarningCard');
+    const warnValEl = document.getElementById('warningWeightVal');
 
     if (!dispEl) return;
 
@@ -2838,6 +2914,17 @@ function recalcTotalWeight() {
         dispEl.textContent = '—';
         if (unitEl) unitEl.textContent = '';
         if (avgEl)  avgEl.textContent  = 'no weight data';
+    }
+
+    if (total > 1300) {
+        if (barEl) barEl.classList.add('is-overweight');
+        if (warnEl) {
+            warnEl.classList.remove('d-none');
+            if (warnValEl) warnValEl.textContent = total.toFixed(2);
+        }
+    } else {
+        if (barEl) barEl.classList.remove('is-overweight');
+        if (warnEl) warnEl.classList.add('d-none');
     }
 }
 
