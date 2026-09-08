@@ -113,29 +113,94 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'get_next_pallet_no') {
     exit;
 }
 
-// ── AJAX: product lookup (now includes std_weight) ────────────
+// ── AJAX: product lookup (now includes std_weight, width, ID & truncated fallback matching) ──
 if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
     header('Content-Type: application/json');
-    $lot  = trim($_GET['lot']  ?? '');
-    $coil = trim($_GET['coil'] ?? '');
-    $roll = trim($_GET['roll'] ?? '');
-    if (!$lot || !$coil || !$roll) { echo json_encode(['ok' => false, 'msg' => 'Please specify full Lot No, Coil No, and Roll No.']); exit; }
-    $stmt = $conn->prepare("
-        SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
-               sp.width, sp.actual_length, sp.length, sp.nod_length,
-               sp.stock_counted, sp.status, sp.is_voided,
-               sp.customer_name, sp.ref_no,
-               pi.pallet_id, p.pallet_no,
-               COALESCE(sw.std_weight, 0) AS std_weight
-        FROM slitting_product sp
-        LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
-        LEFT JOIN pallets p       ON p.id = pi.pallet_id
-        LEFT JOIN std_wgt sw      ON sw.product_code = sp.product
-        WHERE sp.lot_no = ? AND sp.coil_no = ? AND sp.roll_no = ?
-          AND (sp.is_voided = 0 OR sp.is_voided IS NULL)
-        LIMIT 1
-    ");
-    $stmt->bind_param("sss", $lot, $coil, $roll);
+    $lot   = trim($_GET['lot']   ?? '');
+    $coil  = trim($_GET['coil']  ?? '');
+    $roll  = trim($_GET['roll']  ?? '');
+    $width = floatval($_GET['width'] ?? 0);
+    $id    = intval($_GET['id']    ?? 0);
+
+    if ($id <= 0 && !$roll && (!$lot || !$coil)) {
+        echo json_encode(['ok' => false, 'msg' => 'Please specify full Lot No, Coil No, and Roll No.']);
+        exit;
+    }
+
+    if ($id > 0) {
+        $stmt = $conn->prepare("
+            SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
+                   sp.width, sp.actual_length, sp.length, sp.nod_length,
+                   sp.stock_counted, sp.status, sp.is_voided,
+                   sp.customer_name, sp.ref_no,
+                   pi.pallet_id, p.pallet_no,
+                   COALESCE(sw.std_weight, 0) AS std_weight
+            FROM slitting_product sp
+            LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+            LEFT JOIN pallets p       ON p.id = pi.pallet_id
+            LEFT JOIN std_wgt sw      ON sw.product_code = sp.product
+            WHERE sp.id = ? AND (sp.is_voided = 0 OR sp.is_voided IS NULL)
+            LIMIT 1
+        ");
+        $stmt->bind_param("i", $id);
+    } elseif ($lot !== '' && $coil !== '' && $width > 0) {
+        $stmt = $conn->prepare("
+            SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
+                   sp.width, sp.actual_length, sp.length, sp.nod_length,
+                   sp.stock_counted, sp.status, sp.is_voided,
+                   sp.customer_name, sp.ref_no,
+                   pi.pallet_id, p.pallet_no,
+                   COALESCE(sw.std_weight, 0) AS std_weight
+            FROM slitting_product sp
+            LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+            LEFT JOIN pallets p       ON p.id = pi.pallet_id
+            LEFT JOIN std_wgt sw      ON sw.product_code = sp.product
+            WHERE sp.lot_no = ? AND sp.coil_no = ? AND sp.roll_no = ?
+              AND ABS(sp.width - ?) < 0.5
+              AND (sp.is_voided = 0 OR sp.is_voided IS NULL)
+            ORDER BY (pi.pallet_id IS NULL) DESC, sp.id DESC
+            LIMIT 1
+        ");
+        $stmt->bind_param("sssd", $lot, $coil, $roll, $width);
+    } elseif ($width > 0 && $roll !== '') {
+        // Smart Fallback for truncated scans (where Lot/Coil were cut off by scanner gun buffer, but Roll + Width are intact)
+        $stmt = $conn->prepare("
+            SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
+                   sp.width, sp.actual_length, sp.length, sp.nod_length,
+                   sp.stock_counted, sp.status, sp.is_voided,
+                   sp.customer_name, sp.ref_no,
+                   pi.pallet_id, p.pallet_no,
+                   COALESCE(sw.std_weight, 0) AS std_weight
+            FROM slitting_product sp
+            LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+            LEFT JOIN pallets p       ON p.id = pi.pallet_id
+            LEFT JOIN std_wgt sw      ON sw.product_code = sp.product
+            WHERE sp.roll_no = ?
+              AND ABS(sp.width - ?) < 0.5
+              AND (sp.is_voided = 0 OR sp.is_voided IS NULL)
+            ORDER BY (pi.pallet_id IS NULL) DESC, sp.id DESC
+            LIMIT 1
+        ");
+        $stmt->bind_param("sd", $roll, $width);
+    } else {
+        $stmt = $conn->prepare("
+            SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
+                   sp.width, sp.actual_length, sp.length, sp.nod_length,
+                   sp.stock_counted, sp.status, sp.is_voided,
+                   sp.customer_name, sp.ref_no,
+                   pi.pallet_id, p.pallet_no,
+                   COALESCE(sw.std_weight, 0) AS std_weight
+            FROM slitting_product sp
+            LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+            LEFT JOIN pallets p       ON p.id = pi.pallet_id
+            LEFT JOIN std_wgt sw      ON sw.product_code = sp.product
+            WHERE sp.lot_no = ? AND sp.coil_no = ? AND sp.roll_no = ?
+              AND (sp.is_voided = 0 OR sp.is_voided IS NULL)
+            ORDER BY (pi.pallet_id IS NULL) DESC, sp.id DESC
+            LIMIT 1
+        ");
+        $stmt->bind_param("sss", $lot, $coil, $roll);
+    }
     $stmt->execute();
     $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
@@ -268,6 +333,8 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === 'deliver_by_scan') {
         $targetStatus   = $palletRow['status'];
     } else {
         $lot = $coil = $roll = '';
+        $width = 0.0;
+        $id = 0;
 
         if (strpos($raw, '=') !== false) {
             // Format A — KEY=value;KEY=value
@@ -277,25 +344,29 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === 'deliver_by_scan') {
                 [$k, $v] = explode('=', $segment, 2);
                 $k = strtoupper(trim($k));
                 $v = trim($v);
-                if ($k === 'LOT')  $lot  = $v;
-                if ($k === 'COIL') $coil = $v;
-                if ($k === 'ROLL') $roll = $v;
+                if ($k === 'OLL')   $k = 'ROLL';
+                if ($k === 'OT')    $k = 'LOT';
+                if ($k === 'OIL')   $k = 'COIL';
+                if ($k === 'LOT')   $lot   = $v;
+                if ($k === 'COIL')  $coil  = $v;
+                if ($k === 'ROLL')  $roll  = $v;
+                if ($k === 'WIDTH') $width = (float)$v;
+                if ($k === 'ID')    $id    = (int)$v;
             }
         } else {
             // Format B — space-separated "826277 FK-1 R1"
-            $tokens = preg_split('/\s+/', $raw, 3);
+            $tokens = preg_split('/\s+/', $raw, 4);
             $lot    = trim($tokens[0] ?? '');
             $coil   = trim($tokens[1] ?? '');
             $roll   = trim($tokens[2] ?? '');
+            $width  = floatval($tokens[3] ?? 0);
         }
 
-        // ── REQUIREMENT 1: Restrict Search to Full Identifiers ──────
-        // Searching by Lot No alone is disabled. Must specify Lot, Coil, and Roll!
-        if ($lot === '' || $coil === '' || $roll === '') {
+        if ($id <= 0 && ($width <= 0 || $roll === '') && ($lot === '' || $coil === '' || $roll === '')) {
             echo json_encode([
                 'ok'   => false,
                 'code' => 'INCOMPLETE_IDENTIFIER',
-                'msg'  => 'Please specify full Lot No, Coil No, and Roll No (e.g. 826277 FK-1 R1) or a Pallet Serial No (e.g. SFS-2607-001).'
+                'msg'  => 'Please specify full Lot No, Coil No, and Roll No (e.g. 826277 FK-1 R1) or Roll No and Width.'
             ]);
             exit;
         }
@@ -303,18 +374,46 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === 'deliver_by_scan') {
         $cleanRoll = ltrim(strtoupper($roll), 'R-');
         $cleanRoll = 'R' . ltrim($cleanRoll, 'R');
 
-        $stmt = $conn->prepare("
-            SELECT sp.id, sp.is_voided,
-                   pi.pallet_id,
-                   p.status AS pallet_status, p.pallet_no
-            FROM slitting_product sp
-            LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
-            LEFT JOIN pallets p       ON p.id = pi.pallet_id
-            WHERE sp.lot_no = ? AND sp.coil_no = ? AND (sp.roll_no = ? OR sp.roll_no = ?)
-            ORDER BY sp.id DESC
-            LIMIT 1
-        ");
-        $stmt->bind_param("ssss", $lot, $coil, $roll, $cleanRoll);
+        if ($id > 0) {
+            $stmt = $conn->prepare("
+                SELECT sp.id, sp.is_voided,
+                       pi.pallet_id,
+                       p.status AS pallet_status, p.pallet_no
+                FROM slitting_product sp
+                LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+                LEFT JOIN pallets p       ON p.id = pi.pallet_id
+                WHERE sp.id = ?
+                ORDER BY sp.id DESC
+                LIMIT 1
+            ");
+            $stmt->bind_param("i", $id);
+        } elseif ($width > 0 && $roll !== '') {
+            $stmt = $conn->prepare("
+                SELECT sp.id, sp.is_voided,
+                       pi.pallet_id,
+                       p.status AS pallet_status, p.pallet_no
+                FROM slitting_product sp
+                LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+                LEFT JOIN pallets p       ON p.id = pi.pallet_id
+                WHERE sp.roll_no = ? AND ABS(sp.width - ?) < 0.5
+                ORDER BY sp.id DESC
+                LIMIT 1
+            ");
+            $stmt->bind_param("sd", $roll, $width);
+        } else {
+            $stmt = $conn->prepare("
+                SELECT sp.id, sp.is_voided,
+                       pi.pallet_id,
+                       p.status AS pallet_status, p.pallet_no
+                FROM slitting_product sp
+                LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+                LEFT JOIN pallets p       ON p.id = pi.pallet_id
+                WHERE sp.lot_no = ? AND sp.coil_no = ? AND (sp.roll_no = ? OR sp.roll_no = ?)
+                ORDER BY sp.id DESC
+                LIMIT 1
+            ");
+            $stmt->bind_param("ssss", $lot, $coil, $roll, $cleanRoll);
+        }
         $stmt->execute();
         $row = $stmt->get_result()->fetch_assoc();
         $stmt->close();
@@ -3064,6 +3163,8 @@ function refreshConstraintRefBadge(refNo) {
 // ─────────────────────────────────────────────────────────────
 function parseQR(raw) {
     raw = (raw || '').trim();
+    // Strip control characters & AIM symbology prefixes (e.g. ]C1)
+    raw = raw.replace(/[\r\n\t\x00-\x1F]/g, '').replace(/^\][A-Za-z][0-9]/, '');
 
     // ── Format A: contains '=' → KEY=value;KEY=value ──────────
     if (raw.indexOf('=') > -1) {
@@ -3071,28 +3172,42 @@ function parseQR(raw) {
         raw.split(';').forEach(p => {
             const idx = p.indexOf('=');
             if (idx > -1) {
-                parts[p.substring(0, idx).trim().toUpperCase()]
-                    = decodeURIComponent(p.substring(idx + 1).trim());
+                let k = p.substring(0, idx).trim().toUpperCase();
+                let v = decodeURIComponent(p.substring(idx + 1).trim());
+                if (k === 'OLL') k = 'ROLL'; // Fix if leading 'R' was truncated by scanner gun
+                if (k === 'OT')  k = 'LOT';  // Fix if leading 'L' was truncated by scanner gun
+                if (k === 'OIL') k = 'COIL'; // Fix if leading 'C' was truncated by scanner gun
+                parts[k] = v;
             }
         });
-        return { lot: parts.LOT || '', coil: parts.COIL || '', roll: parts.ROLL || '' };
+        return {
+            lot:   parts.LOT   || '',
+            coil:  parts.COIL  || '',
+            roll:  parts.ROLL  || '',
+            width: parts.WIDTH || '',
+            id:    parts.ID    || ''
+        };
     }
 
     // ── Format B: no '=' → split on whitespace ────────────────
-    //    First token = Lot, second = Coil, third = Roll.
-    //    Extra tokens are ignored.
+    //    First token = Lot, second = Coil, third = Roll, fourth = Width (optional)
     const tokens = raw.split(/\s+/).filter(Boolean);
     return {
-        lot:  tokens[0] || '',
-        coil: tokens[1] || '',
-        roll: tokens[2] || '',
+        lot:   tokens[0] || '',
+        coil:  tokens[1] || '',
+        roll:  tokens[2] || '',
+        width: tokens[3] || '',
+        id:    ''
     };
 }
 
 async function processQR(raw) {
-    const { lot, coil, roll } = parseQR(raw);
-    if (!lot || !coil) { showFeedback('Could not parse input: ' + escHtml(raw), false); return; }
-    await lookupAndAdd(lot, coil, roll);
+    const { lot, coil, roll, width, id } = parseQR(raw);
+    if (!id && (!roll || !width) && (!lot || !coil)) { 
+        showFeedback(`⚠️ Imbasan Terpotong (Incomplete Scan): Imbasan terputus ("${escHtml(raw)}"). Sila pastikan pelekat QR diimbas sepenuhnya.`, false); 
+        return; 
+    }
+    await lookupAndAdd(lot, coil, roll, width, id);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -3219,7 +3334,7 @@ async function combinedLookup() {
 // ─────────────────────────────────────────────────────────────
 // LOOKUP + ADD
 // ─────────────────────────────────────────────────────────────
-async function lookupAndAdd(lot, coil, roll) {
+async function lookupAndAdd(lot, coil, roll, width = '', id = '') {
     if (!PALLET_ID) return;
 
     // Drop overlapping scans (e.g. camera double-decode) while a
@@ -3236,7 +3351,7 @@ async function lookupAndAdd(lot, coil, roll) {
         let lk;
         try {
             lk = await fetch(
-                `pallet.php?ajax=lookup_product&lot=${enc(lot)}&coil=${enc(coil)}&roll=${enc(roll)}`
+                `pallet.php?ajax=lookup_product&lot=${enc(lot)}&coil=${enc(coil)}&roll=${enc(roll)}&width=${enc(width)}&id=${enc(id)}`
             ).then(r => r.json());
         } catch {
             showFeedback('Network error during lookup.', false);
