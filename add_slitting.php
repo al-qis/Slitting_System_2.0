@@ -705,20 +705,19 @@ document.addEventListener('DOMContentLoaded', function () {
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close" onclick="closeModalOnly()"></button>
             </div>
             <div class="modal-body p-4">
-                <p class="fs-6 mb-3">
-                    The remaining width balance of this coil is <strong class="text-primary fs-5" id="modalBalanceWidthVal">0.0 mm</strong> (at least 80 mm).
+                <p class="fs-6 mb-2">
+                    The remaining width balance is <strong class="text-primary fs-5" id="modalBalanceWidthVal">0.0 mm</strong>.
                 </p>
-                <div class="alert alert-warning border-0 bg-warning bg-opacity-10 mb-0">
-                    <i class="bi bi-exclamation-circle-fill me-2"></i>
-                    Click <strong>✓ Right</strong> to return to <strong>Production Slitting</strong> form to set the balance width, or click <strong>❌ X</strong> to directly continue saving this process.
-                </div>
+                <p class="fs-6 mb-2 text-secondary">
+                    Do you want to save as SFC?
+                </p>
             </div>
             <div class="modal-footer bg-light border-0 d-flex justify-content-between p-3">
                 <button type="button" class="btn btn-outline-secondary btn-lg px-4 rounded-3 fw-bold" onclick="handleSfcChoice('X')">
-                    <i class="bi bi-x-lg text-danger me-2"></i>X (Continue Process)
+                    <i class="bi bi-x-lg text-danger me-2"></i> No, Continue Anyway
                 </button>
                 <button type="button" class="btn btn-success btn-lg px-4 rounded-3 fw-bold shadow-sm" onclick="handleSfcChoice('right')">
-                    <i class="bi bi-check-lg me-2 fs-5"></i>✓ Right (Set Balance in Slitting Form)
+                    <i class="bi bi-check-lg me-2 fs-5"></i> Yes, Set Balance as SFC
                 </button>
             </div>
         </div>
