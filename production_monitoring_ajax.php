@@ -22,45 +22,119 @@ function formatElapsedTime($seconds) {
     return sprintf('%02d:%02d:%02d', $hours, $mins, $secs);
 }
 
-// Helper: Get Customer Name for a Mother Coil or Slitting Product
+// Helper: Get Customer Name/Codes for a Mother Coil or Slitting Product
+// If customer(s) are set, returns single code or list of customer codes. If none, returns '-'.
 function resolveCustomerName($conn, $mother_id, $lot_no, $coil_no, $width = null) {
+    $customers = [];
+
+    // 1. Check slitting_plans for this mother coil (plan has precedence and lists planned customers per roll)
     if ($mother_id > 0) {
-        $stmt = $conn->prepare("SELECT customer_name FROM slitting_plans WHERE mother_coil_id = ? AND customer_name IS NOT NULL AND customer_name != '' ORDER BY sort_order ASC, id ASC LIMIT 1");
+        $stmt = $conn->prepare("
+            SELECT customer_name 
+            FROM slitting_plans 
+            WHERE mother_coil_id = ? 
+              AND customer_name IS NOT NULL 
+              AND TRIM(customer_name) != '' 
+              AND TRIM(customer_name) != '-'
+            ORDER BY sort_order ASC, id ASC
+        ");
         if ($stmt) {
             $stmt->bind_param("i", $mother_id);
             $stmt->execute();
             $res = $stmt->get_result();
-            if ($row = $res->fetch_assoc()) {
-                $stmt->close();
-                return trim($row['customer_name']);
+            while ($row = $res->fetch_assoc()) {
+                $c = trim($row['customer_name']);
+                if ($c !== '' && $c !== '-' && !in_array($c, $customers, true)) {
+                    $customers[] = $c;
+                }
             }
             $stmt->close();
         }
     }
 
-    $prefix = '';
-    $coil_no_clean = trim((string)$coil_no);
-    if (strpos($coil_no_clean, '-') !== false) {
-        $prefix = strtoupper(trim(explode('-', $coil_no_clean)[0]));
-    } else {
-        preg_match('/^[A-Za-z]+/', $coil_no_clean, $m);
-        $prefix = strtoupper($m[0] ?? '');
+    // 2. Also check slitting_product for already registered rolls under this mother coil / lot+coil
+    if (empty($customers)) {
+        if ($mother_id > 0) {
+            $stmt_sp = $conn->prepare("
+                SELECT customer_name 
+                FROM slitting_product 
+                WHERE mother_id = ? 
+                  AND (is_voided = 0 OR is_voided IS NULL)
+                  AND customer_name IS NOT NULL 
+                  AND TRIM(customer_name) != '' 
+                  AND TRIM(customer_name) != '-'
+                ORDER BY id ASC
+            ");
+            if ($stmt_sp) {
+                $stmt_sp->bind_param("i", $mother_id);
+                $stmt_sp->execute();
+                $res_sp = $stmt_sp->get_result();
+                while ($row = $res_sp->fetch_assoc()) {
+                    $c = trim($row['customer_name']);
+                    if ($c !== '' && $c !== '-' && !in_array($c, $customers, true)) {
+                        $customers[] = $c;
+                    }
+                }
+                $stmt_sp->close();
+            }
+        } elseif (!empty($lot_no) && !empty($coil_no)) {
+            $stmt_sp = $conn->prepare("
+                SELECT customer_name 
+                FROM slitting_product 
+                WHERE lot_no = ? AND coil_no = ? 
+                  AND (is_voided = 0 OR is_voided IS NULL)
+                  AND customer_name IS NOT NULL 
+                  AND TRIM(customer_name) != '' 
+                  AND TRIM(customer_name) != '-'
+                ORDER BY id ASC
+            ");
+            if ($stmt_sp) {
+                $stmt_sp->bind_param("ss", $lot_no, $coil_no);
+                $stmt_sp->execute();
+                $res_sp = $stmt_sp->get_result();
+                while ($row = $res_sp->fetch_assoc()) {
+                    $c = trim($row['customer_name']);
+                    if ($c !== '' && $c !== '-' && !in_array($c, $customers, true)) {
+                        $customers[] = $c;
+                    }
+                }
+                $stmt_sp->close();
+            }
+        }
     }
 
-    if ($prefix !== '' && $width > 0) {
-        $int_code = $prefix . '-' . (int)$width;
-        $stmt = $conn->prepare("SELECT customer FROM nci_product_mapping WHERE internal_code = ? OR internal_code LIKE ? LIMIT 1");
-        if ($stmt) {
-            $like_code = $prefix . '-%';
-            $stmt->bind_param("ss", $int_code, $like_code);
-            $stmt->execute();
-            $res = $stmt->get_result();
-            if ($row = $res->fetch_assoc()) {
-                $stmt->close();
-                return trim($row['customer']);
-            }
-            $stmt->close();
+    // 3. Fallback: nci_product_mapping check if not found yet
+    if (empty($customers)) {
+        $prefix = '';
+        $coil_no_clean = trim((string)$coil_no);
+        if (strpos($coil_no_clean, '-') !== false) {
+            $prefix = strtoupper(trim(explode('-', $coil_no_clean)[0]));
+        } else {
+            preg_match('/^[A-Za-z]+/', $coil_no_clean, $m);
+            $prefix = strtoupper($m[0] ?? '');
         }
+
+        if ($prefix !== '' && $width > 0) {
+            $int_code = $prefix . '-' . (int)$width;
+            $stmt = $conn->prepare("SELECT customer FROM nci_product_mapping WHERE internal_code = ? OR internal_code LIKE ? LIMIT 1");
+            if ($stmt) {
+                $like_code = $prefix . '-%';
+                $stmt->bind_param("ss", $int_code, $like_code);
+                $stmt->execute();
+                $res = $stmt->get_result();
+                if ($row = $res->fetch_assoc()) {
+                    $c = trim($row['customer']);
+                    if ($c !== '' && $c !== '-') {
+                        $customers[] = $c;
+                    }
+                }
+                $stmt->close();
+            }
+        }
+    }
+
+    if (!empty($customers)) {
+        return implode(', ', $customers);
     }
 
     return '-';
@@ -335,7 +409,7 @@ if ($action === 'get_data') {
             sp.lot_no,
             sp.coil_no,
             sp.product,
-            MAX(sp.customer_name) AS customer_name,
+            GROUP_CONCAT(DISTINCT CASE WHEN sp.customer_name IS NOT NULL AND TRIM(sp.customer_name) != '' AND TRIM(sp.customer_name) != '-' THEN TRIM(sp.customer_name) END SEPARATOR ', ') AS customer_name,
             MIN(sp.date_in) AS start_time,
             MAX(sp.date_in) AS latest_time,
             MAX(sp.id) AS max_id,
@@ -532,7 +606,7 @@ if ($action === 'get_data') {
                 sp.lot_no,
                 sp.coil_no,
                 sp.product,
-                MAX(sp.customer_name) AS customer_name,
+                GROUP_CONCAT(DISTINCT CASE WHEN sp.customer_name IS NOT NULL AND TRIM(sp.customer_name) != '' AND TRIM(sp.customer_name) != '-' THEN TRIM(sp.customer_name) END SEPARATOR ', ') AS customer_name,
                 MIN(sp.date_in) AS start_time,
                 MAX(sp.updated_at) AS last_updated,
                 COUNT(sp.id) AS total_rolls,
