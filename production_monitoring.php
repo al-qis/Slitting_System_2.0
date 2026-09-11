@@ -48,9 +48,11 @@ include 'header.php';
         color: #f1f5f9;
     }
     .display-customer {
-        font-size: 1.4rem;
+        font-size: 1.3rem;
         font-weight: 600;
         color: #cbd5e1;
+        word-break: break-word;
+        overflow-wrap: break-word;
     }
     .elapsed-timer-box {
         background: rgba(15, 23, 42, 0.6);
