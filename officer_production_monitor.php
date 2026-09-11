@@ -383,6 +383,7 @@ function loadOfficerData() {
             const st = data.shift_target_meters || 5200;
             const dt = data.daily_target_meters || (st * 2);
             const wt = data.weekly_target_meters || (dt * 7);
+            const perf = data.weekly_performance;
 
             document.getElementById('displayShiftTarget').innerText = Math.round(st).toLocaleString() + ' m';
             document.getElementById('displayDailyTarget').innerText = Math.round(dt).toLocaleString() + ' m';
@@ -398,7 +399,6 @@ function loadOfficerData() {
                 dailyDesc.innerHTML = `<i class="bi bi-stack me-1"></i> ${is3Shifts ? `<strong class="text-primary">3 Syif</strong> (Aktif ${triggerDesc})` : '<strong class="text-secondary">2 Syif</strong> (Default harian)'}`;
             }
 
-            const perf = data.weekly_performance;
             if (perf) {
                 const prodTotal = perf.weekly_produced_total || 0;
                 const overallPct = perf.weekly_overall_pct || 0;
