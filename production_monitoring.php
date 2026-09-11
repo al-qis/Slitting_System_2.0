@@ -134,13 +134,13 @@ include 'header.php';
                     </div>
                     <div>
                         <h5 class="fw-bold m-0 text-dark">24-Hour Production Performance</h5>
-                        <p class="text-muted small m-0">Real-time total length tracking vs. 24-hour target (3 shifts multiplier)</p>
+                        <p class="text-muted small m-0" id="lenTargetSubtitle">Real-time total length tracking vs. 24-hour target (Default 2 Shifts: 10,400 m / 3 Shifts: 15,600 m)</p>
                     </div>
                 </div>
                 <div class="text-end">
                     <span class="fs-5 fw-bold text-dark" id="len24hProduced">0 m</span>
                     <span class="text-muted fs-6"> / </span>
-                    <span class="text-muted fs-6 fw-semibold" id="len24hTarget">15,600 m</span>
+                    <span class="text-muted fs-6 fw-semibold" id="len24hTarget">10,400 m</span>
                     <span class="badge bg-info text-dark fs-6 ms-2" id="lenProgressBadge">0.0%</span>
                 </div>
             </div>
@@ -163,7 +163,7 @@ include 'header.php';
                     <i class="bi bi-gear me-1"></i>
                     Shift Target (8h): <strong id="lenShiftTarget" class="text-dark">5,200 m</strong> 
                     <span class="mx-1">&bull;</span> 
-                    24h Target (3 Shifts): <strong id="len24hMaxFormula" class="text-dark">15,600 m</strong>
+                    <span id="lenTargetFormulaLabel">24h Target (2 Shifts):</span> <strong id="len24hMaxFormula" class="text-dark">10,400 m</strong>
                 </div>
                 <div>
                     <i class="bi bi-calendar-week me-1"></i>
@@ -285,15 +285,17 @@ function renderLengthTracking(tracking) {
     if (!tracking) return;
     
     const produced = parseFloat(tracking.length_produced_24h) || 0;
-    const target24h = parseFloat(tracking.target_24h_meters) || 15600;
+    const target24h = parseFloat(tracking.target_24h_meters) || 10400;
     const shiftTarget = parseFloat(tracking.shift_target_meters) || 5200;
     const weeklyTotal = parseFloat(tracking.weekly_total_meters) || 0;
     const pct = parseFloat(tracking.progress_percentage) || 0;
+    const shiftsCount = parseInt(tracking.shifts_multiplier, 10) || (target24h >= 15600 ? 3 : 2);
 
     const elProd = document.getElementById('len24hProduced');
     const elTgt = document.getElementById('len24hTarget');
     const elShiftTgt = document.getElementById('lenShiftTarget');
     const el24hMax = document.getElementById('len24hMaxFormula');
+    const elFormulaLbl = document.getElementById('lenTargetFormulaLabel');
     const elWkTotal = document.getElementById('lenWeeklyTotal');
     const badge = document.getElementById('lenProgressBadge');
     const bar = document.getElementById('lenProgressBar');
@@ -302,6 +304,7 @@ function renderLengthTracking(tracking) {
     if (elTgt) elTgt.innerText = Math.round(target24h).toLocaleString() + ' m';
     if (elShiftTgt) elShiftTgt.innerText = Math.round(shiftTarget).toLocaleString() + ' m';
     if (el24hMax) el24hMax.innerText = Math.round(target24h).toLocaleString() + ' m';
+    if (elFormulaLbl) elFormulaLbl.innerText = `24h Target (${shiftsCount} Shifts):`;
     if (elWkTotal) elWkTotal.innerText = Math.round(weeklyTotal).toLocaleString() + ' m';
     
     if (badge) badge.innerText = pct.toFixed(1) + '%';
