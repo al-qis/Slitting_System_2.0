@@ -134,7 +134,7 @@ include 'header.php';
                     </div>
                     <div>
                         <h5 class="fw-bold m-0 text-dark">24-Hour Production Performance</h5>
-                        <p class="text-muted small m-0" id="lenTargetSubtitle">Real-time total length tracking vs. 24-hour target (Default 2 Shifts: 10,400 m / 3 Shifts: 15,600 m)</p>
+                        <p class="text-muted small m-0" id="lenTargetSubtitle">Real-time total Mother Coil length tracking vs. 24-hour target (Default 2 Shifts: 10,400 m / 3 Shifts: 15,600 m)</p>
                     </div>
                 </div>
                 <div class="text-end">
@@ -204,10 +204,11 @@ include 'header.php';
                         <table class="table table-hover align-middle waiting-table m-0">
                             <thead>
                                 <tr>
-                                    <th class="text-center" style="width: 50px;">Pos</th>
+                                    <th class="text-center" style="width: 45px;">Pos</th>
                                     <th>Coil ID / Barcode</th>
                                     <th>Process Operation</th>
                                     <th>Product Type</th>
+                                    <th>Length (m)</th>
                                     <th>Customer Name</th>
                                     <th>Status</th>
                                     <th>Received</th>
@@ -215,7 +216,7 @@ include 'header.php';
                             </thead>
                             <tbody id="waitingTableBody">
                                 <tr>
-                                    <td colspan="7" class="text-center py-4 text-muted">
+                                    <td colspan="8" class="text-center py-4 text-muted">
                                         <div class="spinner-border spinner-border-sm text-secondary me-2"></div> Loading queue...
                                     </td>
                                 </tr>
@@ -378,11 +379,15 @@ function renderSectionA(running) {
                 </div>
 
                 <div class="row g-3 mb-4">
-                    <div class="col-6 col-md-6">
+                    <div class="col-4 col-md-4">
                         <div class="text-uppercase small text-light fw-semibold">Product Type</div>
                         <div class="display-product-type">${running.product_type}</div>
                     </div>
-                    <div class="col-6 col-md-6">
+                    <div class="col-4 col-md-4">
+                        <div class="text-uppercase small text-light fw-semibold">Mother Coil Length</div>
+                        <div class="display-product-type text-warning fw-bold">${running.mother_length_formatted || '-'}</div>
+                    </div>
+                    <div class="col-4 col-md-4">
                         <div class="text-uppercase small text-light fw-semibold">Customer Name</div>
                         <div class="display-customer">${running.customer_name}</div>
                     </div>
@@ -449,15 +454,19 @@ function renderSectionA(running) {
                 </div>
 
                 <div class="row g-3 mb-4">
-                    <div class="col-4 col-md-4">
-                        <div class="text-uppercase small text-light fw-semibold">Process Operation</div>
+                    <div class="col-6 col-md-3">
+                        <div class="text-uppercase small text-light fw-semibold">Process</div>
                         <div class="display-product-type"><span class="badge ${processBadgeClass} fs-6"><i class="bi ${processIcon} me-1"></i>${processType}</span></div>
                     </div>
-                    <div class="col-4 col-md-4">
+                    <div class="col-6 col-md-3">
                         <div class="text-uppercase small text-light fw-semibold">Product Type</div>
                         <div class="display-product-type">${running.product_type}</div>
                     </div>
-                    <div class="col-4 col-md-4">
+                    <div class="col-6 col-md-3">
+                        <div class="text-uppercase small text-light fw-semibold">Mother Coil Length</div>
+                        <div class="display-product-type text-warning fw-bold">${running.mother_length_formatted || '-'}</div>
+                    </div>
+                    <div class="col-6 col-md-3">
                         <div class="text-uppercase small text-light fw-semibold">Customer Name</div>
                         <div class="display-customer">${running.customer_name}</div>
                     </div>
@@ -503,7 +512,7 @@ function renderSectionB(waitingList) {
     if (!waitingList || waitingList.length === 0) {
         tbody.innerHTML = `
             <tr>
-                <td colspan="7" class="text-center py-4 text-muted">
+                <td colspan="8" class="text-center py-4 text-muted">
                     <i class="bi bi-inbox fs-3 d-block mb-1 text-secondary"></i>
                     No mother coils currently in Waiting List queue.
                 </td>
@@ -530,6 +539,7 @@ function renderSectionB(waitingList) {
                 <td class="fw-bold text-dark">${item.coil_id_display}</td>
                 <td><span class="badge ${procClass} fs-7"><i class="bi ${procIcon} me-1"></i>${procType}</span></td>
                 <td><span class="badge bg-secondary">${item.product_type}</span></td>
+                <td class="fw-bold text-dark">${item.length_formatted || '-'}</td>
                 <td class="fw-semibold text-secondary">${item.customer_name}</td>
                 <td><span class="badge ${badgeClass} fs-7">${statusLabel}</span></td>
                 <td class="small text-muted">${item.received_formatted}</td>

@@ -90,121 +90,113 @@ function resolveProcessDetails($is_recoiled, $is_reslitted, $original_source) {
 
 // Helper: Calculate 24-Hour Production Length exclusively from Mother Coil length (excluding recoil/reslit)
 function calculate24HourMotherCoilLength(mysqli $conn): float {
-    $prodDate = getCurrentProductionDate();
-    $s1_start = "{$prodDate} 07:00:00";
-    
-    $total = 0.0;
+    $prodDate   = getCurrentProductionDate();
+    $cycleStart = "{$prodDate} 07:00:00";
+    $nextDate   = date('Y-m-d', strtotime('+1 day', strtotime($prodDate)));
+    $cycleEnd   = "{$nextDate} 06:59:59";
 
-    // 1. Distinct mother coils completed in 24h window (excluding recoil and reslit)
-    $sqlCompleted = "
-        SELECT COALESCE(SUM(mc_len.length), 0) AS total_len
-        FROM (
-            SELECT mc.id, mc.length, COALESCE(mc.date_out, MIN(sp.date_in)) AS slit_time
-            FROM mother_coil mc
-            JOIN slitting_product sp ON sp.mother_id = mc.id
-            WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
-              AND (sp.source IS NULL OR sp.source NOT IN ('recoiling', 'reslit'))
-              AND (sp.original_source IS NULL OR sp.original_source NOT IN ('recoiling', 'reslit'))
-              AND (sp.is_recoiled = 0 OR sp.is_recoiled IS NULL)
-              AND (sp.is_reslitted = 0 OR sp.is_reslitted IS NULL)
-              AND sp.recoiling_id IS NULL
-              AND sp.parent_slit_id IS NULL
-              AND (sp.is_completed = 1 OR (sp.actual_length IS NOT NULL AND sp.actual_length > 0))
-            GROUP BY mc.id, mc.length
-            HAVING (
-                slit_time >= '$s1_start'
-                OR slit_time >= NOW() - INTERVAL 24 HOUR
-            )
-        ) AS mc_len
+    $sql = "
+        SELECT COALESCE(SUM(mc.length), 0) AS total_len
+        FROM mother_coil mc
+        WHERE mc.id IN (
+            SELECT completed_mids.mother_id FROM (
+                SELECT sp.mother_id
+                FROM slitting_product sp
+                WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
+                  AND (sp.source IS NULL OR sp.source NOT IN ('recoiling', 'reslit'))
+                  AND (sp.original_source IS NULL OR sp.original_source NOT IN ('recoiling', 'reslit'))
+                  AND (sp.is_recoiled = 0 OR sp.is_recoiled IS NULL)
+                  AND (sp.is_reslitted = 0 OR sp.is_reslitted IS NULL)
+                  AND sp.recoiling_id IS NULL
+                  AND sp.parent_slit_id IS NULL
+                  AND (sp.is_completed = 1 OR (sp.actual_length IS NOT NULL AND sp.actual_length > 0))
+                GROUP BY sp.mother_id
+                HAVING COALESCE(MAX(sp.date_out), MIN(sp.date_in)) >= '{$cycleStart}'
+                   AND COALESCE(MAX(sp.date_out), MIN(sp.date_in)) <= '{$cycleEnd}'
+            ) AS completed_mids
+
+            UNION
+
+            SELECT running_mids.mother_id FROM (
+                SELECT sp_run.mother_id
+                FROM slitting_product sp_run
+                WHERE (sp_run.is_voided = 0 OR sp_run.is_voided IS NULL)
+                  AND (sp_run.is_completed = 0 OR sp_run.actual_length IS NULL OR sp_run.actual_length = 0)
+                  AND (sp_run.source IS NULL OR sp_run.source NOT IN ('recoiling', 'reslit'))
+                  AND (sp_run.original_source IS NULL OR sp_run.original_source NOT IN ('recoiling', 'reslit'))
+                  AND (sp_run.is_recoiled = 0 OR sp_run.is_recoiled IS NULL)
+                  AND (sp_run.is_reslitted = 0 OR sp_run.is_reslitted IS NULL)
+                  AND sp_run.recoiling_id IS NULL
+                  AND sp_run.parent_slit_id IS NULL
+                ORDER BY sp_run.date_in ASC, sp_run.id ASC
+                LIMIT 1
+            ) AS running_mids
+        )
     ";
-    $stmt = $conn->query($sqlCompleted);
+
+    $stmt = $conn->query($sql);
     if ($stmt && $row = $stmt->fetch_assoc()) {
-        $total += (float)$row['total_len'];
+        return (float)$row['total_len'];
     }
 
-    // 2. Add currently running slitting mother coil (if any)
-    $sqlRunning = "
-        SELECT mc.length
-        FROM slitting_product sp_run
-        JOIN mother_coil mc ON sp_run.mother_id = mc.id
-        WHERE (sp_run.is_voided = 0 OR sp_run.is_voided IS NULL)
-          AND (sp_run.is_completed = 0 OR sp_run.actual_length IS NULL OR sp_run.actual_length = 0)
-          AND (sp_run.source IS NULL OR sp_run.source NOT IN ('recoiling', 'reslit'))
-          AND (sp_run.original_source IS NULL OR sp_run.original_source NOT IN ('recoiling', 'reslit'))
-          AND (sp_run.is_recoiled = 0 OR sp_run.is_recoiled IS NULL)
-          AND (sp_run.is_reslitted = 0 OR sp_run.is_reslitted IS NULL)
-          AND sp_run.recoiling_id IS NULL
-          AND sp_run.parent_slit_id IS NULL
-        ORDER BY sp_run.date_in ASC, sp_run.id ASC
-        LIMIT 1
-    ";
-    $resRun = $conn->query($sqlRunning);
-    if ($resRun && $rowRun = $resRun->fetch_assoc()) {
-        $total += (float)$rowRun['length'];
-    }
-
-    return $total;
+    return 0.0;
 }
 
 // Helper: Calculate Weekly Production Length exclusively from Mother Coil length (excluding recoil/reslit)
 function calculateWeeklyMotherCoilLength(mysqli $conn): float {
-    $mondayTs = strtotime('monday this week');
+    $mondayTs  = strtotime('monday this week');
     $mondayStr = date('Y-m-d 00:00:00', $mondayTs);
 
-    $total = 0.0;
+    $sql = "
+        SELECT COALESCE(SUM(mc.length), 0) AS total_len
+        FROM mother_coil mc
+        WHERE mc.id IN (
+            SELECT completed_mids.mother_id FROM (
+                SELECT sp.mother_id
+                FROM slitting_product sp
+                WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
+                  AND (sp.source IS NULL OR sp.source NOT IN ('recoiling', 'reslit'))
+                  AND (sp.original_source IS NULL OR sp.original_source NOT IN ('recoiling', 'reslit'))
+                  AND (sp.is_recoiled = 0 OR sp.is_recoiled IS NULL)
+                  AND (sp.is_reslitted = 0 OR sp.is_reslitted IS NULL)
+                  AND sp.recoiling_id IS NULL
+                  AND sp.parent_slit_id IS NULL
+                  AND (sp.is_completed = 1 OR (sp.actual_length IS NOT NULL AND sp.actual_length > 0))
+                GROUP BY sp.mother_id
+                HAVING COALESCE(MAX(sp.date_out), MIN(sp.date_in)) >= ?
+            ) AS completed_mids
 
-    // 1. Distinct mother coils completed since Monday (excluding recoil and reslit)
-    $sqlCompleted = "
-        SELECT COALESCE(SUM(mc_len.length), 0) AS total_len
-        FROM (
-            SELECT mc.id, mc.length, COALESCE(mc.date_out, MIN(sp.date_in)) AS slit_time
-            FROM mother_coil mc
-            JOIN slitting_product sp ON sp.mother_id = mc.id
-            WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
-              AND (sp.source IS NULL OR sp.source NOT IN ('recoiling', 'reslit'))
-              AND (sp.original_source IS NULL OR sp.original_source NOT IN ('recoiling', 'reslit'))
-              AND (sp.is_recoiled = 0 OR sp.is_recoiled IS NULL)
-              AND (sp.is_reslitted = 0 OR sp.is_reslitted IS NULL)
-              AND sp.recoiling_id IS NULL
-              AND sp.parent_slit_id IS NULL
-              AND (sp.is_completed = 1 OR (sp.actual_length IS NOT NULL AND sp.actual_length > 0))
-            GROUP BY mc.id, mc.length
-            HAVING slit_time >= ?
-        ) AS mc_len
+            UNION
+
+            SELECT running_mids.mother_id FROM (
+                SELECT sp_run.mother_id
+                FROM slitting_product sp_run
+                WHERE (sp_run.is_voided = 0 OR sp_run.is_voided IS NULL)
+                  AND (sp_run.is_completed = 0 OR sp_run.actual_length IS NULL OR sp_run.actual_length = 0)
+                  AND (sp_run.source IS NULL OR sp_run.source NOT IN ('recoiling', 'reslit'))
+                  AND (sp_run.original_source IS NULL OR sp_run.original_source NOT IN ('recoiling', 'reslit'))
+                  AND (sp_run.is_recoiled = 0 OR sp_run.is_recoiled IS NULL)
+                  AND (sp_run.is_reslitted = 0 OR sp_run.is_reslitted IS NULL)
+                  AND sp_run.recoiling_id IS NULL
+                  AND sp_run.parent_slit_id IS NULL
+                ORDER BY sp_run.date_in ASC, sp_run.id ASC
+                LIMIT 1
+            ) AS running_mids
+        )
     ";
-    $stmt = $conn->prepare($sqlCompleted);
+    $stmt = $conn->prepare($sql);
     if ($stmt) {
         $stmt->bind_param("s", $mondayStr);
         $stmt->execute();
         $res = $stmt->get_result();
         if ($row = $res->fetch_assoc()) {
-            $total += (float)$row['total_len'];
+            $stmt->close();
+            return (float)$row['total_len'];
         }
         $stmt->close();
     }
 
-    // 2. Add currently running slitting mother coil (if any)
-    $sqlRunning = "
-        SELECT mc.length
-        FROM slitting_product sp_run
-        JOIN mother_coil mc ON sp_run.mother_id = mc.id
-        WHERE (sp_run.is_voided = 0 OR sp_run.is_voided IS NULL)
-          AND (sp_run.is_completed = 0 OR sp_run.actual_length IS NULL OR sp_run.actual_length = 0)
-          AND (sp_run.source IS NULL OR sp_run.source NOT IN ('recoiling', 'reslit'))
-          AND (sp_run.original_source IS NULL OR sp_run.original_source NOT IN ('recoiling', 'reslit'))
-          AND (sp_run.is_recoiled = 0 OR sp_run.is_recoiled IS NULL)
-          AND (sp_run.is_reslitted = 0 OR sp_run.is_reslitted IS NULL)
-          AND sp_run.recoiling_id IS NULL
-          AND sp_run.parent_slit_id IS NULL
-        ORDER BY sp_run.date_in ASC, sp_run.id ASC
-        LIMIT 1
-    ";
-    $resRun = $conn->query($sqlRunning);
-    if ($resRun && $rowRun = $resRun->fetch_assoc()) {
-        $total += (float)$rowRun['length'];
-    }
-
-    return $total;
+    return 0.0;
 }
 
 // Helper: Check if slitting production occurred after 12:00 AM in the given production cycle
@@ -302,8 +294,10 @@ if ($action === 'get_data') {
             SUM(CASE WHEN sp.is_completed = 1 AND sp.actual_length IS NOT NULL AND sp.actual_length > 0 THEN 1 ELSE 0 END) AS completed_rolls,
             MAX(sp.is_recoiled) AS is_recoiled,
             MAX(sp.is_reslitted) AS is_reslitted,
-            MAX(sp.original_source) AS original_source
+            MAX(sp.original_source) AS original_source,
+            MAX(mc.length) AS length
         FROM slitting_product sp
+        LEFT JOIN mother_coil mc ON sp.mother_id = mc.id
         WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
           AND (sp.is_completed = 0 OR sp.actual_length IS NULL OR sp.actual_length = 0)
         GROUP BY sp.mother_id, sp.lot_no, sp.coil_no, sp.product
@@ -332,7 +326,8 @@ if ($action === 'get_data') {
             0 AS completed_rolls,
             1 AS is_recoiled,
             0 AS is_reslitted,
-            'recoiling' AS original_source
+            'recoiling' AS original_source,
+            MAX(COALESCE(rp.length, rp.new_length, rp.actual_length, 0)) AS length
         FROM recoiling_product rp
         WHERE rp.status = 'in_progress'
         GROUP BY rp.mother_id, rp.lot_no, rp.coil_no, rp.roll_no, rp.product
@@ -359,7 +354,8 @@ if ($action === 'get_data') {
             0 AS completed_rolls,
             0 AS is_recoiled,
             1 AS is_reslitted,
-            'reslit' AS original_source
+            'reslit' AS original_source,
+            MAX(COALESCE(rp.length, rp.actual_length, 0)) AS length
         FROM reslit_product rp
         WHERE rp.status IN ('pending', 'in_progress')
         GROUP BY rp.mother_id, rp.lot_no, rp.coil_no, rp.product
@@ -435,6 +431,20 @@ if ($action === 'get_data') {
             $sub_status = 'Reslit Process';
         }
 
+        $active_len = (float)($active_item['length'] ?? 0);
+        if ($active_len <= 0 && $mother_id > 0) {
+            $stmt_ml = $conn->prepare("SELECT length FROM mother_coil WHERE id = ? LIMIT 1");
+            if ($stmt_ml) {
+                $stmt_ml->bind_param("i", $mother_id);
+                $stmt_ml->execute();
+                $r_ml = $stmt_ml->get_result()->fetch_assoc();
+                $stmt_ml->close();
+                if ($r_ml) {
+                    $active_len = (float)$r_ml['length'];
+                }
+            }
+        }
+
         $running_data = [
             'has_running'          => true,
             'mother_id'            => $mother_id,
@@ -442,6 +452,8 @@ if ($action === 'get_data') {
             'coil_no'              => $coil_no,
             'coil_id_display'      => $lot_no . ' - ' . $coil_no . $roll_suffix,
             'product_type'         => $active_item['product'] ?: 'N/A',
+            'mother_length'        => $active_len,
+            'mother_length_formatted' => ($active_len > 0) ? number_format($active_len, 0) . ' m' : '-',
             'customer_name'        => $cust_name,
             'process_type'         => $proc['process_type'],
             'process_badge_class'  => $proc['process_badge_class'],
@@ -474,8 +486,10 @@ if ($action === 'get_data') {
                 MAX(sp.customer_name) AS customer_name,
                 MIN(sp.date_in) AS start_time,
                 MAX(sp.updated_at) AS last_updated,
-                COUNT(sp.id) AS total_rolls
+                COUNT(sp.id) AS total_rolls,
+                MAX(mc.length) AS length
             FROM slitting_product sp
+            LEFT JOIN mother_coil mc ON sp.mother_id = mc.id
             WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
               AND sp.is_completed = 1
               AND sp.actual_length IS NOT NULL
@@ -505,6 +519,20 @@ if ($action === 'get_data') {
                 $startTimeStr   = $p['start_time'];
                 $startTimestamp = $startTimeStr ? strtotime($startTimeStr) : $lastUpdTs;
 
+                $pack_len = (float)($p['length'] ?? 0);
+                if ($pack_len <= 0 && $mother_id > 0) {
+                    $stmt_pl = $conn->prepare("SELECT length FROM mother_coil WHERE id = ? LIMIT 1");
+                    if ($stmt_pl) {
+                        $stmt_pl->bind_param("i", $mother_id);
+                        $stmt_pl->execute();
+                        $r_pl = $stmt_pl->get_result()->fetch_assoc();
+                        $stmt_pl->close();
+                        if ($r_pl) {
+                            $pack_len = (float)$r_pl['length'];
+                        }
+                    }
+                }
+
                 $running_data = [
                     'has_running'       => true,
                     'mother_id'         => $mother_id,
@@ -512,6 +540,8 @@ if ($action === 'get_data') {
                     'coil_no'           => $coil_no,
                     'coil_id_display'   => $lot_no . ' - ' . $coil_no,
                     'product_type'      => $p['product'] ?: 'N/A',
+                    'mother_length'     => $pack_len,
+                    'mother_length_formatted' => ($pack_len > 0) ? number_format($pack_len, 0) . ' m' : '-',
                     'customer_name'     => $cust_name,
                     'status'            => 'Packing',
                     'sub_status'        => 'Finished Goods Stock',
@@ -589,6 +619,20 @@ if ($action === 'get_data') {
             $status_desc = 'Reslit Queue';
         }
 
+        $item_len = (float)($item['length'] ?? 0);
+        if ($item_len <= 0 && $m_id > 0) {
+            $stmt_il = $conn->prepare("SELECT length FROM mother_coil WHERE id = ? LIMIT 1");
+            if ($stmt_il) {
+                $stmt_il->bind_param("i", $m_id);
+                $stmt_il->execute();
+                $r_il = $stmt_il->get_result()->fetch_assoc();
+                $stmt_il->close();
+                if ($r_il) {
+                    $item_len = (float)$r_il['length'];
+                }
+            }
+        }
+
         $waiting_list[] = [
             'pos'               => $pos++,
             'stock_id'          => 0,
@@ -597,6 +641,8 @@ if ($action === 'get_data') {
             'lot_no'            => $l_no,
             'coil_no'           => $c_no,
             'product_type'      => $item['product'] ?: 'N/A',
+            'length'            => $item_len,
+            'length_formatted'  => ($item_len > 0) ? number_format($item_len, 0) . ' m' : '-',
             'customer_name'     => $cust,
             'process_type'      => $proc['process_type'],
             'process_badge_class'=> $proc['process_badge_class'],
@@ -645,6 +691,8 @@ if ($action === 'get_data') {
             $date_str = $w['date_in'] ?: $w['created_at'];
             $time_fmt = $date_str ? date('d M Y, h:i A', strtotime($date_str)) : '-';
 
+            $raw_len = (float)($w['length'] ?? 0);
+
             $waiting_list[] = [
                 'pos'               => $pos++,
                 'stock_id'          => (int)$w['stock_id'],
@@ -653,6 +701,8 @@ if ($action === 'get_data') {
                 'lot_no'            => $l_no,
                 'coil_no'           => $c_no,
                 'product_type'      => $w['mother_product'] ?: 'N/A',
+                'length'            => $raw_len,
+                'length_formatted'  => ($raw_len > 0) ? number_format($raw_len, 0) . ' m' : '-',
                 'customer_name'     => $cust,
                 'process_type'      => 'Slitting',
                 'process_badge_class'=> 'bg-info text-dark',
