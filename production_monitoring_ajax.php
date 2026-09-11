@@ -1,5 +1,7 @@
 <?php
-session_start();
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 header('Content-Type: application/json');
 
 if (!isset($_SESSION['role'])) {
@@ -86,6 +88,125 @@ function resolveProcessDetails($is_recoiled, $is_reslitted, $original_source) {
     ];
 }
 
+// Helper: Calculate 24-Hour Production Length exclusively from Mother Coil length (excluding recoil/reslit)
+function calculate24HourMotherCoilLength(mysqli $conn): float {
+    $prodDate = getCurrentProductionDate();
+    $s1_start = "{$prodDate} 07:00:00";
+    
+    $total = 0.0;
+
+    // 1. Distinct mother coils completed in 24h window (excluding recoil and reslit)
+    $sqlCompleted = "
+        SELECT COALESCE(SUM(mc_len.length), 0) AS total_len
+        FROM (
+            SELECT mc.id, mc.length, COALESCE(mc.date_out, MIN(sp.date_in)) AS slit_time
+            FROM mother_coil mc
+            JOIN slitting_product sp ON sp.mother_id = mc.id
+            WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
+              AND (sp.source IS NULL OR sp.source NOT IN ('recoiling', 'reslit'))
+              AND (sp.original_source IS NULL OR sp.original_source NOT IN ('recoiling', 'reslit'))
+              AND (sp.is_recoiled = 0 OR sp.is_recoiled IS NULL)
+              AND (sp.is_reslitted = 0 OR sp.is_reslitted IS NULL)
+              AND sp.recoiling_id IS NULL
+              AND sp.parent_slit_id IS NULL
+              AND (sp.is_completed = 1 OR (sp.actual_length IS NOT NULL AND sp.actual_length > 0))
+            GROUP BY mc.id, mc.length
+            HAVING (
+                slit_time >= '$s1_start'
+                OR slit_time >= NOW() - INTERVAL 24 HOUR
+            )
+        ) AS mc_len
+    ";
+    $stmt = $conn->query($sqlCompleted);
+    if ($stmt && $row = $stmt->fetch_assoc()) {
+        $total += (float)$row['total_len'];
+    }
+
+    // 2. Add currently running slitting mother coil (if any)
+    $sqlRunning = "
+        SELECT mc.length
+        FROM slitting_product sp_run
+        JOIN mother_coil mc ON sp_run.mother_id = mc.id
+        WHERE (sp_run.is_voided = 0 OR sp_run.is_voided IS NULL)
+          AND (sp_run.is_completed = 0 OR sp_run.actual_length IS NULL OR sp_run.actual_length = 0)
+          AND (sp_run.source IS NULL OR sp_run.source NOT IN ('recoiling', 'reslit'))
+          AND (sp_run.original_source IS NULL OR sp_run.original_source NOT IN ('recoiling', 'reslit'))
+          AND (sp_run.is_recoiled = 0 OR sp_run.is_recoiled IS NULL)
+          AND (sp_run.is_reslitted = 0 OR sp_run.is_reslitted IS NULL)
+          AND sp_run.recoiling_id IS NULL
+          AND sp_run.parent_slit_id IS NULL
+        ORDER BY sp_run.date_in ASC, sp_run.id ASC
+        LIMIT 1
+    ";
+    $resRun = $conn->query($sqlRunning);
+    if ($resRun && $rowRun = $resRun->fetch_assoc()) {
+        $total += (float)$rowRun['length'];
+    }
+
+    return $total;
+}
+
+// Helper: Calculate Weekly Production Length exclusively from Mother Coil length (excluding recoil/reslit)
+function calculateWeeklyMotherCoilLength(mysqli $conn): float {
+    $mondayTs = strtotime('monday this week');
+    $mondayStr = date('Y-m-d 00:00:00', $mondayTs);
+
+    $total = 0.0;
+
+    // 1. Distinct mother coils completed since Monday (excluding recoil and reslit)
+    $sqlCompleted = "
+        SELECT COALESCE(SUM(mc_len.length), 0) AS total_len
+        FROM (
+            SELECT mc.id, mc.length, COALESCE(mc.date_out, MIN(sp.date_in)) AS slit_time
+            FROM mother_coil mc
+            JOIN slitting_product sp ON sp.mother_id = mc.id
+            WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
+              AND (sp.source IS NULL OR sp.source NOT IN ('recoiling', 'reslit'))
+              AND (sp.original_source IS NULL OR sp.original_source NOT IN ('recoiling', 'reslit'))
+              AND (sp.is_recoiled = 0 OR sp.is_recoiled IS NULL)
+              AND (sp.is_reslitted = 0 OR sp.is_reslitted IS NULL)
+              AND sp.recoiling_id IS NULL
+              AND sp.parent_slit_id IS NULL
+              AND (sp.is_completed = 1 OR (sp.actual_length IS NOT NULL AND sp.actual_length > 0))
+            GROUP BY mc.id, mc.length
+            HAVING slit_time >= ?
+        ) AS mc_len
+    ";
+    $stmt = $conn->prepare($sqlCompleted);
+    if ($stmt) {
+        $stmt->bind_param("s", $mondayStr);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        if ($row = $res->fetch_assoc()) {
+            $total += (float)$row['total_len'];
+        }
+        $stmt->close();
+    }
+
+    // 2. Add currently running slitting mother coil (if any)
+    $sqlRunning = "
+        SELECT mc.length
+        FROM slitting_product sp_run
+        JOIN mother_coil mc ON sp_run.mother_id = mc.id
+        WHERE (sp_run.is_voided = 0 OR sp_run.is_voided IS NULL)
+          AND (sp_run.is_completed = 0 OR sp_run.actual_length IS NULL OR sp_run.actual_length = 0)
+          AND (sp_run.source IS NULL OR sp_run.source NOT IN ('recoiling', 'reslit'))
+          AND (sp_run.original_source IS NULL OR sp_run.original_source NOT IN ('recoiling', 'reslit'))
+          AND (sp_run.is_recoiled = 0 OR sp_run.is_recoiled IS NULL)
+          AND (sp_run.is_reslitted = 0 OR sp_run.is_reslitted IS NULL)
+          AND sp_run.recoiling_id IS NULL
+          AND sp_run.parent_slit_id IS NULL
+        ORDER BY sp_run.date_in ASC, sp_run.id ASC
+        LIMIT 1
+    ";
+    $resRun = $conn->query($sqlRunning);
+    if ($resRun && $rowRun = $resRun->fetch_assoc()) {
+        $total += (float)$rowRun['length'];
+    }
+
+    return $total;
+}
+
 $action = $_REQUEST['action'] ?? 'get_data';
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -124,14 +245,16 @@ if ($action === 'get_data') {
         }
     }
 
-    // 2. Pending Recoiling Coils
+    // 2. Active Recoiling Coils (ONLY in_progress — pending recoiling coils are NOT shown on monitoring)
     $recoiling_pending_res = $conn->query("
         SELECT 
             'Recoiling' AS proc_name,
             rp.mother_id,
             rp.lot_no,
             rp.coil_no,
+            rp.roll_no,
             rp.product,
+            MAX(rp.slitting_product_id) AS slitting_product_id,
             '' AS customer_name,
             MIN(COALESCE(rp.started_at, rp.date_in)) AS start_time,
             MAX(COALESCE(rp.started_at, rp.date_in)) AS latest_time,
@@ -142,8 +265,8 @@ if ($action === 'get_data') {
             0 AS is_reslitted,
             'recoiling' AS original_source
         FROM recoiling_product rp
-        WHERE rp.status IN ('pending', 'in_progress')
-        GROUP BY rp.mother_id, rp.lot_no, rp.coil_no, rp.product
+        WHERE rp.status = 'in_progress'
+        GROUP BY rp.mother_id, rp.lot_no, rp.coil_no, rp.roll_no, rp.product
     ");
     if ($recoiling_pending_res) {
         while ($row = $recoiling_pending_res->fetch_assoc()) {
@@ -178,21 +301,23 @@ if ($action === 'get_data') {
         }
     }
 
-    // Sort active jobs by LATEST scan/start time first (latest_time DESC, max_id DESC)
+    // Sort active jobs in FIFO order: earliest start_time first (start_time ASC, max_id ASC).
+    // An already running coil keeps Slot 1 (Running), and a newly started recoiling job queues
+    // into Slot 2+ (Waiting List). If no coil is running, the recoiling job takes Slot 1 (Running).
     usort($all_active_jobs, function ($a, $b) {
-        $tA = strtotime($a['latest_time'] ?? '1970-01-01');
-        $tB = strtotime($b['latest_time'] ?? '1970-01-01');
+        $tA = strtotime($a['start_time'] ?? '1970-01-01');
+        $tB = strtotime($b['start_time'] ?? '1970-01-01');
         if ($tA === $tB) {
-            return ((int)($b['max_id'] ?? 0)) <=> ((int)($a['max_id'] ?? 0));
+            return ((int)($a['max_id'] ?? 0)) <=> ((int)($b['max_id'] ?? 0));
         }
-        return $tB <=> $tA;
+        return $tA <=> $tB;
     });
 
     $running_data = null;
     $queued_in_pending = [];
 
     if (!empty($all_active_jobs)) {
-        // SLOT 1: Latest scanned/active coil becomes the Current Running Coil
+        // SLOT 1: Earliest active job becomes the Current Running Coil
         $active_item = $all_active_jobs[0];
         $mother_id   = (int)$active_item['mother_id'];
         $lot_no      = $active_item['lot_no'];
@@ -200,7 +325,26 @@ if ($action === 'get_data') {
 
         $cust_name = trim($active_item['customer_name'] ?? '');
         if ($cust_name === '' || $cust_name === '-') {
-            $cust_name = resolveCustomerName($conn, $mother_id, $lot_no, $coil_no);
+            if (!empty($active_item['slitting_product_id'])) {
+                $sp_id = (int)$active_item['slitting_product_id'];
+                $stmt_sp = $conn->prepare("SELECT customer_name, mother_id FROM slitting_product WHERE id = ? LIMIT 1");
+                if ($stmt_sp) {
+                    $stmt_sp->bind_param("i", $sp_id);
+                    $stmt_sp->execute();
+                    $r_sp = $stmt_sp->get_result()->fetch_assoc();
+                    $stmt_sp->close();
+                    if ($r_sp) {
+                        if (!empty($r_sp['customer_name'])) {
+                            $cust_name = trim($r_sp['customer_name']);
+                        } elseif (!empty($r_sp['mother_id'])) {
+                            $cust_name = resolveCustomerName($conn, (int)$r_sp['mother_id'], $lot_no, $coil_no);
+                        }
+                    }
+                }
+            }
+            if ($cust_name === '' || $cust_name === '-') {
+                $cust_name = resolveCustomerName($conn, $mother_id, $lot_no, $coil_no);
+            }
         }
 
         $startTimeStr   = $active_item['start_time'];
@@ -213,19 +357,28 @@ if ($action === 'get_data') {
             $active_item['original_source'] ?? ''
         );
 
+        $roll_suffix = (!empty($active_item['roll_no']) && $active_item['roll_no'] !== '-') ? ' ' . $active_item['roll_no'] : '';
+
+        $sub_status = 'IN (pending)';
+        if ($active_item['proc_name'] === 'Recoiling') {
+            $sub_status = 'Recoiling Process';
+        } elseif ($active_item['proc_name'] === 'Reslit') {
+            $sub_status = 'Reslit Process';
+        }
+
         $running_data = [
             'has_running'          => true,
             'mother_id'            => $mother_id,
             'lot_no'               => $lot_no,
             'coil_no'              => $coil_no,
-            'coil_id_display'      => $lot_no . ' - ' . $coil_no,
+            'coil_id_display'      => $lot_no . ' - ' . $coil_no . $roll_suffix,
             'product_type'         => $active_item['product'] ?: 'N/A',
             'customer_name'        => $cust_name,
             'process_type'         => $proc['process_type'],
             'process_badge_class'  => $proc['process_badge_class'],
             'process_icon'         => $proc['process_icon'],
             'status'               => 'Running',
-            'sub_status'           => 'IN (pending)',
+            'sub_status'           => $sub_status,
             'status_badge_class'   => 'bg-primary text-white',
             'start_time'           => $startTimeStr ? date('Y-m-d H:i:s', $startTimestamp) : '-',
             'start_time_fmt'       => $startTimeStr ? date('h:i A', $startTimestamp) : '-',
@@ -327,7 +480,26 @@ if ($action === 'get_data') {
         $c_no = $item['coil_no'];
         $cust = trim($item['customer_name'] ?? '');
         if ($cust === '' || $cust === '-') {
-            $cust = resolveCustomerName($conn, $m_id, $l_no, $c_no);
+            if (!empty($item['slitting_product_id'])) {
+                $sp_id = (int)$item['slitting_product_id'];
+                $stmt_sp = $conn->prepare("SELECT customer_name, mother_id FROM slitting_product WHERE id = ? LIMIT 1");
+                if ($stmt_sp) {
+                    $stmt_sp->bind_param("i", $sp_id);
+                    $stmt_sp->execute();
+                    $r_sp = $stmt_sp->get_result()->fetch_assoc();
+                    $stmt_sp->close();
+                    if ($r_sp) {
+                        if (!empty($r_sp['customer_name'])) {
+                            $cust = trim($r_sp['customer_name']);
+                        } elseif (!empty($r_sp['mother_id'])) {
+                            $cust = resolveCustomerName($conn, (int)$r_sp['mother_id'], $l_no, $c_no);
+                        }
+                    }
+                }
+            }
+            if ($cust === '' || $cust === '-') {
+                $cust = resolveCustomerName($conn, $m_id, $l_no, $c_no);
+            }
         }
 
         $date_str = $item['start_time'];
@@ -339,11 +511,20 @@ if ($action === 'get_data') {
             $item['original_source'] ?? ''
         );
 
+        $roll_suffix = (!empty($item['roll_no']) && $item['roll_no'] !== '-') ? ' ' . $item['roll_no'] : '';
+
+        $status_desc = 'Prepared';
+        if (($item['proc_name'] ?? '') === 'Recoiling') {
+            $status_desc = 'Recoiling Queue';
+        } elseif (($item['proc_name'] ?? '') === 'Reslit') {
+            $status_desc = 'Reslit Queue';
+        }
+
         $waiting_list[] = [
             'pos'               => $pos++,
             'stock_id'          => 0,
             'mother_id'         => $m_id,
-            'coil_id_display'   => $l_no . ' - ' . $c_no,
+            'coil_id_display'   => $l_no . ' - ' . $c_no . $roll_suffix,
             'lot_no'            => $l_no,
             'coil_no'           => $c_no,
             'product_type'      => $item['product'] ?: 'N/A',
@@ -354,7 +535,7 @@ if ($action === 'get_data') {
             'received_at'       => $date_str,
             'received_formatted'=> $time_fmt,
             'status_label'      => 'IN (pending)',
-            'status_desc'       => 'Prepared',
+            'status_desc'       => $status_desc,
             'status_badge_class'=> 'bg-warning text-dark'
         ];
     }
@@ -419,8 +600,8 @@ if ($action === 'get_data') {
     $shift_counts = getMotherCoilShiftCounts($conn);
     $shiftTargetMeters = floatval(getSystemSetting($conn, 'shift_target_meters', '5200'));
     $target24hMeters    = $shiftTargetMeters * 3;
-    $lengthProduced24h  = get24HourProductionLength($conn);
-    $weeklyTotalMeters  = getWeeklyProductionLength($conn);
+    $lengthProduced24h  = calculate24HourMotherCoilLength($conn);
+    $weeklyTotalMeters  = calculateWeeklyMotherCoilLength($conn);
     $progressPercentage = ($target24hMeters > 0) ? min(100.0, round(($lengthProduced24h / $target24hMeters) * 100, 1)) : 0.0;
 
     echo json_encode([

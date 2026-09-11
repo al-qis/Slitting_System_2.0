@@ -1,5 +1,7 @@
 <?php
-session_start();
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 header('Content-Type: application/json; charset=utf-8');
 
 if (!isset($_SESSION['role'])) {
@@ -29,10 +31,22 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
         $weeklyTargetTotal = $dailyTarget * 7;
 
         $stmt = $conn->prepare("
-            SELECT COALESCE(SUM(COALESCE(sp.actual_length, sp.length, 0)), 0) AS total_len
-            FROM slitting_product sp
-            WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
-              AND sp.date_in >= ? AND sp.date_in <= ?
+            SELECT COALESCE(SUM(mc_len.length), 0) AS total_len
+            FROM (
+                SELECT mc.id, mc.length, COALESCE(mc.date_out, MIN(sp.date_in)) AS slit_time
+                FROM mother_coil mc
+                JOIN slitting_product sp ON sp.mother_id = mc.id
+                WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
+                  AND (sp.source IS NULL OR sp.source NOT IN ('recoiling', 'reslit'))
+                  AND (sp.original_source IS NULL OR sp.original_source NOT IN ('recoiling', 'reslit'))
+                  AND (sp.is_recoiled = 0 OR sp.is_recoiled IS NULL)
+                  AND (sp.is_reslitted = 0 OR sp.is_reslitted IS NULL)
+                  AND sp.recoiling_id IS NULL
+                  AND sp.parent_slit_id IS NULL
+                  AND (sp.is_completed = 1 OR (sp.actual_length IS NOT NULL AND sp.actual_length > 0))
+                GROUP BY mc.id, mc.length
+                HAVING slit_time >= ? AND slit_time <= ?
+            ) AS mc_len
         ");
 
         for ($i = 0; $i < 7; $i++) {
