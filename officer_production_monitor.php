@@ -195,11 +195,12 @@ $weeklyTargetDefault = $dailyTargetDefault * 7; // Estimated minimum 14 shifts
                                     <th class="text-end">Sasaran (m)</th>
                                     <th class="text-end">Varian (m)</th>
                                     <th class="text-center">Pencapaian (%)</th>
+                                    <th class="text-center">Recoiling</th>
                                 </tr>
                             </thead>
                             <tbody id="weeklySlotsTableBody">
                                 <tr>
-                                    <td colspan="6" class="text-center py-4 text-muted">
+                                    <td colspan="7" class="text-center py-4 text-muted">
                                         <div class="spinner-border spinner-border-sm me-2 text-primary"></div> Muat turun data slot mingguan...
                                     </td>
                                 </tr>
@@ -427,7 +428,7 @@ function renderSlotsTable(slots) {
     if (!tbody || !slots) return;
 
     if (slots.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="text-center py-4 text-muted">Tiada data rekod slot mingguan.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center py-4 text-muted">Tiada data rekod slot mingguan.</td></tr>';
         return;
     }
 
@@ -446,6 +447,11 @@ function renderSlotsTable(slots) {
         const pct = slot.percentage;
         const pctBadgeClass = pct >= 100 ? 'bg-success' : (pct >= 50 ? 'bg-warning text-dark' : 'bg-secondary');
 
+        const recoilCoils = parseInt(slot.recoil_coils) || 0;
+        const recoilBadge = recoilCoils > 0 
+            ? `<span class="badge bg-warning text-dark fw-bold px-2 py-1 fs-7"><i class="bi bi-arrow-repeat me-1"></i>${recoilCoils} coil</span>`
+            : `<span class="text-muted small">0</span>`;
+
         html += `
             <tr class="${trClass}">
                 <td class="fw-bold text-dark">
@@ -461,6 +467,9 @@ function renderSlotsTable(slots) {
                 <td class="text-end ${varianceClass}">${varianceFormatted}</td>
                 <td class="text-center">
                     <span class="badge ${pctBadgeClass} px-2 py-1 fs-7">${pct.toFixed(1)}%</span>
+                </td>
+                <td class="text-center">
+                    ${recoilBadge}
                 </td>
             </tr>
         `;

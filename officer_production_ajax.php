@@ -83,7 +83,18 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
             LIMIT 1
         ");
 
+        // Recoiling coil count query per day slot (distinct lot_no, coil_no)
+        $stmtRecoil = $conn->prepare("
+            SELECT COUNT(DISTINCT rp.lot_no, rp.coil_no) AS recoil_coils
+            FROM recoiling_product rp
+            WHERE (
+                (rp.status = 'completed' AND rp.completed_at >= ? AND rp.completed_at <= ?)
+                OR (rp.status = 'in_progress' AND COALESCE(rp.started_at, rp.date_in) >= ? AND COALESCE(rp.started_at, rp.date_in) <= ?)
+            )
+        ");
+
         $activeDailyTarget = $shiftTarget * 2; // Default for current active cycle
+        $weeklyRecoilCoilsTotal = 0;
 
         for ($i = 0; $i < 7; $i++) {
             $startTs = strtotime("+{$i} days", $mondayTimestamp);
@@ -130,6 +141,18 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
                 }
             }
 
+            // 3. Calculate recoiling coil count for this slot (distinct lot_no, coil_no)
+            $recoilCoils = 0;
+            if ($stmtRecoil) {
+                $stmtRecoil->bind_param("ssss", $startStr, $endStr, $startStr, $endStr);
+                $stmtRecoil->execute();
+                $resRecoil = $stmtRecoil->get_result();
+                if ($rowR = $resRecoil->fetch_assoc()) {
+                    $recoilCoils = (int)($rowR['recoil_coils'] ?? 0);
+                }
+            }
+            $weeklyRecoilCoilsTotal += $recoilCoils;
+
             // Slot Target: Default 10,400 m (2 shifts), becomes 15,600 m if production after 12am (3 shifts)
             $slotShifts = $hasPost12am ? 3 : 2;
             $slotTarget = $shiftTarget * $slotShifts;
@@ -146,19 +169,20 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
             }
 
             $slots[] = [
-                'day_name'          => $days[$i],
-                'start_time'        => $startStr,
-                'end_time'          => $endStr,
-                'time_slot_label'   => "{$days[$i]} 07:01 AM - " . $days[($i+1)%7] . " 07:00 AM",
-                'start_display'     => $startDisplay,
-                'end_display'       => $endDisplay,
-                'produced_meters'   => $produced,
-                'target_meters'     => $slotTarget,
-                'shifts_count'      => $slotShifts,
-                'has_post_12am'     => $hasPost12am,
-                'variance_meters'   => $variance,
-                'percentage'        => $percentage,
-                'is_today'          => $isToday
+                'day_name'                  => $days[$i],
+                'start_time'                => $startStr,
+                'end_time'                  => $endStr,
+                'time_slot_label'           => "{$days[$i]} 07:01 AM - " . $days[($i+1)%7] . " 07:00 AM",
+                'start_display'             => $startDisplay,
+                'end_display'               => $endDisplay,
+                'produced_meters'           => $produced,
+                'target_meters'             => $slotTarget,
+                'shifts_count'              => $slotShifts,
+                'has_post_12am'             => $hasPost12am,
+                'variance_meters'           => $variance,
+                'percentage'                => $percentage,
+                'recoil_coils'              => $recoilCoils,
+                'is_today'                  => $isToday
             ];
         }
 
@@ -171,18 +195,22 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
         if ($stmtMidnightRunning) {
             $stmtMidnightRunning->close();
         }
+        if ($stmtRecoil) {
+            $stmtRecoil->close();
+        }
 
         $overallPct = ($weeklyTargetTotal > 0) ? min(100.0, round(($weeklyProducedTotal / $weeklyTargetTotal) * 100, 1)) : 0.0;
 
         return [
-            'monday_cycle_start'    => date('Y-m-d H:i:s', $mondayTimestamp),
-            'sunday_cycle_end'      => date('Y-m-d H:i:s', strtotime("+7 days -1 second", $mondayTimestamp)),
-            'shift_target_meters'   => $shiftTarget,
-            'daily_target_meters'   => $activeDailyTarget,
-            'weekly_target_meters'  => $weeklyTargetTotal,
-            'weekly_produced_total' => $weeklyProducedTotal,
-            'weekly_overall_pct'    => $overallPct,
-            'slots'                 => $slots
+            'monday_cycle_start'        => date('Y-m-d H:i:s', $mondayTimestamp),
+            'sunday_cycle_end'          => date('Y-m-d H:i:s', strtotime("+7 days -1 second", $mondayTimestamp)),
+            'shift_target_meters'       => $shiftTarget,
+            'daily_target_meters'       => $activeDailyTarget,
+            'weekly_target_meters'      => $weeklyTargetTotal,
+            'weekly_produced_total'     => $weeklyProducedTotal,
+            'weekly_recoil_coils_total' => $weeklyRecoilCoilsTotal,
+            'weekly_overall_pct'        => $overallPct,
+            'slots'                     => $slots
         ];
     }
 }
