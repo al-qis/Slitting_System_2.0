@@ -112,6 +112,63 @@ include 'header.php';
         justify-content: center;
         font-weight: 800;
     }
+    /* 24-Hour Production Performance Hourly Scale */
+    .hourly-scale-wrapper {
+        position: relative;
+        width: 100%;
+        height: 32px;
+        margin-top: 4px;
+        margin-bottom: 8px;
+        user-select: none;
+    }
+    .hourly-scale-item {
+        position: absolute;
+        transform: translateX(-50%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+    }
+    .hourly-scale-tick {
+        width: 1px;
+        height: 8px;
+        background-color: #94a3b8;
+    }
+    .hourly-scale-tick.tick-major {
+        height: 11px;
+        width: 2px;
+        background-color: #475569;
+    }
+    .hourly-scale-tick.tick-midnight {
+        height: 12px;
+        width: 2px;
+        background-color: #0284c7;
+    }
+    .hourly-scale-label {
+        font-size: 0.72rem;
+        font-weight: 600;
+        color: #64748b;
+        margin-top: 2px;
+        line-height: 1;
+        white-space: nowrap;
+    }
+    .hourly-scale-label.label-major {
+        color: #1e293b;
+        font-weight: 700;
+    }
+    .hourly-scale-label.label-midnight {
+        color: #0284c7;
+        font-weight: 800;
+    }
+    @media (max-width: 768px) {
+        .hourly-scale-label {
+            font-size: 0.60rem;
+        }
+    }
+    @media (max-width: 480px) {
+        .hourly-scale-label {
+            font-size: 0.50rem;
+        }
+    }
 </style>
 
 <div class="container-fluid py-3">
@@ -182,6 +239,9 @@ include 'header.php';
                      aria-valuemax="100">
                 </div>
             </div>
+
+            <!-- Scale Per Hour Track (Start 8, 9, 10... up to 23, or up to 7 AM if post-12am production) -->
+            <div class="hourly-scale-wrapper" id="hourlyScaleContainer"></div>
 
             <!-- Footer Details -->
             <div class="d-flex flex-wrap align-items-center justify-content-between small text-muted pt-1">
@@ -361,6 +421,56 @@ function renderLengthTracking(tracking) {
             if (badge) badge.className = 'badge bg-info text-dark fs-6 ms-2';
         }
     }
+
+    // Render Scale Per Hour (8, 9, 10... 23, and extended up to 7 AM if post-12am production)
+    const hasPostMidnight = (tracking.has_post_midnight_prod === true || shiftsCount === 3 || target24h >= 15600);
+    renderHourlyScale(hasPostMidnight);
+}
+
+// Render Hourly Scale Marks along the 24-Hour Progress Track
+function renderHourlyScale(hasPostMidnight) {
+    const container = document.getElementById('hourlyScaleContainer');
+    if (!container) return;
+
+    // Define hours in the production timeline
+    // Production day starts at 07:00 AM.
+    // Shift 1 + Shift 2 covers 07:00 AM to 23:00 (11:00 PM).
+    // Default hours: 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23 (16 hours).
+    // If post-12am (Shift 3) has production, scale extends through 00, 1, 2, 3, 4, 5, 6, 7 (24 hours).
+    const totalHours = hasPostMidnight ? 24 : 16;
+    
+    // Check if current scale configuration already rendered
+    const currentScaleType = container.getAttribute('data-scale-type');
+    const targetScaleType = hasPostMidnight ? '24h' : '16h';
+    if (currentScaleType === targetScaleType) return;
+    container.setAttribute('data-scale-type', targetScaleType);
+
+    let html = '';
+    for (let step = 1; step <= totalHours; step++) {
+        // Calculate clock hour
+        const clockHour = (7 + step) % 24;
+        const pctPosition = (step / totalHours) * 100;
+        
+        let labelText = clockHour.toString();
+        let isMajor = (clockHour === 15 || clockHour === 23 || clockHour === 7);
+        let isMidnight = (clockHour === 0);
+
+        if (isMidnight) {
+            labelText = '00:00';
+        }
+
+        const tickClass = isMidnight ? 'tick-midnight' : (isMajor ? 'tick-major' : '');
+        const labelClass = isMidnight ? 'label-midnight' : (isMajor ? 'label-major' : '');
+
+        html += `
+            <div class="hourly-scale-item" style="left: ${pctPosition}%;" title="Jam ${labelText}">
+                <div class="hourly-scale-tick ${tickClass}"></div>
+                <div class="hourly-scale-label ${labelClass}">${labelText}</div>
+            </div>
+        `;
+    }
+
+    container.innerHTML = html;
 }
 
 // Render Section A: Current Running Coil (Read-Only Display)
