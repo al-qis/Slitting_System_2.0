@@ -392,7 +392,10 @@ function loadOfficerData() {
             const dailyDesc = document.getElementById('displayDailyTargetDesc');
             if (dailyDesc) {
                 const is3Shifts = (dt >= st * 2.5);
-                dailyDesc.innerHTML = `<i class="bi bi-stack me-1"></i> ${is3Shifts ? '<strong class="text-primary">3 Syif</strong> (Aktif selepas 12 AM)' : '<strong class="text-secondary">2 Syif</strong> (Default harian)'}`;
+                const currentSlot = (perf && perf.slots) ? perf.slots.find(s => s.is_today) : null;
+                const isFri = currentSlot ? (currentSlot.is_friday || currentSlot.day_name === 'Jumaat') : false;
+                const triggerDesc = isFri ? 'selepas 1:00 AM (Jumaat)' : 'selepas 12:00 AM';
+                dailyDesc.innerHTML = `<i class="bi bi-stack me-1"></i> ${is3Shifts ? `<strong class="text-primary">3 Syif</strong> (Aktif ${triggerDesc})` : '<strong class="text-secondary">2 Syif</strong> (Default harian)'}`;
             }
 
             const perf = data.weekly_performance;
@@ -436,8 +439,10 @@ function renderSlotsTable(slots) {
     slots.forEach(slot => {
         const trClass = slot.is_today ? 'bg-today-highlight' : '';
         const todayBadge = slot.is_today ? '<span class="badge bg-info text-dark ms-2">HARI INI</span>' : '';
+        const isFri = (slot.is_friday || slot.day_name === 'Jumaat');
+        const triggerTime = isFri ? '1:00 AM' : '12:00 AM';
         const shiftsBadge = slot.shifts_count === 3 
-            ? '<span class="badge bg-primary ms-1" title="3 Syif (Pengeluaran dikesan selepas 12:00 AM)">3 Syif</span>'
+            ? `<span class="badge bg-primary ms-1" title="3 Syif (Pengeluaran dikesan selepas ${triggerTime})">3 Syif</span>`
             : '<span class="badge bg-light text-dark border ms-1" title="2 Syif (Default)">2 Syif</span>';
         
         const varianceVal = slot.variance_meters;

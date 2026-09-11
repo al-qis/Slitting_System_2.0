@@ -406,6 +406,14 @@ function renderLengthTracking(tracking) {
     
     if (badge) badge.innerText = pct.toFixed(1) + '%';
 
+    const subTitle = document.getElementById('lenTargetSubtitle');
+    if (subTitle) {
+        const isFri = (tracking.is_friday === true);
+        subTitle.innerText = isFri 
+            ? 'Real-time total Mother Coil length tracking vs. 24-hour target (Friday 2 Shifts: 10,400 m / 3 Shifts: 15,600 m after 01:00)'
+            : 'Real-time total Mother Coil length tracking vs. 24-hour target (Default 2 Shifts: 10,400 m / 3 Shifts: 15,600 m after 12:00 AM)';
+    }
+
     if (bar) {
         bar.style.width = Math.min(100, Math.max(0, pct)) + '%';
         bar.setAttribute('aria-valuenow', pct);

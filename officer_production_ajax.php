@@ -63,7 +63,7 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
                   AND sp.parent_slit_id IS NULL
                   AND (sp.is_completed = 1 OR (sp.actual_length IS NOT NULL AND sp.actual_length > 0))
                 GROUP BY mc.id
-                HAVING slit_time >= ? AND slit_time <= ?
+                HAVING slit_time > ? AND slit_time <= ?
             ) t
             LIMIT 1
         ");
@@ -79,7 +79,7 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
               AND (sp_run.is_reslitted = 0 OR sp_run.is_reslitted IS NULL)
               AND sp_run.recoiling_id IS NULL
               AND sp_run.parent_slit_id IS NULL
-              AND sp_run.date_in >= ? AND sp_run.date_in <= ?
+              AND sp_run.date_in > ? AND sp_run.date_in <= ?
             LIMIT 1
         ");
 
@@ -103,9 +103,12 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
             $startStr = date('Y-m-d H:i:s', $startTs);
             $endStr   = date('Y-m-d H:i:s', $endTs);
 
-            // Post-12 AM window for this 24-hour cycle: from next calendar day 00:00:00 to end of slot
-            $midnightTs  = strtotime(date('Y-m-d 00:00:00', strtotime('+1 day', $startTs)));
-            $midnightStr = date('Y-m-d 00:00:00', $midnightTs);
+            // Threshold window for 3rd shift (15,600m target):
+            // For Friday (Jumaat): Shift 2 extends to 01:00 AM, so target becomes 15,600m only if coil produced after 01:00 AM
+            // For other days: target becomes 15,600m if coil produced after 12:00 AM midnight
+            $isFriday        = ($days[$i] === 'Jumaat' || (int)date('N', $startTs) === 5);
+            $thresholdTs     = strtotime(date($isFriday ? 'Y-m-d 01:00:00' : 'Y-m-d 00:00:00', strtotime('+1 day', $startTs)));
+            $thresholdStr    = date('Y-m-d H:i:s', $thresholdTs);
 
             $startDisplay = date('d/m (D) h:i A', $startTs);
             $endDisplay   = date('d/m (D) h:i A', $endTs);
@@ -121,10 +124,10 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
                 }
             }
 
-            // 2. Check if production occurred after 12 AM (midnight to 07:00:59)
+            // 2. Check if production occurred after threshold (01:00 AM on Friday, 12:00 AM on other days)
             $hasPost12am = false;
             if ($stmtMidnight) {
-                $stmtMidnight->bind_param("ss", $midnightStr, $endStr);
+                $stmtMidnight->bind_param("ss", $thresholdStr, $endStr);
                 $stmtMidnight->execute();
                 $resM = $stmtMidnight->get_result();
                 if ($resM && $resM->num_rows > 0) {
@@ -133,7 +136,7 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
             }
 
             if (!$hasPost12am && $stmtMidnightRunning) {
-                $stmtMidnightRunning->bind_param("ss", $midnightStr, $endStr);
+                $stmtMidnightRunning->bind_param("ss", $thresholdStr, $endStr);
                 $stmtMidnightRunning->execute();
                 $resRun = $stmtMidnightRunning->get_result();
                 if ($resRun && $resRun->num_rows > 0) {
@@ -153,7 +156,7 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
             }
             $weeklyRecoilCoilsTotal += $recoilCoils;
 
-            // Slot Target: Default 10,400 m (2 shifts), becomes 15,600 m if production after 12am (3 shifts)
+            // Slot Target: Default 10,400 m (2 shifts), becomes 15,600 m if production after threshold (3 shifts)
             $slotShifts = $hasPost12am ? 3 : 2;
             $slotTarget = $shiftTarget * $slotShifts;
 
@@ -179,6 +182,8 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
                 'target_meters'             => $slotTarget,
                 'shifts_count'              => $slotShifts,
                 'has_post_12am'             => $hasPost12am,
+                'has_extended_shift'        => $hasPost12am,
+                'is_friday'                 => $isFriday,
                 'variance_meters'           => $variance,
                 'percentage'                => $percentage,
                 'recoil_coils'              => $recoilCoils,
