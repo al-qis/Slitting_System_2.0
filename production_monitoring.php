@@ -115,12 +115,36 @@ include 'header.php';
 <div class="container-fluid py-3">
 
     <!-- Top Header -->
-    <div class="row align-items-center mb-4">
-        <div class="col-12">
-            <h3 class="fw-bold m-0 text-dark">
-                <i class="bi bi-tv text-primary me-2"></i> Slitting Production Monitoring
-            </h3>
-            <p class="text-muted small m-0 mt-1">Real-time active production status & mother coil queue display</p>
+    <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mb-4">
+        <div class="d-flex flex-wrap align-items-center gap-4">
+            <div>
+                <h3 class="fw-bold m-0 text-dark">
+                    <i class="bi bi-tv text-primary me-2"></i> Slitting Production Monitoring
+                </h3>
+                <p class="text-muted small m-0 mt-1">Real-time active production status & mother coil queue display</p>
+            </div>
+
+            <!-- Recoiling Coil Counter (By Coil, Follow by Day) -->
+            <div class="card border-0 shadow-sm px-3 py-2 rounded-3 bg-white d-flex flex-row align-items-center gap-3 border-start border-4 border-warning">
+                <div class="p-2 rounded-2 bg-warning bg-opacity-20 text-warning">
+                    <i class="bi bi-arrow-repeat fs-4 text-warning"></i>
+                </div>
+                <div>
+                    <div class="text-uppercase text-muted fw-bold" style="font-size: 0.72rem; letter-spacing: 0.5px;">
+                        Recoiling Coils (Today)
+                    </div>
+                    <div class="d-flex align-items-baseline gap-1">
+                        <span class="fs-4 fw-bold text-dark" id="recoilDayCoilCount">0</span>
+                        <span class="text-muted small fw-semibold">Coils</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="d-none d-md-block text-end">
+            <span class="badge bg-light text-secondary border px-3 py-2 small fw-semibold">
+                <i class="bi bi-calendar-event me-1"></i> Production Day: <strong id="prodDayLabel" class="text-dark"><?php echo date('d M Y'); ?></strong>
+            </span>
         </div>
     </div>
 
@@ -254,6 +278,16 @@ function fetchMonitoringData() {
                 renderSectionA(data.running);
                 renderSectionB(data.waiting_list);
                 renderLengthTracking(data.length_tracking);
+                if (data.recoil_summary) {
+                    const elCoil = document.getElementById('recoilDayCoilCount');
+                    if (elCoil) {
+                        elCoil.innerText = data.recoil_summary.total_coils ?? 0;
+                    }
+                    const elDate = document.getElementById('prodDayLabel');
+                    if (elDate && data.recoil_summary.prod_date_formatted) {
+                        elDate.innerText = data.recoil_summary.prod_date_formatted;
+                    }
+                }
                 if (data.shift_summary) {
                     const s1 = document.getElementById('s1Badge');
                     const s2 = document.getElementById('s2Badge');

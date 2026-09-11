@@ -9,7 +9,9 @@ if (!isset($_SESSION['role'])) {
     exit;
 }
 
-include 'config.php';
+if (!isset($conn) || !($conn instanceof mysqli)) {
+    require_once 'config.php';
+}
 
 // Helper: Format elapsed time in HH:MM:SS
 function formatElapsedTime($seconds) {
@@ -266,6 +268,53 @@ function hasProductionAfterMidnight(mysqli $conn, string $cycleStartDate): bool 
     }
 
     return false;
+}
+
+// Helper: Calculate Recoiling Coil Count by distinct coil following the current production day
+function getRecoilingDailyCoilCount(mysqli $conn): array {
+    $prodDate = getCurrentProductionDate();
+    $dayStart = "{$prodDate} 07:00:00";
+    $dayEnd   = date('Y-m-d 06:59:59', strtotime('+1 day', strtotime($prodDate)));
+
+    $sql = "
+        SELECT 
+            COUNT(DISTINCT rp.lot_no, rp.coil_no) AS total_coils,
+            COUNT(DISTINCT CASE WHEN rp.status = 'completed' THEN CONCAT(rp.lot_no, '___', rp.coil_no) END) AS completed_coils,
+            COUNT(DISTINCT CASE WHEN rp.status = 'in_progress' THEN CONCAT(rp.lot_no, '___', rp.coil_no) END) AS in_progress_coils,
+            COUNT(rp.id) AS total_rolls
+        FROM recoiling_product rp
+        WHERE (
+            (rp.status = 'completed' AND rp.completed_at >= ? AND rp.completed_at <= ?)
+            OR (rp.status = 'in_progress' AND COALESCE(rp.started_at, rp.date_in) >= ? AND COALESCE(rp.started_at, rp.date_in) <= ?)
+        )
+    ";
+    $stmt = $conn->prepare($sql);
+    if ($stmt) {
+        $stmt->bind_param("ssss", $dayStart, $dayEnd, $dayStart, $dayEnd);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        if ($row = $res->fetch_assoc()) {
+            $stmt->close();
+            return [
+                'prod_date'           => $prodDate,
+                'prod_date_formatted' => date('d M Y', strtotime($prodDate)),
+                'total_coils'         => (int)($row['total_coils'] ?? 0),
+                'completed_coils'     => (int)($row['completed_coils'] ?? 0),
+                'in_progress_coils'   => (int)($row['in_progress_coils'] ?? 0),
+                'total_rolls'         => (int)($row['total_rolls'] ?? 0),
+            ];
+        }
+        $stmt->close();
+    }
+
+    return [
+        'prod_date'           => $prodDate,
+        'prod_date_formatted' => date('d M Y', strtotime($prodDate)),
+        'total_coils'         => 0,
+        'completed_coils'     => 0,
+        'in_progress_coils'   => 0,
+        'total_rolls'         => 0,
+    ];
 }
 
 $action = $_REQUEST['action'] ?? 'get_data';
@@ -731,6 +780,8 @@ if ($action === 'get_data') {
     $weeklyTotalMeters  = calculateWeeklyMotherCoilLength($conn);
     $progressPercentage = ($target24hMeters > 0) ? min(100.0, round(($lengthProduced24h / $target24hMeters) * 100, 1)) : 0.0;
 
+    $recoil_summary = getRecoilingDailyCoilCount($conn);
+
     echo json_encode([
         'success'         => true,
         'timestamp'       => date('Y-m-d H:i:s'),
@@ -738,6 +789,7 @@ if ($action === 'get_data') {
         'waiting_list'    => $waiting_list,
         'waiting_count'   => count($waiting_list),
         'shift_summary'   => $shift_counts,
+        'recoil_summary'  => $recoil_summary,
         'length_tracking' => [
             'length_produced_24h'    => $lengthProduced24h,
             'shift_target_meters'    => $shiftTargetMeters,
