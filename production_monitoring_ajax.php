@@ -207,6 +207,75 @@ function calculateWeeklyMotherCoilLength(mysqli $conn): float {
     return $total;
 }
 
+// Helper: Check if slitting production occurred after 12:00 AM in the given production cycle
+function hasProductionAfterMidnight(mysqli $conn, string $cycleStartDate): bool {
+    // A production date (e.g. 2026-09-11) has its post-12am window from +1 day 00:00:00 to +1 day 07:00:00
+    $nextDate    = date('Y-m-d', strtotime('+1 day', strtotime($cycleStartDate)));
+    $midnightStr = "{$nextDate} 00:00:00";
+    $cycleEndStr = "{$nextDate} 07:00:00";
+
+    // 1. Check completed slitting mother coils in the post-12am window (excluding recoil/reslit)
+    $sqlCompleted = "
+        SELECT 1
+        FROM (
+            SELECT mc.id, COALESCE(mc.date_out, MIN(sp.date_in)) AS slit_time
+            FROM mother_coil mc
+            JOIN slitting_product sp ON sp.mother_id = mc.id
+            WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
+              AND (sp.source IS NULL OR sp.source NOT IN ('recoiling', 'reslit'))
+              AND (sp.original_source IS NULL OR sp.original_source NOT IN ('recoiling', 'reslit'))
+              AND (sp.is_recoiled = 0 OR sp.is_recoiled IS NULL)
+              AND (sp.is_reslitted = 0 OR sp.is_reslitted IS NULL)
+              AND sp.recoiling_id IS NULL
+              AND sp.parent_slit_id IS NULL
+              AND (sp.is_completed = 1 OR (sp.actual_length IS NOT NULL AND sp.actual_length > 0))
+            GROUP BY mc.id
+            HAVING slit_time >= ? AND slit_time <= ?
+        ) t
+        LIMIT 1
+    ";
+    $stmt = $conn->prepare($sqlCompleted);
+    if ($stmt) {
+        $stmt->bind_param("ss", $midnightStr, $cycleEndStr);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        if ($res && $res->num_rows > 0) {
+            $stmt->close();
+            return true;
+        }
+        $stmt->close();
+    }
+
+    // 2. Check running slitting products started after midnight in this cycle
+    $sqlRunning = "
+        SELECT 1
+        FROM slitting_product sp_run
+        WHERE (sp_run.is_voided = 0 OR sp_run.is_voided IS NULL)
+          AND (sp_run.is_completed = 0 OR sp_run.actual_length IS NULL OR sp_run.actual_length = 0)
+          AND (sp_run.source IS NULL OR sp_run.source NOT IN ('recoiling', 'reslit'))
+          AND (sp_run.original_source IS NULL OR sp_run.original_source NOT IN ('recoiling', 'reslit'))
+          AND (sp_run.is_recoiled = 0 OR sp_run.is_recoiled IS NULL)
+          AND (sp_run.is_reslitted = 0 OR sp_run.is_reslitted IS NULL)
+          AND sp_run.recoiling_id IS NULL
+          AND sp_run.parent_slit_id IS NULL
+          AND sp_run.date_in >= ? AND sp_run.date_in <= ?
+        LIMIT 1
+    ";
+    $stmtRun = $conn->prepare($sqlRunning);
+    if ($stmtRun) {
+        $stmtRun->bind_param("ss", $midnightStr, $cycleEndStr);
+        $stmtRun->execute();
+        $resRun = $stmtRun->get_result();
+        if ($resRun && $resRun->num_rows > 0) {
+            $stmtRun->close();
+            return true;
+        }
+        $stmtRun->close();
+    }
+
+    return false;
+}
+
 $action = $_REQUEST['action'] ?? 'get_data';
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -599,7 +668,15 @@ if ($action === 'get_data') {
 
     $shift_counts = getMotherCoilShiftCounts($conn);
     $shiftTargetMeters = floatval(getSystemSetting($conn, 'shift_target_meters', '5200'));
-    $target24hMeters    = $shiftTargetMeters * 3;
+    if ($shiftTargetMeters <= 0) {
+        $shiftTargetMeters = 5200.0;
+    }
+
+    $prodDate = getCurrentProductionDate();
+    $hasPostMidnightProd = hasProductionAfterMidnight($conn, $prodDate);
+    $shiftsMultiplier    = $hasPostMidnightProd ? 3 : 2;
+    $target24hMeters     = $shiftTargetMeters * $shiftsMultiplier; // Default: 10,400 m (2 shifts), becomes 15,600 m if production after 12am
+
     $lengthProduced24h  = calculate24HourMotherCoilLength($conn);
     $weeklyTotalMeters  = calculateWeeklyMotherCoilLength($conn);
     $progressPercentage = ($target24hMeters > 0) ? min(100.0, round(($lengthProduced24h / $target24hMeters) * 100, 1)) : 0.0;
@@ -612,11 +689,13 @@ if ($action === 'get_data') {
         'waiting_count'   => count($waiting_list),
         'shift_summary'   => $shift_counts,
         'length_tracking' => [
-            'length_produced_24h' => $lengthProduced24h,
-            'shift_target_meters' => $shiftTargetMeters,
-            'target_24h_meters'   => $target24hMeters,
-            'progress_percentage' => $progressPercentage,
-            'weekly_total_meters' => $weeklyTotalMeters
+            'length_produced_24h'    => $lengthProduced24h,
+            'shift_target_meters'    => $shiftTargetMeters,
+            'target_24h_meters'      => $target24hMeters,
+            'shifts_multiplier'      => $shiftsMultiplier,
+            'has_post_midnight_prod' => $hasPostMidnightProd,
+            'progress_percentage'    => $progressPercentage,
+            'weekly_total_meters'    => $weeklyTotalMeters
         ]
     ]);
     exit;

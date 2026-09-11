@@ -27,8 +27,7 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
         $days = ['Isnin', 'Selasa', 'Rabu', 'Khamis', 'Jumaat', 'Sabtu', 'Ahad'];
         $slots = [];
         $weeklyProducedTotal = 0.0;
-        $dailyTarget = $shiftTarget * 3; // 24-hour target (3 shifts)
-        $weeklyTargetTotal = $dailyTarget * 7;
+        $weeklyTargetTotal = 0.0;
 
         $stmt = $conn->prepare("
             SELECT COALESCE(SUM(mc_len.length), 0) AS total_len
@@ -49,6 +48,43 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
             ) AS mc_len
         ");
 
+        $stmtMidnight = $conn->prepare("
+            SELECT 1
+            FROM (
+                SELECT mc.id, COALESCE(mc.date_out, MIN(sp.date_in)) AS slit_time
+                FROM mother_coil mc
+                JOIN slitting_product sp ON sp.mother_id = mc.id
+                WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
+                  AND (sp.source IS NULL OR sp.source NOT IN ('recoiling', 'reslit'))
+                  AND (sp.original_source IS NULL OR sp.original_source NOT IN ('recoiling', 'reslit'))
+                  AND (sp.is_recoiled = 0 OR sp.is_recoiled IS NULL)
+                  AND (sp.is_reslitted = 0 OR sp.is_reslitted IS NULL)
+                  AND sp.recoiling_id IS NULL
+                  AND sp.parent_slit_id IS NULL
+                  AND (sp.is_completed = 1 OR (sp.actual_length IS NOT NULL AND sp.actual_length > 0))
+                GROUP BY mc.id
+                HAVING slit_time >= ? AND slit_time <= ?
+            ) t
+            LIMIT 1
+        ");
+
+        $stmtMidnightRunning = $conn->prepare("
+            SELECT 1
+            FROM slitting_product sp_run
+            WHERE (sp_run.is_voided = 0 OR sp_run.is_voided IS NULL)
+              AND (sp_run.is_completed = 0 OR sp_run.actual_length IS NULL OR sp_run.actual_length = 0)
+              AND (sp_run.source IS NULL OR sp_run.source NOT IN ('recoiling', 'reslit'))
+              AND (sp_run.original_source IS NULL OR sp_run.original_source NOT IN ('recoiling', 'reslit'))
+              AND (sp_run.is_recoiled = 0 OR sp_run.is_recoiled IS NULL)
+              AND (sp_run.is_reslitted = 0 OR sp_run.is_reslitted IS NULL)
+              AND sp_run.recoiling_id IS NULL
+              AND sp_run.parent_slit_id IS NULL
+              AND sp_run.date_in >= ? AND sp_run.date_in <= ?
+            LIMIT 1
+        ");
+
+        $activeDailyTarget = $shiftTarget * 2; // Default for current active cycle
+
         for ($i = 0; $i < 7; $i++) {
             $startTs = strtotime("+{$i} days", $mondayTimestamp);
             $endTs   = strtotime("+1 day -1 second", $startTs);
@@ -56,9 +92,14 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
             $startStr = date('Y-m-d H:i:s', $startTs);
             $endStr   = date('Y-m-d H:i:s', $endTs);
 
+            // Post-12 AM window for this 24-hour cycle: from next calendar day 00:00:00 to end of slot
+            $midnightTs  = strtotime(date('Y-m-d 00:00:00', strtotime('+1 day', $startTs)));
+            $midnightStr = date('Y-m-d 00:00:00', $midnightTs);
+
             $startDisplay = date('d/m (D) h:i A', $startTs);
             $endDisplay   = date('d/m (D) h:i A', $endTs);
 
+            // 1. Calculate produced meters
             $produced = 0.0;
             if ($stmt) {
                 $stmt->bind_param("ss", $startStr, $endStr);
@@ -69,10 +110,40 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
                 }
             }
 
+            // 2. Check if production occurred after 12 AM (midnight to 07:00:59)
+            $hasPost12am = false;
+            if ($stmtMidnight) {
+                $stmtMidnight->bind_param("ss", $midnightStr, $endStr);
+                $stmtMidnight->execute();
+                $resM = $stmtMidnight->get_result();
+                if ($resM && $resM->num_rows > 0) {
+                    $hasPost12am = true;
+                }
+            }
+
+            if (!$hasPost12am && $stmtMidnightRunning) {
+                $stmtMidnightRunning->bind_param("ss", $midnightStr, $endStr);
+                $stmtMidnightRunning->execute();
+                $resRun = $stmtMidnightRunning->get_result();
+                if ($resRun && $resRun->num_rows > 0) {
+                    $hasPost12am = true;
+                }
+            }
+
+            // Slot Target: Default 10,400 m (2 shifts), becomes 15,600 m if production after 12am (3 shifts)
+            $slotShifts = $hasPost12am ? 3 : 2;
+            $slotTarget = $shiftTarget * $slotShifts;
+
             $weeklyProducedTotal += $produced;
-            $variance = $produced - $dailyTarget;
-            $percentage = ($dailyTarget > 0) ? round(($produced / $dailyTarget) * 100, 1) : 0.0;
+            $weeklyTargetTotal   += $slotTarget;
+
+            $variance = $produced - $slotTarget;
+            $percentage = ($slotTarget > 0) ? round(($produced / $slotTarget) * 100, 1) : 0.0;
             $isToday = ($now >= $startTs && $now <= $endTs);
+
+            if ($isToday) {
+                $activeDailyTarget = $slotTarget;
+            }
 
             $slots[] = [
                 'day_name'          => $days[$i],
@@ -82,7 +153,9 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
                 'start_display'     => $startDisplay,
                 'end_display'       => $endDisplay,
                 'produced_meters'   => $produced,
-                'target_meters'     => $dailyTarget,
+                'target_meters'     => $slotTarget,
+                'shifts_count'      => $slotShifts,
+                'has_post_12am'     => $hasPost12am,
                 'variance_meters'   => $variance,
                 'percentage'        => $percentage,
                 'is_today'          => $isToday
@@ -92,6 +165,12 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
         if ($stmt) {
             $stmt->close();
         }
+        if ($stmtMidnight) {
+            $stmtMidnight->close();
+        }
+        if ($stmtMidnightRunning) {
+            $stmtMidnightRunning->close();
+        }
 
         $overallPct = ($weeklyTargetTotal > 0) ? min(100.0, round(($weeklyProducedTotal / $weeklyTargetTotal) * 100, 1)) : 0.0;
 
@@ -99,7 +178,7 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
             'monday_cycle_start'    => date('Y-m-d H:i:s', $mondayTimestamp),
             'sunday_cycle_end'      => date('Y-m-d H:i:s', strtotime("+7 days -1 second", $mondayTimestamp)),
             'shift_target_meters'   => $shiftTarget,
-            'daily_target_meters'   => $dailyTarget,
+            'daily_target_meters'   => $activeDailyTarget,
             'weekly_target_meters'  => $weeklyTargetTotal,
             'weekly_produced_total' => $weeklyProducedTotal,
             'weekly_overall_pct'    => $overallPct,
@@ -124,8 +203,8 @@ if ($action === 'get_data') {
         'success'               => true,
         'timestamp'             => date('Y-m-d H:i:s'),
         'shift_target_meters'   => $shiftTarget,
-        'daily_target_meters'   => $shiftTarget * 3,
-        'weekly_target_meters'  => $shiftTarget * 3 * 7,
+        'daily_target_meters'   => $weeklyData['daily_target_meters'],
+        'weekly_target_meters'  => $weeklyData['weekly_target_meters'],
         'last_weekly_reset_at'  => $lastReset,
         'weekly_performance'    => $weeklyData
     ]);

@@ -15,8 +15,8 @@ $shiftTarget = (float)getSystemSetting($conn, 'shift_target_meters', '5200');
 if ($shiftTarget <= 0) {
     $shiftTarget = 5200.0;
 }
-$dailyTarget  = $shiftTarget * 3;
-$weeklyTarget = $dailyTarget * 7;
+$dailyTargetDefault = $shiftTarget * 2; // Default 2 shifts: 10,400 m
+$weeklyTargetDefault = $dailyTargetDefault * 7; // Estimated minimum 14 shifts
 ?>
 
 <!-- Include Chart.js for Weekly Slot Performance Chart -->
@@ -97,7 +97,7 @@ $weeklyTarget = $dailyTarget * 7;
                 <div class="mt-2">
                     <div class="stat-number text-dark" id="displayShiftTarget"><?php echo number_format($shiftTarget, 0); ?> m</div>
                     <div class="small text-muted mt-1">
-                        <i class="bi bi-info-circle me-1"></i> Purata pengeluaran per syif
+                        <i class="bi bi-info-circle me-1"></i> Purata sasaran per syif
                     </div>
                 </div>
             </div>
@@ -113,9 +113,9 @@ $weeklyTarget = $dailyTarget * 7;
                     </span>
                 </div>
                 <div class="mt-2">
-                    <div class="stat-number text-dark" id="displayDailyTarget"><?php echo number_format($dailyTarget, 0); ?> m</div>
-                    <div class="small text-muted mt-1">
-                        <i class="bi bi-stack me-1"></i> 3 Syif x <?php echo number_format($shiftTarget, 0); ?> m
+                    <div class="stat-number text-dark" id="displayDailyTarget"><?php echo number_format($dailyTargetDefault, 0); ?> m</div>
+                    <div class="small text-muted mt-1" id="displayDailyTargetDesc">
+                        <i class="bi bi-stack me-1"></i> Default 2 Syif (10,400 m) / 3 Syif (15,600 m selepas 12am)
                     </div>
                 </div>
             </div>
@@ -131,9 +131,9 @@ $weeklyTarget = $dailyTarget * 7;
                     </span>
                 </div>
                 <div class="mt-2">
-                    <div class="stat-number text-dark" id="displayWeeklyTarget"><?php echo number_format($weeklyTarget, 0); ?> m</div>
+                    <div class="stat-number text-dark" id="displayWeeklyTarget"><?php echo number_format($weeklyTargetDefault, 0); ?> m</div>
                     <div class="small text-muted mt-1">
-                        <i class="bi bi-calculator me-1"></i> 7 Hari (21 Syif Total)
+                        <i class="bi bi-calculator me-1"></i> Jumlah sasaran dinamik 7 slot harian
                     </div>
                 </div>
             </div>
@@ -380,13 +380,19 @@ function loadOfficerData() {
 
             // Update KPI Display Numbers
             const st = data.shift_target_meters || 5200;
-            const dt = data.daily_target_meters || (st * 3);
+            const dt = data.daily_target_meters || (st * 2);
             const wt = data.weekly_target_meters || (dt * 7);
 
             document.getElementById('displayShiftTarget').innerText = Math.round(st).toLocaleString() + ' m';
             document.getElementById('displayDailyTarget').innerText = Math.round(dt).toLocaleString() + ' m';
             document.getElementById('displayWeeklyTarget').innerText = Math.round(wt).toLocaleString() + ' m';
             document.getElementById('lastResetTimestamp').innerText = data.last_weekly_reset_at || '-';
+
+            const dailyDesc = document.getElementById('displayDailyTargetDesc');
+            if (dailyDesc) {
+                const is3Shifts = (dt >= st * 2.5);
+                dailyDesc.innerHTML = `<i class="bi bi-stack me-1"></i> ${is3Shifts ? '<strong class="text-primary">3 Syif</strong> (Aktif selepas 12 AM)' : '<strong class="text-secondary">2 Syif</strong> (Default harian)'}`;
+            }
 
             const perf = data.weekly_performance;
             if (perf) {
@@ -429,6 +435,9 @@ function renderSlotsTable(slots) {
     slots.forEach(slot => {
         const trClass = slot.is_today ? 'bg-today-highlight' : '';
         const todayBadge = slot.is_today ? '<span class="badge bg-info text-dark ms-2">HARI INI</span>' : '';
+        const shiftsBadge = slot.shifts_count === 3 
+            ? '<span class="badge bg-primary ms-1" title="3 Syif (Pengeluaran dikesan selepas 12:00 AM)">3 Syif</span>'
+            : '<span class="badge bg-light text-dark border ms-1" title="2 Syif (Default)">2 Syif</span>';
         
         const varianceVal = slot.variance_meters;
         const varianceFormatted = (varianceVal > 0 ? '+' : '') + Math.round(varianceVal).toLocaleString() + ' m';
@@ -446,7 +455,9 @@ function renderSlotsTable(slots) {
                     <i class="bi bi-clock me-1"></i> ${slot.time_slot_label}
                 </td>
                 <td class="text-end fw-bold text-dark">${Math.round(slot.produced_meters).toLocaleString()} m</td>
-                <td class="text-end text-muted">${Math.round(slot.target_meters).toLocaleString()} m</td>
+                <td class="text-end text-muted">
+                    ${Math.round(slot.target_meters).toLocaleString()} m ${shiftsBadge}
+                </td>
                 <td class="text-end ${varianceClass}">${varianceFormatted}</td>
                 <td class="text-center">
                     <span class="badge ${pctBadgeClass} px-2 py-1 fs-7">${pct.toFixed(1)}%</span>
