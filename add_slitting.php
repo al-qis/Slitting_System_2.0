@@ -85,6 +85,8 @@ if ($from_stock) {
     $source_data = $mother_data;
 }
 
+$coil_width_val = floatval($source_data['width'] ?? $mother_data['width'] ?? 0);
+
 // ── Look up an officer-authored slitting plan for this mother coil ──
 // A plan's widths describe cuts of the ORIGINAL full mother coil, so it
 // only applies when we're slitting that original material — whether
@@ -113,6 +115,7 @@ if (!$isLeftoverCut && $mother_id) {
     <title>Add Slitting Product</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <style>
         body { background-color: #f8f9fa; padding:20px; }
         .card { border: none; border-radius: 12px; }
@@ -206,11 +209,15 @@ if (!$isLeftoverCut && $mother_id) {
                     <small class="text-muted d-block">Coil No</small>
                     <span class="fw-bold"><?= htmlspecialchars($source_data['coil_no'] ?? '-') ?></span>
                 </div>
-                <div class="col-md-3">
+                <div class="col-md-2">
                     <small class="text-muted d-block">Grade</small>
                     <span class="badge bg-primary"><?= htmlspecialchars($source_data['grade'] ?? '-') ?></span>
                 </div>
-                <div class="col-md-3 text-end">
+                <div class="col-md-2">
+                    <small class="text-muted d-block">Coil Width</small>
+                    <span class="fw-bold text-primary"><?= number_format($source_data['width'] ?? $mother_data['width'] ?? 0, 1) ?> mm</span>
+                </div>
+                <div class="col-md-2 text-end">
                     <small class="text-muted d-block"><?= $from_stock ? 'Current Length' : 'Input' ?> Length</small>
                     <span class="h5 mb-0 text-success fw-bold"><?= number_format($source_data['length'] ?? 0, 2) ?> m</span>
                 </div>
@@ -238,6 +245,7 @@ if (!$isLeftoverCut && $mother_id) {
         <input type="hidden" name="product" value="<?= htmlspecialchars($mother_data['product'] ?? '') ?>">
         <input type="hidden" name="lot_no" value="<?= htmlspecialchars($source_data['lot_no'] ?? '') ?>">
         <input type="hidden" name="coil_no" value="<?= htmlspecialchars($source_data['coil_no'] ?? '') ?>">
+        <input type="hidden" name="source_width" value="<?= floatval($source_data['width'] ?? $mother_data['width'] ?? 0) ?>">
 
         <div class="card shadow-sm mb-4">
             <div class="card-body">
@@ -324,6 +332,7 @@ const sourceData = {
     lotNo: '<?= htmlspecialchars($source_data['lot_no'] ?? '') ?>',
     coilNo: '<?= htmlspecialchars($source_data['coil_no'] ?? '') ?>',
     originalLength: <?= floatval($source_data['length'] ?? 0) ?>,
+    originalWidth: <?= floatval($source_data['width'] ?? $mother_data['width'] ?? 0) ?>,
     fromStock: <?= $from_stock ? 'true' : 'false' ?>,
     product: '<?= htmlspecialchars($mother_data['product'] ?? '') ?>'
 };
@@ -548,7 +557,172 @@ function updateLotLabel(idx) {
     const badge = document.getElementById(`infoBadge${idx}`);
     badge.innerHTML = `<i class="bi bi-tag me-1"></i>${sourceData.lotNo}${letter} ${sourceData.coilNo}-R${idx+1}`;
 }
+
+// ── SFC Balance Warning Interceptor (≥ 80mm) ────────────────
+let isBypassingSfcWarning = false;
+
+function checkAndShowSfcModal(e) {
+    if (isBypassingSfcWarning) return true;
+
+    let originalWidth = parseFloat(sourceData.originalWidth) || 0;
+    
+    // Fallback: if originalWidth is 0, try to sum plan widths if available
+    if (originalWidth <= 0 && typeof slittingPlan !== 'undefined' && slittingPlan && slittingPlan.length > 0) {
+        slittingPlan.forEach(p => {
+            originalWidth += parseFloat(p.planned_width) || 0;
+        });
+    }
+
+    let totalRollWidth = 0;
+    const widthInputs = document.querySelectorAll('.width-input');
+    widthInputs.forEach(input => {
+        totalRollWidth += parseFloat(input.value) || 0;
+    });
+
+    const leftoverWidth = originalWidth - totalRollWidth;
+    const mainSfcInput = document.querySelector('input[name="sfc_balance_width"]');
+    const existingSfcVal = parseFloat(mainSfcInput?.value) || 0;
+
+    // Trigger warning if leftover balance width is at least 80mm and SFC balance is not filled yet
+    if (originalWidth > 0 && leftoverWidth >= 79.95 && existingSfcVal <= 0) {
+        if (e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        const roundedVal = leftoverWidth.toFixed(1);
+        const valElem = document.getElementById('modalBalanceWidthVal');
+        if (valElem) valElem.innerText = roundedVal + ' mm';
+
+        const modalEl = document.getElementById('sfcBalanceModal');
+        if (modalEl) {
+            if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+                try {
+                    const sfcModal = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
+                    sfcModal.show();
+                } catch (err) {
+                    showModalFallback(modalEl);
+                }
+            } else {
+                showModalFallback(modalEl);
+            }
+        }
+        return false;
+    }
+    return true;
+}
+
+function showModalFallback(modalEl) {
+    modalEl.classList.add('show');
+    modalEl.style.display = 'block';
+    modalEl.removeAttribute('aria-hidden');
+    document.body.classList.add('modal-open');
+    if (!document.querySelector('.modal-backdrop')) {
+        const backdrop = document.createElement('div');
+        backdrop.className = 'modal-backdrop fade show';
+        document.body.appendChild(backdrop);
+    }
+}
+
+function closeModalOnly() {
+    const modalEl = document.getElementById('sfcBalanceModal');
+    if (modalEl) {
+        if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+            try {
+                const sfcModal = bootstrap.Modal.getInstance(modalEl);
+                if (sfcModal) sfcModal.hide();
+            } catch(e){}
+        }
+        modalEl.classList.remove('show');
+        modalEl.style.display = 'none';
+        modalEl.setAttribute('aria-hidden', 'true');
+    }
+    document.body.classList.remove('modal-open');
+    const backdrop = document.querySelector('.modal-backdrop');
+    if (backdrop) backdrop.remove();
+}
+
+function handleSfcChoice(choice) {
+    closeModalOnly();
+
+    if (choice === 'right') {
+        // Operator chose Right -> Return to Production Slitting page form to enter/adjust SFC Balance Width
+        const mainSfcInput = document.querySelector('input[name="sfc_balance_width"]');
+        const valElem = document.getElementById('modalBalanceWidthVal');
+        
+        // Ensure SFC section is visible
+        const sfcSection = document.getElementById('normalCutSfcSection');
+        if (sfcSection) sfcSection.style.display = 'block';
+
+        if (mainSfcInput) {
+            if (valElem && valElem.innerText) {
+                const calculatedVal = parseFloat(valElem.innerText);
+                if (calculatedVal > 0) {
+                    mainSfcInput.value = calculatedVal.toFixed(1);
+                }
+            }
+            mainSfcInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            setTimeout(function() { mainSfcInput.focus(); }, 300);
+        }
+    } else if (choice === 'X') {
+        // Operator chose X -> Continue the slitting process directly without SFC balance
+        const mainSfcInput = document.querySelector('input[name="sfc_balance_width"]');
+        if (mainSfcInput) {
+            mainSfcInput.value = '';
+        }
+
+        isBypassingSfcWarning = true;
+        const mainForm = document.querySelector('form');
+        if (mainForm) mainForm.submit();
+    }
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    const mainForm = document.querySelector('form');
+    if (mainForm) {
+        mainForm.addEventListener('submit', function (e) {
+            checkAndShowSfcModal(e);
+        });
+    }
+
+    const submitBtn = document.getElementById('submitBtn');
+    if (submitBtn) {
+        submitBtn.addEventListener('click', function (e) {
+            checkAndShowSfcModal(e);
+        });
+    }
+});
 </script>
+
+<!-- SFC Balance Warning Modal (≥ 80mm) -->
+<div class="modal fade" id="sfcBalanceModal" tabindex="-1" aria-labelledby="sfcBalanceModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content shadow-lg border-0 rounded-4">
+            <div class="modal-header bg-warning bg-opacity-25 border-0">
+                <h5 class="modal-title text-warning-emphasis fw-bold" id="sfcBalanceModalLabel">
+                    <i class="bi bi-exclamation-triangle-fill text-warning me-2 fs-4"></i>Coil Balance Width Warning
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close" onclick="closeModalOnly()"></button>
+            </div>
+            <div class="modal-body p-4">
+                <p class="fs-6 mb-2">
+                    The remaining width balance is <strong class="text-primary fs-5" id="modalBalanceWidthVal">0.0 mm</strong>.
+                </p>
+                <p class="fs-6 mb-2 text-secondary">
+                    Do you want to save as SFC?
+                </p>
+            </div>
+            <div class="modal-footer bg-light border-0 d-flex justify-content-between p-3">
+                <button type="button" class="btn btn-outline-secondary btn-lg px-4 rounded-3 fw-bold" onclick="handleSfcChoice('X')">
+                    <i class="bi bi-x-lg text-danger me-2"></i> No, Continue Anyway
+                </button>
+                <button type="button" class="btn btn-success btn-lg px-4 rounded-3 fw-bold shadow-sm" onclick="handleSfcChoice('right')">
+                    <i class="bi bi-check-lg me-2 fs-5"></i> Yes, Set Balance as SFC
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
 
 </body>
 </html>

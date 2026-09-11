@@ -52,7 +52,8 @@ if (isset($_GET['generate_qr']) && isset($_GET['stock_id'])) {
             . "&lot="    . urlencode($d['lot_no'])
             . "&coil="   . urlencode($d['coil_no'])
             . "&width="  . urlencode($d['width'])
-            . "&length=" . urlencode($d['length']));
+            . "&length=" . urlencode($d['length'])
+            . "&id="     . urlencode($stock_id));
         exit;
     }
 }

@@ -62,6 +62,30 @@ function resolveCustomerName($conn, $mother_id, $lot_no, $coil_no, $width = null
     return '-';
 }
 
+// Helper: Resolve Process Details (Slitting vs Recoiling vs Reslit)
+function resolveProcessDetails($is_recoiled, $is_reslitted, $original_source) {
+    $src = strtolower((string)$original_source);
+    if ($is_recoiled == 1 || $src === 'recoiling') {
+        return [
+            'process_type'        => 'Recoiling',
+            'process_badge_class' => 'bg-warning text-dark',
+            'process_icon'        => 'bi-arrow-repeat'
+        ];
+    }
+    if ($is_reslitted == 1 || $src === 'reslit') {
+        return [
+            'process_type'        => 'Reslit',
+            'process_badge_class' => 'bg-purple text-white',
+            'process_icon'        => 'bi-intersect'
+        ];
+    }
+    return [
+        'process_type'        => 'Slitting',
+        'process_badge_class' => 'bg-info text-dark',
+        'process_icon'        => 'bi-scissors'
+    ];
+}
+
 $action = $_REQUEST['action'] ?? 'get_data';
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -69,38 +93,107 @@ $action = $_REQUEST['action'] ?? 'get_data';
 // ══════════════════════════════════════════════════════════════════════════
 if ($action === 'get_data') {
 
-    // ── Fetch ALL IN (pending) Coils in FIFO Order (Oldest setup date first) ──
-    $all_pending_query = "
+    // ── Fetch ALL Active/Pending Coils Across All Operations (Slitting, Recoiling, Reslit) ──
+    $all_active_jobs = [];
+
+    // 1. Pending Slitting Coils
+    $slitting_pending_res = $conn->query("
         SELECT 
+            'Slitting' AS proc_name,
             sp.mother_id,
             sp.lot_no,
             sp.coil_no,
             sp.product,
             MAX(sp.customer_name) AS customer_name,
             MIN(sp.date_in) AS start_time,
+            MAX(sp.date_in) AS latest_time,
+            MAX(sp.id) AS max_id,
             COUNT(sp.id) AS total_rolls,
-            SUM(CASE WHEN sp.is_completed = 1 AND sp.actual_length IS NOT NULL AND sp.actual_length > 0 THEN 1 ELSE 0 END) AS completed_rolls
+            SUM(CASE WHEN sp.is_completed = 1 AND sp.actual_length IS NOT NULL AND sp.actual_length > 0 THEN 1 ELSE 0 END) AS completed_rolls,
+            MAX(sp.is_recoiled) AS is_recoiled,
+            MAX(sp.is_reslitted) AS is_reslitted,
+            MAX(sp.original_source) AS original_source
         FROM slitting_product sp
         WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
           AND (sp.is_completed = 0 OR sp.actual_length IS NULL OR sp.actual_length = 0)
         GROUP BY sp.mother_id, sp.lot_no, sp.coil_no, sp.product
-        ORDER BY MIN(sp.date_in) ASC, MIN(sp.id) ASC
-    ";
-
-    $pending_res = $conn->query($all_pending_query);
-    $pending_coils = [];
-    if ($pending_res) {
-        while ($row = $pending_res->fetch_assoc()) {
-            $pending_coils[] = $row;
+    ");
+    if ($slitting_pending_res) {
+        while ($row = $slitting_pending_res->fetch_assoc()) {
+            $all_active_jobs[] = $row;
         }
     }
+
+    // 2. Pending Recoiling Coils
+    $recoiling_pending_res = $conn->query("
+        SELECT 
+            'Recoiling' AS proc_name,
+            rp.mother_id,
+            rp.lot_no,
+            rp.coil_no,
+            rp.product,
+            '' AS customer_name,
+            MIN(COALESCE(rp.started_at, rp.date_in)) AS start_time,
+            MAX(COALESCE(rp.started_at, rp.date_in)) AS latest_time,
+            MAX(rp.id) AS max_id,
+            COUNT(rp.id) AS total_rolls,
+            0 AS completed_rolls,
+            1 AS is_recoiled,
+            0 AS is_reslitted,
+            'recoiling' AS original_source
+        FROM recoiling_product rp
+        WHERE rp.status IN ('pending', 'in_progress')
+        GROUP BY rp.mother_id, rp.lot_no, rp.coil_no, rp.product
+    ");
+    if ($recoiling_pending_res) {
+        while ($row = $recoiling_pending_res->fetch_assoc()) {
+            $all_active_jobs[] = $row;
+        }
+    }
+
+    // 3. Pending Reslit Coils
+    $reslit_pending_res = $conn->query("
+        SELECT 
+            'Reslit' AS proc_name,
+            rp.mother_id,
+            rp.lot_no,
+            rp.coil_no,
+            rp.product,
+            '' AS customer_name,
+            MIN(COALESCE(rp.started_at, rp.date_in)) AS start_time,
+            MAX(COALESCE(rp.started_at, rp.date_in)) AS latest_time,
+            MAX(rp.id) AS max_id,
+            COUNT(rp.id) AS total_rolls,
+            0 AS completed_rolls,
+            0 AS is_recoiled,
+            1 AS is_reslitted,
+            'reslit' AS original_source
+        FROM reslit_product rp
+        WHERE rp.status IN ('pending', 'in_progress')
+        GROUP BY rp.mother_id, rp.lot_no, rp.coil_no, rp.product
+    ");
+    if ($reslit_pending_res) {
+        while ($row = $reslit_pending_res->fetch_assoc()) {
+            $all_active_jobs[] = $row;
+        }
+    }
+
+    // Sort active jobs by LATEST scan/start time first (latest_time DESC, max_id DESC)
+    usort($all_active_jobs, function ($a, $b) {
+        $tA = strtotime($a['latest_time'] ?? '1970-01-01');
+        $tB = strtotime($b['latest_time'] ?? '1970-01-01');
+        if ($tA === $tB) {
+            return ((int)($b['max_id'] ?? 0)) <=> ((int)($a['max_id'] ?? 0));
+        }
+        return $tB <=> $tA;
+    });
 
     $running_data = null;
     $queued_in_pending = [];
 
-    if (!empty($pending_coils)) {
-        // SLOT 1: Oldest IN (pending) coil becomes the Current Running Coil
-        $active_item = $pending_coils[0];
+    if (!empty($all_active_jobs)) {
+        // SLOT 1: Latest scanned/active coil becomes the Current Running Coil
+        $active_item = $all_active_jobs[0];
         $mother_id   = (int)$active_item['mother_id'];
         $lot_no      = $active_item['lot_no'];
         $coil_no     = $active_item['coil_no'];
@@ -114,30 +207,39 @@ if ($action === 'get_data') {
         $startTimestamp = $startTimeStr ? strtotime($startTimeStr) : time();
         $elapsedSec     = time() - $startTimestamp;
 
+        $proc = resolveProcessDetails(
+            $active_item['is_recoiled'] ?? 0,
+            $active_item['is_reslitted'] ?? 0,
+            $active_item['original_source'] ?? ''
+        );
+
         $running_data = [
-            'has_running'       => true,
-            'mother_id'         => $mother_id,
-            'lot_no'            => $lot_no,
-            'coil_no'           => $coil_no,
-            'coil_id_display'   => $lot_no . ' - ' . $coil_no,
-            'product_type'      => $active_item['product'] ?: 'N/A',
-            'customer_name'     => $cust_name,
-            'status'            => 'Running',
-            'sub_status'        => 'IN (pending)',
-            'status_badge_class'=> 'bg-primary text-white',
-            'start_time'        => $startTimeStr ? date('Y-m-d H:i:s', $startTimestamp) : '-',
-            'start_time_fmt'    => $startTimeStr ? date('h:i A', $startTimestamp) : '-',
-            'start_timestamp'   => $startTimestamp,
-            'elapsed_seconds'   => max(0, $elapsedSec),
-            'elapsed_formatted' => formatElapsedTime($elapsedSec),
-            'is_packing'        => false,
+            'has_running'          => true,
+            'mother_id'            => $mother_id,
+            'lot_no'               => $lot_no,
+            'coil_no'              => $coil_no,
+            'coil_id_display'      => $lot_no . ' - ' . $coil_no,
+            'product_type'         => $active_item['product'] ?: 'N/A',
+            'customer_name'        => $cust_name,
+            'process_type'         => $proc['process_type'],
+            'process_badge_class'  => $proc['process_badge_class'],
+            'process_icon'         => $proc['process_icon'],
+            'status'               => 'Running',
+            'sub_status'           => 'IN (pending)',
+            'status_badge_class'   => 'bg-primary text-white',
+            'start_time'           => $startTimeStr ? date('Y-m-d H:i:s', $startTimestamp) : '-',
+            'start_time_fmt'       => $startTimeStr ? date('h:i A', $startTimestamp) : '-',
+            'start_timestamp'      => $startTimestamp,
+            'elapsed_seconds'      => max(0, $elapsedSec),
+            'elapsed_formatted'    => formatElapsedTime($elapsedSec),
+            'is_packing'           => false,
             'packing_remaining_seconds' => 0,
-            'total_rolls'       => (int)$active_item['total_rolls'],
-            'completed_rolls'   => (int)$active_item['completed_rolls']
+            'total_rolls'          => (int)$active_item['total_rolls'],
+            'completed_rolls'      => (int)$active_item['completed_rolls']
         ];
 
-        // Remaining IN (pending) coils (index 1 onwards) wait in the Queue
-        $queued_in_pending = array_slice($pending_coils, 1);
+        // Remaining IN (pending) coils wait in the Queue
+        $queued_in_pending = array_slice($all_active_jobs, 1);
 
     } else {
         // No active running coil: check if a coil recently finished (< 60s ago -> PACKING state)
@@ -231,6 +333,12 @@ if ($action === 'get_data') {
         $date_str = $item['start_time'];
         $time_fmt = $date_str ? date('d M Y, h:i A', strtotime($date_str)) : '-';
 
+        $proc = resolveProcessDetails(
+            $item['is_recoiled'] ?? 0,
+            $item['is_reslitted'] ?? 0,
+            $item['original_source'] ?? ''
+        );
+
         $waiting_list[] = [
             'pos'               => $pos++,
             'stock_id'          => 0,
@@ -240,6 +348,9 @@ if ($action === 'get_data') {
             'coil_no'           => $c_no,
             'product_type'      => $item['product'] ?: 'N/A',
             'customer_name'     => $cust,
+            'process_type'      => $proc['process_type'],
+            'process_badge_class'=> $proc['process_badge_class'],
+            'process_icon'      => $proc['process_icon'],
             'received_at'       => $date_str,
             'received_formatted'=> $time_fmt,
             'status_label'      => 'IN (pending)',
@@ -293,6 +404,9 @@ if ($action === 'get_data') {
                 'coil_no'           => $c_no,
                 'product_type'      => $w['mother_product'] ?: 'N/A',
                 'customer_name'     => $cust,
+                'process_type'      => 'Slitting',
+                'process_badge_class'=> 'bg-info text-dark',
+                'process_icon'      => 'bi-scissors',
                 'received_at'       => $date_str,
                 'received_formatted'=> $time_fmt,
                 'status_label'      => 'Waiting',
