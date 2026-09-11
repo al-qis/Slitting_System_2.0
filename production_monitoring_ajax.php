@@ -275,14 +275,17 @@ function calculateWeeklyMotherCoilLength(mysqli $conn): float {
     return 0.0;
 }
 
-// Helper: Check if slitting production occurred after 12:00 AM in the given production cycle
+// Helper: Check if slitting production occurred after threshold (12:00 AM, or 01:00 AM for Friday) in the given production cycle
 function hasProductionAfterMidnight(mysqli $conn, string $cycleStartDate): bool {
-    // A production date (e.g. 2026-09-11) has its post-12am window from +1 day 00:00:00 to +1 day 07:00:00
-    $nextDate    = date('Y-m-d', strtotime('+1 day', strtotime($cycleStartDate)));
-    $midnightStr = "{$nextDate} 00:00:00";
-    $cycleEndStr = "{$nextDate} 07:00:00";
+    $nextDate = date('Y-m-d', strtotime('+1 day', strtotime($cycleStartDate)));
+    $isFriday = ((int)date('N', strtotime($cycleStartDate)) === 5);
 
-    // 1. Check completed slitting mother coils in the post-12am window (excluding recoil/reslit)
+    // For Friday: shift 2 extends to 01:00 AM, so target becomes 15,600m only if coil produced after 01:00 AM
+    // For other days: target becomes 15,600m if coil produced after 12:00 AM midnight
+    $thresholdTime = $isFriday ? "{$nextDate} 01:00:00" : "{$nextDate} 00:00:00";
+    $cycleEndStr   = "{$nextDate} 07:00:00";
+
+    // 1. Check completed slitting mother coils in the threshold window (excluding recoil/reslit)
     $sqlCompleted = "
         SELECT 1
         FROM (
@@ -298,13 +301,13 @@ function hasProductionAfterMidnight(mysqli $conn, string $cycleStartDate): bool 
               AND sp.parent_slit_id IS NULL
               AND (sp.is_completed = 1 OR (sp.actual_length IS NOT NULL AND sp.actual_length > 0))
             GROUP BY mc.id
-            HAVING slit_time >= ? AND slit_time <= ?
+            HAVING slit_time > ? AND slit_time <= ?
         ) t
         LIMIT 1
     ";
     $stmt = $conn->prepare($sqlCompleted);
     if ($stmt) {
-        $stmt->bind_param("ss", $midnightStr, $cycleEndStr);
+        $stmt->bind_param("ss", $thresholdTime, $cycleEndStr);
         $stmt->execute();
         $res = $stmt->get_result();
         if ($res && $res->num_rows > 0) {
@@ -314,7 +317,7 @@ function hasProductionAfterMidnight(mysqli $conn, string $cycleStartDate): bool 
         $stmt->close();
     }
 
-    // 2. Check running slitting products started after midnight in this cycle
+    // 2. Check running slitting products started after threshold in this cycle
     $sqlRunning = "
         SELECT 1
         FROM slitting_product sp_run
@@ -326,12 +329,12 @@ function hasProductionAfterMidnight(mysqli $conn, string $cycleStartDate): bool 
           AND (sp_run.is_reslitted = 0 OR sp_run.is_reslitted IS NULL)
           AND sp_run.recoiling_id IS NULL
           AND sp_run.parent_slit_id IS NULL
-          AND sp_run.date_in >= ? AND sp_run.date_in <= ?
+          AND sp_run.date_in > ? AND sp_run.date_in <= ?
         LIMIT 1
     ";
     $stmtRun = $conn->prepare($sqlRunning);
     if ($stmtRun) {
-        $stmtRun->bind_param("ss", $midnightStr, $cycleEndStr);
+        $stmtRun->bind_param("ss", $thresholdTime, $cycleEndStr);
         $stmtRun->execute();
         $resRun = $stmtRun->get_result();
         if ($resRun && $resRun->num_rows > 0) {
@@ -846,9 +849,10 @@ if ($action === 'get_data') {
     }
 
     $prodDate = getCurrentProductionDate();
+    $isFriday = ((int)date('N', strtotime($prodDate)) === 5);
     $hasPostMidnightProd = hasProductionAfterMidnight($conn, $prodDate);
     $shiftsMultiplier    = $hasPostMidnightProd ? 3 : 2;
-    $target24hMeters     = $shiftTargetMeters * $shiftsMultiplier; // Default: 10,400 m (2 shifts), becomes 15,600 m if production after 12am
+    $target24hMeters     = $shiftTargetMeters * $shiftsMultiplier; // Default: 10,400 m (2 shifts), becomes 15,600 m if production after 12am (or after 1am on Friday)
 
     $lengthProduced24h  = calculate24HourMotherCoilLength($conn);
     $weeklyTotalMeters  = calculateWeeklyMotherCoilLength($conn);
@@ -870,6 +874,7 @@ if ($action === 'get_data') {
             'target_24h_meters'      => $target24hMeters,
             'shifts_multiplier'      => $shiftsMultiplier,
             'has_post_midnight_prod' => $hasPostMidnightProd,
+            'is_friday'              => $isFriday,
             'progress_percentage'    => $progressPercentage,
             'weekly_total_meters'    => $weeklyTotalMeters
         ]
