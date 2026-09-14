@@ -15,7 +15,9 @@
 //                   Letter suffix on lot_no is OPTIONAL (a/b/c or none).
 //                   Source row lot_no renamed to "*_OLD_{id}" to free UNIQUE KEY.
 
-session_start();
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 include 'config.php';
 
 error_reporting(E_ALL);
@@ -47,6 +49,38 @@ function log_process(
     );
     $stmt->execute();
     $stmt->close();
+}
+
+// ── AJAX Action: Operator opened modal / started recoiling process ───────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'start_recoiling_process') {
+    header('Content-Type: application/json');
+    $recoil_id = intval($_POST['id'] ?? 0);
+    if ($recoil_id > 0) {
+        $stmt = $conn->prepare("UPDATE recoiling_product SET status = 'in_progress', started_at = COALESCE(started_at, NOW()) WHERE id = ? AND status != 'completed'");
+        $stmt->bind_param("i", $recoil_id);
+        $ok = $stmt->execute();
+        $stmt->close();
+        echo json_encode(['success' => $ok]);
+        exit;
+    }
+    echo json_encode(['success' => false, 'error' => 'Invalid ID']);
+    exit;
+}
+
+// ── AJAX Action: Operator cancelled / closed modal without completing ────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'cancel_recoiling_process') {
+    header('Content-Type: application/json');
+    $recoil_id = intval($_POST['id'] ?? 0);
+    if ($recoil_id > 0) {
+        $stmt = $conn->prepare("UPDATE recoiling_product SET status = 'pending', started_at = NULL WHERE id = ? AND status = 'in_progress'");
+        $stmt->bind_param("i", $recoil_id);
+        $ok = $stmt->execute();
+        $stmt->close();
+        echo json_encode(['success' => $ok]);
+        exit;
+    }
+    echo json_encode(['success' => false, 'error' => 'Invalid ID']);
+    exit;
 }
 
 if (
@@ -270,7 +304,7 @@ try {
         UPDATE recoiling_product
         SET status       = 'completed',
             completed_at = NOW(),
-            started_at   = NOW(),
+            started_at   = COALESCE(started_at, NOW()),
             new_width    = ?,
             new_length   = ?,
             remark       = ?,
@@ -283,7 +317,7 @@ try {
     $update_stmt->close();
 
     log_process($conn, 'recoiling', $id, $mother_id_val,
-        'pending', 'completed', 'recoiling_complete',
+        $original['status'] ?? 'in_progress', 'completed', 'recoiling_complete',
         "Mode={$cut_type}, rolls={$total_rolls}, total_length={$total_actual_length}m"
     );
 
