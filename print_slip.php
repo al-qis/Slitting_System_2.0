@@ -111,7 +111,7 @@ function fmtNum($v): string {
 <head>
 <meta charset="UTF-8">
 <title>Warehousing Slip — <?= $h($pallet['pallet_no']) ?></title>
-<<style id="basePrintStyle">
+<style id="basePrintStyle">
     * { box-sizing: border-box; }
     body {
         font-family: Arial, Helvetica, sans-serif;
@@ -143,13 +143,13 @@ function fmtNum($v): string {
     .slip-header {
         position: relative;
         text-align: center;
-        margin-bottom: 2mm;
+        margin-bottom: 1mm;
     }
     .slip-header h1 {
         font-size: 10.5pt;
         font-weight: bold;
         margin: 0;
-        line-height: 1.25;
+        line-height: 1.2;
     }
     .form-code {
         position: absolute;
@@ -163,13 +163,14 @@ function fmtNum($v): string {
     table.info-table {
         width: 100%;
         border-collapse: collapse;
-        margin-bottom: 2mm;
+        margin-bottom: 1mm;
     }
     table.info-table td {
         border: 1px solid #000000;
-        padding: 1mm 2mm;
+        padding: 0.6mm 2mm;
         font-size: 10pt;
         vertical-align: middle;
+        line-height: 1.15;
     }
     table.info-table td.label {
         width: 15%;
@@ -184,17 +185,19 @@ function fmtNum($v): string {
     table.data-table {
         width: 100%;
         border-collapse: collapse;
-        margin-bottom: 2mm;
+        margin-bottom: 1mm;
     }
     table.data-table th, table.data-table td {
         border: 1px solid #000000;
-        padding: 0.8mm 1mm;
+        padding: 0.5mm 1mm;
         text-align: center;
         font-size: 9.5pt;
+        line-height: 1.15;
     }
     table.data-table thead th {
         font-weight: bold;
         background: #f5f5f5;
+        padding: 0.6mm 1mm;
     }
     table.data-table col.col-stock   { width: 22%; }
     table.data-table col.col-lot     { width: 18%; }
@@ -203,13 +206,14 @@ function fmtNum($v): string {
     table.data-table col.col-coils   { width: 8%;  }
     table.data-table col.col-roll    { width: 12%; }
     table.data-table col.col-wgt     { width: 16%; }
-    table.data-table td.data-row     { height: 8mm; }
+    table.data-table td.data-row     { height: 6.5mm; }
 
     /* ── Footer signature blocks ────────────────────────── */
     .footer-wrap {
         display: flex;
         align-items: flex-end;
         justify-content: space-between;
+        margin-top: 0.5mm;
         margin-bottom: 0;
     }
     table.footer-table {
@@ -220,7 +224,7 @@ function fmtNum($v): string {
     }
     table.footer-table th, table.footer-table td {
         border: 1px solid #000000;
-        padding: 1mm 1.5mm;
+        padding: 0.6mm 1.5mm;
         font-size: 8pt;
         vertical-align: top;
     }
@@ -228,18 +232,19 @@ function fmtNum($v): string {
         text-align: center;
         background: #f5f5f5;
         font-weight: bold;
+        padding: 0.6mm 1.5mm;
     }
 
     /* Row 2: blank signature space */
     table.footer-table td.sig-space-cell {
-        height: 15mm;
+        height: 10mm;
         vertical-align: top;
     }
     /* Row 3: separate Date row */
     table.footer-table td.date-cell {
         height: auto;
         vertical-align: middle;
-        padding: 1mm 1.5mm;
+        padding: 0.6mm 1.5mm;
     }
 
     .sig-line { display: flex; align-items: center; gap: 1.5mm; }
@@ -250,7 +255,7 @@ function fmtNum($v): string {
         border-bottom: 1px solid #999;
         font-family: inherit;
         font-size: 8pt;
-        padding: 0.5mm 1mm;
+        padding: 0.4mm 1mm;
         background: #fffef2;
     }
     .prod-name-input { flex: 1; min-width: 0; }
@@ -399,21 +404,24 @@ function fmtNum($v): string {
             margin: 0 !important;
             padding: 0 !important;
             background: #fff !important;
+            overflow: hidden !important;
             -webkit-print-color-adjust: exact !important;
             print-color-adjust: exact !important;
         }
         .sheet-wrapper {
             display: block !important;
             width: 100% !important;
+            height: 100% !important;
             padding: 0 !important;
             margin: 0 !important;
-            overflow: visible !important;
+            overflow: hidden !important;
         }
         .sheet {
             width: 100% !important;
             max-width: 100% !important;
             min-height: auto !important;
             height: auto !important;
+            max-height: calc(5.5in - 0.19in - 0.13in) !important;
             margin: 0 !important;
             padding: 0 !important;
             border: none !important;
@@ -422,6 +430,13 @@ function fmtNum($v): string {
             break-inside: avoid !important;
             page-break-after: avoid !important;
             break-after: avoid !important;
+            page-break-before: avoid !important;
+            break-before: avoid !important;
+            overflow: hidden !important;
+        }
+        table, tr, td, th, tbody, thead {
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
         }
         .no-print, .no-print-toolbar {
             display: none !important;
