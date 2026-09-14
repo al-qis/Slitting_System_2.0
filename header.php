@@ -42,9 +42,11 @@
 
                 // Full menu for slitting role
                 $all_menu_items = [
-                    'settings.php'         => ['icon' => 'gear',                   'label' => 'Settings'],
-                    'index.php'            => ['icon' => 'speedometer2',            'label' => 'Dashboard'],
-                    'mother_coil.php'      => ['icon' => 'layer-forward',           'label' => 'Mother Coil'],
+                    'settings.php'                   => ['icon' => 'gear',                   'label' => 'Settings'],
+                    'index.php'                      => ['icon' => 'speedometer2',            'label' => 'Dashboard'],
+                    'officer_production_monitor.php' => ['icon' => 'display',                 'label' => 'Officer Monitor'],
+                    'production_monitoring.php'      => ['icon' => 'tv',                      'label' => 'Live Monitor'],
+                    'mother_coil.php'                => ['icon' => 'layer-forward',           'label' => 'Mother Coil'],
                     'raw_material.php'     => ['icon' => 'box-seam',                'label' => 'Raw Material'],
                     'sfc.php'              => ['icon' => 'box-seam-fill',           'label' => 'SFC Inventory'],
                     'slitting_product.php' => ['icon' => 'scissors',                'label' => 'Slitting Product'],
