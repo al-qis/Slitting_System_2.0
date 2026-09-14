@@ -183,6 +183,22 @@ include 'header.php';
                 <p class="text-muted small m-0 mt-1">Real-time active production status & mother coil queue display</p>
             </div>
 
+            <!-- Slitting Running Coil Counter (Jumlah Coil Sedang Dipotong) -->
+            <div class="card border-0 shadow-sm px-3 py-2 rounded-3 bg-white d-flex flex-row align-items-center gap-3 border-start border-4 border-primary">
+                <div class="p-2 rounded-2 bg-primary bg-opacity-20 text-primary">
+                    <i class="bi bi-scissors fs-4 text-primary"></i>
+                </div>
+                <div>
+                    <div class="text-uppercase text-muted fw-bold" style="font-size: 0.72rem; letter-spacing: 0.5px;">
+                        Coil Sedang Dipotong
+                    </div>
+                    <div class="d-flex align-items-baseline gap-1">
+                        <span class="fs-4 fw-bold text-dark" id="slittingRunningCoilCount">0</span>
+                        <span class="text-muted small fw-semibold">Coil (<span id="slittingRunningCoilLen">0 m</span>)</span>
+                    </div>
+                </div>
+            </div>
+
             <!-- Recoiling Coil Counter (By Coil, Follow by Day) -->
             <div class="card border-0 shadow-sm px-3 py-2 rounded-3 bg-white d-flex flex-row align-items-center gap-3 border-start border-4 border-warning">
                 <div class="p-2 rounded-2 bg-warning bg-opacity-20 text-warning">
@@ -261,8 +277,10 @@ include 'header.php';
                         <i class="bi bi-speedometer fs-4"></i>
                     </div>
                     <div>
-                        <div class="d-flex align-items-center gap-2">
+                        <div class="d-flex flex-wrap align-items-center gap-2">
                             <h5 class="fw-bold m-0 text-dark">Real Production Performance (Actual)</h5>
+                            <span class="badge bg-primary bg-opacity-10 text-primary border border-primary fs-7 d-none" id="runningCoilInfoBadge"></span>
+                            <span class="badge bg-secondary bg-opacity-10 text-secondary border fs-7 d-none" id="completedCoilInfoBadge"></span>
                             <span class="badge bg-light text-dark border fs-7 d-none" id="productionVarianceBadge"></span>
                         </div>
                         <p class="text-muted small m-0" id="lenTargetSubtitle">Real-time total Mother Coil length tracking vs. 24-hour target (Default 2 Shifts: 10,400 m / 3 Shifts: 15,600 m)</p>
@@ -388,6 +406,16 @@ function fetchMonitoringData() {
                 renderSectionA(data.running);
                 renderSectionB(data.waiting_list);
                 renderLengthTracking(data.length_tracking);
+                if (data.length_tracking) {
+                    const elRunCoilCount = document.getElementById('slittingRunningCoilCount');
+                    const elRunCoilLen   = document.getElementById('slittingRunningCoilLen');
+                    if (elRunCoilCount) {
+                        elRunCoilCount.innerText = data.length_tracking.running_coil_count ?? 0;
+                    }
+                    if (elRunCoilLen) {
+                        elRunCoilLen.innerText = Math.round(data.length_tracking.running_coil_length ?? 0).toLocaleString() + ' m';
+                    }
+                }
                 if (data.recoil_summary) {
                     const elCoil = document.getElementById('recoilDayCoilCount');
                     if (elCoil) {
@@ -476,6 +504,25 @@ function renderLengthTracking(tracking) {
     if (elWkTotal) elWkTotal.innerText = Math.round(weeklyTotal).toLocaleString() + ' m';
     
     if (badge) badge.innerText = pct.toFixed(1) + '%';
+
+    // Badges for Completed vs Sedang Dipotong
+    const elCompletedBadge = document.getElementById('completedCoilInfoBadge');
+    const elRunningBadge   = document.getElementById('runningCoilInfoBadge');
+
+    if (elCompletedBadge) {
+        elCompletedBadge.classList.remove('d-none');
+        elCompletedBadge.innerText = 'Siap: ' + Math.round(tracking.length_completed_24h || 0).toLocaleString() + ' m';
+    }
+    if (elRunningBadge) {
+        const rCount = parseInt(tracking.running_coil_count, 10) || 0;
+        const rLen   = parseFloat(tracking.running_coil_length) || 0;
+        if (rCount > 0 && rLen > 0) {
+            elRunningBadge.classList.remove('d-none');
+            elRunningBadge.innerHTML = `<i class="bi bi-scissors me-1"></i>Sedang dipotong: ${rCount} Coil (${Math.round(rLen).toLocaleString()} m)`;
+        } else {
+            elRunningBadge.classList.add('d-none');
+        }
+    }
 
     // Variance badge (Ahead / Behind target pacing)
     if (varianceBadge) {
