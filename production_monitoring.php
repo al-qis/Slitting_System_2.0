@@ -207,16 +207,64 @@ include 'header.php';
         </div>
     </div>
 
-    <!-- 24-HOUR LENGTH TRACKING PROGRESS BAR -->
+    <!-- 24-HOUR PRODUCTION PERFORMANCE: 2 BAR GRAPHS WITH SCALE -->
     <div class="card shadow-sm border-0 mb-4 rounded-3" style="background: #ffffff;">
         <div class="card-body p-3 p-md-4">
+            
+            <!-- ════════════════════════════════════════════════════════════════ -->
+            <!-- 1ST BAR: TARGET MOTHER COIL LENGTH PER HOUR (RED COLOUR)         -->
+            <!-- ════════════════════════════════════════════════════════════════ -->
             <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
                 <div class="d-flex align-items-center gap-2">
-                    <div class="p-2 rounded-3 bg-success bg-opacity-10 text-success">
+                    <div class="p-2 rounded-3 bg-danger bg-opacity-10 text-danger">
+                        <i class="bi bi-bullseye fs-4"></i>
+                    </div>
+                    <div>
+                        <div class="d-flex align-items-center gap-2">
+                            <h5 class="fw-bold m-0 text-dark">Target Mother Coil Length (Per Hour)</h5>
+                            <span class="badge bg-danger bg-opacity-10 text-danger border border-danger-subtle fw-bold" id="targetHourlyRateBadge">650 m / hour</span>
+                        </div>
+                        <p class="text-muted small m-0" id="targetHourlySubtitle">Sasaran pengeluaran mengikut jam &bull; Sasaran kumulatif mengikut garis masa</p>
+                    </div>
+                </div>
+                <div class="text-end">
+                    <span class="fs-5 fw-bold text-danger" id="targetHourProduced">0 m</span>
+                    <span class="text-muted fs-6"> / </span>
+                    <span class="text-muted fs-6 fw-semibold" id="targetHourMax">10,400 m</span>
+                    <span class="badge bg-danger text-white fs-6 ms-2" id="targetHourBadge">0.0%</span>
+                </div>
+            </div>
+
+            <!-- Target Progress Bar Track (Red) -->
+            <div class="progress rounded-pill shadow-inner my-2" style="height: 22px; background: #fee2e2;">
+                <div class="progress-bar progress-bar-striped progress-bar-animated rounded-pill" 
+                     id="targetProgressBar" 
+                     role="progressbar" 
+                     style="width: 0%; background: linear-gradient(90deg, #dc2626, #ef4444); transition: width 0.8s ease-in-out;" 
+                     aria-valuenow="0" 
+                     aria-valuemin="0" 
+                     aria-valuemax="100">
+                </div>
+            </div>
+
+            <!-- 1st Scale: Hourly Scale Track for Target -->
+            <div class="hourly-scale-wrapper" id="hourlyScaleTargetContainer"></div>
+
+            <hr class="my-3 text-muted opacity-25">
+
+            <!-- ════════════════════════════════════════════════════════════════ -->
+            <!-- 2ND BAR: REAL PRODUCTION PERFORMANCE (ACTUAL)                   -->
+            <!-- ════════════════════════════════════════════════════════════════ -->
+            <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
+                <div class="d-flex align-items-center gap-2">
+                    <div class="p-2 rounded-3 bg-primary bg-opacity-10 text-primary">
                         <i class="bi bi-speedometer fs-4"></i>
                     </div>
                     <div>
-                        <h5 class="fw-bold m-0 text-dark">24-Hour Production Performance</h5>
+                        <div class="d-flex align-items-center gap-2">
+                            <h5 class="fw-bold m-0 text-dark">Real Production Performance (Actual)</h5>
+                            <span class="badge bg-light text-dark border fs-7 d-none" id="productionVarianceBadge"></span>
+                        </div>
                         <p class="text-muted small m-0" id="lenTargetSubtitle">Real-time total Mother Coil length tracking vs. 24-hour target (Default 2 Shifts: 10,400 m / 3 Shifts: 15,600 m)</p>
                     </div>
                 </div>
@@ -228,7 +276,7 @@ include 'header.php';
                 </div>
             </div>
 
-            <!-- Main Progress Bar Track -->
+            <!-- Real Performance Progress Bar Track -->
             <div class="progress rounded-pill shadow-inner my-2" style="height: 22px; background: #e2e8f0;">
                 <div class="progress-bar progress-bar-striped progress-bar-animated rounded-pill" 
                      id="lenProgressBar" 
@@ -240,11 +288,11 @@ include 'header.php';
                 </div>
             </div>
 
-            <!-- Scale Per Hour Track (Start 8, 9, 10... up to 23, or up to 7 AM if post-12am production) -->
+            <!-- 2nd Scale: Hourly Scale Track for Real Performance -->
             <div class="hourly-scale-wrapper" id="hourlyScaleContainer"></div>
 
             <!-- Footer Details -->
-            <div class="d-flex flex-wrap align-items-center justify-content-between small text-muted pt-1">
+            <div class="d-flex flex-wrap align-items-center justify-content-between small text-muted pt-2 border-top">
                 <div>
                     <i class="bi bi-gear me-1"></i>
                     Shift Target (8h): <strong id="lenShiftTarget" class="text-dark">5,200 m</strong> 
@@ -377,7 +425,7 @@ function fetchMonitoringData() {
         });
 }
 
-// Render 24-Hour Length Tracking Progress Bar
+// Render 24-Hour Length Tracking: 2 Bar Graphs (Target Per Hour & Real Performance)
 function renderLengthTracking(tracking) {
     if (!tracking) return;
     
@@ -388,6 +436,28 @@ function renderLengthTracking(tracking) {
     const pct = parseFloat(tracking.progress_percentage) || 0;
     const shiftsCount = parseInt(tracking.shifts_multiplier, 10) || (target24h >= 15600 ? 3 : 2);
 
+    // ── 1ST BAR: TARGET MOTHER COIL LENGTH PER HOUR (RED) ───────────────
+    const hourlyRate = parseFloat(tracking.hourly_target_rate) || Math.round(shiftTarget / 8);
+    const targetProduced = parseFloat(tracking.target_produced_meters) || 0;
+    const targetPct = parseFloat(tracking.target_hour_percentage) || 0;
+
+    const elTargetProd = document.getElementById('targetHourProduced');
+    const elTargetMax  = document.getElementById('targetHourMax');
+    const targetBadge  = document.getElementById('targetHourBadge');
+    const targetBar    = document.getElementById('targetProgressBar');
+    const targetRateBadge = document.getElementById('targetHourlyRateBadge');
+
+    if (elTargetProd) elTargetProd.innerText = Math.round(targetProduced).toLocaleString() + ' m';
+    if (elTargetMax)  elTargetMax.innerText  = Math.round(target24h).toLocaleString() + ' m';
+    if (targetBadge)  targetBadge.innerText  = targetPct.toFixed(1) + '%';
+    if (targetRateBadge) targetRateBadge.innerText = Math.round(hourlyRate).toLocaleString() + ' m / hour';
+
+    if (targetBar) {
+        targetBar.style.width = Math.min(100, Math.max(0, targetPct)) + '%';
+        targetBar.setAttribute('aria-valuenow', targetPct);
+    }
+
+    // ── 2ND BAR: REAL PRODUCTION PERFORMANCE (ACTUAL) ───────────────────
     const elProd = document.getElementById('len24hProduced');
     const elTgt = document.getElementById('len24hTarget');
     const elShiftTgt = document.getElementById('lenShiftTarget');
@@ -396,6 +466,7 @@ function renderLengthTracking(tracking) {
     const elWkTotal = document.getElementById('lenWeeklyTotal');
     const badge = document.getElementById('lenProgressBadge');
     const bar = document.getElementById('lenProgressBar');
+    const varianceBadge = document.getElementById('productionVarianceBadge');
 
     if (elProd) elProd.innerText = Math.round(produced).toLocaleString() + ' m';
     if (elTgt) elTgt.innerText = Math.round(target24h).toLocaleString() + ' m';
@@ -405,6 +476,19 @@ function renderLengthTracking(tracking) {
     if (elWkTotal) elWkTotal.innerText = Math.round(weeklyTotal).toLocaleString() + ' m';
     
     if (badge) badge.innerText = pct.toFixed(1) + '%';
+
+    // Variance badge (Ahead / Behind target pacing)
+    if (varianceBadge) {
+        const diff = Math.round(produced - targetProduced);
+        varianceBadge.classList.remove('d-none');
+        if (diff >= 0) {
+            varianceBadge.className = 'badge bg-success bg-opacity-10 text-success border border-success fs-7';
+            varianceBadge.innerHTML = `<i class="bi bi-arrow-up-right me-1"></i>+${diff.toLocaleString()} m Ahead of Target`;
+        } else {
+            varianceBadge.className = 'badge bg-danger bg-opacity-10 text-danger border border-danger fs-7';
+            varianceBadge.innerHTML = `<i class="bi bi-arrow-down-right me-1"></i>${diff.toLocaleString()} m Behind Target`;
+        }
+    }
 
     const subTitle = document.getElementById('lenTargetSubtitle');
     if (subTitle) {
@@ -430,14 +514,15 @@ function renderLengthTracking(tracking) {
         }
     }
 
-    // Render Scale Per Hour (8, 9, 10... 23, and extended up to 7 AM if post-12am production)
+    // Render Scales for both Target Bar and Real Performance Bar
     const hasPostMidnight = (tracking.has_post_midnight_prod === true || shiftsCount === 3 || target24h >= 15600);
-    renderHourlyScale(hasPostMidnight);
+    renderHourlyScale('hourlyScaleTargetContainer', hasPostMidnight);
+    renderHourlyScale('hourlyScaleContainer', hasPostMidnight);
 }
 
-// Render Hourly Scale Marks along the 24-Hour Progress Track
-function renderHourlyScale(hasPostMidnight) {
-    const container = document.getElementById('hourlyScaleContainer');
+// Render Hourly Scale Marks along the 24-Hour Progress Track for a given container
+function renderHourlyScale(containerId, hasPostMidnight) {
+    const container = document.getElementById(containerId);
     if (!container) return;
 
     // Define hours in the production timeline

@@ -858,6 +858,17 @@ if ($action === 'get_data') {
     $weeklyTotalMeters  = calculateWeeklyMotherCoilLength($conn);
     $progressPercentage = ($target24hMeters > 0) ? min(100.0, round(($lengthProduced24h / $target24hMeters) * 100, 1)) : 0.0;
 
+    // --- Hourly Target Calculations (1st Bar: Red) ---
+    $hourlyTargetRate = round($shiftTargetMeters / 8.0, 1); // e.g. 650 m/hour
+    $totalScaleHours  = ($shiftsMultiplier === 3) ? 24 : 16;
+    
+    $nowTs         = time();
+    $cycleStartTs  = strtotime("{$prodDate} 07:00:00");
+    $elapsedSec    = max(0, $nowTs - $cycleStartTs);
+    $elapsedHours  = min((float)$totalScaleHours, $elapsedSec / 3600.0);
+    $targetProducedMeters = min($target24hMeters, round($elapsedHours * $hourlyTargetRate));
+    $targetHourPercentage = ($target24hMeters > 0) ? min(100.0, round(($targetProducedMeters / $target24hMeters) * 100, 1)) : 0.0;
+
     $recoil_summary = getRecoilingDailyCoilCount($conn);
 
     echo json_encode([
@@ -876,7 +887,12 @@ if ($action === 'get_data') {
             'has_post_midnight_prod' => $hasPostMidnightProd,
             'is_friday'              => $isFriday,
             'progress_percentage'    => $progressPercentage,
-            'weekly_total_meters'    => $weeklyTotalMeters
+            'weekly_total_meters'    => $weeklyTotalMeters,
+            'hourly_target_rate'     => $hourlyTargetRate,
+            'target_produced_meters' => $targetProducedMeters,
+            'target_hour_percentage' => $targetHourPercentage,
+            'elapsed_hours'          => round($elapsedHours, 2),
+            'total_scale_hours'      => $totalScaleHours
         ]
     ]);
     exit;
