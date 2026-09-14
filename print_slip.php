@@ -111,7 +111,7 @@ function fmtNum($v): string {
 <head>
 <meta charset="UTF-8">
 <title>Warehousing Slip — <?= $h($pallet['pallet_no']) ?></title>
-<<style>
+<<style id="basePrintStyle">
     * { box-sizing: border-box; }
     body {
         font-family: Arial, Helvetica, sans-serif;
@@ -121,7 +121,7 @@ function fmtNum($v): string {
         color: #000;
     }
 
-    /* Screen preview sheet styled strictly to 9.5" x 5.5" (half of 9.5" x 11" fanfold) */
+    /* Screen preview sheet styled to 9.5" x 5.5" with user-defined margins in inches */
     .sheet-wrapper {
         display: flex;
         justify-content: center;
@@ -133,7 +133,7 @@ function fmtNum($v): string {
         min-height: 5.5in;
         max-width: 9.5in;
         background: #fff;
-        padding: 3.5mm 5mm;
+        padding: 0.19in 0.5in 0.13in 0.15in; /* Top: 0.19in, Right: 0.5in, Bottom: 0.13in, Left: 0.15in */
         box-sizing: border-box;
         box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
         border: 1px solid #cbd5e1;
@@ -143,20 +143,19 @@ function fmtNum($v): string {
     .slip-header {
         position: relative;
         text-align: center;
-        margin-bottom: 1.5mm;
+        margin-bottom: 2mm;
     }
     .slip-header h1 {
-        font-size: 11pt;
+        font-size: 10.5pt;
         font-weight: bold;
         margin: 0;
         line-height: 1.25;
-        letter-spacing: 0.3px;
     }
     .form-code {
         position: absolute;
         top: 0;
         right: 0;
-        font-size: 8.5pt;
+        font-size: 8pt;
         font-weight: bold;
     }
 
@@ -164,13 +163,12 @@ function fmtNum($v): string {
     table.info-table {
         width: 100%;
         border-collapse: collapse;
-        margin-bottom: 1.5mm;
+        margin-bottom: 2mm;
     }
     table.info-table td {
         border: 1px solid #000000;
-        padding: 0.8mm 2mm;
-        font-size: 9.5pt;
-        line-height: 1.2;
+        padding: 1mm 2mm;
+        font-size: 10pt;
         vertical-align: middle;
     }
     table.info-table td.label {
@@ -186,19 +184,17 @@ function fmtNum($v): string {
     table.data-table {
         width: 100%;
         border-collapse: collapse;
-        margin-bottom: 1.5mm;
+        margin-bottom: 2mm;
     }
     table.data-table th, table.data-table td {
         border: 1px solid #000000;
-        padding: 0.6mm 1mm;
+        padding: 0.8mm 1mm;
         text-align: center;
-        font-size: 9pt;
-        line-height: 1.2;
+        font-size: 9.5pt;
     }
     table.data-table thead th {
         font-weight: bold;
         background: #f5f5f5;
-        padding: 0.8mm 1mm;
     }
     table.data-table col.col-stock   { width: 22%; }
     table.data-table col.col-lot     { width: 18%; }
@@ -207,14 +203,13 @@ function fmtNum($v): string {
     table.data-table col.col-coils   { width: 8%;  }
     table.data-table col.col-roll    { width: 12%; }
     table.data-table col.col-wgt     { width: 16%; }
-    table.data-table td.data-row     { height: 7.2mm; }
+    table.data-table td.data-row     { height: 8mm; }
 
     /* ── Footer signature blocks ────────────────────────── */
     .footer-wrap {
         display: flex;
         align-items: flex-end;
         justify-content: space-between;
-        margin-top: 1mm;
         margin-bottom: 0;
     }
     table.footer-table {
@@ -225,7 +220,7 @@ function fmtNum($v): string {
     }
     table.footer-table th, table.footer-table td {
         border: 1px solid #000000;
-        padding: 0.8mm 1.5mm;
+        padding: 1mm 1.5mm;
         font-size: 8pt;
         vertical-align: top;
     }
@@ -233,19 +228,18 @@ function fmtNum($v): string {
         text-align: center;
         background: #f5f5f5;
         font-weight: bold;
-        height: 4.5mm;
     }
 
     /* Row 2: blank signature space */
     table.footer-table td.sig-space-cell {
-        height: 13mm;
+        height: 15mm;
         vertical-align: top;
     }
     /* Row 3: separate Date row */
     table.footer-table td.date-cell {
-        height: 5mm;
+        height: auto;
         vertical-align: middle;
-        padding: 0.8mm 1.5mm;
+        padding: 1mm 1.5mm;
     }
 
     .sig-line { display: flex; align-items: center; gap: 1.5mm; }
@@ -266,8 +260,7 @@ function fmtNum($v): string {
     .legend {
         white-space: nowrap;
         flex-shrink: 0;
-        font-size: 7pt;
-        font-weight: 500;
+        font-size: 6.5pt;
         padding-right: 2mm;
         box-sizing: border-box;
     }
@@ -329,6 +322,57 @@ function fmtNum($v): string {
     .print-btn.secondary { background: #475569; }
     .print-btn.secondary:hover { background: #334155; }
 
+    /* Margin Adjustment Panel */
+    .margin-panel {
+        background: #fff;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        padding: 8px 14px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 12px;
+        font-size: 12px;
+    }
+    .margin-inputs {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+    .margin-field {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-weight: 600;
+        color: #334155;
+    }
+    .margin-field input {
+        width: 58px;
+        padding: 3px 6px;
+        font-size: 12px;
+        border: 1px solid #94a3b8;
+        border-radius: 4px;
+        text-align: center;
+        background: #f8fafc;
+    }
+    .margin-actions {
+        display: flex;
+        gap: 6px;
+    }
+    .margin-btn {
+        padding: 4px 10px;
+        font-size: 11px;
+        font-weight: 600;
+        border-radius: 4px;
+        border: 1px solid #cbd5e1;
+        background: #f1f5f9;
+        cursor: pointer;
+        color: #334155;
+    }
+    .margin-btn:hover { background: #e2e8f0; }
+
     .print-hints {
         background: #f8fafc;
         border: 1px solid #cbd5e1;
@@ -340,11 +384,14 @@ function fmtNum($v): string {
     }
     .print-hints strong { color: #0f172a; }
 
-    /* ── Print rules (Strict 9.5 inch * 5.5 inch) ────────── */
+    /* ── Print rules (Strict 9.5" × 5.5" with Margins in Inch) ────────── */
     @media print {
         @page {
             size: 9.5in 5.5in;
-            margin: 3.5mm 5mm 3.5mm 5mm;
+            margin-top: 0.19in;
+            margin-bottom: 0.13in;
+            margin-left: 0.15in;
+            margin-right: 0.5in;
         }
         html, body {
             width: 100% !important;
@@ -409,10 +456,23 @@ function fmtNum($v): string {
             <button class="print-btn secondary" onclick="window.close()">Close</button>
         </div>
     </div>
+    <div class="margin-panel">
+        <div class="margin-inputs">
+            <span style="font-weight:700; color:#0f172a; margin-right:4px;">Print Margins (inch):</span>
+            <label class="margin-field">Top: <input type="number" step="0.01" min="0" max="4" id="mTop" value="0.19" onchange="applyMargins()"></label>
+            <label class="margin-field">Bottom: <input type="number" step="0.01" min="0" max="4" id="mBottom" value="0.13" onchange="applyMargins()"></label>
+            <label class="margin-field">Left: <input type="number" step="0.01" min="0" max="4" id="mLeft" value="0.15" onchange="applyMargins()"></label>
+            <label class="margin-field">Right: <input type="number" step="0.01" min="0" max="4" id="mRight" value="0.5" onchange="applyMargins()"></label>
+        </div>
+        <div class="margin-actions">
+            <button type="button" class="margin-btn" onclick="applyMargins()">Apply</button>
+            <button type="button" class="margin-btn" onclick="resetMargins()">Reset</button>
+        </div>
+    </div>
     <div class="print-hints">
         <strong>Printer Settings for Continuous Form (9.5" × 5.5"):</strong><br>
         • <strong>Paper Size:</strong> Select <code>9.5 x 5.5 in</code> (or <code>Half Letter / Fanfold 241 × 140 mm</code>). If not listed, add Custom Paper Size (Width: 9.5", Height: 5.5") in Windows Print Server Properties.<br>
-        • <strong>Margins:</strong> <code>None</code> or <code>Minimum</code>&nbsp;&nbsp;|&nbsp;&nbsp;• <strong>Scale:</strong> <code>100% (Default)</code>&nbsp;&nbsp;|&nbsp;&nbsp;• <strong>Headers/Footers:</strong> <code>Unchecked</code>
+        • <strong>Margins:</strong> <code>None</code> or <code>Minimum</code> (CSS controls top: 0.19", bottom: 0.13", left: 0.15", right: 0.5")&nbsp;&nbsp;|&nbsp;&nbsp;• <strong>Scale:</strong> <code>100%</code>&nbsp;&nbsp;|&nbsp;&nbsp;• <strong>Headers/Footers:</strong> <code>Unchecked</code>
     </div>
 </div>
 
@@ -546,6 +606,65 @@ function syncDateText(val) {
         document.getElementById('prodDateText').textContent = parts[2] + '/' + parts[1] + '/' + parts[0];
     }
 }
+
+function applyMargins() {
+    var top = parseFloat(document.getElementById('mTop').value);
+    var bottom = parseFloat(document.getElementById('mBottom').value);
+    var left = parseFloat(document.getElementById('mLeft').value);
+    var right = parseFloat(document.getElementById('mRight').value);
+
+    if (isNaN(top)) top = 0.19;
+    if (isNaN(bottom)) bottom = 0.13;
+    if (isNaN(left)) left = 0.15;
+    if (isNaN(right)) right = 0.5;
+
+    // Update screen sheet padding
+    var sheet = document.querySelector('.sheet');
+    if (sheet) {
+        sheet.style.paddingTop = top + 'in';
+        sheet.style.paddingRight = right + 'in';
+        sheet.style.paddingBottom = bottom + 'in';
+        sheet.style.paddingLeft = left + 'in';
+    }
+
+    // Update print @page margin rule dynamically
+    var styleTag = document.getElementById('dynamicPrintMargins');
+    if (!styleTag) {
+        styleTag = document.createElement('style');
+        styleTag.id = 'dynamicPrintMargins';
+        document.head.appendChild(styleTag);
+    }
+    styleTag.innerHTML = '@media print { @page { size: 9.5in 5.5in; margin: ' + top + 'in ' + right + 'in ' + bottom + 'in ' + left + 'in !important; } }';
+
+    try {
+        localStorage.setItem('slip_margin_top', top);
+        localStorage.setItem('slip_margin_bottom', bottom);
+        localStorage.setItem('slip_margin_left', left);
+        localStorage.setItem('slip_margin_right', right);
+    } catch(e) {}
+}
+
+function resetMargins() {
+    document.getElementById('mTop').value = '0.19';
+    document.getElementById('mBottom').value = '0.13';
+    document.getElementById('mLeft').value = '0.15';
+    document.getElementById('mRight').value = '0.5';
+    applyMargins();
+}
+
+// Load saved margins on startup or initialize default
+(function() {
+    try {
+        var savedTop = localStorage.getItem('slip_margin_top');
+        if (savedTop !== null) {
+            document.getElementById('mTop').value = savedTop;
+            document.getElementById('mBottom').value = localStorage.getItem('slip_margin_bottom') || '0.13';
+            document.getElementById('mLeft').value = localStorage.getItem('slip_margin_left') || '0.15';
+            document.getElementById('mRight').value = localStorage.getItem('slip_margin_right') || '0.5';
+            applyMargins();
+        }
+    } catch(e) {}
+})();
 </script>
 
 </body>
