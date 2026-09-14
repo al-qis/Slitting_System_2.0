@@ -641,9 +641,16 @@ function renderSectionA(running) {
     }
 
     if (running.is_packing) {
-        // PACKING STATE (Temporary 1-minute completion state)
+        // PACKING STATE (Temporary 5-minute completion state)
         container.className = 'card monitoring-card h-100 packing-hero-card';
-        currentPackingRemaining = running.packing_remaining_seconds || 60;
+        currentPackingRemaining = running.packing_remaining_seconds || 300;
+
+        const formatPackingTime = (sec) => {
+            if (sec <= 0) return '00:00';
+            const m = Math.floor(sec / 60);
+            const s = sec % 60;
+            return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
+        };
 
         body.innerHTML = `
             <div>
@@ -655,7 +662,7 @@ function renderSectionA(running) {
                         <span class="badge bg-secondary ms-2 fs-6">${running.sub_status}</span>
                     </div>
                     <div class="text-end">
-                        <span class="text-warning small fw-bold">Auto-clears in 1 minute</span>
+                        <span class="text-warning small fw-bold">Auto-clears in 5 minutes</span>
                     </div>
                 </div>
 
@@ -683,7 +690,7 @@ function renderSectionA(running) {
             <div class="d-flex justify-content-between align-items-end mt-3 pt-3 border-top border-secondary">
                 <div class="elapsed-timer-box">
                     <div class="text-uppercase small text-warning fw-bold mb-1">Packing Countdown</div>
-                    <div class="packing-countdown-digits" id="packingCountdownDisplay">00:${currentPackingRemaining < 10 ? '0' : ''}${currentPackingRemaining}</div>
+                    <div class="packing-countdown-digits" id="packingCountdownDisplay">${formatPackingTime(currentPackingRemaining)}</div>
                 </div>
                 <div>
                     <span class="badge bg-success fs-6 py-2 px-3">
@@ -699,11 +706,11 @@ function renderSectionA(running) {
             const displayEl = document.getElementById('packingCountdownDisplay');
             if (displayEl) {
                 if (currentPackingRemaining > 0) {
-                    displayEl.innerText = `00:${currentPackingRemaining < 10 ? '0' : ''}${currentPackingRemaining}`;
+                    displayEl.innerText = formatPackingTime(currentPackingRemaining);
                 } else {
                     displayEl.innerText = `00:00`;
                     clearInterval(packingCountdownInterval);
-                    fetchMonitoringData(); // Refresh to clear
+                    fetchMonitoringData(); // Refresh to transition to next running coil
                 }
             }
         }, 1000);
