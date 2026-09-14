@@ -168,16 +168,39 @@ $weeklyTargetDefault = $dailyTargetDefault * 7; // Estimated minimum 14 shifts
     <!-- SECTION 2: CHART & WEEKLY TIME SLOTS TABLE                       -->
     <!-- ════════════════════════════════════════════════════════════════ -->
     <div class="row g-4 mb-4">
-        <!-- Visual Chart -->
-        <div class="col-12 col-xl-5">
-            <div class="card officer-card h-100">
-                <div class="card-header bg-white border-bottom p-3">
-                    <h5 class="fw-bold m-0 text-dark">
-                        <i class="bi bi-bar-chart-line text-primary me-2"></i> Graf Pencapaian Slot Harian
-                    </h5>
+        <!-- Visual Charts: 1st (Current Week) & 2nd (Last Week) -->
+        <div class="col-12 col-xl-5 d-flex flex-column gap-4">
+            <!-- 1st Chart: Current Week -->
+            <div class="card officer-card shadow-sm">
+                <div class="card-header bg-white border-bottom p-3 d-flex justify-content-between align-items-center">
+                    <h6 class="fw-bold m-0 text-dark">
+                        <i class="bi bi-bar-chart-line text-primary me-2"></i> Graf Pencapaian Slot Harian (Minggu Ini)
+                    </h6>
+                    <span class="badge bg-primary bg-opacity-10 text-primary border border-primary border-opacity-25 rounded-pill px-2 py-1 small" id="currentWeekRangeBadge">
+                        Minggu Ini
+                    </span>
                 </div>
-                <div class="card-body p-3 d-flex align-items-center justify-content-center">
-                    <canvas id="weeklyPerformanceChart" style="max-height: 380px; width: 100%;"></canvas>
+                <div class="card-body p-3">
+                    <div style="height: 250px; position: relative;">
+                        <canvas id="weeklyPerformanceChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 2nd Chart: Last Week -->
+            <div class="card officer-card shadow-sm">
+                <div class="card-header bg-white border-bottom p-3 d-flex justify-content-between align-items-center">
+                    <h6 class="fw-bold m-0 text-dark">
+                        <i class="bi bi-clock-history text-secondary me-2"></i> Graf Pencapaian Slot Harian (Minggu Lepas)
+                    </h6>
+                    <span class="badge bg-secondary bg-opacity-10 text-secondary border border-secondary border-opacity-25 rounded-pill px-2 py-1 small" id="lastWeekRangeBadge">
+                        Minggu Lepas
+                    </span>
+                </div>
+                <div class="card-body p-3">
+                    <div style="height: 250px; position: relative;">
+                        <canvas id="lastWeekPerformanceChart"></canvas>
+                    </div>
                 </div>
             </div>
         </div>
@@ -297,7 +320,9 @@ $weeklyTargetDefault = $dailyTargetDefault * 7; // Estimated minimum 14 shifts
 </div>
 
 <script>
-let perfChart = null;
+let currentWeekChart = null;
+let lastWeekChart    = null;
+let perfChart        = null; // Backward compatibility alias
 
 document.addEventListener('DOMContentLoaded', () => {
     initChart();
@@ -318,62 +343,122 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Initialize Chart.js
 function initChart() {
-    const ctx = document.getElementById('weeklyPerformanceChart');
-    if (!ctx) return;
-
-    perfChart = new Chart(ctx, {
-        type: 'bar',
-        data: {
-            labels: ['Isnin', 'Selasa', 'Rabu', 'Khamis', 'Jumaat', 'Sabtu', 'Ahad'],
-            datasets: [
-                {
-                    label: 'Hasil Pengeluaran (m)',
-                    data: [0, 0, 0, 0, 0, 0, 0],
-                    backgroundColor: 'rgba(2, 132, 199, 0.85)',
-                    borderColor: '#0284c7',
-                    borderWidth: 1,
-                    borderRadius: 6
+    // 1. Current Week Performance Chart
+    const ctxCurrent = document.getElementById('weeklyPerformanceChart');
+    if (ctxCurrent) {
+        currentWeekChart = new Chart(ctxCurrent, {
+            type: 'bar',
+            data: {
+                labels: ['Isnin', 'Selasa', 'Rabu', 'Khamis', 'Jumaat', 'Sabtu', 'Ahad'],
+                datasets: [
+                    {
+                        label: 'Hasil Pengeluaran (m)',
+                        data: [0, 0, 0, 0, 0, 0, 0],
+                        backgroundColor: 'rgba(2, 132, 199, 0.85)',
+                        borderColor: '#0284c7',
+                        borderWidth: 1,
+                        borderRadius: 5
+                    },
+                    {
+                        label: 'Sasaran Harian (m)',
+                        data: [0, 0, 0, 0, 0, 0, 0],
+                        type: 'line',
+                        borderColor: '#ef4444',
+                        borderWidth: 2,
+                        borderDash: [5, 5],
+                        fill: false,
+                        pointStyle: 'circle',
+                        pointRadius: 4,
+                        pointBackgroundColor: '#ef4444'
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: { font: { weight: 'bold', size: 11 }, boxWidth: 12 }
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return context.dataset.label + ': ' + Math.round(context.raw).toLocaleString() + ' m';
+                            }
+                        }
+                    }
                 },
-                {
-                    label: 'Sasaran Harian (m)',
-                    data: [0, 0, 0, 0, 0, 0, 0],
-                    type: 'line',
-                    borderColor: '#ef4444',
-                    borderWidth: 2,
-                    borderDash: [5, 5],
-                    fill: false,
-                    pointStyle: 'circle',
-                    pointRadius: 4,
-                    pointBackgroundColor: '#ef4444'
-                }
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: {
-                    position: 'bottom',
-                    labels: { font: { weight: 'bold' } }
-                },
-                tooltip: {
-                    callbacks: {
-                        label: function(context) {
-                            return context.dataset.label + ': ' + Math.round(context.raw).toLocaleString() + ' m';
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: {
+                            callback: function(value) { return value.toLocaleString() + ' m'; }
                         }
                     }
                 }
+            }
+        });
+        perfChart = currentWeekChart;
+    }
+
+    // 2. Last Week Performance Chart
+    const ctxLast = document.getElementById('lastWeekPerformanceChart');
+    if (ctxLast) {
+        lastWeekChart = new Chart(ctxLast, {
+            type: 'bar',
+            data: {
+                labels: ['Isnin', 'Selasa', 'Rabu', 'Khamis', 'Jumaat', 'Sabtu', 'Ahad'],
+                datasets: [
+                    {
+                        label: 'Hasil Pengeluaran (m)',
+                        data: [0, 0, 0, 0, 0, 0, 0],
+                        backgroundColor: 'rgba(99, 102, 241, 0.85)',
+                        borderColor: '#6366f1',
+                        borderWidth: 1,
+                        borderRadius: 5
+                    },
+                    {
+                        label: 'Sasaran Harian (m)',
+                        data: [0, 0, 0, 0, 0, 0, 0],
+                        type: 'line',
+                        borderColor: '#ef4444',
+                        borderWidth: 2,
+                        borderDash: [5, 5],
+                        fill: false,
+                        pointStyle: 'circle',
+                        pointRadius: 4,
+                        pointBackgroundColor: '#ef4444'
+                    }
+                ]
             },
-            scales: {
-                y: {
-                    beginAtZero: true,
-                    ticks: {
-                        callback: function(value) { return value.toLocaleString() + ' m'; }
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: { font: { weight: 'bold', size: 11 }, boxWidth: 12 }
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return context.dataset.label + ': ' + Math.round(context.raw).toLocaleString() + ' m';
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: {
+                            callback: function(value) { return value.toLocaleString() + ' m'; }
+                        }
                     }
                 }
             }
-        }
-    });
+        });
+    }
 }
 
 // Load data from officer_production_ajax.php
@@ -423,8 +508,33 @@ function loadOfficerData() {
                     pbar.style.width = Math.min(100, Math.max(0, overallPct)) + '%';
                 }
 
+                // Range label for current week cycle
+                if (perf.monday_cycle_start && perf.sunday_cycle_end) {
+                    const startD = new Date(perf.monday_cycle_start.replace(/-/g, '/'));
+                    const endD   = new Date(perf.sunday_cycle_end.replace(/-/g, '/'));
+                    const sStr   = ('0' + startD.getDate()).slice(-2) + '/' + ('0' + (startD.getMonth() + 1)).slice(-2);
+                    const eStr   = ('0' + endD.getDate()).slice(-2) + '/' + ('0' + (endD.getMonth() + 1)).slice(-2);
+                    const rangeEl = document.getElementById('currentWeekRangeBadge');
+                    if (rangeEl) rangeEl.innerText = `${sStr} - ${eStr} (Minggu Ini)`;
+                }
+
                 renderSlotsTable(perf.slots);
-                updateChartData(perf.slots);
+                updateCurrentWeekChart(perf.slots);
+            }
+
+            // Update 2nd Chart: Last Week Performance
+            const lastWeekPerf = data.last_week_performance;
+            if (lastWeekPerf) {
+                if (lastWeekPerf.monday_cycle_start && lastWeekPerf.sunday_cycle_end) {
+                    const startD = new Date(lastWeekPerf.monday_cycle_start.replace(/-/g, '/'));
+                    const endD   = new Date(lastWeekPerf.sunday_cycle_end.replace(/-/g, '/'));
+                    const sStr   = ('0' + startD.getDate()).slice(-2) + '/' + ('0' + (startD.getMonth() + 1)).slice(-2);
+                    const eStr   = ('0' + endD.getDate()).slice(-2) + '/' + ('0' + (endD.getMonth() + 1)).slice(-2);
+                    const lastTotal = Math.round(lastWeekPerf.weekly_produced_total || 0).toLocaleString();
+                    const rangeEl = document.getElementById('lastWeekRangeBadge');
+                    if (rangeEl) rangeEl.innerText = `${sStr} - ${eStr} (${lastTotal} m)`;
+                }
+                updateLastWeekChart(lastWeekPerf.slots);
             }
         })
         .catch(err => {
@@ -490,16 +600,33 @@ function renderSlotsTable(slots) {
     tbody.innerHTML = html;
 }
 
-// Update Chart Data
-function updateChartData(slots) {
-    if (!perfChart || !slots) return;
+// Update Current Week Chart
+function updateCurrentWeekChart(slots) {
+    if (!currentWeekChart || !slots) return;
 
     const producedData = slots.map(s => Math.round(s.produced_meters));
     const targetData   = slots.map(s => Math.round(s.target_meters));
 
-    perfChart.data.datasets[0].data = producedData;
-    perfChart.data.datasets[1].data = targetData;
-    perfChart.update();
+    currentWeekChart.data.datasets[0].data = producedData;
+    currentWeekChart.data.datasets[1].data = targetData;
+    currentWeekChart.update();
+}
+
+// Update Last Week Chart
+function updateLastWeekChart(slots) {
+    if (!lastWeekChart || !slots) return;
+
+    const producedData = slots.map(s => Math.round(s.produced_meters));
+    const targetData   = slots.map(s => Math.round(s.target_meters));
+
+    lastWeekChart.data.datasets[0].data = producedData;
+    lastWeekChart.data.datasets[1].data = targetData;
+    lastWeekChart.update();
+}
+
+// Backward compatibility alias
+function updateChartData(slots) {
+    updateCurrentWeekChart(slots);
 }
 
 // Save Shift Target via AJAX
