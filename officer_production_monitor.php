@@ -9,6 +9,7 @@ if (!isset($_SESSION['role'])) {
 require_once 'config.php';
 
 $page_title = "Papan Pemantauan Pengeluaran Pegawai (Officer Monitor)";
+$hide_sidebar = true;
 include 'header.php';
 
 $shiftTarget = (float)getSystemSetting($conn, 'shift_target_meters', '5200');
@@ -72,6 +73,12 @@ $weeklyTargetDefault = $dailyTargetDefault * 7; // Estimated minimum 14 shifts
             </p>
         </div>
         <div class="d-flex align-items-center gap-2">
+            <a href="production_monitoring.php" target="_blank" rel="noopener noreferrer" class="btn btn-outline-info fw-semibold px-3 shadow-sm">
+                <i class="bi bi-tv me-1"></i> Live Production Monitor
+            </a>
+            <a href="index.php" class="btn btn-outline-secondary fw-semibold px-3 shadow-sm">
+                <i class="bi bi-arrow-left me-1"></i> Dashboard
+            </a>
             <button type="button" class="btn btn-outline-primary fw-semibold px-3 shadow-sm" data-bs-toggle="modal" data-bs-target="#targetConfigModal">
                 <i class="bi bi-sliders me-1"></i> Tetapan Sasaran Syif
             </button>
