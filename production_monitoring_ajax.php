@@ -486,8 +486,127 @@ if ($action === 'get_data') {
     $running_data = null;
     $queued_in_pending = [];
 
-    if (!empty($all_active_jobs)) {
-        // SLOT 1: Earliest active job becomes the Current Running Coil
+    // ── 1. Check if a coil recently finished (< 5 minutes / 300s ago) ────────
+    // Step 1: When a coil completes (operator updates actual length), it stops running.
+    // Step 2: 5-minute packing gap before the next waiting coil runs, to allow packing for the finished coil.
+    // During these 5 minutes, Slot 1 displays the finished coil in PACKING state with countdown.
+    // The next coil in queue WAITS in the Waiting List.
+    $packing_duration_sec = 300; // 5 minutes
+    
+    $packing_query = "
+        SELECT 
+            sp.mother_id,
+            sp.lot_no,
+            sp.coil_no,
+            sp.product,
+            GROUP_CONCAT(DISTINCT CASE WHEN sp.customer_name IS NOT NULL AND TRIM(sp.customer_name) != '' AND TRIM(sp.customer_name) != '-' THEN TRIM(sp.customer_name) END SEPARATOR ', ') AS customer_name,
+            MIN(sp.date_in) AS start_time,
+            MAX(sp.updated_at) AS last_updated,
+            COUNT(sp.id) AS total_rolls,
+            MAX(mc.length) AS length
+        FROM slitting_product sp
+        LEFT JOIN mother_coil mc ON sp.mother_id = mc.id
+        WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
+          AND (sp.source IS NULL OR sp.source NOT IN ('recoiling', 'reslit'))
+          AND (sp.original_source IS NULL OR sp.original_source NOT IN ('recoiling', 'reslit'))
+          AND (sp.is_recoiled = 0 OR sp.is_recoiled IS NULL)
+          AND (sp.is_reslitted = 0 OR sp.is_reslitted IS NULL)
+          AND sp.recoiling_id IS NULL
+          AND sp.parent_slit_id IS NULL
+          AND sp.is_completed = 1
+          AND sp.actual_length IS NOT NULL
+          AND sp.actual_length > 0
+          AND sp.mother_id NOT IN (
+              SELECT sp_sub.mother_id 
+              FROM slitting_product sp_sub 
+              WHERE (sp_sub.is_voided = 0 OR sp_sub.is_voided IS NULL)
+                AND (sp_sub.is_completed = 0 OR sp_sub.actual_length IS NULL OR sp_sub.actual_length = 0)
+          )
+        GROUP BY sp.mother_id, sp.lot_no, sp.coil_no, sp.product
+        HAVING MAX(sp.updated_at) >= NOW() - INTERVAL 5 MINUTE
+        ORDER BY MAX(sp.updated_at) DESC
+        LIMIT 1
+    ";
+
+    $last_completed_item = null;
+    $is_in_packing = false;
+    $remaining_packing_sec = 0;
+    $last_completed_ts = 0;
+
+    $packing_res = $conn->query($packing_query);
+    if ($packing_res && $packing_res->num_rows > 0) {
+        $p = $packing_res->fetch_assoc();
+        $last_completed_ts  = strtotime($p['last_updated']);
+        $elapsed_since_done = time() - $last_completed_ts;
+        if ($elapsed_since_done >= 0 && $elapsed_since_done < $packing_duration_sec) {
+            $is_in_packing = true;
+            $remaining_packing_sec = $packing_duration_sec - $elapsed_since_done;
+            $last_completed_item = $p;
+        }
+    }
+
+    if ($is_in_packing && $last_completed_item) {
+        // ── STATE: PACKING (5-minute gap) ─────────────────────────────────
+        // Coil that just finished is in PACKING state.
+        // Waiting coils stay in Waiting List at Position 1, 2, ...
+        $mother_id  = (int)$last_completed_item['mother_id'];
+        $lot_no     = $last_completed_item['lot_no'];
+        $coil_no    = $last_completed_item['coil_no'];
+        $cust_name  = trim($last_completed_item['customer_name'] ?? '');
+        if ($cust_name === '' || $cust_name === '-') {
+            $cust_name = resolveCustomerName($conn, $mother_id, $lot_no, $coil_no);
+        }
+
+        $startTimeStr   = $last_completed_item['start_time'];
+        $startTimestamp = $startTimeStr ? strtotime($startTimeStr) : $last_completed_ts;
+
+        $pack_len = (float)($last_completed_item['length'] ?? 0);
+        if ($pack_len <= 0 && $mother_id > 0) {
+            $stmt_pl = $conn->prepare("SELECT length FROM mother_coil WHERE id = ? LIMIT 1");
+            if ($stmt_pl) {
+                $stmt_pl->bind_param("i", $mother_id);
+                $stmt_pl->execute();
+                $r_pl = $stmt_pl->get_result()->fetch_assoc();
+                $stmt_pl->close();
+                if ($r_pl) {
+                    $pack_len = (float)$r_pl['length'];
+                }
+            }
+        }
+
+        $running_data = [
+            'has_running'       => true,
+            'mother_id'         => $mother_id,
+            'lot_no'            => $lot_no,
+            'coil_no'           => $coil_no,
+            'coil_id_display'   => $lot_no . ' - ' . $coil_no,
+            'product_type'      => $last_completed_item['product'] ?: 'N/A',
+            'mother_length'     => $pack_len,
+            'mother_length_formatted' => ($pack_len > 0) ? number_format($pack_len, 0) . ' m' : '-',
+            'customer_name'     => $cust_name,
+            'process_type'      => 'Slitting',
+            'process_badge_class'=> 'bg-info text-dark',
+            'process_icon'      => 'bi-scissors',
+            'status'            => 'Packing',
+            'sub_status'        => 'Finished Goods Stock',
+            'status_badge_class'=> 'bg-warning text-dark fw-bold',
+            'start_time'        => $startTimeStr ? date('Y-m-d H:i:s', $startTimestamp) : '-',
+            'start_time_fmt'    => $startTimeStr ? date('h:i A', $startTimestamp) : '-',
+            'start_timestamp'   => $startTimestamp,
+            'elapsed_seconds'   => max(0, time() - $startTimestamp),
+            'elapsed_formatted' => formatElapsedTime(time() - $startTimestamp),
+            'is_packing'        => true,
+            'packing_remaining_seconds' => $remaining_packing_sec,
+            'total_rolls'       => (int)$last_completed_item['total_rolls'],
+            'completed_rolls'   => (int)$last_completed_item['total_rolls']
+        ];
+
+        // All pending jobs wait in the Waiting List during packing
+        $queued_in_pending = $all_active_jobs;
+
+    } elseif (!empty($all_active_jobs)) {
+        // ── STATE: RUNNING ────────────────────────────────────────────────
+        // Step 3: After the 5 minutes end, the next coil from waiting queue changes to RUNNING!
         $active_item = $all_active_jobs[0];
         $mother_id   = (int)$active_item['mother_id'];
         $lot_no      = $active_item['lot_no'];
@@ -517,9 +636,45 @@ if ($action === 'get_data') {
             }
         }
 
-        $startTimeStr   = $active_item['start_time'];
-        $startTimestamp = $startTimeStr ? strtotime($startTimeStr) : time();
-        $elapsedSec     = time() - $startTimestamp;
+        // Determine effective start timestamp:
+        // Elapsed time starts from when the 5-minute packing of the previous coil ended (or when this coil began)
+        $rawStartTimeStr = $active_item['start_time'];
+        $rawStartTs      = $rawStartTimeStr ? strtotime($rawStartTimeStr) : time();
+
+        // Check completion time of the most recently finished coil overall
+        $qPrevDone = $conn->query("
+            SELECT MAX(sp.updated_at) AS last_done
+            FROM slitting_product sp
+            WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
+              AND sp.is_completed = 1
+              AND sp.actual_length IS NOT NULL
+              AND sp.actual_length > 0
+              AND sp.mother_id NOT IN (
+                  SELECT sp_sub.mother_id 
+                  FROM slitting_product sp_sub 
+                  WHERE (sp_sub.is_voided = 0 OR sp_sub.is_voided IS NULL)
+                    AND (sp_sub.is_completed = 0 OR sp_sub.actual_length IS NULL OR sp_sub.actual_length = 0)
+              )
+            LIMIT 1
+        ");
+        $effectiveStartTs = $rawStartTs;
+        if ($qPrevDone && $rowPrev = $qPrevDone->fetch_assoc()) {
+            if (!empty($rowPrev['last_done'])) {
+                $prevDoneTs = strtotime($rowPrev['last_done']);
+                $prevPackingEndTs = $prevDoneTs + $packing_duration_sec;
+                $effectiveStartTs = max($rawStartTs, $prevPackingEndTs);
+            }
+        }
+
+        // Ensure start time doesn't exceed current time and is not prior to today's shift start
+        $prodDateNow   = getCurrentProductionDate();
+        $shiftStartTs  = strtotime("{$prodDateNow} 07:00:00");
+        if ($effectiveStartTs < $shiftStartTs) {
+            $effectiveStartTs = $shiftStartTs;
+        }
+        $effectiveStartTs = min(time(), $effectiveStartTs);
+
+        $elapsedSec = time() - $effectiveStartTs;
 
         $proc = resolveProcessDetails(
             $active_item['is_recoiled'] ?? 0,
@@ -566,9 +721,9 @@ if ($action === 'get_data') {
             'status'               => 'Running',
             'sub_status'           => $sub_status,
             'status_badge_class'   => 'bg-primary text-white',
-            'start_time'           => $startTimeStr ? date('Y-m-d H:i:s', $startTimestamp) : '-',
-            'start_time_fmt'       => $startTimeStr ? date('h:i A', $startTimestamp) : '-',
-            'start_timestamp'      => $startTimestamp,
+            'start_time'           => date('Y-m-d H:i:s', $effectiveStartTs),
+            'start_time_fmt'       => date('h:i A', $effectiveStartTs),
+            'start_timestamp'      => $effectiveStartTs,
             'elapsed_seconds'      => max(0, $elapsedSec),
             'elapsed_formatted'    => formatElapsedTime($elapsedSec),
             'is_packing'           => false,
@@ -581,91 +736,7 @@ if ($action === 'get_data') {
         $queued_in_pending = array_slice($all_active_jobs, 1);
 
     } else {
-        // No active running coil: check if a coil recently finished (< 60s ago -> PACKING state)
-        $packing_query = "
-            SELECT 
-                sp.mother_id,
-                sp.lot_no,
-                sp.coil_no,
-                sp.product,
-                GROUP_CONCAT(DISTINCT CASE WHEN sp.customer_name IS NOT NULL AND TRIM(sp.customer_name) != '' AND TRIM(sp.customer_name) != '-' THEN TRIM(sp.customer_name) END SEPARATOR ', ') AS customer_name,
-                MIN(sp.date_in) AS start_time,
-                MAX(sp.updated_at) AS last_updated,
-                COUNT(sp.id) AS total_rolls,
-                MAX(mc.length) AS length
-            FROM slitting_product sp
-            LEFT JOIN mother_coil mc ON sp.mother_id = mc.id
-            WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
-              AND sp.is_completed = 1
-              AND sp.actual_length IS NOT NULL
-              AND sp.actual_length > 0
-            GROUP BY sp.mother_id, sp.lot_no, sp.coil_no, sp.product
-            HAVING MAX(sp.updated_at) >= NOW() - INTERVAL 1 MINUTE
-            ORDER BY MAX(sp.updated_at) DESC
-            LIMIT 1
-        ";
-
-        $packing_res = $conn->query($packing_query);
-        if ($packing_res && $packing_res->num_rows > 0) {
-            $p = $packing_res->fetch_assoc();
-            $mother_id  = (int)$p['mother_id'];
-            $lot_no     = $p['lot_no'];
-            $coil_no    = $p['coil_no'];
-            $lastUpdTs  = strtotime($p['last_updated']);
-            $elapsedSinceDone = time() - $lastUpdTs;
-            $remainingPackingSec = max(0, 60 - $elapsedSinceDone);
-
-            if ($remainingPackingSec > 0) {
-                $cust_name = trim($p['customer_name'] ?? '');
-                if ($cust_name === '' || $cust_name === '-') {
-                    $cust_name = resolveCustomerName($conn, $mother_id, $lot_no, $coil_no);
-                }
-
-                $startTimeStr   = $p['start_time'];
-                $startTimestamp = $startTimeStr ? strtotime($startTimeStr) : $lastUpdTs;
-
-                $pack_len = (float)($p['length'] ?? 0);
-                if ($pack_len <= 0 && $mother_id > 0) {
-                    $stmt_pl = $conn->prepare("SELECT length FROM mother_coil WHERE id = ? LIMIT 1");
-                    if ($stmt_pl) {
-                        $stmt_pl->bind_param("i", $mother_id);
-                        $stmt_pl->execute();
-                        $r_pl = $stmt_pl->get_result()->fetch_assoc();
-                        $stmt_pl->close();
-                        if ($r_pl) {
-                            $pack_len = (float)$r_pl['length'];
-                        }
-                    }
-                }
-
-                $running_data = [
-                    'has_running'       => true,
-                    'mother_id'         => $mother_id,
-                    'lot_no'            => $lot_no,
-                    'coil_no'           => $coil_no,
-                    'coil_id_display'   => $lot_no . ' - ' . $coil_no,
-                    'product_type'      => $p['product'] ?: 'N/A',
-                    'mother_length'     => $pack_len,
-                    'mother_length_formatted' => ($pack_len > 0) ? number_format($pack_len, 0) . ' m' : '-',
-                    'customer_name'     => $cust_name,
-                    'status'            => 'Packing',
-                    'sub_status'        => 'Finished Goods Stock',
-                    'status_badge_class'=> 'bg-warning text-dark fw-bold',
-                    'start_time'        => $startTimeStr ? date('Y-m-d H:i:s', $startTimestamp) : '-',
-                    'start_time_fmt'    => $startTimeStr ? date('h:i A', $startTimestamp) : '-',
-                    'start_timestamp'   => $startTimestamp,
-                    'elapsed_seconds'   => max(0, time() - $startTimestamp),
-                    'elapsed_formatted' => formatElapsedTime(time() - $startTimestamp),
-                    'is_packing'        => true,
-                    'packing_remaining_seconds' => $remainingPackingSec,
-                    'total_rolls'       => (int)$p['total_rolls'],
-                    'completed_rolls'   => (int)$p['total_rolls']
-                ];
-            }
-        }
-    }
-
-    if (!$running_data) {
+        // IDLE STATE: No coil running and no coil in packing
         $running_data = [
             'has_running' => false,
             'message'     => 'No coil currently in active production. Machine Idle.'
