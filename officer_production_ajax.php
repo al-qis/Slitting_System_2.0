@@ -13,15 +13,20 @@ require_once __DIR__ . '/config.php';
 
 // Helper Function: Compute 7 daily slots (Isnin 7:01 AM - Selasa 7:00 AM) based on Date In
 if (!function_exists('getWeeklyPerformanceSlots')) {
-    function getWeeklyPerformanceSlots(mysqli $conn, float $shiftTarget = 5200.0): array {
+    function getWeeklyPerformanceSlots(mysqli $conn, float $shiftTarget = 5200.0, ?int $customMondayTimestamp = null): array {
         $now = time();
-        $currentDayOfWeek = (int)date('N', $now); // 1 (Mon) .. 7 (Sun)
-        $currentHourMin   = date('H:i:s', $now);
 
-        if ($currentDayOfWeek === 1 && $currentHourMin < '07:01:00') {
-            $mondayTimestamp = strtotime('last monday 07:01:00', $now);
+        if ($customMondayTimestamp !== null) {
+            $mondayTimestamp = $customMondayTimestamp;
         } else {
-            $mondayTimestamp = strtotime('monday this week 07:01:00', $now);
+            $currentDayOfWeek = (int)date('N', $now); // 1 (Mon) .. 7 (Sun)
+            $currentHourMin   = date('H:i:s', $now);
+
+            if ($currentDayOfWeek === 1 && $currentHourMin < '07:01:00') {
+                $mondayTimestamp = strtotime('last monday 07:01:00', $now);
+            } else {
+                $mondayTimestamp = strtotime('monday this week 07:01:00', $now);
+            }
         }
 
         $days = ['Isnin', 'Selasa', 'Rabu', 'Khamis', 'Jumaat', 'Sabtu', 'Ahad'];
@@ -230,7 +235,13 @@ if ($action === 'get_data') {
     }
 
     $weeklyData = getWeeklyPerformanceSlots($conn, $shiftTarget);
-    $lastReset  = getSystemSetting($conn, 'last_weekly_reset_at', '-');
+    
+    // Calculate Last Week's performance slots
+    $currentMondayTs  = strtotime($weeklyData['monday_cycle_start']);
+    $lastWeekMondayTs = strtotime('-7 days', $currentMondayTs);
+    $lastWeekData     = getWeeklyPerformanceSlots($conn, $shiftTarget, $lastWeekMondayTs);
+
+    $lastReset = getSystemSetting($conn, 'last_weekly_reset_at', '-');
 
     echo json_encode([
         'success'               => true,
@@ -239,7 +250,8 @@ if ($action === 'get_data') {
         'daily_target_meters'   => $weeklyData['daily_target_meters'],
         'weekly_target_meters'  => $weeklyData['weekly_target_meters'],
         'last_weekly_reset_at'  => $lastReset,
-        'weekly_performance'    => $weeklyData
+        'weekly_performance'    => $weeklyData,
+        'last_week_performance' => $lastWeekData
     ]);
     exit;
 }
