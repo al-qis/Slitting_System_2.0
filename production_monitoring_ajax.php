@@ -164,110 +164,89 @@ function resolveProcessDetails($is_recoiled, $is_reslitted, $original_source) {
     ];
 }
 
-// Helper: Calculate 24-Hour Production Length exclusively from Mother Coil length (excluding recoil/reslit)
+// Helper: Calculate 24-Hour Production Length exclusively from Completed Mother Coil length (excluding recoil/reslit)
 function calculate24HourMotherCoilLength(mysqli $conn): float {
+    $now = time();
+    $currentDayOfWeek = (int)date('N', $now);
+    $currentHourMin   = date('H:i:s', $now);
+
     $prodDate   = getCurrentProductionDate();
-    $cycleStart = "{$prodDate} 07:00:00";
+    $cycleStart = "{$prodDate} 07:01:00";
     $nextDate   = date('Y-m-d', strtotime('+1 day', strtotime($prodDate)));
-    $cycleEnd   = "{$nextDate} 06:59:59";
+    $cycleEnd   = "{$nextDate} 07:00:59";
 
-    $sql = "
-        SELECT COALESCE(SUM(mc.length), 0) AS total_len
-        FROM mother_coil mc
-        WHERE mc.id IN (
-            SELECT completed_mids.mother_id FROM (
-                SELECT sp.mother_id
-                FROM slitting_product sp
-                WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
-                  AND (sp.source IS NULL OR sp.source NOT IN ('recoiling', 'reslit'))
-                  AND (sp.original_source IS NULL OR sp.original_source NOT IN ('recoiling', 'reslit'))
-                  AND (sp.is_recoiled = 0 OR sp.is_recoiled IS NULL)
-                  AND (sp.is_reslitted = 0 OR sp.is_reslitted IS NULL)
-                  AND sp.recoiling_id IS NULL
-                  AND sp.parent_slit_id IS NULL
-                  AND (sp.is_completed = 1 OR (sp.actual_length IS NOT NULL AND sp.actual_length > 0))
-                GROUP BY sp.mother_id
-                HAVING COALESCE(MAX(sp.date_out), MIN(sp.date_in)) >= '{$cycleStart}'
-                   AND COALESCE(MAX(sp.date_out), MIN(sp.date_in)) <= '{$cycleEnd}'
-            ) AS completed_mids
-
-            UNION
-
-            SELECT running_mids.mother_id FROM (
-                SELECT sp_run.mother_id
-                FROM slitting_product sp_run
-                WHERE (sp_run.is_voided = 0 OR sp_run.is_voided IS NULL)
-                  AND (sp_run.is_completed = 0 OR sp_run.actual_length IS NULL OR sp_run.actual_length = 0)
-                  AND (sp_run.source IS NULL OR sp_run.source NOT IN ('recoiling', 'reslit'))
-                  AND (sp_run.original_source IS NULL OR sp_run.original_source NOT IN ('recoiling', 'reslit'))
-                  AND (sp_run.is_recoiled = 0 OR sp_run.is_recoiled IS NULL)
-                  AND (sp_run.is_reslitted = 0 OR sp_run.is_reslitted IS NULL)
-                  AND sp_run.recoiling_id IS NULL
-                  AND sp_run.parent_slit_id IS NULL
-                ORDER BY sp_run.date_in ASC, sp_run.id ASC
-                LIMIT 1
-            ) AS running_mids
-        )
-    ";
-
-    $stmt = $conn->query($sql);
-    if ($stmt && $row = $stmt->fetch_assoc()) {
-        return (float)$row['total_len'];
+    $stmt = $conn->prepare("
+        SELECT COALESCE(SUM(mc_len.length), 0) AS total_len
+        FROM (
+            SELECT mc.id, mc.length, COALESCE(mc.date_out, MIN(sp.date_in)) AS slit_time
+            FROM mother_coil mc
+            JOIN slitting_product sp ON sp.mother_id = mc.id
+            WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
+              AND (sp.source IS NULL OR sp.source NOT IN ('recoiling', 'reslit'))
+              AND (sp.original_source IS NULL OR sp.original_source NOT IN ('recoiling', 'reslit'))
+              AND (sp.is_recoiled = 0 OR sp.is_recoiled IS NULL)
+              AND (sp.is_reslitted = 0 OR sp.is_reslitted IS NULL)
+              AND sp.recoiling_id IS NULL
+              AND sp.parent_slit_id IS NULL
+              AND (sp.is_completed = 1 OR (sp.actual_length IS NOT NULL AND sp.actual_length > 0))
+            GROUP BY mc.id, mc.length
+            HAVING slit_time >= ? AND slit_time <= ?
+        ) AS mc_len
+    ");
+    if ($stmt) {
+        $stmt->bind_param("ss", $cycleStart, $cycleEnd);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        if ($row = $res->fetch_assoc()) {
+            $val = (float)$row['total_len'];
+            $stmt->close();
+            return $val;
+        }
+        $stmt->close();
     }
 
     return 0.0;
 }
 
-// Helper: Calculate Weekly Production Length exclusively from Mother Coil length (excluding recoil/reslit)
+// Helper: Calculate Weekly Production Length exclusively from Completed Mother Coil length (excluding recoil/reslit)
 function calculateWeeklyMotherCoilLength(mysqli $conn): float {
-    $mondayTs  = strtotime('monday this week');
-    $mondayStr = date('Y-m-d 00:00:00', $mondayTs);
+    $now = time();
+    $currentDayOfWeek = (int)date('N', $now);
+    $currentHourMin   = date('H:i:s', $now);
+    if ($currentDayOfWeek === 1 && $currentHourMin < '07:01:00') {
+        $mondayTimestamp = strtotime('last monday 07:01:00', $now);
+    } else {
+        $mondayTimestamp = strtotime('monday this week 07:01:00', $now);
+    }
+    $mondayStr    = date('Y-m-d H:i:s', $mondayTimestamp);
+    $sundayEndStr = date('Y-m-d H:i:s', strtotime('+7 days -1 second', $mondayTimestamp));
 
-    $sql = "
-        SELECT COALESCE(SUM(mc.length), 0) AS total_len
-        FROM mother_coil mc
-        WHERE mc.id IN (
-            SELECT completed_mids.mother_id FROM (
-                SELECT sp.mother_id
-                FROM slitting_product sp
-                WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
-                  AND (sp.source IS NULL OR sp.source NOT IN ('recoiling', 'reslit'))
-                  AND (sp.original_source IS NULL OR sp.original_source NOT IN ('recoiling', 'reslit'))
-                  AND (sp.is_recoiled = 0 OR sp.is_recoiled IS NULL)
-                  AND (sp.is_reslitted = 0 OR sp.is_reslitted IS NULL)
-                  AND sp.recoiling_id IS NULL
-                  AND sp.parent_slit_id IS NULL
-                  AND (sp.is_completed = 1 OR (sp.actual_length IS NOT NULL AND sp.actual_length > 0))
-                GROUP BY sp.mother_id
-                HAVING COALESCE(MAX(sp.date_out), MIN(sp.date_in)) >= ?
-            ) AS completed_mids
-
-            UNION
-
-            SELECT running_mids.mother_id FROM (
-                SELECT sp_run.mother_id
-                FROM slitting_product sp_run
-                WHERE (sp_run.is_voided = 0 OR sp_run.is_voided IS NULL)
-                  AND (sp_run.is_completed = 0 OR sp_run.actual_length IS NULL OR sp_run.actual_length = 0)
-                  AND (sp_run.source IS NULL OR sp_run.source NOT IN ('recoiling', 'reslit'))
-                  AND (sp_run.original_source IS NULL OR sp_run.original_source NOT IN ('recoiling', 'reslit'))
-                  AND (sp_run.is_recoiled = 0 OR sp_run.is_recoiled IS NULL)
-                  AND (sp_run.is_reslitted = 0 OR sp_run.is_reslitted IS NULL)
-                  AND sp_run.recoiling_id IS NULL
-                  AND sp_run.parent_slit_id IS NULL
-                ORDER BY sp_run.date_in ASC, sp_run.id ASC
-                LIMIT 1
-            ) AS running_mids
-        )
-    ";
-    $stmt = $conn->prepare($sql);
+    $stmt = $conn->prepare("
+        SELECT COALESCE(SUM(mc_len.length), 0) AS total_len
+        FROM (
+            SELECT mc.id, mc.length, COALESCE(mc.date_out, MIN(sp.date_in)) AS slit_time
+            FROM mother_coil mc
+            JOIN slitting_product sp ON sp.mother_id = mc.id
+            WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
+              AND (sp.source IS NULL OR sp.source NOT IN ('recoiling', 'reslit'))
+              AND (sp.original_source IS NULL OR sp.original_source NOT IN ('recoiling', 'reslit'))
+              AND (sp.is_recoiled = 0 OR sp.is_recoiled IS NULL)
+              AND (sp.is_reslitted = 0 OR sp.is_reslitted IS NULL)
+              AND sp.recoiling_id IS NULL
+              AND sp.parent_slit_id IS NULL
+              AND (sp.is_completed = 1 OR (sp.actual_length IS NOT NULL AND sp.actual_length > 0))
+            GROUP BY mc.id, mc.length
+            HAVING slit_time >= ? AND slit_time <= ?
+        ) AS mc_len
+    ");
     if ($stmt) {
-        $stmt->bind_param("s", $mondayStr);
+        $stmt->bind_param("ss", $mondayStr, $sundayEndStr);
         $stmt->execute();
         $res = $stmt->get_result();
         if ($row = $res->fetch_assoc()) {
+            $val = (float)$row['total_len'];
             $stmt->close();
-            return (float)$row['total_len'];
+            return $val;
         }
         $stmt->close();
     }
@@ -854,8 +833,22 @@ if ($action === 'get_data') {
     $shiftsMultiplier    = $hasPostMidnightProd ? 3 : 2;
     $target24hMeters     = $shiftTargetMeters * $shiftsMultiplier; // Default: 10,400 m (2 shifts), becomes 15,600 m if production after 12am (or after 1am on Friday)
 
-    $lengthProduced24h  = calculate24HourMotherCoilLength($conn);
-    $weeklyTotalMeters  = calculateWeeklyMotherCoilLength($conn);
+    $lengthCompleted24h = calculate24HourMotherCoilLength($conn);
+    $weeklyCompletedMeters = calculateWeeklyMotherCoilLength($conn);
+
+    // Active coil currently being cut (running)
+    $runningCoilCount = 0;
+    $runningCoilLen   = 0.0;
+    $runningCoilId    = '';
+    if (!empty($running_data) && !empty($running_data['has_running'])) {
+        $runningCoilCount = 1;
+        $runningCoilLen   = (float)($running_data['mother_length'] ?? 0.0);
+        $runningCoilId    = (string)($running_data['coil_id_display'] ?? '');
+    }
+
+    // Total 24h produced includes completed coils + active coil currently being cut
+    $lengthProduced24h  = $lengthCompleted24h + $runningCoilLen;
+    $weeklyTotalMeters  = $weeklyCompletedMeters + $runningCoilLen;
     $progressPercentage = ($target24hMeters > 0) ? min(100.0, round(($lengthProduced24h / $target24hMeters) * 100, 1)) : 0.0;
 
     // --- Hourly Target Calculations (1st Bar: Red) ---
@@ -881,6 +874,10 @@ if ($action === 'get_data') {
         'recoil_summary'  => $recoil_summary,
         'length_tracking' => [
             'length_produced_24h'    => $lengthProduced24h,
+            'length_completed_24h'   => $lengthCompleted24h,
+            'running_coil_count'     => $runningCoilCount,
+            'running_coil_length'    => $runningCoilLen,
+            'running_coil_id'        => $runningCoilId,
             'shift_target_meters'    => $shiftTargetMeters,
             'target_24h_meters'      => $target24hMeters,
             'shifts_multiplier'      => $shiftsMultiplier,
