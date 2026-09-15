@@ -1977,7 +1977,7 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                                             <?php endif; ?>
                                         </td>
                                         <td>
-                                            <span class="fw-semibold"><?= number_format((float)$r['width'], 0) ?> mm</span>
+                                            <span class="fw-semibold"><?= (float)$r['width'] ?> mm</span>
                                             <?php $curLength = (!empty($r['actual_length']) && $r['actual_length'] > 0) ? $r['actual_length'] : $r['length']; ?>
                                             <div class="input-group input-group-sm mt-1">
                                                 <input type="number" step="0.01" min="0"
