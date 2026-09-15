@@ -870,14 +870,32 @@ class FinishedProductController extends Controller
             $mother_data = $source_data;
         }
 
+        $isLeftoverCut = $from_stock && (($source_data['source_type'] ?? '') === 'slitting_cut_into_2');
+        $slittingPlan = [];
+        if (!$isLeftoverCut && $mother_id) {
+            $planStmt = $conn->prepare("
+                SELECT roll_seq, planned_width, customer_name, ref_no
+                FROM slitting_plans
+                WHERE mother_coil_id = ?
+                ORDER BY sort_order ASC, id ASC
+            ");
+            if ($planStmt) {
+                $planStmt->bind_param("i", $mother_id);
+                $planStmt->execute();
+                $slittingPlan = $planStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $planStmt->close();
+            }
+        }
+
         $this->render('slitting/add', [
-            'from_stock'  => $from_stock,
-            'source_data' => $source_data,
-            'mother_data' => $mother_data,
-            'source_type' => $source_type,
-            'mother_id'   => $mother_id,
-            'stock_id'    => $stock_id,
-            'conn'        => $conn,
+            'from_stock'   => $from_stock,
+            'source_data'  => $source_data,
+            'mother_data'  => $mother_data,
+            'source_type'  => $source_type,
+            'mother_id'    => $mother_id,
+            'stock_id'     => $stock_id,
+            'slittingPlan' => $slittingPlan,
+            'conn'         => $conn,
         ]);
     }
 
