@@ -253,7 +253,7 @@ $stmt->close();
                         <?php endif; ?>
                     </td>
                     <td class="readonly-cell">
-                        <?= number_format((float)$r['width'], 0) ?> mm<br>
+                        <?= (float)$r['width'] ?> mm<br>
                         <?php $curLength = (!empty($r['actual_length']) && $r['actual_length'] > 0) ? $r['actual_length'] : $r['length']; ?>
                         <div class="input-group input-group-sm mt-1" style="max-width:120px;">
                             <input type="number" step="0.01" min="0"
