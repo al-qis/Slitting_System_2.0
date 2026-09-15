@@ -100,7 +100,7 @@ $dateStr = $pallet['created_at'] ? date('d/m/Y', strtotime($pallet['created_at']
 
 $h = fn($s) => htmlspecialchars((string)($s ?? ''), ENT_QUOTES, 'UTF-8');
 
-function fmtNum($v): string {
+function fmtNum(mixed$v): string {
     if ($v === null || $v === '' || (float)$v == 0) return '';
     $f = number_format((float)$v, 2, '.', '');
     return str_ends_with($f, '.00') ? substr($f, 0, -3) : $f;
