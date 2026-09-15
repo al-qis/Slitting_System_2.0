@@ -346,7 +346,7 @@ const sourceData = {
    (length to use) is still typed in by the operator — the plan has
    no opinion on that, and your existing calculateStock() keeps
    working out the leftover balance exactly as it does today.
-   No plan → this whole block is a no-op.
+   No plan → defaults to 1 roll so form and inputs appear immediately!
 ════════════════════════════════════════════════════════════ */
 const slittingPlan = <?= json_encode($slittingPlan, JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>;
 
@@ -367,94 +367,129 @@ function applySlittingPlanToForm() {
     if (!slittingPlan || slittingPlan.length === 0) return;
 
     // Match the number of output rolls to the plan, then build the table.
-    document.getElementById('total').value = String(slittingPlan.length);
+    const totalSelect = document.getElementById('total');
+    if (totalSelect) totalSelect.value = String(slittingPlan.length);
     generateForm();
     fillWidthsFromPlan();
 }
 
 document.addEventListener('DOMContentLoaded', function () {
-    if (!slittingPlan || slittingPlan.length === 0) return; // no plan — load as-is
+    // If a slitting plan is present, inform the operator with a banner
+    if (typeof slittingPlan !== 'undefined' && slittingPlan && slittingPlan.length > 0) {
+        const banner = document.createElement('div');
+        banner.className = 'alert alert-info py-2 mb-3';
+        banner.innerHTML = `<i class="bi bi-clipboard-check me-2"></i>A slitting plan is available for this coil — ${slittingPlan.length} roll(s) planned. Choose Normal or Cut Into 2 below and it'll be applied automatically.`;
+        const cutTypeCard = document.querySelector('form .card.shadow-sm.mb-4');
+        if (cutTypeCard) cutTypeCard.parentNode.insertBefore(banner, cutTypeCard);
+    }
 
-    // Let the operator know a plan is ready, without touching any field yet.
-    const banner = document.createElement('div');
-    banner.className = 'alert alert-info py-2 mb-3';
-    banner.innerHTML = `<i class="bi bi-clipboard-check me-2"></i>A slitting plan is available for this coil — ${slittingPlan.length} roll(s) planned. Choose Normal or Cut Into 2 below and it'll be applied automatically.`;
-    const cutTypeCard = document.querySelector('form .card.shadow-sm.mb-4');
-    if (cutTypeCard) cutTypeCard.parentNode.insertBefore(banner, cutTypeCard);
-
-    // Apply the plan the moment the operator picks a cut type themselves.
-    // These listeners run AFTER the existing inline onchange="handleCutTypeChange()"
-    // (registered earlier, during page parse), so the section is already
-    // shown/hidden correctly before we fill anything in.
-    document.getElementById('cutNormal').addEventListener('change', applySlittingPlanToForm);
-    document.getElementById('cutInto2').addEventListener('change', applySlittingPlanToForm);
-
-    // If the operator manually changes the roll count afterward, the total
-    // dropdown's own onchange="generateForm()" (inline, fires first) rebuilds
-    // the table from scratch and wipes every width. This listener runs right
-    // after and reapplies the plan's widths to whichever rolls still match it.
-    document.getElementById('total').addEventListener('change', fillWidthsFromPlan);
+    // If total changes and a plan exists, re-apply plan widths
+    const totalSelect = document.getElementById('total');
+    if (totalSelect) {
+        totalSelect.addEventListener('change', function() {
+            if (typeof slittingPlan !== 'undefined' && slittingPlan && slittingPlan.length > 0) {
+                fillWidthsFromPlan();
+            }
+        });
+    }
 });
 
 function calculateStock() {
-    const slitQty = parseFloat(document.getElementById('slitQuantity').value) || 0;
+    const slitQtyInput = document.getElementById('slitQuantity');
+    const slitQty = parseFloat(slitQtyInput ? slitQtyInput.value : 0) || 0;
     const stock = sourceData.originalLength - slitQty;
     const stockField = document.getElementById('stock');
     
-    stockField.value = stock.toFixed(2);
-    stockField.style.color = stock < 0 ? '#dc3545' : (stock === 0 ? '#ffc107' : '#198754');
+    if (stockField) {
+        stockField.value = stock.toFixed(2);
+        stockField.style.color = stock < 0 ? '#dc3545' : (stock === 0 ? '#ffc107' : '#198754');
+    }
 
     // Sync length to all rolls in "Cut Into 2" mode
-    const lengths = document.querySelectorAll('.length-input');
-    lengths.forEach(input => {
-        if(document.querySelector('input[name="cut_type"]:checked').value === 'cut_into_2') {
-            input.value = slitQty;
-        }
-    });
+    const checkedCut = document.querySelector('input[name="cut_type"]:checked');
+    if (checkedCut && checkedCut.value === 'cut_into_2') {
+        const lengths = document.querySelectorAll('.length-input');
+        lengths.forEach(input => {
+            input.value = slitQty > 0 ? slitQty : 0;
+        });
+    }
 }
 
 function handleCutTypeChange(){
-    const cutType = document.querySelector('input[name="cut_type"]:checked')?.value;
+    const checkedCut = document.querySelector('input[name="cut_type"]:checked');
+    const cutType = checkedCut ? checkedCut.value : '';
     const outputStepTitle = document.getElementById('outputStepTitle');
-    
+    const cutInto2Section = document.getElementById('cutInto2Section');
+    const rollCountSection = document.getElementById('rollCountSection');
+    const normalCutSfcSection = document.getElementById('normalCutSfcSection');
+    const slitQtyInput = document.getElementById('slitQuantity');
+    const totalSelect = document.getElementById('total');
+
+    if (!cutType) return;
+
     // UI Toggles
-    document.getElementById('cutInto2Section').style.display = (cutType === 'cut_into_2') ? 'block' : 'none';
-    document.getElementById('rollCountSection').style.display = (cutType) ? 'block' : 'none';
-    document.getElementById('normalCutSfcSection').style.display = (cutType === 'normal') ? 'block' : 'none';
+    if (cutInto2Section) cutInto2Section.style.display = (cutType === 'cut_into_2') ? 'block' : 'none';
+    if (rollCountSection) rollCountSection.style.display = 'block';
+    if (normalCutSfcSection) normalCutSfcSection.style.display = (cutType === 'normal') ? 'block' : 'none';
+    if (slitQtyInput) slitQtyInput.required = (cutType === 'cut_into_2');
     
     // Fix Step Numbering
-    if (cutType === 'cut_into_2') {
-        outputStepTitle.innerText = "3. Output Configuration";
-    } else {
-        outputStepTitle.innerText = "2. Output Configuration";
+    if (outputStepTitle) {
+        outputStepTitle.innerText = (cutType === 'cut_into_2') ? "3. Output Configuration" : "2. Output Configuration";
     }
 
-    // Reset output form
-    document.getElementById('total').value = '';
-    document.getElementById('slittingForm').innerHTML = '';
-    document.getElementById('submitBtn').style.display = 'none';
+    // Determine roll count:
+    // If a plan exists, use plan length.
+    // If no plan, keep existing choice or default to 1 roll so form appears immediately!
+    if (typeof slittingPlan !== 'undefined' && slittingPlan && slittingPlan.length > 0) {
+        totalSelect.value = String(slittingPlan.length);
+    } else if (!totalSelect.value || parseInt(totalSelect.value) < 1) {
+        totalSelect.value = '1';
+    }
+
+    // Immediately generate rolls form
+    generateForm();
+
+    // If there is a plan, fill planned widths
+    if (typeof slittingPlan !== 'undefined' && slittingPlan && slittingPlan.length > 0) {
+        fillWidthsFromPlan();
+    }
+
+    // If Cut Into 2, calculate stock and focus slit quantity
+    if (cutType === 'cut_into_2') {
+        calculateStock();
+        if (slitQtyInput && !slitQtyInput.value) {
+            slitQtyInput.focus();
+        }
+    }
 }
 
 function generateForm(){
-    const total = parseInt(document.getElementById('total').value);
+    const totalSelect = document.getElementById('total');
+    const total = parseInt(totalSelect ? totalSelect.value : 0);
     const container = document.getElementById('slittingForm');
-    const cutType = document.querySelector('input[name="cut_type"]:checked').value;
+    const checkedCut = document.querySelector('input[name="cut_type"]:checked');
+    const cutType = checkedCut ? checkedCut.value : 'normal';
 
-    if (!total) {
-        container.innerHTML = '';
-        document.getElementById('submitBtn').style.display = 'none';
+    if (!total || total < 1) {
+        if (container) container.innerHTML = '';
+        const submitBtn = document.getElementById('submitBtn');
+        if (submitBtn) submitBtn.style.display = 'none';
         return;
     }
 
-    // Determine the default length based on selection
-    let defaultLength = (cutType === 'cut_into_2')
-        ? (parseFloat(document.getElementById('slitQuantity').value) || 0)
+    // Preserve previously typed values if the user already entered something
+    const prevWidths = Array.from(document.querySelectorAll('.width-input')).map(i => i.value);
+    const prevCutLetters = Array.from(document.querySelectorAll('select[name="cut_letter[]"]')).map(s => s.value);
+    const prevSfcs = Array.from(document.querySelectorAll('.sfc-checkbox')).map(c => c.checked);
+
+    // Determine default length based on selection
+    const slitVal = parseFloat(document.getElementById('slitQuantity')?.value) || 0;
+    const defaultLength = (cutType === 'cut_into_2')
+        ? (slitVal > 0 ? slitVal : 0)
         : sourceData.originalLength;
 
     // ── Bulk "Apply to All" toolbar for Width ──
-    // Length is already auto-filled/readonly (identical for every roll in
-    // both modes), so the only field worth bulk-filling is Width — very
-    // common case: cutting one coil into several identical-width rolls.
     let html = `
         <div id="bulkApplyBar" class="mb-2 d-flex flex-wrap gap-2 align-items-center">
             <i class="bi bi-lightning-charge-fill text-primary"></i>
@@ -484,19 +519,25 @@ function generateForm(){
     `;
 
     for (let i = 1; i <= total; i++) {
+        const valWidth = prevWidths[i - 1] !== undefined ? prevWidths[i - 1] : '';
+        const valLetter = prevCutLetters[i - 1] || '';
+        const isSfc = prevSfcs[i - 1] ? 'checked' : '';
+        const sfcActive = prevSfcs[i - 1] ? 'sfc-active' : '';
+        const rowActive = prevSfcs[i - 1] ? 'sfc-row-active' : '';
+
         html += `
-                <tr>
+                <tr class="${rowActive}">
                     <td>
                         <span class="badge bg-light text-dark border">R${i}</span>
                         <input type="hidden" name="roll_no[]" value="R${i}">
                     </td>
                     <td>
                         <select name="cut_letter[]" class="form-select form-select-sm" onchange="updateLotLabel(${i-1})">
-                            <option value="">Standard</option>
-                            <option value="a">a</option>
-                            <option value="b">b</option>
-                            <option value="c">c</option>
-                            <option value="d">d</option>
+                            <option value="" ${valLetter === '' ? 'selected' : ''}>Standard</option>
+                            <option value="a" ${valLetter === 'a' ? 'selected' : ''}>a</option>
+                            <option value="b" ${valLetter === 'b' ? 'selected' : ''}>b</option>
+                            <option value="c" ${valLetter === 'c' ? 'selected' : ''}>c</option>
+                            <option value="d" ${valLetter === 'd' ? 'selected' : ''}>d</option>
                         </select>
                     </td>
                     <td>
@@ -505,18 +546,18 @@ function generateForm(){
                     </td>
                     <td>
                         <input type="number" step="0.1" name="width[]" class="form-control form-control-sm width-input"
-                               placeholder="Width" required>
+                               placeholder="Width" value="${valWidth}" required>
                     </td>
                     <td class="text-center sfc-cell">
-                        <label class="sfc-toggle" for="sfcCheck${i-1}">
+                        <label class="sfc-toggle ${sfcActive}" for="sfcCheck${i-1}">
                             <input class="form-check-input sfc-checkbox" type="checkbox" name="send_to_sfc[]" id="sfcCheck${i-1}" value="${i}"
-                                   onchange="toggleSfcRowHighlight(this)">
+                                   ${isSfc} onchange="toggleSfcRowHighlight(this)">
                             <span class="sfc-toggle-text"><i class="bi bi-box-seam-fill me-1"></i>SFC</span>
                         </label>
                     </td>
                     <td>
                         <small class="text-primary" id="infoBadge${i-1}">
-                            <i class="bi bi-tag me-1"></i>${sourceData.lotNo} ${sourceData.coilNo}-R${i}
+                            <i class="bi bi-tag me-1"></i>${sourceData.lotNo}${valLetter} ${sourceData.coilNo}-R${i}
                         </small>
                     </td>
                 </tr>
@@ -530,7 +571,8 @@ function generateForm(){
     `;
 
     container.innerHTML = html;
-    document.getElementById('submitBtn').style.display = 'inline-block';
+    const submitBtn = document.getElementById('submitBtn');
+    if (submitBtn) submitBtn.style.display = 'inline-block';
 }
 
 function applyWidthToAll() {
