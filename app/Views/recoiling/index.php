@@ -48,7 +48,7 @@ include dirname(__DIR__, 3) . '/header.php';
     .mode-card .mode-desc  { font-size:.75rem; color:#6c757d; margin-top:3px; }
     .mode-card.selected .mode-title { color:#0d6efd; }
 
-    /* â”€â”€ Modal footer: sticky so it never scrolls away on tablet â”€â”€ */
+    /* -- Modal footer: sticky so it never scrolls away on tablet -- */
     #recoilingModal .modal-footer {
         position: sticky;
         bottom: 0;
@@ -84,7 +84,7 @@ include dirname(__DIR__, 3) . '/header.php';
     </div>
 </div>
 
-<!-- â•â•â• ADD PRODUCT TO RECOILING â€” one unified intake bar â•â•â•â•â•â•â•â•â•â•â•
+<!--  ADD PRODUCT TO RECOILING  &mdash;  one unified intake bar 
      No mode selection: this single field handles hardware-scanner
      input (which types like a keyboard, ending in Enter), manual
      typing of a combined Lot-Coil-Roll string, and camera-scanned
@@ -245,12 +245,12 @@ include dirname(__DIR__, 3) . '/header.php';
     </div>
 </div>
 
-<!-- â•â•â• Hidden form: Send Back to Finished Product â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+<!--  Hidden form: Send Back to Finished Product  -->
 <form id="sendBackRecoilForm" method="post" action="recoiling_send_back.php" style="display:none;">
     <input type="hidden" name="id" id="sendBackRecoilId" value="">
 </form>
 
-<!-- â•â•â• SUMMARY REPORT MODAL â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+<!--  SUMMARY REPORT MODAL  -->
 <div class="modal fade" id="summaryModal" tabindex="-1">
     <div class="modal-dialog modal-lg modal-dialog-scrollable">
         <div class="modal-content border-0 shadow-lg">
@@ -313,12 +313,12 @@ include dirname(__DIR__, 3) . '/header.php';
                                 class="btn btn-sm btn-outline-warning"
                                 data-type="cut_into_2"
                                 onclick="setSummaryType(this, 'cut_into_2')">
-                            âœ‚ï¸ Cut Into 2
+                            <i class="bi bi-scissors"></i> Cut Into 2
                         </button>
                     </div>
                 </div>
 
-                <!-- KPI cards â€” always show full month totals, clicking a card also filters -->
+                <!-- KPI cards  &mdash;  always show full month totals, clicking a card also filters -->
                 <div class="row g-3 mb-4" id="summaryKpiRow">
                     <div class="col-4">
                         <div class="card border-0 shadow-sm text-center p-3 kpi-card"
@@ -327,7 +327,7 @@ include dirname(__DIR__, 3) . '/header.php';
                              style="background:linear-gradient(135deg,#6610f2,#a855f7);color:#fff;cursor:pointer;"
                              title="Click to filter by Rewinding">
                             <div class="fw-bold small mb-1"><i class="bi bi-arrow-repeat me-1"></i>Rewinding</div>
-                            <div class="fs-2 fw-bold" id="kpi_rewinding">â€”</div>
+                            <div class="fs-2 fw-bold" id="kpi_rewinding"> &mdash; </div>
                             <div class="small opacity-75 mt-1" id="kpi_rewinding_label">click to filter</div>
                         </div>
                     </div>
@@ -338,7 +338,7 @@ include dirname(__DIR__, 3) . '/header.php';
                              style="background:linear-gradient(135deg,#dc3545,#ff7043);color:#fff;cursor:pointer;"
                              title="Click to filter by Cut Defect">
                             <div class="fw-bold small mb-1"><i class="bi bi-scissors me-1"></i>Cut Defect</div>
-                            <div class="fs-2 fw-bold" id="kpi_normal">â€”</div>
+                            <div class="fs-2 fw-bold" id="kpi_normal"> &mdash; </div>
                             <div class="small opacity-75 mt-1" id="kpi_normal_label">click to filter</div>
                         </div>
                     </div>
@@ -348,8 +348,8 @@ include dirname(__DIR__, 3) . '/header.php';
                              onclick="setSummaryTypeByCard('cut_into_2')"
                              style="background:linear-gradient(135deg,#fd7e14,#ffc107);color:#fff;cursor:pointer;"
                              title="Click to filter by Cut Into 2">
-                            <div class="fw-bold small mb-1">âœ‚ï¸ Cut Into 2</div>
-                            <div class="fs-2 fw-bold" id="kpi_cut2">â€”</div>
+                            <div class="fw-bold small mb-1"><i class="bi bi-scissors"></i> Cut Into 2</div>
+                            <div class="fs-2 fw-bold" id="kpi_cut2"> &mdash; </div>
                             <div class="small opacity-75 mt-1" id="kpi_cut2_label">click to filter</div>
                         </div>
                     </div>
@@ -396,7 +396,7 @@ include dirname(__DIR__, 3) . '/header.php';
     </div>
 </div>
 
-<!-- â•â•â• RECOILING MODAL â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+<!--  RECOILING MODAL  -->
 <div class="modal fade" id="recoilingModal" tabindex="-1">
     <div class="modal-dialog modal-xl modal-dialog-scrollable">
         <div class="modal-content border-0 shadow-lg">
@@ -449,19 +449,19 @@ include dirname(__DIR__, 3) . '/header.php';
                             <label class="mode-card" id="card-rewinding" onclick="selectMode('rewinding')">
                                 <input type="radio" name="cut_type_radio" value="rewinding">
                                 <div class="mode-title">Rewinding</div>
-                                <div class="mode-desc">Rewind only â€” same roll, update length if changed</div>
+                                <div class="mode-desc">Rewind only  &mdash;  same roll, update length if changed</div>
                             </label>
 
                             <label class="mode-card" id="card-normal" onclick="selectMode('normal')">
                                 <input type="radio" name="cut_type_radio" value="normal">
                                 <div class="mode-title">Cut Defect</div>
-                                <div class="mode-desc">Remove defect at start or end â€” same roll number</div>
+                                <div class="mode-desc">Remove defect at start or end  &mdash;  same roll number</div>
                             </label>
 
                             <label class="mode-card" id="card-cut_into_2" onclick="selectMode('cut_into_2')">
                                 <input type="radio" name="cut_type_radio" value="cut_into_2">
                                 <div class="mode-title">Cut Into 2</div>
-                                <div class="mode-desc">Split into two new rolls â€” enter both lengths manually</div>
+                                <div class="mode-desc">Split into two new rolls  &mdash;  enter both lengths manually</div>
                             </label>
 
                         </div>
@@ -482,7 +482,7 @@ include dirname(__DIR__, 3) . '/header.php';
                 FIX: modal-footer is now position:sticky via CSS above so it
                      never scrolls out of view on tablet.
                 FIX: submitBtn now uses class="d-none" instead of style="display:none"
-                     and is toggled via classList in JS â€” more reliable on tablet browsers.
+                     and is toggled via classList in JS  &mdash;  more reliable on tablet browsers.
                 FIX: Both buttons use flex:1 1 130px so they wrap instead of disappearing
                      on narrow screens.
             -->
@@ -506,13 +506,13 @@ let productData = {};
 let recoilFormSubmitted = false;
 const reopenId = <?= $reopenId ?>;
 
-// â”€â”€ Add Product to Recoiling â€” one unified intake bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Add Product to Recoiling  &mdash;  one unified intake bar -----------
 // No mode toggle: submitIntake() handles Enter-key submission from the
 // form (hardware keyboard-wedge scanners "type" their payload then send
 // Enter, so this just works for them automatically) as well as a manual
 // click on the Add button. handleIntakeScan() is the camera-scanner
 // widget's onScan callback (wired up in the DOMContentLoaded listener
-// further down) â€” it feeds into the exact same single code path.
+// further down)  &mdash;  it feeds into the exact same single code path.
 
 function submitIntake(e) {
     e.preventDefault();
@@ -549,18 +549,18 @@ function addToRecoilingQueue(raw, source) {
         input.value = '';
         if (data.ok) {
             // Brief pause so the confirmation is actually seen before the
-            // page reloads to show the newly-added pending roll â€” the
+            // page reloads to show the newly-added pending roll  &mdash;  the
             // input's `autofocus` attribute takes care of re-focusing it
             // on the fresh page load, ready for the very next scan.
             setTimeout(() => window.location.reload(), 1400);
         } else {
-            // Failed â€” no reload, so refocus immediately so the operator
+            // Failed  &mdash;  no reload, so refocus immediately so the operator
             // can correct and retry without touching the mouse.
             input.focus();
         }
     })
     .catch(() => {
-        showIntakeFeedback(false, 'Network error â€” could not reach the server.');
+        showIntakeFeedback(false, 'Network error  &mdash;  could not reach the server.');
         input.focus();
     })
     .finally(() => {
@@ -580,12 +580,12 @@ function showIntakeFeedback(ok, msg) {
 }
 
 // Camera scanner is initialized inside the existing DOMContentLoaded
-// listener further down this file (see handleIntakeScan usage there) â€”
+// listener further down this file (see handleIntakeScan usage there)  &mdash; 
 // kept in that single shared listener rather than a second one, since a
 // prior page in this app (sfc.php) had a real bug from splitting related
 // setup across multiple separate script scopes.
 
-// â”€â”€ KPI Card Filter + Global Search (Pending/Completed table) â”€â”€â”€
+// -- KPI Card Filter + Global Search (Pending/Completed table) ---
 // 'sfc' rows are grouped under 'pending' server-side via data-status-group,
 // since they're still awaiting recoil just like true pending rows.
 let recoilStatusFilter = 'pending';
@@ -751,18 +751,18 @@ function buildRewindingForm() {
         <div class="alert alert-info py-2 small mb-3">
             <i class="bi bi-info-circle me-1"></i>
             Output: <strong>${productData.lot_no} ${productData.coil_no}
-            ${productData.roll_no}</strong> â€” same reference. Update length only if it changed after rewinding.
+            ${productData.roll_no}</strong>  &mdash;  same reference. Update length only if it changed after rewinding.
         </div>
         <input type="hidden" name="roll_number[]" value="1">
         <input type="hidden" name="defect[]"      value="0">
         <input type="hidden" name="letter[]"      value="">
         <div class="row g-3">
             <div class="col-md-6">
-                <label class="form-label fw-bold">Width after rewinding (mm)<small class="text-muted fw-normal"> â€” edit if trimmed</small></label>
+                <label class="form-label fw-bold">Width after rewinding (mm)<small class="text-muted fw-normal">  &mdash;  edit if trimmed</small></label>
                 <input type="number" step="0.01" name="new_width[]" class="form-control" value="${productData.width}" min="0.01" required>
             </div>
             <div class="col-md-6">
-                <label class="form-label fw-bold text-success">New Length (m)<small class="text-muted fw-normal"> â€” original: ${productData.length} m</small></label>
+                <label class="form-label fw-bold text-success">New Length (m)<small class="text-muted fw-normal">  &mdash;  original: ${productData.length} m</small></label>
                 <input type="number" step="0.01" name="actual_length[]" class="form-control fw-bold" value="${productData.length.toFixed(2)}" min="0.01" required>
                 <div class="form-text">Enter the same value if length did not change.</div>
             </div>
@@ -784,13 +784,13 @@ function buildCutDefectForm() {
         <div class="alert alert-warning py-2 small mb-3">
             <i class="bi bi-scissors me-1"></i>
             Output: <strong>${productData.lot_no} ${productData.coil_no}
-            ${productData.roll_no}</strong> â€” same reference. Actual length = original âˆ’ defect removed.
+            ${productData.roll_no}</strong>  &mdash;  same reference. Actual length = original  -  defect removed.
         </div>
         <input type="hidden" name="roll_number[]" value="1">
         <input type="hidden" name="letter[]"      value="">
         <div class="row g-3">
             <div class="col-md-4">
-                <label class="form-label fw-bold">Width (mm)<small class="text-muted fw-normal"> â€” edit if trimmed</small></label>
+                <label class="form-label fw-bold">Width (mm)<small class="text-muted fw-normal">  &mdash;  edit if trimmed</small></label>
                 <input type="number" step="0.01" name="new_width[]" class="form-control" id="cd_width" value="${productData.width}" min="0.01" required>
             </div>
             <div class="col-md-4">
@@ -828,9 +828,9 @@ function buildCutInto2() {
     infoDiv.className = 'alert alert-secondary py-2 small mb-3';
     infoDiv.innerHTML = `
         <i class="bi bi-scissors me-1"></i>
-        <strong>Cut Into 2</strong> â€” splitting <strong>${productData.lot_no} ${productData.coil_no} ${productData.roll_no}</strong>
+        <strong>Cut Into 2</strong>  &mdash;  splitting <strong>${productData.lot_no} ${productData.coil_no} ${productData.roll_no}</strong>
         into two rolls. Coil No. and Roll No. stay the same.
-        The letter suffix is <strong>optional</strong> â€” if omitted, both rolls keep the original lot number.
+        The letter suffix is <strong>optional</strong>  &mdash;  if omitted, both rolls keep the original lot number.
         <div class="mt-2 row g-2 align-items-center">
             <div class="col-auto"><label class="form-label mb-0 fw-bold small">Defect / waste between cuts (m):</label></div>
             <div class="col-auto"><input type="number" step="0.01" id="c2_defect" class="form-control form-control-sm" style="width:100px" value="0" min="0" placeholder="0"></div>
@@ -916,13 +916,13 @@ function buildCutInto2() {
             if (a1 > 0 || a2 > 0) {
                 balInfo.style.display = 'block';
                 if (Math.abs(diff) < 0.01) {
-                    balText.innerHTML = `Roll1 ${a1}m + Roll2 ${a2}m + Waste ${def}m = ${used}m âœ… Matches original ${orig}m`;
+                    balText.innerHTML = `Roll1 ${a1}m + Roll2 ${a2}m + Waste ${def}m = ${used}m <i class="bi bi-check-circle"></i> Matches original ${orig}m`;
                     balText.style.color = '#166534';
                 } else if (diff > 0) {
-                    balText.innerHTML = `= ${used}m â€” <strong>${diff}m unaccounted</strong> (original: ${orig}m)`;
+                    balText.innerHTML = `= ${used}m  &mdash;  <strong>${diff}m unaccounted</strong> (original: ${orig}m)`;
                     balText.style.color = '#92400e';
                 } else {
-                    balText.innerHTML = `= ${used}m â€” <strong>exceeds original by ${Math.abs(diff)}m</strong>`;
+                    balText.innerHTML = `= ${used}m  &mdash;  <strong>exceeds original by ${Math.abs(diff)}m</strong>`;
                     balText.style.color = '#991b1b';
                 }
             } else { balInfo.style.display = 'none'; }
@@ -937,16 +937,16 @@ function buildCutInto2() {
     return wrapper;
 }
 
-// â”€â”€ Summary Report â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Summary Report ---------------------------------------------
 let summaryActiveCutType = ''; // '' = all, or 'rewinding' | 'normal' | 'cut_into_2'
 
-const typeLabel = { rewinding:'ðŸ”„ Rewinding', normal:'âœ‚ï¸ Cut Defect', cut_into_2:'âœ‚ï¸âœ‚ï¸ Cut Into 2' };
+const typeLabel = { rewinding:'<i class="bi bi-arrow-repeat"></i> Rewinding', normal:'<i class="bi bi-scissors"></i> Cut Defect', cut_into_2:'<i class="bi bi-scissors"></i><i class="bi bi-scissors"></i> Cut Into 2' };
 const typeCls   = { rewinding:'bg-secondary', normal:'bg-danger',    cut_into_2:'bg-warning text-dark' };
 const typeFullLabel = {
     '':          'All Types',
-    rewinding:   'ðŸ”„ Rewinding',
-    normal:      'âœ‚ï¸ Cut Defect',
-    cut_into_2:  'âœ‚ï¸ Cut Into 2',
+    rewinding:   '<i class="bi bi-arrow-repeat"></i> Rewinding',
+    normal:      '<i class="bi bi-scissors"></i> Cut Defect',
+    cut_into_2:  '<i class="bi bi-scissors"></i> Cut Into 2',
 };
 
 function clearSummaryFilter() {
@@ -1010,7 +1010,7 @@ function loadSummary() {
 
     // Range label
     let rangeText = month ? month : 'All time';
-    if (type) rangeText += ' Â· ' + (typeFullLabel[type] ?? type);
+    if (type) rangeText += '  &middot;  ' + (typeFullLabel[type] ?? type);
     document.getElementById('summaryRange').textContent = rangeText;
 
     // Build URL
@@ -1021,7 +1021,7 @@ function loadSummary() {
 
     // Loading state
     document.getElementById('summaryTableBody').innerHTML =
-        '<tr><td colspan="7" class="text-center text-muted py-3"><span class="spinner-border spinner-border-sm me-2"></span>Loadingâ€¦</td></tr>';
+        '<tr><td colspan="7" class="text-center text-muted py-3"><span class="spinner-border spinner-border-sm me-2"></span>Loading...</td></tr>';
 
     fetch(url)
         .then(r => r.json())
@@ -1069,7 +1069,7 @@ document.addEventListener('DOMContentLoaded', function () {
     applyRecoilFilters();
 
     // Initialize the shared camera scanner widget (same library used by
-    // sfc.php / finish_product.php) â€” it manages its own floating trigger
+    // sfc.php / finish_product.php)  &mdash;  it manages its own floating trigger
     // UI, so no custom container or "start camera" button is needed here.
     initCameraScanner({
         onScan: handleIntakeScan
@@ -1079,7 +1079,7 @@ document.addEventListener('DOMContentLoaded', function () {
         loadSummary();
     });
 
-    // â”€â”€ Send Back to Finished Product (with confirmation) â”€â”€â”€â”€â”€â”€
+    // -- Send Back to Finished Product (with confirmation) ------
     document.querySelectorAll('.btn-send-back-recoil').forEach(function (btn) {
         btn.addEventListener('click', function () {
             const rid   = btn.dataset.rid;
