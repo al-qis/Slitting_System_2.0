@@ -1,6 +1,6 @@
 <?php
 $page_title = "Dashboard";
-include __DIR__ . '/../header.php';
+include dirname(__DIR__, 3) . '/header.php';
 ?>
 
 <style>
@@ -461,4 +461,4 @@ document.getElementById('qrInput').addEventListener('keydown', function (e) {
 });
 </script>
 
-<?php include __DIR__ . '/../footer.php'; ?>
+<?php include dirname(__DIR__, 3) . '/footer.php'; ?>

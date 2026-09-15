@@ -1,6 +1,6 @@
 <?php
 $page_title = "Stock Raw Material Log";
-include __DIR__ . '/../../header.php';
+include dirname(__DIR__, 3) . '/header.php';
 ?>
 
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -141,4 +141,4 @@ include __DIR__ . '/../../header.php';
 <?php endif; ?>
 </script>
 
-<?php include __DIR__ . '/../../footer.php'; ?>
+<?php include dirname(__DIR__, 3) . '/footer.php'; ?>

@@ -1,5 +1,54 @@
+<?php
 $page_title = 'Product Traceability';
-include __DIR__ . '/../../header.php';
+include dirname(__DIR__, 3) . '/header.php';
+
+if (!function_exists('statusBadge')) {
+    function statusBadge(array $row): string
+    {
+        $s  = $row['status'] ?? '';
+        $sc = (int)($row['stock_counted'] ?? 0);
+        return match($s) {
+            'DELIVERED' => '<span class="badge badge-delivered">Delivered</span>',
+            'APPROVED'  => '<span class="badge badge-approved">Approved</span>',
+            'WAITING'   => '<span class="badge badge-waiting">Waiting QC</span>',
+            'REJECTED'  => '<span class="badge badge-rejected">Rejected</span>',
+            'IN'        => $sc
+                            ? '<span class="badge badge-stock">Finish Good</span>'
+                            : '<span class="badge badge-pending">In Production</span>',
+            default     => '<span class="badge badge-pending">' . htmlspecialchars($s) . '</span>',
+        };
+    }
+}
+
+if (!function_exists('sourceMeta')) {
+    function sourceMeta(?string $raw): array
+    {
+        $key = strtolower(trim((string)$raw));
+
+        if ($key === 'sfc') {
+            return ['label' => 'SFC', 'class' => 'src-sfc'];
+        }
+        if ($key !== '' && str_contains($key, 'initial')) {
+            return ['label' => 'Initial Stock', 'class' => 'src-initial'];
+        }
+        return ['label' => 'Raw Mat', 'class' => 'src-raw'];
+    }
+}
+
+if (!function_exists('fmtRoll')) {
+    function fmtRoll(string $roll): string
+    {
+        return str_replace('R', 'R-', htmlspecialchars($roll));
+    }
+}
+
+if (!function_exists('fmtDate')) {
+    function fmtDate(?string $dt): string
+    {
+        if (!$dt) return '—';
+        return date('d M Y', strtotime($dt));
+    }
+}
 ?>
 
 <style>
@@ -414,4 +463,4 @@ include __DIR__ . '/../../header.php';
     <a href="index.php" class="btn btn-secondary">← Back to Dashboard</a>
 </div>
 
-<?php include __DIR__ . '/../../footer.php'; ?>
+<?php include dirname(__DIR__, 3) . '/footer.php'; ?>

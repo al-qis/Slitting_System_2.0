@@ -10,7 +10,7 @@ if (!function_exists('calcEstWeight')) {
     }
 }
 $page_title = 'Pallet Management';
-include __DIR__ . '/../../header.php';
+include dirname(__DIR__, 3) . '/header.php';
 
 $MAX = \PalletManager::MAX_ROLLS;
 
@@ -4011,4 +4011,4 @@ initCameraScanner({
 });
 </script>
 
-<?php include __DIR__ . '/../../footer.php'; ?>
+<?php include dirname(__DIR__, 3) . '/footer.php'; ?>

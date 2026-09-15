@@ -1,6 +1,6 @@
 <?php
 $page_title = "SFC Inventory";
-include __DIR__ . '/../../header.php';
+include dirname(__DIR__, 3) . '/header.php';
 ?>
 
 <style>
@@ -755,4 +755,4 @@ document.addEventListener('DOMContentLoaded', function () {
 }); // end DOMContentLoaded
 </script>
 
-<?php include __DIR__ . '/../../footer.php'; ?>
+<?php include dirname(__DIR__, 3) . '/footer.php'; ?>

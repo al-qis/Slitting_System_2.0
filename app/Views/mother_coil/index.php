@@ -1,6 +1,6 @@
 <?php
 $page_title = $page_title ?? 'Mother Coil';
-include __DIR__ . '/../../header.php';
+include dirname(__DIR__, 3) . '/header.php';
 ?>
 
 <style>
@@ -1705,4 +1705,4 @@ function bpsPrintAll() {
     <div><a href="logout.php" class="btn btn-secondary mt-3">Logout</a></div>
 <?php endif; ?>
 
-<?php include __DIR__ . '/../../footer.php'; ?>
+<?php include dirname(__DIR__, 3) . '/footer.php'; ?>

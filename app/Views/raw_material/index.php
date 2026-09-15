@@ -1,6 +1,6 @@
 <?php
 $page_title = "Raw Material - Available Stock";
-include __DIR__ . '/../../header.php';
+include dirname(__DIR__, 3) . '/header.php';
 ?>
 
 <style>
@@ -558,4 +558,4 @@ initCameraScanner({
 })();
 </script>0
 
-<?php include __DIR__ . '/../../footer.php'; ?>
+<?php include dirname(__DIR__, 3) . '/footer.php'; ?>

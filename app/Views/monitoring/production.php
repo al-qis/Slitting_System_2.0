@@ -1,7 +1,7 @@
 <?php
 $page_title = "Real-Time Production Monitoring";
 $hide_sidebar = true;
-include __DIR__ . '/../../header.php';
+include dirname(__DIR__, 3) . '/header.php';
 ?>
 
 <style>
@@ -834,4 +834,4 @@ function renderSectionB(waitingList) {
 }
 </script>
 
-<?php include __DIR__ . '/../../footer.php'; ?>
+<?php include dirname(__DIR__, 3) . '/footer.php'; ?>

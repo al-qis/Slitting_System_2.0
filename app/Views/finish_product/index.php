@@ -10,7 +10,7 @@ if (!function_exists('cardUrl')) {
     }
 }
 $page_title = 'Finish Product';
-include __DIR__ . '/../../header.php';
+include dirname(__DIR__, 3) . '/header.php';
 ?>
 <style>
 table { table-layout: fixed; width: 100%; }
@@ -2071,4 +2071,4 @@ function openSendToSfcModal(id, product, lotNo, coilNo, rollNo, width, length) {
 </div>
 
 <div><a href="index.php" class="btn btn-secondary mt-3">← Back</a></div>
-<?php include __DIR__ . '/../../footer.php'; ?>
+<?php include dirname(__DIR__, 3) . '/footer.php'; ?>

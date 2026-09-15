@@ -1,6 +1,6 @@
 <?php
 $page_title = $page_title ?? "Edit Reslit Record";
-include __DIR__ . '/../../header.php';
+include dirname(__DIR__, 3) . '/header.php';
 ?>
 
 <div class="container mt-4">
@@ -60,4 +60,4 @@ include __DIR__ . '/../../header.php';
     </div>
 </div>
 
-<?php include __DIR__ . '/../../footer.php'; ?>
+<?php include dirname(__DIR__, 3) . '/footer.php'; ?>

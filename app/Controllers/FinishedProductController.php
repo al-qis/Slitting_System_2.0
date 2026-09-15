@@ -1278,27 +1278,167 @@ class FinishedProductController extends Controller
 
         $conn = $this->conn;
 
+        // === Handle Update Product ===
         if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'update') {
             $id            = intval($_POST['id']);
-            $coil_no       = $_POST['coil_no'];
-            $product       = $_POST['product'];
-            $lot_no        = $_POST['lot_no'];
-            $roll_no       = $_POST['roll_no'];
-            $width         = $_POST['width'];
-            $length        = $_POST['length'];
+            $coil_no       = $_POST['coil_no'] ?? '';
+            $product       = $_POST['product'] ?? '';
+            $lot_no        = $_POST['lot_no'] ?? '';
+            $roll_no       = $_POST['roll_no'] ?? '';
+            $width         = $_POST['width'] ?? '';
+            $length        = $_POST['length'] ?? '';
             $actual_length = $_POST['actual_length'] ?? '';
 
-            $stmt = $conn->prepare("UPDATE slitting_product SET coil_no=?, product=?, lot_no=?, roll_no=?, width=?, length=?, actual_length=? WHERE id=?");
+            $beforeStmt = $conn->prepare("
+                SELECT lot_no, coil_no, roll_no, width, length, actual_length
+                FROM slitting_product WHERE id = ?
+            ");
+            $beforeStmt->bind_param("i", $id);
+            $beforeStmt->execute();
+            $before = $beforeStmt->get_result()->fetch_assoc();
+            $beforeStmt->close();
+
+            $stmt = $conn->prepare("UPDATE slitting_product
+                SET coil_no=?, product=?, lot_no=?, roll_no=?, width=?, length=?, actual_length=?
+                WHERE id=?");
             $stmt->bind_param("sssssssi", $coil_no, $product, $lot_no, $roll_no, $width, $length, $actual_length, $id);
             $stmt->execute();
             $stmt->close();
 
-            $this->redirect("slitting_product.php?success=updated");
+            if ($before) {
+                $qrFieldsChanged =
+                       (string)$before['lot_no']        !== (string)$lot_no
+                    || (string)$before['coil_no']       !== (string)$coil_no
+                    || (string)$before['roll_no']       !== (string)$roll_no
+                    || (float)$before['width']          !== (float)$width
+                    || (float)$before['length']         !== (float)$length
+                    || (float)($before['actual_length'] ?? 0) !== (float)($actual_length !== '' ? $actual_length : 0);
+                if ($qrFieldsChanged) {
+                    $resetStmt = $conn->prepare("
+                        UPDATE slitting_product SET is_printed = 0 WHERE id = ?
+                    ");
+                    $resetStmt->bind_param("i", $id);
+                    $resetStmt->execute();
+                    $resetStmt->close();
+                }
+            }
+
+            $this->redirect("slitting_product.php?success=update");
             return;
         }
 
+        // === Soft-delete (void) Product ===
+        if (isset($_GET['delete'])) {
+            $id   = intval($_GET['delete']);
+            $stmt = $conn->prepare("
+                UPDATE slitting_product
+                SET is_voided=1, voided_at=NOW(), voided_reason='manual_delete'
+                WHERE id=?
+            ");
+            $stmt->bind_param("i", $id);
+            $stmt->execute();
+            $stmt->close();
+            $this->redirect("slitting_product.php?success=delete");
+            return;
+        }
+
+        // === Search Logic ===
+        $search = isset($_GET['search']) ? trim($_GET['search']) : '';
+        $tokens = $search !== '' ? preg_split('/\s+/', $search, -1, PREG_SPLIT_NO_EMPTY) : [];
+
+        $printFilter = $_GET['print_status'] ?? '';
+        if (!in_array($printFilter, ['printed', 'not_printed'], true)) {
+            $printFilter = '';
+        }
+
+        $print_where = '';
+        if ($printFilter === 'printed') {
+            $print_where = " AND (is_printed = 1)";
+        } elseif ($printFilter === 'not_printed') {
+            $print_where = " AND (is_printed = 0 OR is_printed IS NULL)";
+        }
+
+        $base_where = "
+            (is_voided    = 0 OR is_voided    IS NULL)
+            AND (is_recoiled  = 0 OR is_recoiled  IS NULL)
+            AND (is_reslitted = 0 OR is_reslitted IS NULL)
+        ";
+
+        if (count($tokens) === 1) {
+            $stmt = $conn->prepare("
+                SELECT * FROM slitting_product
+                WHERE ($base_where)
+                  AND (coil_no LIKE ? OR product LIKE ? OR lot_no LIKE ? OR roll_no LIKE ?)
+                  $print_where
+                ORDER BY id DESC
+            ");
+            if (!$stmt) { die("Query preparation failed: " . htmlspecialchars($conn->error)); }
+            $like = '%' . $tokens[0] . '%';
+            $stmt->bind_param("ssss", $like, $like, $like, $like);
+            $stmt->execute();
+            $slitting = $stmt->get_result();
+            $stmt->close();
+        } elseif (count($tokens) === 2) {
+            $stmt = $conn->prepare("
+                SELECT * FROM slitting_product
+                WHERE ($base_where)
+                  AND lot_no LIKE ? AND coil_no LIKE ?
+                  $print_where
+                ORDER BY id DESC
+            ");
+            if (!$stmt) { die("Query preparation failed: " . htmlspecialchars($conn->error)); }
+            $likeLot  = '%' . $tokens[0] . '%';
+            $likeCoil = '%' . $tokens[1] . '%';
+            $stmt->bind_param("ss", $likeLot, $likeCoil);
+            $stmt->execute();
+            $slitting = $stmt->get_result();
+            $stmt->close();
+        } elseif (count($tokens) >= 3) {
+            $stmt = $conn->prepare("
+                SELECT * FROM slitting_product
+                WHERE ($base_where)
+                  AND lot_no LIKE ? AND coil_no LIKE ? AND roll_no LIKE ?
+                  $print_where
+                ORDER BY id DESC
+            ");
+            if (!$stmt) { die("Query preparation failed: " . htmlspecialchars($conn->error)); }
+            $likeLot  = '%' . $tokens[0] . '%';
+            $likeCoil = '%' . $tokens[1] . '%';
+            $likeRoll = '%' . $tokens[2] . '%';
+            $stmt->bind_param("sss", $likeLot, $likeCoil, $likeRoll);
+            $stmt->execute();
+            $slitting = $stmt->get_result();
+            $stmt->close();
+        } else {
+            $slitting = $conn->query("
+                SELECT * FROM slitting_product
+                WHERE $base_where
+                $print_where
+                ORDER BY id DESC
+            ");
+        }
+
+        $success = $_GET['success'] ?? null;
+
+        // === Fetch Single Product for Edit ===
+        $editData = null;
+        if (isset($_GET['edit'])) {
+            $id  = intval($_GET['edit']);
+            $res = $conn->query("SELECT * FROM slitting_product WHERE id=$id");
+            if ($res && $res->num_rows > 0) {
+                $editData = $res->fetch_assoc();
+            } else {
+                die("Product not found!");
+            }
+        }
+
         $this->render('slitting/list', [
-            'conn' => $conn,
+            'conn'        => $conn,
+            'slitting'    => $slitting,
+            'search'      => $search,
+            'printFilter' => $printFilter,
+            'success'     => $success,
+            'editData'    => $editData,
         ]);
     }
 
@@ -1445,67 +1585,154 @@ class FinishedProductController extends Controller
         $filter_customer = trim($_GET['customer'] ?? '');
         $filter_source   = trim($_GET['source']   ?? '');
 
+        $consumedSql = "(sp.is_reslitted = 1 OR sp.is_recoiled = 1)";
+
         $sql = "
-            SELECT sp.*, mc.grade
+            SELECT
+                sp.id,
+                sp.product,
+                sp.lot_no,
+                sp.coil_no,
+                sp.roll_no,
+                sp.width,
+                sp.actual_length,
+                sp.length,
+                sp.status,
+                sp.stock_counted,
+                sp.is_reslitted,
+                sp.is_recoiled,
+                sp.date_in,
+                sp.date_out,
+                sp.delivered_at,
+                sp.original_source,
+                sp.customer_name,
+                sp.ref_no,
+                mc.grade
             FROM slitting_product sp
             LEFT JOIN mother_coil mc ON mc.id = sp.mother_id
             WHERE sp.is_voided = 0
-              AND (sp.is_reslitted = 0 OR sp.is_reslitted IS NULL)
-              AND (sp.is_recoiled = 0 OR sp.is_recoiled IS NULL)
+              AND NOT {$consumedSql}
         ";
 
-        $types = '';
         $params = [];
+        $types  = '';
 
-        if ($search !== '') {
-            $sql .= " AND (sp.product LIKE ? OR sp.lot_no LIKE ? OR sp.coil_no LIKE ? OR sp.roll_no LIKE ? OR sp.customer_name LIKE ? OR sp.ref_no LIKE ?)";
-            $lk = "%$search%";
-            $types .= "ssssss";
-            $params = array_merge($params, [$lk, $lk, $lk, $lk, $lk, $lk]);
+        $tokens = ($search !== '') ? preg_split('/\s+/', $search, -1, PREG_SPLIT_NO_EMPTY) : [];
+
+        if (count($tokens) === 1) {
+            $sql   .= " AND (
+                            sp.lot_no        LIKE ? OR
+                            sp.coil_no       LIKE ? OR
+                            sp.roll_no       LIKE ? OR
+                            sp.product       LIKE ? OR
+                            sp.customer_name LIKE ?
+                        )";
+            $like   = '%' . $tokens[0] . '%';
+            $params = array_merge($params, [$like, $like, $like, $like, $like]);
+            $types .= 'sssss';
+        } elseif (count($tokens) === 2) {
+            $sql      .= " AND sp.lot_no LIKE ? AND sp.coil_no LIKE ?";
+            $likeLot   = '%' . $tokens[0] . '%';
+            $likeCoil  = '%' . $tokens[1] . '%';
+            $params    = array_merge($params, [$likeLot, $likeCoil]);
+            $types    .= 'ss';
+        } elseif (count($tokens) >= 3) {
+            $sql      .= " AND sp.lot_no LIKE ? AND sp.coil_no LIKE ? AND sp.roll_no LIKE ?";
+            $likeLot   = '%' . $tokens[0] . '%';
+            $likeCoil  = '%' . $tokens[1] . '%';
+            $likeRoll  = '%' . $tokens[2] . '%';
+            $params    = array_merge($params, [$likeLot, $likeCoil, $likeRoll]);
+            $types    .= 'sss';
         }
 
         if ($filter_status !== '') {
-            $sql .= " AND sp.status = ?";
-            $types .= "s";
+            $sql    .= " AND sp.status = ?";
             $params[] = $filter_status;
-        }
-
-        if ($filter_month > 0) {
-            $sql .= " AND MONTH(sp.date_in) = ?";
-            $types .= "i";
-            $params[] = $filter_month;
-        }
-
-        if ($filter_year > 0) {
-            $sql .= " AND YEAR(sp.date_in) = ?";
-            $types .= "i";
-            $params[] = $filter_year;
+            $types  .= 's';
         }
 
         if ($filter_customer !== '') {
-            $sql .= " AND sp.customer_name = ?";
-            $types .= "s";
-            $params[] = $filter_customer;
+            $sql    .= " AND sp.customer_name LIKE ?";
+            $params[] = '%' . $filter_customer . '%';
+            $types  .= 's';
         }
 
-        if ($filter_source !== '') {
-            $sql .= " AND sp.original_source = ?";
-            $types .= "s";
-            $params[] = $filter_source;
+        if ($filter_source === 'sfc') {
+            $sql .= " AND LOWER(sp.original_source) = 'sfc'";
+        } elseif ($filter_source === 'initial_stock') {
+            $sql .= " AND LOWER(sp.original_source) LIKE '%initial%'";
+        } elseif ($filter_source === 'raw_material') {
+            $sql .= " AND (sp.original_source IS NULL OR sp.original_source = ''
+                        OR (LOWER(sp.original_source) != 'sfc' AND LOWER(sp.original_source) NOT LIKE '%initial%'))";
         }
 
-        $sql .= " ORDER BY sp.id DESC";
+        if ($filter_month > 0) {
+            $sql .= " AND (
+                (sp.status = 'DELIVERED' AND MONTH(sp.delivered_at) = ? AND YEAR(sp.delivered_at) = ?)
+                OR
+                (sp.status != 'DELIVERED' AND MONTH(sp.date_in) = ? AND YEAR(sp.date_in) = ?)
+            )";
+            $params = array_merge($params, [$filter_month, $filter_year, $filter_month, $filter_year]);
+            $types .= 'iiii';
+        }
+
+        $sql .= " ORDER BY
+            CASE sp.status WHEN 'DELIVERED' THEN 0 ELSE 1 END ASC,
+            COALESCE(sp.delivered_at, sp.date_in) DESC";
 
         $stmt = $conn->prepare($sql);
-        if ($params) {
+        if (!empty($params)) {
             $stmt->bind_param($types, ...$params);
         }
         $stmt->execute();
-        $result = $stmt->get_result();
+        $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+
+        // Summary KPI counts (all records, not filtered)
+        $counts_stmt = $conn->prepare("
+            SELECT status, COUNT(*) AS total
+            FROM slitting_product sp
+            WHERE sp.is_voided = 0
+              AND NOT {$consumedSql}
+            GROUP BY status
+        ");
+        $counts_stmt->execute();
+        $counts_raw  = $counts_stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $counts_stmt->close();
+
+        $counts = ['DELIVERED' => 0, 'IN' => 0, 'WAITING' => 0, 'APPROVED' => 0, 'REJECTED' => 0];
+        foreach ($counts_raw as $c) {
+            if (isset($counts[$c['status']])) {
+                $counts[$c['status']] = (int)$c['total'];
+            }
+        }
+
+        // Finish Good = IN + stock_counted
+        $fg_stmt = $conn->prepare("
+            SELECT COUNT(*) AS total FROM slitting_product sp
+            WHERE sp.is_voided = 0 AND sp.status = 'IN' AND sp.stock_counted = 1
+              AND NOT {$consumedSql}
+        ");
+        $fg_stmt->execute();
+        $counts['FINISH_GOOD'] = (int)($fg_stmt->get_result()->fetch_assoc()['total'] ?? 0);
+        $fg_stmt->close();
+
+        // Customer dropdown list
+        $cust_stmt = $conn->prepare("
+            SELECT DISTINCT customer_name
+            FROM slitting_product
+            WHERE customer_name IS NOT NULL AND customer_name != ''
+            ORDER BY customer_name ASC
+        ");
+        $cust_stmt->execute();
+        $customers = array_column($cust_stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'customer_name');
+        $cust_stmt->close();
 
         $this->render('tracking/index', [
             'conn'            => $conn,
-            'result'          => $result,
+            'rows'            => $rows,
+            'counts'          => $counts,
+            'customers'       => $customers,
             'search'          => $search,
             'filter_status'   => $filter_status,
             'filter_month'    => $filter_month,

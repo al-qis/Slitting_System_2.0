@@ -1,5 +1,6 @@
+<?php
 $page_title = 'Slitting Product';
-include __DIR__ . '/../../header.php';
+include dirname(__DIR__, 3) . '/header.php';
 ?>
 
 <style>
@@ -260,4 +261,4 @@ function goToMixedBatchSetup() {
 }
 </script>
 
-<?php include __DIR__ . '/../../footer.php'; ?>
+<?php include dirname(__DIR__, 3) . '/footer.php'; ?>

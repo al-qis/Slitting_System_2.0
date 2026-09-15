@@ -1,6 +1,6 @@
 <?php
 $page_title = $page_title ?? 'Recoiling Cut';
-include __DIR__ . '/../../header.php';
+include dirname(__DIR__, 3) . '/header.php';
 ?>
 
 <style>
@@ -107,7 +107,7 @@ include __DIR__ . '/../../header.php';
             </button>
         </form>
         <div class="form-text mt-1">
-            Ready for scanner input â€” just scan a label. Typing manually? Use
+            Ready for scanner input &mdash; just scan a label. Typing manually? Use
             <code>LotNo-CoilNo-RollNo</code> or <code>LotNo CoilNo RollNo</code>, then press Enter.
         </div>
         <div id="intakeFeedback" class="alert py-2 mb-0 mt-3" style="display:none;"></div>
@@ -128,7 +128,7 @@ include __DIR__ . '/../../header.php';
         <div class="input-group">
             <span class="input-group-text bg-white"><i class="bi bi-search"></i></span>
             <input type="text" id="recoilSearchInput" class="form-control"
-                   placeholder="Search Lot, Coil, or Roll â€” e.g. &quot;826529&quot;, &quot;N-2&quot;, or &quot;826529 N-2 R4&quot;"
+                   placeholder="Search Lot, Coil, or Roll &mdash; e.g. &quot;826529&quot;, &quot;N-2&quot;, or &quot;826529 N-2 R4&quot;"
                    oninput="applyRecoilFilters()">
             <button class="btn btn-outline-secondary" type="button" onclick="clearRecoilSearch()" title="Clear search">
                 <i class="bi bi-x-lg"></i>
@@ -1112,4 +1112,4 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 </script>
 
-<?php include __DIR__ . '/../../footer.php'; ?>
+<?php include dirname(__DIR__, 3) . '/footer.php'; ?>

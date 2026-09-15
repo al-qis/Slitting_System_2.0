@@ -1,6 +1,6 @@
 <?php
 $page_title = "Monthly Report";
-include __DIR__ . '/../../header.php';
+include dirname(__DIR__, 3) . '/header.php';
 ?>
 
 <style>
@@ -483,4 +483,4 @@ include __DIR__ . '/../../header.php';
     </div>
 <?php endif; ?>
 
-<?php include __DIR__ . '/../../footer.php'; ?>
+<?php include dirname(__DIR__, 3) . '/footer.php'; ?>

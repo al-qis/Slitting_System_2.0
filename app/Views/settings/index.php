@@ -1,6 +1,6 @@
 <?php
 $page_title = "Settings";
-include __DIR__ . '/../../header.php';
+include dirname(__DIR__, 3) . '/header.php';
 ?>
 
 <style>
@@ -1158,4 +1158,4 @@ function esc(s) {
 }
 </script>
 
-<?php include __DIR__ . '/../../footer.php'; ?>
+<?php include dirname(__DIR__, 3) . '/footer.php'; ?>

@@ -1,7 +1,7 @@
 <?php
 $page_title = "Papan Pemantauan Pengeluaran Pegawai (Officer Monitor)";
 $hide_sidebar = true;
-include __DIR__ . '/../../header.php';
+include dirname(__DIR__, 3) . '/header.php';
 
 $shiftTarget = (float)getSystemSetting($conn, 'shift_target_meters', '5200');
 if ($shiftTarget <= 0) {
@@ -672,4 +672,4 @@ function confirmManualReset() {
 }
 </script>
 
-<?php include __DIR__ . '/../../footer.php'; ?>
+<?php include dirname(__DIR__, 3) . '/footer.php'; ?>

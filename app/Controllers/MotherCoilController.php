@@ -70,7 +70,7 @@ class MotherCoilController extends Controller
         $this->requireRole(['slitting', 'mkl3']);
 
         // ── POST ACTIONS (ADD / UPDATE / BULK ADD) ─────────────────
-        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             $action = $_POST['action'] ?? '';
 
             if ($action === 'bulk_add') {

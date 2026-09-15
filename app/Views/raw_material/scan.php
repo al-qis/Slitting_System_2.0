@@ -1,6 +1,6 @@
 <?php
 $page_title = "Raw Material Inventory";
-include __DIR__ . '/../../header.php'; 
+include dirname(__DIR__, 3) . '/header.php'; 
 ?>
 
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -294,4 +294,4 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 </script>
 
-<?php include __DIR__ . '/../../footer.php'; ?>
+<?php include dirname(__DIR__, 3) . '/footer.php'; ?>

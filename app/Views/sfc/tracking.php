@@ -1,6 +1,6 @@
 <?php
 $page_title = "SFC Tracking Report";
-include __DIR__ . '/../../header.php';
+include dirname(__DIR__, 3) . '/header.php';
 ?>
 
 <style>
@@ -204,4 +204,4 @@ include __DIR__ . '/../../header.php';
 
 <div><a href="sfc.php" class="btn btn-secondary mt-3">← Back to SFC</a></div>
 
-<?php include __DIR__ . '/../../footer.php'; ?>
+<?php include dirname(__DIR__, 3) . '/footer.php'; ?>
