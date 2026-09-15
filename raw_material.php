@@ -483,80 +483,6 @@ include 'header.php';
 <form id="scanForm" method="post" action="scan_mother_action.php">
     <input id="qrInput" type="hidden" name="qr" value="">
 </form>
- 
-<script src="camera_scanner.js"></script>
-<script>
-initCameraScanner({
-    onScan: function(decodedText) {
-        document.getElementById('qrInput').value = decodedText;
-        document.getElementById('scanForm').submit();
-    }
-});
-</script>
-
-<script>
-document.addEventListener('DOMContentLoaded', function () {
-    const combinedInput  = document.getElementById('combined_input');
-    const manualBtn      = document.getElementById('manualSubmitButton');
-    const feedback       = document.getElementById('validationFeedback');
-    const qrInput        = document.getElementById('qrInput');
-    const scanForm       = document.getElementById('scanForm');
-    const manualModal    = document.getElementById('manualEntryModal');
-
-    if (!manualBtn) return;
-
-    manualBtn.addEventListener('click', function () {
-        const rawValue = combinedInput.value.trim();
-
-        if (rawValue === '') {
-            combinedInput.classList.add('is-invalid');
-            feedback.style.display = 'block';
-            return;
-        }
-+
-        const parts = rawValue.split(/\s+/);
-
-        if (parts.length >= 2) {
-            const lotNo  = parts[0];
-            const coilNo = parts.slice(1).join(' ');
-
-            combinedInput.classList.remove('is-invalid');
-            feedback.style.display = 'none';
-
-            // Format expected by scan_mother_action.php
-            qrInput.value = `LOT=${lotNo};COIL=${coilNo}`;
-
-            const modalInstance = bootstrap.Modal.getInstance(manualModal);
-            if (modalInstance) modalInstance.hide();
-
-            setTimeout(() => scanForm.submit(), 300);
-
-        } else {
-            combinedInput.classList.add('is-invalid');
-            feedback.style.display = 'block';
-        }
-    });
-
-    // Clear error on input
-    combinedInput.addEventListener('input', function () {
-        combinedInput.classList.remove('is-invalid');
-        feedback.style.display = 'none';
-    });
-
-    // Allow Enter key to submit
-    combinedInput.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            manualBtn.click();
-        }
-    });
-});
-</script>
-
-
-<form id="scanForm" method="post" action="scan_mother_action.php">
-    <input id="qrInput" type="hidden" name="qr" value="">
-</form>
 
 <script src="camera_scanner.js"></script>
 <script>
@@ -579,11 +505,9 @@ initCameraScanner({
         console.error('manualSubmitButton NOT FOUND in DOM');
         return;
     }
-    console.log('Manual entry handler attached OK');
 
     btn.addEventListener('click', function () {
         var raw = input.value.trim();
-        console.log('Button clicked, raw value:', raw);
 
         if (!raw) {
             input.classList.add('is-invalid');
@@ -602,14 +526,14 @@ initCameraScanner({
         var coilNo = parts.slice(1).join(' ');
         var qrVal  = 'LOT=' + lotNo + ';COIL=' + coilNo;
 
-        console.log('Submitting:', qrVal);
-
         document.getElementById('qrInput').value = qrVal;
 
         // Close modal safely without Bootstrap JS dependency
         var modalEl = document.getElementById('manualEntryModal');
-        modalEl.classList.remove('show');
-        modalEl.style.display = 'none';
+        if (modalEl) {
+            modalEl.classList.remove('show');
+            modalEl.style.display = 'none';
+        }
         document.body.classList.remove('modal-open');
         var backdrop = document.querySelector('.modal-backdrop');
         if (backdrop) backdrop.remove();
@@ -627,6 +551,6 @@ initCameraScanner({
         if (e.key === 'Enter') { e.preventDefault(); btn.click(); }
     });
 })();
-</script>0
+</script>
 
 <?php include 'footer.php'; ?>

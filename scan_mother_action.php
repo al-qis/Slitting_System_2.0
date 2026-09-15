@@ -87,6 +87,7 @@ $lot_no      = '';
 $coil_no     = '';
 $qr_width    = '';
 $qr_length   = '';
+$qr_id       = 0;
 
 if (strpos($qr, '=') !== false) {
     // Format A — KEY=value pairs
@@ -101,6 +102,7 @@ if (strpos($qr, '=') !== false) {
     $coil_no   = $pairs['COIL']   ?? '';
     $qr_width  = $pairs['WIDTH']  ?? ''; // '' on old 2-field stickers — never errors
     $qr_length = $pairs['LENGTH'] ?? ''; // '' on old 2-field stickers — never errors
+    $qr_id     = intval($pairs['ID'] ?? 0);
 
 } else {
     // Format B — space-separated "826277 FK-1" or "826277 FK-1 1250 707".
@@ -114,6 +116,17 @@ if (strpos($qr, '=') !== false) {
     $qr_length = trim($tokens[3] ?? ''); // '' when only 2 tokens present
 }
 
+// ── PRIORITY 0: Direct stock ID match (if scanned QR carries ID=xxx) ──
+if ($qr_id > 0) {
+    $id_check = $conn->query("SELECT id, lot_no, coil_no FROM stock_raw_material WHERE id=$qr_id AND status='IN'");
+    if ($id_check && $id_check->num_rows > 0) {
+        $st = $id_check->fetch_assoc();
+        $_SESSION['success'] = "Stock item {$st['lot_no']} {$st['coil_no']} (ID: $qr_id) ready for slitting.";
+        header("Location: add_slitting.php?stock_id=" . $st['id']);
+        exit;
+    }
+}
+
 if (empty($lot_no) || empty($coil_no)) {
     $_SESSION['error'] = "Invalid QR format. Expected: LOT=xxx;COIL=xxx  or  'LotNo CoilNo'";
     header("Location: raw_material.php");
@@ -121,18 +134,35 @@ if (empty($lot_no) || empty($coil_no)) {
 }
 
 // Escape for inline queries (prepared statements used below)
-$lot_no  = $conn->real_escape_string($lot_no);
-$coil_no = $conn->real_escape_string($coil_no);
+$lot_no     = $conn->real_escape_string($lot_no);
+$coil_no    = $conn->real_escape_string($coil_no);
+$float_width = floatval($qr_width);
 
-// ── PRIORITY: leftover / Cut-Into-2 balance ───────────────────
+// ── PRIORITY 1: leftover / Cut-Into-2 balance ───────────────────
+$width_clause = ($float_width > 0) ? " AND ABS(width - $float_width) < 0.5" : "";
+
 $leftover_check = $conn->query(
-    "SELECT id FROM stock_raw_material
+    "SELECT id, width FROM stock_raw_material
      WHERE lot_no='$lot_no'
        AND coil_no='$coil_no'
        AND source_type='slitting_cut_into_2'
        AND status='IN'
+       $width_clause
      ORDER BY id DESC LIMIT 1"
 );
+
+// Fallback: if width filtering returned nothing, check without width restriction
+if ((!$leftover_check || $leftover_check->num_rows === 0) && $float_width > 0) {
+    $leftover_check = $conn->query(
+        "SELECT id, width FROM stock_raw_material
+         WHERE lot_no='$lot_no'
+           AND coil_no='$coil_no'
+           AND source_type='slitting_cut_into_2'
+           AND status='IN'
+         ORDER BY id DESC LIMIT 1"
+    );
+}
+
 if ($leftover_check && $leftover_check->num_rows > 0) {
     $leftover = $leftover_check->fetch_assoc();
     $_SESSION['success'] = "Leftover coil $lot_no $coil_no ready for slitting. Fill the form.";
@@ -140,12 +170,18 @@ if ($leftover_check && $leftover_check->num_rows > 0) {
     exit;
 }
 
-// ── Fetch mother coil ─────────────────────────────────────────
+// ── PRIORITY 2: Fetch mother coil ─────────────────────────────
+$mother_width_clause = ($float_width > 0) ? " AND ABS(width - $float_width) < 0.5" : "";
 $result = $conn->query(
-    "SELECT * FROM mother_coil WHERE lot_no='$lot_no' AND coil_no='$coil_no'"
+    "SELECT * FROM mother_coil WHERE lot_no='$lot_no' AND coil_no='$coil_no' $mother_width_clause"
 );
+if ((!$result || $result->num_rows === 0) && $float_width > 0) {
+    $result = $conn->query(
+        "SELECT * FROM mother_coil WHERE lot_no='$lot_no' AND coil_no='$coil_no'"
+    );
+}
 if (!$result || $result->num_rows === 0) {
-    $_SESSION['error'] = "Mother coil not found: $lot_no - $coil_no";
+    $_SESSION['error'] = "Mother coil not found: $lot_no - $coil_no" . ($float_width > 0 ? " (Width: {$float_width}mm)" : "");
     header("Location: raw_material.php");
     exit;
 }

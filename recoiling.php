@@ -164,10 +164,11 @@ $query = "
     WHERE log.status = 'IN' AND log.action = 'sfc')
     ORDER BY
       CASE status
-        WHEN 'sfc'       THEN 1
-        WHEN 'pending'   THEN 2
-        WHEN 'completed' THEN 3
-        ELSE 4
+        WHEN 'sfc'         THEN 1
+        WHEN 'in_progress' THEN 2
+        WHEN 'pending'     THEN 3
+        WHEN 'completed'   THEN 4
+        ELSE 5
       END,
       date_in ASC
 ";
@@ -186,7 +187,7 @@ if ($childRes) {
     }
 }
 
-$resPending   = $conn->query("SELECT COUNT(*) AS c FROM recoiling_product WHERE status='pending'");
+$resPending   = $conn->query("SELECT COUNT(*) AS c FROM recoiling_product WHERE status IN ('pending', 'in_progress')");
 $pending      = $resPending   ? (int)($resPending->fetch_assoc()['c'] ?? 0) : 0;
 $resCompleted = $conn->query("SELECT COUNT(*) AS c FROM recoiling_product WHERE status='completed'");
 $completed    = $resCompleted ? (int)($resCompleted->fetch_assoc()['c'] ?? 0) : 0;
@@ -385,10 +386,10 @@ include 'header.php';
                     $status    = $row['status'] ?? '';
                     $source    = $row['source_table'];
                     $isSfc     = ($status === 'sfc');
-                    $canRecoil = ($status === 'pending' || $status === 'sfc');
+                    $canRecoil = ($status === 'pending' || $status === 'sfc' || $status === 'in_progress');
                     $kids      = ($source === 'recoiling_product') ? ($children[$rid] ?? []) : [];
 
-                    // 'sfc' rows are still awaiting recoil, so they're grouped with
+                    // 'sfc' and 'in_progress' rows are still awaiting completion, so they're grouped with
                     // 'pending' for the KPI-card filter (only 'completed' is its own bucket).
                     $statusGroup = ($status === 'completed') ? 'completed' : 'pending';
 
@@ -404,8 +405,8 @@ include 'header.php';
                     data-search="<?= htmlspecialchars($searchBlob) ?>">
                     <td><?= $rowNum ?></td>
                     <td>
-                        <span class="badge <?= $status==='completed' ? 'bg-success' : ($status==='sfc' ? 'bg-info' : 'bg-warning text-dark') ?>">
-                            <?= strtoupper($status) ?>
+                        <span class="badge <?= $status==='completed' ? 'bg-success' : ($status==='sfc' ? 'bg-info' : ($status==='in_progress' ? 'bg-primary' : 'bg-warning text-dark')) ?>">
+                            <?= $status==='in_progress' ? 'IN PROGRESS' : strtoupper($status) ?>
                         </span>
                     </td>
                     <td><?= htmlspecialchars($row['product'] ?? '-') ?></td>
@@ -733,6 +734,7 @@ include 'header.php';
 <script src="camera_scanner.js"></script>
 <script>
 let productData = {};
+let recoilFormSubmitted = false;
 const reopenId = <?= $reopenId ?>;
 
 // ── Add Product to Recoiling — one unified intake bar ───────────
@@ -872,6 +874,32 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('recoilingForm').addEventListener('submit', function (e) {
         if (!confirm('Complete recoiling? This cannot be undone.')) {
             e.preventDefault();
+            return;
+        }
+        recoilFormSubmitted = true;
+    });
+
+    const recoilModalEl = document.getElementById('recoilingModal');
+    if (recoilModalEl) {
+        recoilModalEl.addEventListener('hidden.bs.modal', function () {
+            if (!recoilFormSubmitted && productData.source === 'recoiling_product' && productData.rid > 0) {
+                const fd = new FormData();
+                fd.append('action', 'cancel_recoiling_process');
+                fd.append('id', productData.rid);
+                fetch('recoiling_handler.php', { method: 'POST', body: fd }).catch(console.error);
+            }
+        });
+    }
+
+    window.addEventListener('beforeunload', function () {
+        if (!recoilFormSubmitted && productData.source === 'recoiling_product' && productData.rid > 0) {
+            const m = document.getElementById('recoilingModal');
+            if (m && m.classList.contains('show')) {
+                const fd = new FormData();
+                fd.append('action', 'cancel_recoiling_process');
+                fd.append('id', productData.rid);
+                navigator.sendBeacon('recoiling_handler.php', fd);
+            }
         }
     });
 
@@ -886,6 +914,7 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 
 function openRecoilModal(btn) {
+    recoilFormSubmitted = false;
     productData = {
         rid    : parseInt(btn.dataset.rid),
         product: btn.dataset.product || '',
@@ -896,6 +925,13 @@ function openRecoilModal(btn) {
         length : parseFloat(btn.dataset.length) || 0,
         source : btn.dataset.source || ''
     };
+
+    if (productData.source === 'recoiling_product' && productData.rid > 0) {
+        const fd = new FormData();
+        fd.append('action', 'start_recoiling_process');
+        fd.append('id', productData.rid);
+        fetch('recoiling_handler.php', { method: 'POST', body: fd }).catch(console.error);
+    }
 
     document.getElementById('recoil_id').value           = productData.rid;
     document.getElementById('recoil_source_table').value = productData.source;

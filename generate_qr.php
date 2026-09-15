@@ -52,6 +52,7 @@ if ($type === 'slitting') {
     $roll = trim($_GET['roll'] ?? '');
     $width  = trim($_GET['width']  ?? '');
     $length = trim($_GET['length'] ?? '');
+    $stock_id = trim($_GET['id'] ?? '');
 
     if ($lot === '' || $coil === '') die('Invalid QR data');
 
@@ -63,9 +64,13 @@ if ($type === 'slitting') {
     // have none (e.g. "BALANCE" rolls, already blanked out upstream).
     // WIDTH/LENGTH follow the same "only if provided" rule.
     $qrText = "LOT=$lot;COIL=$coil";
-    if ($roll !== '')   $qrText .= ";ROLL=$roll";
-    if ($width !== '')  $qrText .= ";WIDTH=$width";
-    if ($length !== '') $qrText .= ";LENGTH=$length";
+    if ($roll !== '')     $qrText .= ";ROLL=$roll";
+    if ($width !== '')    $qrText .= ";WIDTH=$width";
+    if ($length !== '')   $qrText .= ";LENGTH=$length";
+    if ($type === 'balance' || $stock_id !== '') {
+        if ($type === 'balance') $qrText .= ";TYPE=BALANCE";
+        if ($stock_id !== '')   $qrText .= ";ID=$stock_id";
+    }
 }
 
 // Ensure there is always text

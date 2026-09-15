@@ -504,7 +504,7 @@ CREATE TABLE `slitting_product` (
   `voided_at` datetime DEFAULT NULL COMMENT 'Timestamp when the row was voided',
   `voided_reason` varchar(255) DEFAULT NULL COMMENT 'Reason for voiding manual_delete, duplicate, etc.',
   `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `roll_key` varchar(400) GENERATED ALWAYS AS ((case when (coalesce(`is_voided`,0) = 0) then concat(`lot_no`,_utf8mb4'',`coil_no`,_utf8mb4'',`roll_no`) else NULL end)) STORED,
+  `roll_key` varchar(400) DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `unique_production_roll` (`roll_key`),
   KEY `idx_recoiling_id` (`recoiling_id`),

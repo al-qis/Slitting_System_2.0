@@ -27,8 +27,9 @@ if ($_SESSION['role'] !== 'slitting') {
 
 include 'config.php';
 
-$lot_no  = trim($_GET['lot_no']  ?? '');
-$coil_no = trim($_GET['coil_no'] ?? '');
+$lot_no    = trim($_GET['lot_no']   ?? '');
+$coil_no   = trim($_GET['coil_no']  ?? '');
+$mother_id = intval($_GET['mother_id'] ?? 0);
 
 // ── Preserve return state back to finish_product.php ─────────────
 $backMonth  = isset($_GET['month'])  ? (int)$_GET['month']  : (int)date('m');
@@ -49,26 +50,46 @@ if ($lot_no === '' || $coil_no === '') {
         . '<a href="' . htmlspecialchars($backUrl) . '">&larr; Back to List</a>');
 }
 
-// ── Fetch every printable roll under this exact Lot + Coil ────────
+// ── Fetch every printable roll under this exact Lot + Coil (and Mother ID) ────────
 // "Printable" mirrors the same rule finish_product.php uses to show a
 // select_customer.php link: not WAITING/REJECTED, and not an IN roll
 // that's still pending Actual Length or already palletised.
-$stmt = $conn->prepare("
-    SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
-           sp.width, sp.length, sp.actual_length, sp.status,
-           sp.is_completed, sp.customer_name, sp.ref_no,
-           sp.is_printed, sp.print_count, sp.last_printed_at, sp.last_printed_by,
-           pi.pallet_id
-    FROM slitting_product sp
-    LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
-    WHERE sp.is_voided = 0
-      AND sp.lot_no  = ?
-      AND sp.coil_no = ?
-      AND sp.status NOT IN ('WAITING', 'REJECTED')
-      AND NOT (sp.status = 'IN' AND (sp.is_completed = 0 OR pi.pallet_id IS NOT NULL))
-    ORDER BY sp.roll_no ASC, sp.id ASC
-");
-$stmt->bind_param("ss", $lot_no, $coil_no);
+if ($mother_id > 0) {
+    $stmt = $conn->prepare("
+        SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
+               sp.width, sp.length, sp.actual_length, sp.status,
+               sp.is_completed, sp.customer_name, sp.ref_no,
+               sp.is_printed, sp.print_count, sp.last_printed_at, sp.last_printed_by,
+               pi.pallet_id
+        FROM slitting_product sp
+        LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+        WHERE sp.is_voided = 0
+          AND sp.lot_no  = ?
+          AND sp.coil_no = ?
+          AND sp.mother_id = ?
+          AND sp.status NOT IN ('WAITING', 'REJECTED')
+          AND NOT (sp.status = 'IN' AND (sp.is_completed = 0 OR pi.pallet_id IS NOT NULL))
+        ORDER BY sp.roll_no ASC, sp.id ASC
+    ");
+    $stmt->bind_param("ssi", $lot_no, $coil_no, $mother_id);
+} else {
+    $stmt = $conn->prepare("
+        SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
+               sp.width, sp.length, sp.actual_length, sp.status,
+               sp.is_completed, sp.customer_name, sp.ref_no,
+               sp.is_printed, sp.print_count, sp.last_printed_at, sp.last_printed_by,
+               pi.pallet_id
+        FROM slitting_product sp
+        LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+        WHERE sp.is_voided = 0
+          AND sp.lot_no  = ?
+          AND sp.coil_no = ?
+          AND sp.status NOT IN ('WAITING', 'REJECTED')
+          AND NOT (sp.status = 'IN' AND (sp.is_completed = 0 OR pi.pallet_id IS NOT NULL))
+        ORDER BY sp.roll_no ASC, sp.id ASC
+    ");
+    $stmt->bind_param("ss", $lot_no, $coil_no);
+}
 $stmt->execute();
 $rolls = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
 $stmt->close();
@@ -294,8 +315,8 @@ $stmt->close();
                         <select class="form-select form-select-sm row-copies" data-row="<?= $idx ?>">
                             <option value="0">0 (skip)</option>
                             <option value="1">1</option>
-                            <option value="2">2</option>
-                            <option value="3" selected>3</option>
+                            <option value="2" selected>2</option>
+                            <option value="3">3</option>
                              <option value="4" >4</option>
                         </select>
                     </td>
@@ -598,7 +619,7 @@ function collectSelections() {
         }
 
         const parsedCopies = parseInt(copiesEl.value, 10);
-        const copies = isNaN(parsedCopies) ? 1 : parsedCopies;
+        const copies = isNaN(parsedCopies) ? 2 : parsedCopies;
         const length = parseFloat(lengthEl.value);
 
         if (!customer) { setRowStatus(idx, 'Select a customer', true); hasError = true; return; }

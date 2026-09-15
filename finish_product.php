@@ -394,14 +394,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     // need fixing") and must touch ONLY that roll — not resync the whole
     // group again.
     $isFirstTimeEntry = $selfRow && (int)$selfRow['is_completed'] === 0;
+    $selfMotherId     = intval($selfRow['mother_id'] ?? 0);
 
     if ($isFirstTimeEntry) {
-        // Find every not-yet-completed row sharing the same Product + Lot No
-        $stmt = $conn->prepare("
-            SELECT * FROM slitting_product
-            WHERE product=? AND lot_no=? AND status='IN' AND is_completed=0
-        ");
-        $stmt->bind_param("ss", $product, $lot_no);
+        // Find every not-yet-completed row sharing the same Product + Lot No + Mother ID
+        if ($selfMotherId > 0) {
+            $stmt = $conn->prepare("
+                SELECT * FROM slitting_product
+                WHERE product=? AND lot_no=? AND mother_id=? AND status='IN' AND is_completed=0
+            ");
+            $stmt->bind_param("ssi", $product, $lot_no, $selfMotherId);
+        } else {
+            $stmt = $conn->prepare("
+                SELECT * FROM slitting_product
+                WHERE product=? AND lot_no=? AND status='IN' AND is_completed=0
+            ");
+            $stmt->bind_param("ss", $product, $lot_no);
+        }
         $stmt->execute();
         $group = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
         $stmt->close();
@@ -411,13 +420,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
             if ($selfRow) $group = [$selfRow];
         }
 
-        // Batch update for actual_length across the whole pending group
-        $stmt = $conn->prepare("
-            UPDATE slitting_product
-            SET actual_length=?, date_in=NOW(), stock_counted=1, is_completed=1
-            WHERE product=? AND lot_no=? AND status='IN' AND is_completed=0
-        ");
-        $stmt->bind_param("sss", $actual_length, $product, $lot_no);
+        // Batch update for actual_length across the whole pending group of this specific mother coil run
+        if ($selfMotherId > 0) {
+            $stmt = $conn->prepare("
+                UPDATE slitting_product
+                SET actual_length=?, date_in=NOW(), stock_counted=1, is_completed=1
+                WHERE product=? AND lot_no=? AND mother_id=? AND status='IN' AND is_completed=0
+            ");
+            $stmt->bind_param("sssi", $actual_length, $product, $lot_no, $selfMotherId);
+        } else {
+            $stmt = $conn->prepare("
+                UPDATE slitting_product
+                SET actual_length=?, date_in=NOW(), stock_counted=1, is_completed=1
+                WHERE product=? AND lot_no=? AND status='IN' AND is_completed=0
+            ");
+            $stmt->bind_param("sss", $actual_length, $product, $lot_no);
+        }
         $stmt->execute();
         $stmt->close();
 
@@ -1043,24 +1061,43 @@ if (isset($_GET['edit'])) {
     if ($res && $res->num_rows > 0) {
         $editData = $res->fetch_assoc();
 
-        $lotNoFetch  = trim($editData['lot_no'] ?? '');
-        $coilNoFetch = trim($editData['coil_no'] ?? '');
+        $lotNoFetch    = trim($editData['lot_no'] ?? '');
+        $coilNoFetch   = trim($editData['coil_no'] ?? '');
+        $motherIdFetch = intval($editData['mother_id'] ?? 0);
 
         if ($lotNoFetch !== '' && $coilNoFetch !== '') {
-            $stmtBR = $conn->prepare("
-                SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
-                       sp.width, sp.length, sp.actual_length, sp.status,
-                       sp.is_completed, sp.customer_name, sp.ref_no,
-                       sp.is_printed, sp.print_count, sp.last_printed_at, sp.last_printed_by,
-                       pi.pallet_id
-                FROM slitting_product sp
-                LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
-                WHERE sp.is_voided = 0
-                  AND sp.lot_no  = ?
-                  AND sp.coil_no = ?
-                ORDER BY sp.roll_no ASC, sp.id ASC
-            ");
-            $stmtBR->bind_param("ss", $lotNoFetch, $coilNoFetch);
+            if ($motherIdFetch > 0) {
+                $stmtBR = $conn->prepare("
+                    SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
+                           sp.width, sp.length, sp.actual_length, sp.status,
+                           sp.is_completed, sp.customer_name, sp.ref_no,
+                           sp.is_printed, sp.print_count, sp.last_printed_at, sp.last_printed_by,
+                           pi.pallet_id
+                    FROM slitting_product sp
+                    LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+                    WHERE sp.is_voided = 0
+                      AND sp.lot_no  = ?
+                      AND sp.coil_no = ?
+                      AND sp.mother_id = ?
+                    ORDER BY sp.roll_no ASC, sp.id ASC
+                ");
+                $stmtBR->bind_param("ssi", $lotNoFetch, $coilNoFetch, $motherIdFetch);
+            } else {
+                $stmtBR = $conn->prepare("
+                    SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
+                           sp.width, sp.length, sp.actual_length, sp.status,
+                           sp.is_completed, sp.customer_name, sp.ref_no,
+                           sp.is_printed, sp.print_count, sp.last_printed_at, sp.last_printed_by,
+                           pi.pallet_id
+                    FROM slitting_product sp
+                    LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+                    WHERE sp.is_voided = 0
+                      AND sp.lot_no  = ?
+                      AND sp.coil_no = ?
+                    ORDER BY sp.roll_no ASC, sp.id ASC
+                ");
+                $stmtBR->bind_param("ss", $lotNoFetch, $coilNoFetch);
+            }
             $stmtBR->execute();
             $batchRolls = $stmtBR->get_result()->fetch_all(MYSQLI_ASSOC);
             $stmtBR->close();
@@ -1821,7 +1858,7 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                     </div>
                 </div>
                 <div class="d-flex align-items-center gap-2">
-                    <a href="batch_setup.php?lot_no=<?= urlencode(trim($editData['lot_no'] ?? '')) ?>&coil_no=<?= urlencode(trim($editData['coil_no'] ?? '')) ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?>&filter=<?= urlencode($filter_card) ?>"
+                    <a href="batch_setup.php?lot_no=<?= urlencode(trim($editData['lot_no'] ?? '')) ?>&coil_no=<?= urlencode(trim($editData['coil_no'] ?? '')) ?>&mother_id=<?= intval($editData['mother_id'] ?? 0) ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?>&filter=<?= urlencode($filter_card) ?>"
                        class="btn btn-outline-light btn-sm" title="Open in dedicated full page">
                         <i class="bi bi-box-arrow-up-right me-1"></i> Full Page View
                     </a>
@@ -2002,8 +2039,8 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                                             <select class="form-select form-select-sm modal-row-copies" data-row="<?= $idx ?>">
                                                 <option value="0">0 (skip)</option>
                                                 <option value="1">1</option>
-                                                <option value="2">2</option>
-                                                <option value="3" selected>3</option>
+                                                <option value="2" selected>2</option>
+                                                <option value="3">3</option>
                                                 <option value="4">4</option>
                                             </select>
                                         </td>
@@ -2301,7 +2338,7 @@ function modalCollectSelections() {
         }
 
         const parsedCopies = parseInt(copiesEl.value, 10);
-        const copies = isNaN(parsedCopies) ? 1 : parsedCopies;
+        const copies = isNaN(parsedCopies) ? 2 : parsedCopies;
         const length = parseFloat(lengthEl.value);
 
         if (!customer) { modalSetRowStatus(idx, 'Select customer', true); hasError = true; return; }

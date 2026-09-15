@@ -111,35 +111,45 @@ function fmtNum($v): string {
 <head>
 <meta charset="UTF-8">
 <title>Warehousing Slip — <?= $h($pallet['pallet_no']) ?></title>
-<style>
+<style id="basePrintStyle">
     * { box-sizing: border-box; }
     body {
         font-family: Arial, Helvetica, sans-serif;
-        background: #eee;
+        background: #e2e8f0;
         margin: 0;
-        padding: 20px;
+        padding: 20px 10px;
         color: #000;
     }
+
+    /* Screen preview sheet styled to 9.5" x 5.5" with user-defined margins in inches */
+    .sheet-wrapper {
+        display: flex;
+        justify-content: center;
+        width: 100%;
+        overflow-x: auto;
+    }
     .sheet {
-        width: 8.5in;
-        max-width: 100%;
-        margin: 0 auto;
+        width: 9.5in;
+        min-height: 5.5in;
+        max-width: 9.5in;
         background: #fff;
-        padding: 4mm 5mm;
+        padding: 0.19in 0.5in 0.13in 0.15in; /* Top: 0.19in, Right: 0.5in, Bottom: 0.13in, Left: 0.15in */
         box-sizing: border-box;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+        border: 1px solid #cbd5e1;
     }
 
     /* ── Header ─────────────────────────────────────────── */
     .slip-header {
         position: relative;
         text-align: center;
-        margin-bottom: 2mm;
+        margin-bottom: 1mm;
     }
     .slip-header h1 {
         font-size: 10.5pt;
         font-weight: bold;
         margin: 0;
-        line-height: 1.25;
+        line-height: 1.2;
     }
     .form-code {
         position: absolute;
@@ -153,13 +163,14 @@ function fmtNum($v): string {
     table.info-table {
         width: 100%;
         border-collapse: collapse;
-        margin-bottom: 2mm;
+        margin-bottom: 1mm;
     }
     table.info-table td {
         border: 1px solid #000000;
-        padding: 1mm 2mm;
+        padding: 0.6mm 2mm;
         font-size: 10pt;
         vertical-align: middle;
+        line-height: 1.15;
     }
     table.info-table td.label {
         width: 15%;
@@ -174,57 +185,66 @@ function fmtNum($v): string {
     table.data-table {
         width: 100%;
         border-collapse: collapse;
-        margin-bottom: 2mm;
+        margin-bottom: 1mm;
     }
     table.data-table th, table.data-table td {
         border: 1px solid #000000;
-        padding: 0.8mm 1mm;
+        padding: 0.5mm 1mm;
         text-align: center;
         font-size: 9.5pt;
+        line-height: 1.15;
     }
-    table.data-table thead th { font-weight: bold; background: #f5f5f5; }
-    table.data-table col.col-stock   { width: 20%; }
-    table.data-table col.col-lot     { width: 15%; } /* lot no: 4-7 mixed-case alnum chars, keep roomy */
-    table.data-table col.col-length  { width: 10%; }
-    table.data-table col.col-width   { width: 10%; }
-    table.data-table col.col-coils   { width: 7%;  }
+    table.data-table thead th {
+        font-weight: bold;
+        background: #f5f5f5;
+        padding: 0.6mm 1mm;
+    }
+    table.data-table col.col-stock   { width: 22%; }
+    table.data-table col.col-lot     { width: 18%; }
+    table.data-table col.col-length  { width: 12%; }
+    table.data-table col.col-width   { width: 12%; }
+    table.data-table col.col-coils   { width: 8%;  }
     table.data-table col.col-roll    { width: 12%; }
-    table.data-table col.col-wgt     { width: 12%; }
-    table.data-table td.data-row     { height: 8mm; }
+    table.data-table col.col-wgt     { width: 16%; }
+    table.data-table td.data-row     { height: 6.5mm; }
 
     /* ── Footer signature blocks ────────────────────────── */
     .footer-wrap {
         display: flex;
-        align-items: flex-end; /* legend baseline lines up with the table's bottom (Date) row */
+        align-items: flex-end;
+        justify-content: space-between;
+        margin-top: 0.5mm;
         margin-bottom: 0;
     }
     table.footer-table {
-        width: 59%;         /* ← make this smaller/bigger to shrink/grow the box */
-        margin-left: auto;  /* pushes it flush against the right edge */
+        width: 58%;
+        margin-left: auto;
         border-collapse: collapse;
         margin-bottom: 0;
     }
     table.footer-table th, table.footer-table td {
-        border: 1px solid #bebebe;
-        padding: 1mm 1.5mm;
+        border: 1px solid #000000;
+        padding: 0.6mm 1.5mm;
         font-size: 8pt;
         vertical-align: top;
     }
-    table.footer-table th { text-align: center; background: #f5f5f5; }
+    table.footer-table th {
+        text-align: center;
+        background: #f5f5f5;
+        font-weight: bold;
+        padding: 0.6mm 1.5mm;
+    }
 
-    /* Row 2: large blank signature space */
+    /* Row 2: blank signature space */
     table.footer-table td.sig-space-cell {
-        height: 15mm;
+        height: 10mm;
         vertical-align: top;
     }
-    /* Row 3: separate Date row — the border between this <tr> and the
-       signature-space <tr> above is what gives the strict horizontal
-       divider line from the physical form; no extra CSS needed for it,
-       it's just a natural consequence of them being distinct rows. */
+    /* Row 3: separate Date row */
     table.footer-table td.date-cell {
         height: auto;
         vertical-align: middle;
-        padding: 1mm 1.5mm;
+        padding: 0.6mm 1.5mm;
     }
 
     .sig-line { display: flex; align-items: center; gap: 1.5mm; }
@@ -235,60 +255,243 @@ function fmtNum($v): string {
         border-bottom: 1px solid #999;
         font-family: inherit;
         font-size: 8pt;
-        padding: 0.5mm 1mm;
+        padding: 0.4mm 1mm;
         background: #fffef2;
     }
     .prod-name-input { flex: 1; min-width: 0; }
     .prod-date-input { width: auto; }
+    .prod-date-text { display: none; font-size: 8pt; font-family: inherit; }
 
     .legend {
-        white-space: nowrap; /* keep the whole legend on one line */
-        flex-shrink: 0;      /* don't let the flex container squeeze it to wrap */
+        white-space: nowrap;
+        flex-shrink: 0;
         font-size: 6.5pt;
         padding-right: 2mm;
         box-sizing: border-box;
     }
 
-    .no-print { text-align: center; margin-top: 6mm; }
+    /* ── On-screen Control Toolbar ──────────────────────── */
+    .no-print-toolbar {
+        max-width: 9.5in;
+        margin: 0 auto 14px auto;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+    .toolbar-actions {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 10px;
+        background: #1e293b;
+        color: #fff;
+        padding: 10px 16px;
+        border-radius: 6px;
+    }
+    .toolbar-title {
+        font-size: 14px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .paper-size-tag {
+        background: #0284c7;
+        color: #fff;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 11px;
+        font-weight: bold;
+        letter-spacing: 0.5px;
+    }
+    .btn-group-print {
+        display: flex;
+        gap: 8px;
+    }
     .print-btn {
-        padding: 10px 24px;
-        background: #0066cc;
+        padding: 8px 18px;
+        background: #2563eb;
         color: #fff;
         border: none;
         cursor: pointer;
-        font-size: 15px;
+        font-size: 13px;
+        font-weight: 600;
         border-radius: 4px;
-        margin: 0 4px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        transition: background 0.15s;
     }
-    .print-btn.secondary { background: #666; }
+    .print-btn:hover { background: #1d4ed8; }
+    .print-btn.secondary { background: #475569; }
+    .print-btn.secondary:hover { background: #334155; }
 
-    /* ── Print rules ────────────────────────────────────── */
+    /* Margin Adjustment Panel */
+    .margin-panel {
+        background: #fff;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        padding: 8px 14px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 12px;
+        font-size: 12px;
+    }
+    .margin-inputs {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+    .margin-field {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-weight: 600;
+        color: #334155;
+    }
+    .margin-field input {
+        width: 58px;
+        padding: 3px 6px;
+        font-size: 12px;
+        border: 1px solid #94a3b8;
+        border-radius: 4px;
+        text-align: center;
+        background: #f8fafc;
+    }
+    .margin-actions {
+        display: flex;
+        gap: 6px;
+    }
+    .margin-btn {
+        padding: 4px 10px;
+        font-size: 11px;
+        font-weight: 600;
+        border-radius: 4px;
+        border: 1px solid #cbd5e1;
+        background: #f1f5f9;
+        cursor: pointer;
+        color: #334155;
+    }
+    .margin-btn:hover { background: #e2e8f0; }
+
+    .print-hints {
+        background: #f8fafc;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        padding: 8px 14px;
+        font-size: 11.5px;
+        color: #334155;
+        line-height: 1.4;
+    }
+    .print-hints strong { color: #0f172a; }
+
+    /* ── Print rules (Strict 9.5" × 5.5" with Margins in Inch) ────────── */
     @media print {
-        @page { size: 21.5cm 14cm; margin: 3mm; }
-        body { background: #fff; padding: 0; }
-        .sheet { width: 100%; padding: 0; }
-        .no-print { display: none !important; }
-
-        /* Inputs render as plain text on paper — no border, no
-           background, no native date-picker calendar icon. */
-        .prod-name-input, .prod-date-input {
+        @page {
+            size: 9.5in 5.5in;
+            margin-top: 0.19in;
+            margin-bottom: 0.13in;
+            margin-left: 0.15in;
+            margin-right: 0.5in;
+        }
+        html, body {
+            width: 100% !important;
+            height: 100% !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            background: #fff !important;
+            overflow: hidden !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+        }
+        .sheet-wrapper {
+            display: block !important;
+            width: 100% !important;
+            height: 100% !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            overflow: hidden !important;
+        }
+        .sheet {
+            width: 100% !important;
+            max-width: 100% !important;
+            min-height: auto !important;
+            height: auto !important;
+            max-height: calc(5.5in - 0.19in - 0.13in) !important;
+            margin: 0 !important;
+            padding: 0 !important;
             border: none !important;
-            background: transparent !important;
-            -webkit-appearance: none;
-            appearance: none;
+            box-shadow: none !important;
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+            page-break-after: avoid !important;
+            break-after: avoid !important;
+            page-break-before: avoid !important;
+            break-before: avoid !important;
+            overflow: hidden !important;
+        }
+        table, tr, td, th, tbody, thead {
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+        }
+        .no-print, .no-print-toolbar {
+            display: none !important;
+        }
+
+        /* Swap date picker input to crisp clean text on print */
+        .prod-date-input {
+            display: none !important;
+        }
+        .prod-date-text {
+            display: inline !important;
         }
         input[type="date"]::-webkit-calendar-picker-indicator {
             display: none !important;
-        }
-        input[type="date"] {
-            -webkit-appearance: none;
-            appearance: none;
         }
     }
 </style>
 </head>
 <body>
 
+<div class="no-print-toolbar">
+    <div class="toolbar-actions">
+        <div class="toolbar-title">
+            <span>Warehousing Slip Print Preview</span>
+            <span class="paper-size-tag">9.5" × 5.5" (11"/2)</span>
+        </div>
+        <div class="btn-group-print">
+            <button class="print-btn" onclick="window.print()">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v8H6z"/></svg>
+                Print Slip
+            </button>
+            <button class="print-btn secondary" onclick="window.close()">Close</button>
+        </div>
+    </div>
+    <div class="margin-panel">
+        <div class="margin-inputs">
+            <span style="font-weight:700; color:#0f172a; margin-right:4px;">Print Margins (inch):</span>
+            <label class="margin-field">Top: <input type="number" step="0.01" min="0" max="4" id="mTop" value="0.19" onchange="applyMargins()"></label>
+            <label class="margin-field">Bottom: <input type="number" step="0.01" min="0" max="4" id="mBottom" value="0.13" onchange="applyMargins()"></label>
+            <label class="margin-field">Left: <input type="number" step="0.01" min="0" max="4" id="mLeft" value="0.15" onchange="applyMargins()"></label>
+            <label class="margin-field">Right: <input type="number" step="0.01" min="0" max="4" id="mRight" value="0.5" onchange="applyMargins()"></label>
+        </div>
+        <div class="margin-actions">
+            <button type="button" class="margin-btn" onclick="applyMargins()">Apply</button>
+            <button type="button" class="margin-btn" onclick="resetMargins()">Reset</button>
+        </div>
+    </div>
+    <div class="print-hints">
+        <strong>Printer Settings for Continuous Form (9.5" × 5.5"):</strong><br>
+        • <strong>Paper Size:</strong> Select <code>9.5 x 5.5 in</code> (or <code>Half Letter / Fanfold 241 × 140 mm</code>). If not listed, add Custom Paper Size (Width: 9.5", Height: 5.5") in Windows Print Server Properties.<br>
+        • <strong>Margins:</strong> <code>None</code> or <code>Minimum</code> (CSS controls top: 0.19", bottom: 0.13", left: 0.15", right: 0.5")&nbsp;&nbsp;|&nbsp;&nbsp;• <strong>Scale:</strong> <code>100%</code>&nbsp;&nbsp;|&nbsp;&nbsp;• <strong>Headers/Footers:</strong> <code>Unchecked</code>
+    </div>
+</div>
+
+<div class="sheet-wrapper">
 <div class="sheet">
 
     <div class="slip-header">
@@ -388,7 +591,9 @@ function fmtNum($v): string {
                         <div class="sig-line">
                             <label for="prodDate">Date:</label>
                             <input type="date" id="prodDate" name="prod_date"
-                                   class="prod-date-input" value="<?= date('Y-m-d') ?>">
+                                   class="prod-date-input" value="<?= date('Y-m-d') ?>"
+                                   oninput="syncDateText(this.value)">
+                            <span id="prodDateText" class="prod-date-text"><?= date('d/m/Y') ?></span>
                         </div>
                     </td>
                     <td class="date-cell">
@@ -403,11 +608,79 @@ function fmtNum($v): string {
     </div>
 
 </div>
-
-<div class="no-print">
-    <button class="print-btn" onclick="window.print()">Print</button>
-    <button class="print-btn secondary" onclick="window.close()">Close</button>
 </div>
+
+<script>
+function syncDateText(val) {
+    if (!val) {
+        document.getElementById('prodDateText').textContent = '';
+        return;
+    }
+    var parts = val.split('-');
+    if (parts.length === 3) {
+        document.getElementById('prodDateText').textContent = parts[2] + '/' + parts[1] + '/' + parts[0];
+    }
+}
+
+function applyMargins() {
+    var top = parseFloat(document.getElementById('mTop').value);
+    var bottom = parseFloat(document.getElementById('mBottom').value);
+    var left = parseFloat(document.getElementById('mLeft').value);
+    var right = parseFloat(document.getElementById('mRight').value);
+
+    if (isNaN(top)) top = 0.19;
+    if (isNaN(bottom)) bottom = 0.13;
+    if (isNaN(left)) left = 0.15;
+    if (isNaN(right)) right = 0.5;
+
+    // Update screen sheet padding
+    var sheet = document.querySelector('.sheet');
+    if (sheet) {
+        sheet.style.paddingTop = top + 'in';
+        sheet.style.paddingRight = right + 'in';
+        sheet.style.paddingBottom = bottom + 'in';
+        sheet.style.paddingLeft = left + 'in';
+    }
+
+    // Update print @page margin rule dynamically
+    var styleTag = document.getElementById('dynamicPrintMargins');
+    if (!styleTag) {
+        styleTag = document.createElement('style');
+        styleTag.id = 'dynamicPrintMargins';
+        document.head.appendChild(styleTag);
+    }
+    styleTag.innerHTML = '@media print { @page { size: 9.5in 5.5in; margin: ' + top + 'in ' + right + 'in ' + bottom + 'in ' + left + 'in !important; } }';
+
+    try {
+        localStorage.setItem('slip_margin_top', top);
+        localStorage.setItem('slip_margin_bottom', bottom);
+        localStorage.setItem('slip_margin_left', left);
+        localStorage.setItem('slip_margin_right', right);
+    } catch(e) {}
+}
+
+function resetMargins() {
+    document.getElementById('mTop').value = '0.19';
+    document.getElementById('mBottom').value = '0.13';
+    document.getElementById('mLeft').value = '0.15';
+    document.getElementById('mRight').value = '0.5';
+    applyMargins();
+}
+
+// Load saved margins on startup or initialize default
+(function() {
+    try {
+        var savedTop = localStorage.getItem('slip_margin_top');
+        if (savedTop !== null) {
+            document.getElementById('mTop').value = savedTop;
+            document.getElementById('mBottom').value = localStorage.getItem('slip_margin_bottom') || '0.13';
+            document.getElementById('mLeft').value = localStorage.getItem('slip_margin_left') || '0.15';
+            document.getElementById('mRight').value = localStorage.getItem('slip_margin_right') || '0.5';
+            applyMargins();
+        }
+    } catch(e) {}
+})();
+</script>
 
 </body>
 </html>
