@@ -2,5 +2,10 @@
     "require": {
         "endroid/qr-code": "^5.1",
         "phpoffice/phpspreadsheet": "^5.1"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "app/"
+        }
     }
 }

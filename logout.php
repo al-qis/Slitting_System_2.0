@@ -1,5 +1,11 @@
 <?php
-session_start();
-session_destroy();
-header("Location: login.php");
-exit;
+/**
+ * Logout Entry Point
+ * Refactored to delegate to App\Controllers\AuthController (MVC Pattern)
+ */
+
+require_once __DIR__ . '/vendor/autoload.php';
+require_once __DIR__ . '/config.php';
+
+$controller = new \App\Controllers\AuthController();
+$controller->logout();
