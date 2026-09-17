@@ -335,55 +335,7 @@ function fmtNum(mixed$v): string {
     .print-btn.secondary:hover { background: #334155; }
 
     /* Margin Adjustment Panel */
-    .margin-panel {
-        background: #fff;
-        border: 1px solid #cbd5e1;
-        border-radius: 6px;
-        padding: 8px 14px;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        flex-wrap: wrap;
-        gap: 12px;
-        font-size: 12px;
-    }
-    .margin-inputs {
-        display: flex;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 10px;
-    }
-    .margin-field {
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
-        font-weight: 600;
-        color: #334155;
-    }
-    .margin-field input {
-        width: 58px;
-        padding: 3px 6px;
-        font-size: 12px;
-        border: 1px solid #94a3b8;
-        border-radius: 4px;
-        text-align: center;
-        background: #f8fafc;
-    }
-    .margin-actions {
-        display: flex;
-        gap: 6px;
-    }
-    .margin-btn {
-        padding: 4px 10px;
-        font-size: 11px;
-        font-weight: 600;
-        border-radius: 4px;
-        border: 1px solid #cbd5e1;
-        background: #f1f5f9;
-        cursor: pointer;
-        color: #334155;
-    }
-    .margin-btn:hover { background: #e2e8f0; }
+   
 
     .print-hints {
         background: #f8fafc;
@@ -481,19 +433,7 @@ function fmtNum(mixed$v): string {
             <button class="print-btn secondary" onclick="window.close()">Close</button>
         </div>
     </div>
-    <div class="margin-panel">
-        <div class="margin-inputs">
-            <span style="font-weight:700; color:#0f172a; margin-right:4px;">Print Margins (inch):</span>
-            <label class="margin-field">Top: <input type="number" step="0.01" min="0" max="4" id="mTop" value="0.19" onchange="applyMargins()"></label>
-            <label class="margin-field">Bottom: <input type="number" step="0.01" min="0" max="4" id="mBottom" value="0.13" onchange="applyMargins()"></label>
-            <label class="margin-field">Left: <input type="number" step="0.01" min="0" max="4" id="mLeft" value="0.15" onchange="applyMargins()"></label>
-            <label class="margin-field">Right: <input type="number" step="0.01" min="0" max="4" id="mRight" value="0.5" onchange="applyMargins()"></label>
-        </div>
-        <div class="margin-actions">
-            <button type="button" class="margin-btn" onclick="applyMargins()">Apply</button>
-            <button type="button" class="margin-btn" onclick="resetMargins()">Reset</button>
-        </div>
-    </div>
+    
     <div class="print-hints">
         <strong>Printer Settings for Continuous Form (9.5" × 5.5"):</strong><br>
         • <strong>Paper Size:</strong> Select <code>9.5 x 5.5 in</code> (or <code>Half Letter / Fanfold 241 × 140 mm</code>). If not listed, add Custom Paper Size (Width: 9.5", Height: 5.5") in Windows Print Server Properties.<br>
