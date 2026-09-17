@@ -133,6 +133,7 @@ function fmtNum(mixed$v): string {
         width: 9.5in;
         min-height: 5.5in;
         height: 5.5in;
+        max-height: 5.5in;
         max-width: 9.5in;
         background: #fff;
         padding: 0.19in 0.5in 0.13in 0.15in; /* Top: 0.19in, Right: 0.5in, Bottom: 0.13in, Left: 0.15in */
@@ -141,14 +142,15 @@ function fmtNum(mixed$v): string {
         border: 1px solid #cbd5e1;
         display: flex;
         flex-direction: column;
-        justify-content: space-between;
+        justify-content: flex-start;
+        overflow: hidden;
     }
 
     /* ── Header ─────────────────────────────────────────── */
     .slip-header {
         position: relative;
         text-align: center;
-        margin-bottom: 2mm;
+        margin-bottom: 1.5mm;
     }
     .slip-header h1 {
         font-size: 11pt;
@@ -169,7 +171,7 @@ function fmtNum(mixed$v): string {
     table.info-table {
         width: 100%;
         border-collapse: collapse;
-        margin-bottom: 2mm;
+        margin-bottom: 1.5mm;
     }
     table.info-table td {
         border: 1px solid #000000;
@@ -191,7 +193,7 @@ function fmtNum(mixed$v): string {
     table.data-table {
         width: 100%;
         border-collapse: collapse;
-        margin-bottom: 2mm;
+        margin-bottom: 0;
     }
     table.data-table th, table.data-table td {
         border: 1px solid #000000;
@@ -212,14 +214,14 @@ function fmtNum(mixed$v): string {
     table.data-table col.col-coils   { width: 8%;  }
     table.data-table col.col-roll    { width: 12%; }
     table.data-table col.col-wgt     { width: 16%; }
-    table.data-table td.data-row     { height: 7.6mm; }
+    table.data-table td.data-row     { height: 8.2mm; }
 
     /* ── Footer signature blocks ────────────────────────── */
     .footer-wrap {
         display: flex;
         align-items: flex-end;
         justify-content: space-between;
-        margin-top: 1mm;
+        margin-top: auto; /* Automatically pushes footer flush down to the 0.13" bottom margin */
         margin-bottom: 0;
     }
     table.footer-table {
@@ -387,7 +389,7 @@ function fmtNum(mixed$v): string {
             box-shadow: none !important;
             display: flex !important;
             flex-direction: column !important;
-            justify-content: space-between !important;
+            justify-content: flex-start !important;
             page-break-inside: avoid !important;
             break-inside: avoid !important;
             page-break-after: avoid !important;
@@ -395,6 +397,10 @@ function fmtNum(mixed$v): string {
             page-break-before: avoid !important;
             break-before: avoid !important;
             overflow: hidden !important;
+        }
+        .footer-wrap {
+            margin-top: auto !important;
+            margin-bottom: 0 !important;
         }
         table, tr, td, th, tbody, thead {
             page-break-inside: avoid !important;
