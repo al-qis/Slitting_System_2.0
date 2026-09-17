@@ -174,19 +174,22 @@ $actual_length = (float)$actual_length; // already validated as required + numer
 $length        = $actual_length;        // Length is always exactly the same as Actual now
 
 // -------------------------------------------------------------
-// 2. Duplicate check (same Lot + Coil + Roll shouldn't already exist)
+// 2. Duplicate check (same Lot + Coil + Roll + Width shouldn't already exist)
 // -------------------------------------------------------------
 $check_stmt = $conn->prepare(
-    "SELECT id FROM slitting_product WHERE lot_no = ? AND coil_no = ? AND roll_no = ?"
+    "SELECT id FROM slitting_product 
+     WHERE lot_no = ? AND coil_no = ? AND roll_no = ?
+       AND ABS(width - ?) < 0.5
+       AND (is_voided = 0 OR is_voided IS NULL)"
 );
-$check_stmt->bind_param("sss", $lot_no, $coil_no, $roll_no);
+$check_stmt->bind_param("sssd", $lot_no, $coil_no, $roll_no, $width);
 $check_stmt->execute();
 $dupe = $check_stmt->get_result();
 if ($dupe->num_rows > 0) {
     $check_stmt->close();
     die("<div style='color:red; font-family:sans-serif; padding:20px; border:1px solid red; background:#fff5f5;'>
             <h2>Duplicate Entry</h2>
-            <p>Lot: $lot_no, Coil: $coil_no, Roll: $roll_no already exists in the system.</p>
+            <p>Lot: $lot_no, Coil: $coil_no, Roll: $roll_no (Width: {$width}mm) already exists in the system.</p>
             <button onclick='history.back()'>Go Back and Correct</button>
          </div>");
 }
@@ -208,44 +211,49 @@ $original_source = 'initial_stock';
 $status          = 'IN';
 $date_in         = date('Y-m-d H:i:s'); // always "now" -- real-time, not user-editable
 
+// Generate unique DB roll_key incorporating width
+$base_roll_key   = $lot_no . '_' . $coil_no . '_' . $roll_no . '_' . round($width, 2);
+$target_roll_key = $base_roll_key;
+$chk_key = $conn->prepare("SELECT id FROM slitting_product WHERE roll_key = ? AND (is_voided = 0 OR is_voided IS NULL)");
+$chk_key->bind_param("s", $target_roll_key);
+$chk_key->execute();
+if ($chk_key->get_result()->num_rows > 0) {
+    $suffix_num = 1;
+    while (true) {
+        $candidate = $base_roll_key . "_" . $suffix_num;
+        $chk2 = $conn->prepare("SELECT id FROM slitting_product WHERE roll_key = ? AND (is_voided = 0 OR is_voided IS NULL)");
+        $chk2->bind_param("s", $candidate);
+        $chk2->execute();
+        if ($chk2->get_result()->num_rows === 0) {
+            $target_roll_key = $candidate;
+            $chk2->close();
+            break;
+        }
+        $chk2->close();
+        $suffix_num++;
+    }
+}
+$chk_key->close();
+
 $conn->begin_transaction();
 try {
     // -------------------------------------------------------------
-    // COLUMN / PLACEHOLDER COUNT -- kept deliberately explicit so
-    // this never silently drifts out of sync again:
-    //
-    //   14 columns total in the INSERT below.
-    //   2 of them (is_completed, stock_counted) are HARDCODED
-    //   literal 1's written directly into the SQL -- they are NOT
-    //   placeholders and must NOT appear in bind_param.
-    //   => placeholders needed = 14 - 2 = 12 (exactly).
-    //
-    //   #   column            type
-    //   1   mother_id         i
-    //   2   source            s
-    //   3   original_source   s
-    //   4   product           s
-    //   5   lot_no            s
-    //   6   coil_no           s
-    //   7   roll_no           s
-    //   8   width             d
-    //   9   length            d
-    //  10   actual_length     d
-    //  11   status            s
-    //  12   date_in           s
-    //  -----------------------------
-    //  type string = "isssssssddss"  (exactly 12 characters)
+    // COLUMN / PLACEHOLDER COUNT:
+    //   15 columns total in the INSERT below.
+    //   2 of them (is_completed, stock_counted) are HARDCODED literal 1's.
+    //   => placeholders needed = 13.
+    //   types: "issssssssddss"
     // -------------------------------------------------------------
     $stmt = $conn->prepare("
         INSERT INTO slitting_product
-            (mother_id, source, original_source, product, lot_no, coil_no, roll_no,
+            (mother_id, source, original_source, product, lot_no, coil_no, roll_no, roll_key,
              width, length, actual_length, status, is_completed, stock_counted, date_in)
         VALUES
-            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?)
+            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?)
     ");
 
     $stmt->bind_param(
-        "isssssssddss",
+        "issssssssddss",
         $mother_id,
         $source,
         $original_source,
@@ -253,6 +261,7 @@ try {
         $lot_no,
         $coil_no,
         $roll_no,
+        $target_roll_key,
         $width,
         $length,
         $actual_length,

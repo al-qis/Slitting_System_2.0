@@ -100,11 +100,21 @@ $coilCode = coilPrefix($coil);
 // on lot_no + coil_no + roll_no). A coil family alone (e.g. "HPM") can be
 // shared between multiple products, so we can no longer guess the product
 // from the coil - only this specific lot's own record knows for sure.
+$widthClause = '';
+$types = 'sss';
+$params = [$lot, $coil, $roll];
+if ($width !== null && is_numeric($width) && floatval($width) > 0) {
+    $widthClause = ' AND ABS(width - ?) < 0.5';
+    $types .= 'd';
+    $params[] = floatval($width);
+}
 $stmt = $mysqli->prepare(
-    'SELECT product, width, actual_length FROM slitting_product
-     WHERE lot_no = ? AND coil_no = ? AND roll_no = ? LIMIT 1'
+    "SELECT product, width, actual_length FROM slitting_product
+     WHERE lot_no = ? AND coil_no = ? AND roll_no = ? $widthClause
+       AND (is_voided = 0 OR is_voided IS NULL)
+     LIMIT 1"
 );
-$stmt->bind_param('sss', $lot, $coil, $roll);
+$stmt->bind_param($types, ...$params);
 $stmt->execute();
 $result = $stmt->get_result();
 $row = $result->fetch_assoc();
@@ -116,14 +126,25 @@ if (!$row) {
     $rollPaddedAlt    = str_pad($roll, 2, '0', STR_PAD_LEFT);
     $rollUnpaddedAlt  = ltrim($roll, '0') ?: '0';
 
+    $typesAlt = 'ssssss';
+    $paramsAlt = [$lot, $coil, $coilFormattedAlt, $roll, $rollPaddedAlt, $rollUnpaddedAlt];
+    $widthClauseAlt = '';
+    if ($width !== null && is_numeric($width) && floatval($width) > 0) {
+        $widthClauseAlt = ' AND ABS(width - ?) < 0.5';
+        $typesAlt .= 'd';
+        $paramsAlt[] = floatval($width);
+    }
+
     $stmtAlt = $mysqli->prepare(
-        'SELECT product, width, actual_length FROM slitting_product
+        "SELECT product, width, actual_length FROM slitting_product
          WHERE LOWER(TRIM(lot_no)) = LOWER(TRIM(?))
            AND (LOWER(TRIM(coil_no)) = LOWER(TRIM(?)) OR LOWER(TRIM(coil_no)) = LOWER(TRIM(?)))
            AND (LOWER(TRIM(roll_no)) = LOWER(TRIM(?)) OR LOWER(TRIM(roll_no)) = LOWER(TRIM(?)) OR LOWER(TRIM(roll_no)) = LOWER(TRIM(?)))
-         LIMIT 1'
+           $widthClauseAlt
+           AND (is_voided = 0 OR is_voided IS NULL)
+         LIMIT 1"
     );
-    $stmtAlt->bind_param('ssssss', $lot, $coil, $coilFormattedAlt, $roll, $rollPaddedAlt, $rollUnpaddedAlt);
+    $stmtAlt->bind_param($typesAlt, ...$paramsAlt);
     $stmtAlt->execute();
     $resultAlt = $stmtAlt->get_result();
     $row = $resultAlt->fetch_assoc();
