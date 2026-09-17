@@ -127,35 +127,41 @@ function fmtNum(mixed$v): string {
         justify-content: center;
         width: 100%;
         overflow-x: auto;
+        padding: 10px 0;
     }
     .sheet {
         width: 9.5in;
         min-height: 5.5in;
+        height: 5.5in;
         max-width: 9.5in;
         background: #fff;
         padding: 0.19in 0.5in 0.13in 0.15in; /* Top: 0.19in, Right: 0.5in, Bottom: 0.13in, Left: 0.15in */
         box-sizing: border-box;
         box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
         border: 1px solid #cbd5e1;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
     }
 
     /* ── Header ─────────────────────────────────────────── */
     .slip-header {
         position: relative;
         text-align: center;
-        margin-bottom: 1mm;
+        margin-bottom: 2mm;
     }
     .slip-header h1 {
-        font-size: 10.5pt;
+        font-size: 11pt;
         font-weight: bold;
         margin: 0;
-        line-height: 1.2;
+        line-height: 1.25;
+        letter-spacing: 0.3px;
     }
     .form-code {
         position: absolute;
         top: 0;
         right: 0;
-        font-size: 8pt;
+        font-size: 8.5pt;
         font-weight: bold;
     }
 
@@ -163,14 +169,14 @@ function fmtNum(mixed$v): string {
     table.info-table {
         width: 100%;
         border-collapse: collapse;
-        margin-bottom: 1mm;
+        margin-bottom: 2mm;
     }
     table.info-table td {
         border: 1px solid #000000;
-        padding: 0.6mm 2mm;
+        padding: 0.8mm 2mm;
         font-size: 10pt;
         vertical-align: middle;
-        line-height: 1.15;
+        line-height: 1.2;
     }
     table.info-table td.label {
         width: 15%;
@@ -185,19 +191,19 @@ function fmtNum(mixed$v): string {
     table.data-table {
         width: 100%;
         border-collapse: collapse;
-        margin-bottom: 1mm;
+        margin-bottom: 2mm;
     }
     table.data-table th, table.data-table td {
         border: 1px solid #000000;
-        padding: 0.5mm 1mm;
+        padding: 0.8mm 1mm;
         text-align: center;
         font-size: 9.5pt;
-        line-height: 1.15;
+        line-height: 1.2;
     }
     table.data-table thead th {
         font-weight: bold;
         background: #f5f5f5;
-        padding: 0.6mm 1mm;
+        padding: 0.8mm 1mm;
     }
     table.data-table col.col-stock   { width: 22%; }
     table.data-table col.col-lot     { width: 18%; }
@@ -206,14 +212,14 @@ function fmtNum(mixed$v): string {
     table.data-table col.col-coils   { width: 8%;  }
     table.data-table col.col-roll    { width: 12%; }
     table.data-table col.col-wgt     { width: 16%; }
-    table.data-table td.data-row     { height: 6.5mm; }
+    table.data-table td.data-row     { height: 7.6mm; }
 
     /* ── Footer signature blocks ────────────────────────── */
     .footer-wrap {
         display: flex;
         align-items: flex-end;
         justify-content: space-between;
-        margin-top: 0.5mm;
+        margin-top: 1mm;
         margin-bottom: 0;
     }
     table.footer-table {
@@ -224,7 +230,7 @@ function fmtNum(mixed$v): string {
     }
     table.footer-table th, table.footer-table td {
         border: 1px solid #000000;
-        padding: 0.6mm 1.5mm;
+        padding: 0.8mm 1.5mm;
         font-size: 8pt;
         vertical-align: top;
     }
@@ -232,19 +238,19 @@ function fmtNum(mixed$v): string {
         text-align: center;
         background: #f5f5f5;
         font-weight: bold;
-        padding: 0.6mm 1.5mm;
+        padding: 0.8mm 1.5mm;
     }
 
     /* Row 2: blank signature space */
     table.footer-table td.sig-space-cell {
-        height: 10mm;
+        height: 13.5mm;
         vertical-align: top;
     }
     /* Row 3: separate Date row */
     table.footer-table td.date-cell {
         height: auto;
         vertical-align: middle;
-        padding: 0.6mm 1.5mm;
+        padding: 0.8mm 1.5mm;
     }
 
     .sig-line { display: flex; align-items: center; gap: 1.5mm; }
@@ -255,7 +261,7 @@ function fmtNum(mixed$v): string {
         border-bottom: 1px solid #999;
         font-family: inherit;
         font-size: 8pt;
-        padding: 0.4mm 1mm;
+        padding: 0.5mm 1mm;
         background: #fffef2;
     }
     .prod-name-input { flex: 1; min-width: 0; }
@@ -265,7 +271,8 @@ function fmtNum(mixed$v): string {
     .legend {
         white-space: nowrap;
         flex-shrink: 0;
-        font-size: 6.5pt;
+        font-size: 7pt;
+        font-weight: 500;
         padding-right: 2mm;
         box-sizing: border-box;
     }
@@ -420,12 +427,15 @@ function fmtNum(mixed$v): string {
             width: 100% !important;
             max-width: 100% !important;
             min-height: auto !important;
-            height: auto !important;
+            height: calc(5.5in - 0.19in - 0.13in) !important;
             max-height: calc(5.5in - 0.19in - 0.13in) !important;
             margin: 0 !important;
             padding: 0 !important;
             border: none !important;
             box-shadow: none !important;
+            display: flex !important;
+            flex-direction: column !important;
+            justify-content: space-between !important;
             page-break-inside: avoid !important;
             break-inside: avoid !important;
             page-break-after: avoid !important;
@@ -672,6 +682,10 @@ function resetMargins() {
     try {
         var savedTop = localStorage.getItem('slip_margin_top');
         if (savedTop !== null) {
+            if (parseFloat(savedTop) === 1.9) {
+                savedTop = '0.19';
+                localStorage.setItem('slip_margin_top', '0.19');
+            }
             document.getElementById('mTop').value = savedTop;
             document.getElementById('mBottom').value = localStorage.getItem('slip_margin_bottom') || '0.13';
             document.getElementById('mLeft').value = localStorage.getItem('slip_margin_left') || '0.15';
