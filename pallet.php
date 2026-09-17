@@ -495,7 +495,8 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === 'deliver_by_scan') {
 // ── Shared: build the flattened Summary Pallet dataset ─────────
 function buildSummaryPalletRows(mysqli $conn): array {
     $rows = $conn->query("
-        SELECT p.id AS pallet_id, p.pallet_no, p.status, p.created_at AS pallet_date, pi.stock_code AS pi_stock_code,
+        SELECT p.id AS pallet_id, p.pallet_no, p.status, p.created_at AS pallet_date, p.ref_no AS pallet_ref_no,
+               pi.stock_code AS pi_stock_code,
                sp.roll_no, sp.lot_no, sp.coil_no, sp.product,
                sp.customer_name, sp.ref_no, sp.width, sp.length, sp.actual_length
         FROM pallets p
@@ -519,6 +520,13 @@ function buildSummaryPalletRows(mysqli $conn): array {
 
         $formattedDate = !empty($r['pallet_date']) ? date('d/m/Y', strtotime($r['pallet_date'])) : '-';
 
+        $rollRef   = trim((string)($r['ref_no'] ?? ''));
+        $palletRef = trim((string)($r['pallet_ref_no'] ?? ''));
+        $isStockRef = ($rollRef === '' || strtoupper($rollRef) === 'STOCK');
+        $effectiveRef = ($isStockRef && $palletRef !== '' && strtoupper($palletRef) !== 'STOCK')
+            ? $palletRef
+            : ($rollRef !== '' ? $rollRef : ($palletRef !== '' ? $palletRef : null));
+
         return [
             'pallet_id'  => $r['pallet_id'],
             'pallet_no'  => $r['pallet_no'],
@@ -529,7 +537,7 @@ function buildSummaryPalletRows(mysqli $conn): array {
             'lot_coil'   => trim(($r['lot_no'] ?? '') . ' ' . ($r['coil_no'] ?? '')),
             'product'    => $r['product'],
             'customer'   => $r['customer_name'],
-            'ref_no'     => $r['ref_no'],
+            'ref_no'     => $effectiveRef,
             'width'      => $r['width'] !== null ? (float)$r['width'] : null,
             'length'     => $lenVal !== null ? (float)$lenVal : null,
         ];
@@ -555,7 +563,7 @@ function filterSummaryPalletRows(array $rows, string $cat, string $val, string $
                 $val = "{$m[3]}/{$m[2]}/{$m[1]}";
             }
             $rows = array_values(array_filter($rows, fn($r) => (string)($r['date'] ?? '') === $val));
-        } elseif ($cat === 'customer' || $cat === 'product') {
+        } elseif ($cat === 'customer' || $cat === 'product' || $cat === 'ref_no') {
             $rows = array_values(array_filter($rows, fn($r) => (string)($r[$cat] ?? '') === $val));
         } elseif ($cat === 'suffix') {
             $rows = array_values(array_filter($rows, function ($r) use ($val) {
@@ -620,7 +628,7 @@ if (isset($_GET['export']) && $_GET['export'] === 'summary_pallet') {
     $rows = buildSummaryPalletRows($conn);
     $rows = filterSummaryPalletRows($rows, $cat, $val, $statusParam, $suffixParam);
 
-    $catLabels = ['customer' => 'Customer', 'product' => 'Product Type', 'date' => 'Date', 'width' => 'Width', 'length' => 'Length', 'suffix' => 'Pallet Suffix'];
+    $catLabels = ['customer' => 'Customer', 'product' => 'Product Type', 'ref_no' => 'SOS No. / Ref No', 'date' => 'Date', 'width' => 'Width', 'length' => 'Length', 'suffix' => 'Pallet Suffix'];
     $filterParts = [];
     if ($val !== '') {
         $filterParts[] = isset($catLabels[$cat]) ? "{$catLabels[$cat]}: {$val}" : "Search: {$val}";
@@ -2877,6 +2885,7 @@ if (isset($_GET['success'])): ?>
           <div class="col-md-2">
             <select id="summaryFilterCategory" class="form-select form-select-sm" onchange="onSummaryCategoryChange()">
               <option value="">All Fields</option>
+              <option value="ref_no">SOS No. / Ref No</option>
               <option value="suffix">Pallet Suffix (B, BN, None)</option>
               <option value="date">Date</option>
               <option value="product">Product Type</option>
@@ -3996,10 +4005,10 @@ function onSummaryCategoryChange() {
     if (cat === 'date') {
         dateInput.value = '';
         dateInput.classList.remove('d-none');
-    } else if (cat === 'customer' || cat === 'product') {
+    } else if (cat === 'customer' || cat === 'product' || cat === 'ref_no') {
         const distinct = [...new Set(
             summaryData
-                .map(r => cat === 'customer' ? r.customer : r.product)
+                .map(r => cat === 'customer' ? r.customer : (cat === 'product' ? r.product : r.ref_no))
                 .filter(v => v !== null && v !== '' && v !== '-')
         )].sort();
 
@@ -4046,7 +4055,7 @@ function applySummaryFilter() {
                 rows = rows.filter(r => String(r.date ?? '') === targetDate);
             }
         }
-    } else if (cat === 'customer' || cat === 'product') {
+    } else if (cat === 'customer' || cat === 'product' || cat === 'ref_no') {
         const val = document.getElementById('summaryFilterValueSelect').value;
         if (val !== '') {
             rows = rows.filter(r => String(r[cat] ?? '') === val);
@@ -4808,7 +4817,7 @@ function exportSummaryPallet() {
 
     if (cat === 'date') {
         val = document.getElementById('summaryFilterValueDate').value;
-    } else if (cat === 'customer' || cat === 'product' || cat === 'suffix') {
+    } else if (cat === 'customer' || cat === 'product' || cat === 'suffix' || cat === 'ref_no') {
         val = document.getElementById('summaryFilterValueSelect').value;
     } else {
         val = document.getElementById('summaryFilterValueText').value.trim();

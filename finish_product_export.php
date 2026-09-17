@@ -84,7 +84,8 @@ if ($filter_card === 'produced_month') {
         SELECT sp.*,
                pi.pallet_id,
                p.pallet_no,
-               p.status AS pallet_status
+               p.status AS pallet_status,
+               p.ref_no AS pallet_ref_no
         FROM slitting_product sp
         LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
         LEFT JOIN pallets p       ON p.id = pi.pallet_id
@@ -103,7 +104,8 @@ if ($filter_card === 'produced_month') {
         SELECT sp.*,
                pi.pallet_id,
                p.pallet_no,
-               p.status AS pallet_status
+               p.status AS pallet_status,
+               p.ref_no AS pallet_ref_no
         FROM slitting_product sp
         LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
         LEFT JOIN pallets p       ON p.id = pi.pallet_id
@@ -136,7 +138,8 @@ if ($filter_card === 'produced_month') {
         SELECT sp.*,
                pi.pallet_id,
                p.pallet_no,
-               p.status AS pallet_status
+               p.status AS pallet_status,
+               p.ref_no AS pallet_ref_no
         FROM slitting_product sp
         LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
         LEFT JOIN pallets p       ON p.id = pi.pallet_id
@@ -293,6 +296,13 @@ if ($result && $result->num_rows > 0) {
         $nodDisplay   = $hasNod ? number_format($nodValue, 2) : '-';
         $invoiceLength = number_format((float)($row['actual_length'] ?? 0) - $nodValue, 2);
 
+        $rollRef   = trim((string)($row['ref_no'] ?? ''));
+        $palletRef = trim((string)($row['pallet_ref_no'] ?? ''));
+        $isStockRef = ($rollRef === '' || strtoupper($rollRef) === 'STOCK');
+        $effectiveRef = ($isStockRef && $palletRef !== '' && strtoupper($palletRef) !== 'STOCK')
+            ? $palletRef
+            : ($rollRef !== '' ? $rollRef : ($palletRef !== '' ? $palletRef : '-'));
+
         echo '<tr>';
         echo '<td ' . $td  . '>' . htmlspecialchars(strtoupper($row['status'] ?? '-')) . '</td>';
         echo '<td ' . $td  . '>' . htmlspecialchars($originLabelTxt) . '</td>';
@@ -305,7 +315,7 @@ if ($result && $result->num_rows > 0) {
         echo '<td ' . $tdN . '>' . $nodDisplay . '</td>';
         echo '<td ' . $tdN . '>' . $invoiceLength . '</td>';
         echo '<td ' . $td  . '>' . htmlspecialchars($row['customer_name'] ?: '-') . '</td>';
-        echo '<td ' . $td  . '>' . htmlspecialchars($row['ref_no']        ?: '-') . '</td>';
+        echo '<td ' . $td  . '>' . htmlspecialchars($effectiveRef) . '</td>';
         echo '<td ' . $td  . '>' . htmlspecialchars($row['date_in']  ?? '-') . '</td>';
         echo '<td ' . $td  . '>' . htmlspecialchars($row['date_out'] ?? '-') . '</td>';
         echo '</tr>';
