@@ -387,6 +387,20 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === 'deliver_by_scan') {
                 LIMIT 1
             ");
             $stmt->bind_param("i", $id);
+        } elseif ($width > 0 && $lot !== '' && $coil !== '') {
+            $stmt = $conn->prepare("
+                SELECT sp.id, sp.is_voided,
+                       pi.pallet_id,
+                       p.status AS pallet_status, p.pallet_no
+                FROM slitting_product sp
+                LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+                LEFT JOIN pallets p       ON p.id = pi.pallet_id
+                WHERE sp.lot_no = ? AND sp.coil_no = ? AND (sp.roll_no = ? OR sp.roll_no = ?)
+                  AND ABS(sp.width - ?) < 0.5
+                ORDER BY sp.id DESC
+                LIMIT 1
+            ");
+            $stmt->bind_param("ssssd", $lot, $coil, $roll, $cleanRoll, $width);
         } elseif ($width > 0 && $roll !== '') {
             $stmt = $conn->prepare("
                 SELECT sp.id, sp.is_voided,

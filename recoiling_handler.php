@@ -136,28 +136,38 @@ $is_same_roll = in_array($cut_type, ['rewinding', 'normal']);
 // "lot_OLD_{id}") frees the unique key, so no pre-check is needed.
 if ($cut_type === 'cut_into_2') {
     $duplicates = [];
+    $seen_in_batch = [];
     for ($i = 0; $i < $total_rolls; $i++) {
         $letter     = trim($_POST['letter'][$i] ?? '');
+        $new_width  = floatval($_POST['new_width'][$i] ?? ($original['width'] ?? 0));
         // Roll and coil stay the same as original; only lot may get a suffix
         $new_lot_no = $original['lot_no'] . $letter;       // '' = same lot
         $new_roll   = $original['roll_no'];                // R4 stays R4
         $exclude_id = $parent_slit_id ?? 0;
 
-        // Only check against OTHER non-voided rows (not the source itself)
+        // Check for duplicates within the current submission
+        $batch_key = $new_lot_no . '|' . $original['coil_no'] . '|' . $new_roll . '|' . round($new_width, 2);
+        if (isset($seen_in_batch[$batch_key])) {
+            $duplicates[] = "{$new_lot_no} {$original['coil_no']} {$new_roll} (width {$new_width}mm)";
+        }
+        $seen_in_batch[$batch_key] = true;
+
+        // Only check against OTHER non-voided rows (not the source itself) with matching width
         $chk = $conn->prepare("
             SELECT COUNT(*) AS cnt
             FROM slitting_product
             WHERE lot_no = ? AND coil_no = ? AND roll_no = ?
+              AND ABS(width - ?) < 0.5
               AND id != ?
               AND (is_voided = 0 OR is_voided IS NULL)
         ");
-        $chk->bind_param("sssi", $new_lot_no, $original['coil_no'], $new_roll, $exclude_id);
+        $chk->bind_param("sssdi", $new_lot_no, $original['coil_no'], $new_roll, $new_width, $exclude_id);
         $chk->execute();
         $cnt = (int)($chk->get_result()->fetch_assoc()['cnt'] ?? 0);
         $chk->close();
 
         if ($cnt > 0) {
-            $duplicates[] = "{$new_lot_no} {$original['coil_no']} {$new_roll}";
+            $duplicates[] = "{$new_lot_no} {$original['coil_no']} {$new_roll} (width {$new_width}mm)";
         }
     }
 
@@ -173,12 +183,8 @@ $conn->begin_transaction();
 
 try {
     // ── STEP 1: Void the source slitting_product row ──────────────────────
-    // Free the UNIQUE KEY (lot_no, coil_no, roll_no) so the new row(s) can
+    // Free the UNIQUE KEY (lot_no, coil_no, roll_no, roll_key) so the new row(s) can
     // reuse the same reference values.
-    //
-    // cut_into_2 strategy: rename lot_no → "lot_OLD_{id}" (keeps roll_no
-    //   intact; both output rolls inherit the original roll_no).
-    // rewinding / cut defect: rename roll_no → "R1_void_{id}" as before.
     if ($parent_slit_id) {
         if ($cut_type === 'cut_into_2') {
             $voided_lot = $original['lot_no'] . '_OLD_' . $parent_slit_id;
@@ -186,6 +192,7 @@ try {
             $void_stmt = $conn->prepare("
                 UPDATE slitting_product
                 SET lot_no        = ?,
+                    roll_key      = CONCAT(COALESCE(roll_key, ''), '_OLD_', ?),
                     is_recoiled   = 1,
                     is_voided     = 1,
                     voided_at     = NOW(),
@@ -193,7 +200,7 @@ try {
                 WHERE id = ?
             ");
             $reason = 'replaced_by_recoil_cut_into_2';
-            $void_stmt->bind_param("ssi", $voided_lot, $reason, $parent_slit_id);
+            $void_stmt->bind_param("sisi", $voided_lot, $parent_slit_id, $reason, $parent_slit_id);
         } else {
             // rewinding / normal: rename roll_no to free unique key
             $voided_roll = $original['roll_no'] . '_void_' . $parent_slit_id;
@@ -201,6 +208,7 @@ try {
             $void_stmt = $conn->prepare("
                 UPDATE slitting_product
                 SET roll_no       = ?,
+                    roll_key      = CONCAT(COALESCE(roll_key, ''), '_OLD_', ?),
                     is_recoiled   = 1,
                     is_voided     = 1,
                     voided_at     = NOW(),
@@ -208,7 +216,7 @@ try {
                 WHERE id = ?
             ");
             $reason = 'replaced_by_recoil_' . $cut_type;
-            $void_stmt->bind_param("ssi", $voided_roll, $reason, $parent_slit_id);
+            $void_stmt->bind_param("sisi", $voided_roll, $parent_slit_id, $reason, $parent_slit_id);
         }
 
         $void_stmt->execute();
@@ -255,18 +263,42 @@ try {
             $all_remarks[] = $r;
         }
 
+        // Generate unique DB roll_key incorporating width
+        $base_roll_key   = $new_lot_no . '_' . $original['coil_no'] . '_' . $new_roll_no . '_' . round($new_width, 2);
+        $target_roll_key = $base_roll_key;
+        $chk_key = $conn->prepare("SELECT id FROM slitting_product WHERE roll_key = ? AND (is_voided = 0 OR is_voided IS NULL)");
+        $chk_key->bind_param("s", $target_roll_key);
+        $chk_key->execute();
+        if ($chk_key->get_result()->num_rows > 0) {
+            $suffix_num = 1;
+            while (true) {
+                $candidate = $base_roll_key . "_" . $suffix_num;
+                $chk2 = $conn->prepare("SELECT id FROM slitting_product WHERE roll_key = ? AND (is_voided = 0 OR is_voided IS NULL)");
+                $chk2->bind_param("s", $candidate);
+                $chk2->execute();
+                if ($chk2->get_result()->num_rows === 0) {
+                    $target_roll_key = $candidate;
+                    $chk2->close();
+                    break;
+                }
+                $chk2->close();
+                $suffix_num++;
+            }
+        }
+        $chk_key->close();
+
         $insert_stmt = $conn->prepare("
             INSERT INTO slitting_product
                 (recoiling_id, mother_id, parent_slit_id,
-                 product, lot_no, coil_no, roll_no,
+                 product, lot_no, coil_no, roll_no, roll_key,
                  width, length, actual_length,
                  status, is_completed, stock_counted,
                  original_source, source, date_in)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, ?, 'recoiling', NOW())
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, ?, 'recoiling', NOW())
         ");
 
         $insert_stmt->bind_param(
-            "iiissssddds",
+            "iiisssssddds",
             $id,
             $mother_id_val,
             $parent_slit_id,
@@ -274,6 +306,7 @@ try {
             $new_lot_no,
             $original['coil_no'],
             $new_roll_no,
+            $target_roll_key,
             $new_width,
             $length,
             $actual_length,

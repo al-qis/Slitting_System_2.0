@@ -40,10 +40,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $lot_no  = $current['lot_no'];
     $coil_no = $current['coil_no'];
 
-    // 2. Duplicate Validation: Check if this Roll No already exists for this Lot and Coil
+    // 2. Duplicate Validation: Check if this Roll No already exists for this Lot, Coil, and Width
     // We exclude the current ID (id != ?) because we are updating this specific record
-    $check_stmt = $conn->prepare("SELECT id FROM slitting_product WHERE lot_no = ? AND coil_no = ? AND roll_no = ? AND id != ?");
-    $check_stmt->bind_param("sssi", $lot_no, $coil_no, $roll_no, $product_id);
+    $check_stmt = $conn->prepare("
+        SELECT id FROM slitting_product 
+        WHERE lot_no = ? AND coil_no = ? AND roll_no = ?
+          AND ABS(width - ?) < 0.5
+          AND (is_voided = 0 OR is_voided IS NULL)
+          AND id != ?
+    ");
+    $check_stmt->bind_param("sssdi", $lot_no, $coil_no, $roll_no, $width, $product_id);
     $check_stmt->execute();
     $check_result = $check_stmt->get_result();
 
@@ -52,7 +58,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Redirect back with an error message or use die()
         die("<div style='color:red; font-family:sans-serif; padding:20px; border:1px solid red; background:#fff5f5;'>
                 <h2>Validation Error</h2>
-                <p><strong>Reason:</strong> The combination of Lot: $lot_no, Coil: $coil_no, and Roll: $roll_no already exists in the system.</p>
+                <p><strong>Reason:</strong> The combination of Lot: $lot_no, Coil: $coil_no, Roll: $roll_no, and Width: {$width}mm already exists in the system.</p>
                 <p>Please use a unique roll number or add an alphabet suffix to the Lot number.</p>
                 <button onclick='history.back()'>Go Back and Correct</button>
              </div>");

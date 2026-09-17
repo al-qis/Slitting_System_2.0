@@ -135,19 +135,21 @@ try {
     foreach ($roll_numbers as $index => $roll_label) {
         $letter      = trim($cut_letters[$index] ?? '');
         $temp_lot_no = $parent['lot_no'] . $letter;
+        $width       = floatval($new_widths[$index] ?? 0);
 
-        // Check against OTHER active non-voided rolls only
+        // Check against OTHER active non-voided rolls only matching width
         $check = $conn->prepare("
             SELECT id FROM slitting_product
             WHERE lot_no = ? AND coil_no = ? AND roll_no = ?
+              AND ABS(width - ?) < 0.5
               AND id != ?
               AND (is_voided = 0 OR is_voided IS NULL)
         ");
-        $check->bind_param("sssi", $temp_lot_no, $coil_no_val, $roll_label, $exclude_id);
+        $check->bind_param("sssdi", $temp_lot_no, $coil_no_val, $roll_label, $width, $exclude_id);
         $check->execute();
         if ($check->get_result()->num_rows > 0) {
             throw new Exception(
-                "Duplicate: Lot [{$temp_lot_no}] Coil [{$coil_no_val}] Roll [{$roll_label}] already exists on an active roll."
+                "Duplicate: Lot [{$temp_lot_no}] Coil [{$coil_no_val}] Roll [{$roll_label}] (width {$width}mm) already exists on an active roll."
             );
         }
         $check->close();
@@ -159,14 +161,15 @@ try {
         $check = $conn->prepare("
             SELECT id FROM slitting_product
             WHERE lot_no = ? AND coil_no = ? AND roll_no = ?
+              AND ABS(width - ?) < 0.5
               AND id != ?
               AND (is_voided = 0 OR is_voided IS NULL)
         ");
-        $check->bind_param("sssi", $parent['lot_no'], $coil_no_val, $leftover_roll_no, $exclude_id);
+        $check->bind_param("sssdi", $parent['lot_no'], $coil_no_val, $leftover_roll_no, $leftover_width, $exclude_id);
         $check->execute();
         if ($check->get_result()->num_rows > 0) {
             throw new Exception(
-                "Duplicate: Lot [{$parent['lot_no']}] Coil [{$coil_no_val}] Roll [{$leftover_roll_no}] already exists on an active roll."
+                "Duplicate: Lot [{$parent['lot_no']}] Coil [{$coil_no_val}] Roll [{$leftover_roll_no}] (width {$leftover_width}mm) already exists on an active roll."
             );
         }
         $check->close();
@@ -226,23 +229,47 @@ try {
         }
 
         // ── PATH B: Go to Finished Products (existing behavior) ─────
+        $base_roll_key   = $new_lot_no . '_' . $coil_no_val . '_' . $roll_label . '_' . round($width, 2);
+        $target_roll_key = $base_roll_key;
+        $chk_key = $conn->prepare("SELECT id FROM slitting_product WHERE roll_key = ? AND (is_voided = 0 OR is_voided IS NULL)");
+        $chk_key->bind_param("s", $target_roll_key);
+        $chk_key->execute();
+        if ($chk_key->get_result()->num_rows > 0) {
+            $suffix_num = 1;
+            while (true) {
+                $candidate = $base_roll_key . "_" . $suffix_num;
+                $chk2 = $conn->prepare("SELECT id FROM slitting_product WHERE roll_key = ? AND (is_voided = 0 OR is_voided IS NULL)");
+                $chk2->bind_param("s", $candidate);
+                $chk2->execute();
+                if ($chk2->get_result()->num_rows === 0) {
+                    $target_roll_key = $candidate;
+                    $chk2->close();
+                    break;
+                }
+                $chk2->close();
+                $suffix_num++;
+            }
+        }
+        $chk_key->close();
+
         $stmt_ins = $conn->prepare("
             INSERT INTO slitting_product
                 (mother_id, parent_slit_id,
-                 product, lot_no, coil_no, roll_no,
+                 product, lot_no, coil_no, roll_no, roll_key,
                  width, length, actual_length,
                  status, is_completed, stock_counted,
                  date_in, source, original_source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, NOW(), 'reslit', ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, NOW(), 'reslit', ?)
         ");
         $stmt_ins->bind_param(
-            "iissssddds",
+            "iisssssddds",
             $mother_id_val,
             $parent_slit_id,
             $parent['product'],
             $new_lot_no,
             $coil_no_val,
             $roll_label,
+            $target_roll_key,
             $width,
             $nom_len,
             $act_len,
@@ -315,23 +342,47 @@ try {
 
         } else {
             // ── Leftover → Finished Product ONLY ──
+            $base_leftover_key   = $parent['lot_no'] . '_' . $coil_no_val . '_' . $leftover_roll_no . '_' . round($leftover_width, 2);
+            $target_leftover_key = $base_leftover_key;
+            $chk_key = $conn->prepare("SELECT id FROM slitting_product WHERE roll_key = ? AND (is_voided = 0 OR is_voided IS NULL)");
+            $chk_key->bind_param("s", $target_leftover_key);
+            $chk_key->execute();
+            if ($chk_key->get_result()->num_rows > 0) {
+                $suffix_num = 1;
+                while (true) {
+                    $candidate = $base_leftover_key . "_" . $suffix_num;
+                    $chk2 = $conn->prepare("SELECT id FROM slitting_product WHERE roll_key = ? AND (is_voided = 0 OR is_voided IS NULL)");
+                    $chk2->bind_param("s", $candidate);
+                    $chk2->execute();
+                    if ($chk2->get_result()->num_rows === 0) {
+                        $target_leftover_key = $candidate;
+                        $chk2->close();
+                        break;
+                    }
+                    $chk2->close();
+                    $suffix_num++;
+                }
+            }
+            $chk_key->close();
+
             $stmt_leftover = $conn->prepare("
                 INSERT INTO slitting_product
                     (mother_id, parent_slit_id,
-                     product, lot_no, coil_no, roll_no,
+                     product, lot_no, coil_no, roll_no, roll_key,
                      width, length, actual_length,
                      status, is_completed, stock_counted,
                      date_in, source, original_source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, NOW(), 'reslit', ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, NOW(), 'reslit', ?)
             ");
             $stmt_leftover->bind_param(
-                "iissssddds",
+                "iisssssddds",
                 $mother_id_val,
                 $parent_slit_id,
                 $parent['product'],
                 $parent['lot_no'],
                 $coil_no_val,
                 $leftover_roll_no,
+                $target_leftover_key,
                 $leftover_width,
                 $leftover_length,
                 $leftover_length,

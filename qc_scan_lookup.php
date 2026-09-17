@@ -29,6 +29,7 @@ $lot    = '';
 $coil   = '';
 $roll   = '';
 $pallet = '';
+$width  = 0.0;
 
 if (strpos($qr, '=') !== false) {
     // Format A: KEY=VALUE pairs (e.g. LOT=826277;COIL=FK-1;ROLL=R1)
@@ -39,16 +40,18 @@ if (strpos($qr, '=') !== false) {
         [$k, $v] = explode('=', $segment, 2);
         $pairs[strtoupper(trim($k))] = trim($v);
     }
-    $lot  = $pairs['LOT']  ?? '';
-    $coil = $pairs['COIL'] ?? '';
-    $roll = $pairs['ROLL'] ?? '';
+    $lot   = $pairs['LOT']   ?? '';
+    $coil  = $pairs['COIL']  ?? '';
+    $roll  = $pairs['ROLL']  ?? '';
+    $width = floatval($pairs['WIDTH'] ?? 0);
 } else {
-    // Format B: Space-separated "826277 FK-1 R1" or single token
+    // Format B: Space-separated "826277 FK-1 R1" or "826277 FK-1 R1 1250" or single token
     $tokens = preg_split('/\s+/', $qr);
     if (count($tokens) >= 2) {
-        $lot  = trim($tokens[0] ?? '');
-        $coil = trim($tokens[1] ?? '');
-        $roll = trim($tokens[2] ?? '');
+        $lot   = trim($tokens[0] ?? '');
+        $coil  = trim($tokens[1] ?? '');
+        $roll  = trim($tokens[2] ?? '');
+        $width = floatval($tokens[3] ?? 0);
     } else {
         // Single string — could be Pallet No or single product ref
         $pallet = $qr;
@@ -67,19 +70,26 @@ if ($lot !== '' && $coil !== '') {
         WHERE sp.lot_no  = ?
           AND sp.coil_no = ?
     ";
+    $types = "ss";
+    $params = [$lot, $coil];
+
     if ($roll !== '') {
         $sql .= " AND (sp.roll_no = ? OR sp.roll_no = ?)";
         $rollWithR = (strpos($roll, 'R') === false) ? 'R' . $roll : $roll;
         $rollWithoutR = ltrim($roll, 'R-');
+        $types .= "ss";
+        $params[] = $rollWithR;
+        $params[] = $rollWithoutR;
+    }
+    if ($width > 0) {
+        $sql .= " AND ABS(sp.width - ?) < 0.5";
+        $types .= "d";
+        $params[] = $width;
     }
     $sql .= " ORDER BY sp.id DESC LIMIT 1";
 
     $stmt = $conn->prepare($sql);
-    if ($roll !== '') {
-        $stmt->bind_param("ssss", $lot, $coil, $rollWithR, $rollWithoutR);
-    } else {
-        $stmt->bind_param("ss", $lot, $coil);
-    }
+    $stmt->bind_param($types, ...$params);
     $stmt->execute();
     $res = $stmt->get_result()->fetch_assoc();
     $stmt->close();
