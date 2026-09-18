@@ -2,20 +2,6 @@
 // print_slip.php
 // ============================================================
 // Prints the "Warehousing Slip" (form MS-WH-01(QR)) for one pallet.
-// Linked from pallet.php's Action column: print_slip.php?pallet_no=XYZ
-//
-// Field mapping (per the physical slip):
-//   Customer     -> pallets.customer_name
-//   Date         -> pallets.created_at (falls back to today if null)
-//   SOS No.      -> pallets.ref_no
-//   Serial No.   -> pallets.pallet_no
-//   Product Type -> pallets.product_type
-//   Pallet No.   -> left blank (warehouse fills this in by hand)
-//
-// Main table is one row per roll on the pallet (pallet_items, joined
-// to slitting_product for the roll's own details). "Coils" is always
-// 1 per row, since each pallet_items row already represents a single
-// roll/coil in this system.
 // ============================================================
 
 session_start();
@@ -28,7 +14,6 @@ if (!isset($_SESSION['role'])) {
 include 'config.php';
 require_once 'PalletManager.php';
 
-// ── Securely resolve the pallet from ?pallet_no= ──────────────────
 $palletNo = trim($_GET['pallet_no'] ?? '');
 if ($palletNo === '') {
     die('<p style="font-family:Arial;padding:24px;">Pallet No is required.</p>');
@@ -44,9 +29,6 @@ if (!$pallet) {
     die('<p style="font-family:Arial;padding:24px;">Pallet "' . htmlspecialchars($palletNo) . '" not found.</p>');
 }
 
-// ── Fetch every roll on this pallet ────────────────────────────────
-// std_wgt is joined the same way pallet.php's getPalletItemsWithWeight()
-// does, so Nett Wgt here matches what the app shows elsewhere.
 $stmt = $conn->prepare("
     SELECT pi.seq, pi.stock_code,
            sp.lot_no, sp.coil_no, sp.roll_no, sp.product,
@@ -54,7 +36,7 @@ $stmt = $conn->prepare("
            COALESCE(sw.std_weight, 0) AS std_weight
     FROM pallet_items pi
     JOIN slitting_product sp ON sp.id = pi.slitting_product_id
-    LEFT JOIN std_wgt sw     ON sw.product_code = sp.product
+    LEFT JOIN std_wgt sw    ON sw.product_code = sp.product
     WHERE pi.pallet_id = ?
     ORDER BY pi.seq ASC
 ");
@@ -63,7 +45,6 @@ $stmt->execute();
 $items = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
 $stmt->close();
 
-// ── Build display rows: effective length, Nett Wgt, Stock Code fallback ──
 function calcNettWeight(float $lengthM, float $widthMm, float $stdWeight): float {
     if ($lengthM <= 0 || $widthMm <= 0 || $stdWeight <= 0) return 0.0;
     return ($lengthM * $widthMm / 1000) * $stdWeight;
@@ -83,24 +64,21 @@ foreach ($items as $it) {
         'lot_no'     => trim(($it['lot_no'] ?? '') . ' ' . ($it['coil_no'] ?? '')) ?: '-',
         'length'     => $lenVal,
         'width'      => (float)($it['width'] ?? 0),
-        'coils'      => 1, // each pallet_items row = one roll/coil
+        'coils'      => 1,
         'roll_no'    => $it['roll_no'] ? str_replace('R', 'R-', $it['roll_no']) : '-',
         'nett_wgt'   => calcNettWeight($lenVal, (float)($it['width'] ?? 0), (float)$it['std_weight']),
     ];
 }
 
-// Pad blank rows so the printed table always shows at least 8 lines,
-// matching the physical slip's fixed layout.
 $MIN_ROWS = 8;
 while (count($rows) < $MIN_ROWS) {
-    $rows[] = null; // null = render as an empty row
+    $rows[] = null;
 }
 
 $dateStr = $pallet['created_at'] ? date('d/m/Y', strtotime($pallet['created_at'])) : date('d/m/Y');
-
 $h = fn($s) => htmlspecialchars((string)($s ?? ''), ENT_QUOTES, 'UTF-8');
 
-function fmtNum(mixed$v): string {
+function fmtNum(mixed $v): string {
     if ($v === null || $v === '' || (float)$v == 0) return '';
     $f = number_format((float)$v, 2, '.', '');
     return str_ends_with($f, '.00') ? substr($f, 0, -3) : $f;
@@ -121,22 +99,22 @@ function fmtNum(mixed$v): string {
         color: #000;
     }
 
-    /* Screen preview sheet styled to 9.5" x 5.5" with user-defined margins in inches */
     .sheet-wrapper {
         display: flex;
         justify-content: center;
+        align-items: center;
         width: 100%;
-        overflow-x: auto;
+        min-height: 5.5in;
+        overflow: hidden;
         padding: 10px 0;
     }
     .sheet {
         width: 9.5in;
-        min-height: 5.5in;
         height: 5.5in;
         max-height: 5.5in;
         max-width: 9.5in;
         background: #fff;
-        padding: 0.19in 0.5in 0.13in 0.15in; /* Top: 0.19in, Right: 0.5in, Bottom: 0.13in, Left: 0.15in */
+        padding: 0 1cm 0.5cm 0.5cm; 
         box-sizing: border-box;
         box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
         border: 1px solid #cbd5e1;
@@ -149,63 +127,64 @@ function fmtNum(mixed$v): string {
     /* ── Header ─────────────────────────────────────────── */
     .slip-header {
         position: relative;
+        width: 20.5cm;
+        margin: 0 auto 1.5mm auto;
         text-align: center;
-        margin-bottom: 1.5mm;
+        padding-top: 0;
     }
     .slip-header h1 {
-        font-size: 11pt;
+        font-size: 12pt;
         font-weight: bold;
         margin: 0;
-        line-height: 1.25;
+        line-height: 1.15;
         letter-spacing: 0.3px;
     }
     .form-code {
         position: absolute;
         top: 0;
         right: 0;
-        font-size: 8.5pt;
+        font-size: 10pt;
         font-weight: bold;
     }
 
-    /* ── Top info table ─────────────────────────────────── */
+    /* ── Top info table (Jarak bawah disamakan 0.13in) ── */
     table.info-table {
-        width: 100%;
+        width: 20.5cm;
+        height: 1.9cm;
+        margin: 0 auto 0.13in auto; 
         border-collapse: collapse;
-        margin-bottom: 1.5mm;
+    }
+    table.info-table tr {
+        height: 0.63cm;
     }
     table.info-table td {
         border: 1px solid #000000;
-        padding: 0.8mm 2mm;
-        font-size: 10pt;
+        padding: 0 2mm;
+        font-size: 12pt;
         vertical-align: middle;
-        line-height: 1.2;
+        line-height: 1.1;
     }
-    table.info-table td.label {
-        width: 15%;
-        font-weight: normal;
-    }
-    table.info-table td.value {
-        width: 35%;
-        font-weight: 600;
-    }
+    table.info-table td.label { width: 15%; font-weight: normal; }
+    table.info-table td.value { width: 35%; font-weight: bold; }
 
     /* ── Main data table ────────────────────────────────── */
     table.data-table {
-        width: 100%;
+        width: 20.5cm;
+        height: 7cm;
+        margin: 0 auto;
         border-collapse: collapse;
-        margin-bottom: 0;
     }
     table.data-table th, table.data-table td {
         border: 1px solid #000000;
-        padding: 0.8mm 1mm;
+        padding: 0.4mm 1mm;
         text-align: center;
-        font-size: 9.5pt;
-        line-height: 1.2;
+        font-size: 12pt;
+        line-height: 1.1;
     }
     table.data-table thead th {
         font-weight: bold;
         background: #f5f5f5;
-        padding: 0.8mm 1mm;
+        padding: 0.4mm 1mm;
     }
     table.data-table col.col-stock   { width: 22%; }
     table.data-table col.col-lot     { width: 18%; }
@@ -214,66 +193,66 @@ function fmtNum(mixed$v): string {
     table.data-table col.col-coils   { width: 8%;  }
     table.data-table col.col-roll    { width: 12%; }
     table.data-table col.col-wgt     { width: 16%; }
-    table.data-table td.data-row     { height: 8.2mm; }
+    
+    table.data-table td.data-row     { height: 6.8mm; }
 
-    /* ── Footer signature blocks ────────────────────────── */
+    /* ── Footer signature blocks (Jarak atas disetkan 0.13in) ── */
     .footer-wrap {
         display: flex;
         align-items: flex-end;
         justify-content: space-between;
-        margin-top: auto; /* Automatically pushes footer flush down to the 0.13" bottom margin */
-        margin-bottom: 0;
+        width: 20.5cm;
+        margin: 0.13in auto 0 auto;
     }
     table.footer-table {
-        width: 58%;
-        margin-left: auto;
+        width: 11cm;
+        height: 2.3cm;
         border-collapse: collapse;
         margin-bottom: 0;
+        margin-left: auto;
     }
     table.footer-table th, table.footer-table td {
         border: 1px solid #000000;
-        padding: 0.8mm 1.5mm;
-        font-size: 8pt;
+        padding: 0.2mm 1.5mm;
+        font-size: 10pt;
         vertical-align: top;
     }
     table.footer-table th {
         text-align: center;
         background: #f5f5f5;
         font-weight: bold;
-        padding: 0.8mm 1.5mm;
+        padding: 0.4mm 1.5mm;
+        height: 0.4cm;
     }
 
-    /* Row 2: blank signature space */
     table.footer-table td.sig-space-cell {
-        height: 13.5mm;
+        height: 1.4cm;
         vertical-align: top;
     }
-    /* Row 3: separate Date row */
     table.footer-table td.date-cell {
-        height: auto;
+        height: 0.5cm;
         vertical-align: middle;
-        padding: 0.8mm 1.5mm;
+        padding: 0 1.5mm;
     }
 
-    .sig-line { display: flex; align-items: center; gap: 1.5mm; }
-    .sig-line label { font-weight: bold; white-space: nowrap; }
+    .sig-line { display: flex; align-items: center; gap: 1mm; }
+    .sig-line label { font-weight: bold; white-space: nowrap; font-size: 10pt; }
 
-    .prod-name-input, .prod-date-input {
+    .prod-date-input {
         border: none;
         border-bottom: 1px solid #999;
         font-family: inherit;
-        font-size: 8pt;
-        padding: 0.5mm 1mm;
+        font-size: 10pt;
+        padding: 0.2mm 1mm;
         background: #fffef2;
+        width: auto;
     }
-    .prod-name-input { flex: 1; min-width: 0; }
-    .prod-date-input { width: auto; }
-    .prod-date-text { display: none; font-size: 8pt; font-family: inherit; }
+    .prod-date-text { display: none; font-size: 10pt; font-family: inherit; }
 
     .legend {
         white-space: nowrap;
         flex-shrink: 0;
-        font-size: 7pt;
+        font-size: 9pt;
         font-weight: 500;
         padding-right: 2mm;
         box-sizing: border-box;
@@ -312,7 +291,6 @@ function fmtNum(mixed$v): string {
         border-radius: 4px;
         font-size: 11px;
         font-weight: bold;
-        letter-spacing: 0.5px;
     }
     .btn-group-print {
         display: flex;
@@ -330,14 +308,10 @@ function fmtNum(mixed$v): string {
         display: inline-flex;
         align-items: center;
         gap: 6px;
-        transition: background 0.15s;
     }
     .print-btn:hover { background: #1d4ed8; }
     .print-btn.secondary { background: #475569; }
     .print-btn.secondary:hover { background: #334155; }
-
-    /* Margin Adjustment Panel */
-   
 
     .print-hints {
         background: #f8fafc;
@@ -348,16 +322,15 @@ function fmtNum(mixed$v): string {
         color: #334155;
         line-height: 1.4;
     }
-    .print-hints strong { color: #0f172a; }
 
-    /* ── Print rules (Strict 9.5" × 5.5" with Margins in Inch) ────────── */
+    /* ── Print rules ────────────────────────── */
     @media print {
         @page {
             size: 9.5in 5.5in;
-            margin-top: 0.19in;
-            margin-bottom: 0.13in;
-            margin-left: 0.15in;
-            margin-right: 0.5in;
+            margin-top: 0;
+            margin-bottom: 0.5cm;
+            margin-left: 0.5cm;
+            margin-right: 1cm;
         }
         html, body {
             width: 100% !important;
@@ -380,37 +353,18 @@ function fmtNum(mixed$v): string {
         .sheet {
             width: 100% !important;
             max-width: 100% !important;
-            min-height: auto !important;
-            height: calc(5.5in - 0.19in - 0.13in) !important;
-            max-height: calc(5.5in - 0.19in - 0.13in) !important;
+            height: 100% !important;
+            max-height: 100% !important;
             margin: 0 !important;
             padding: 0 !important;
             border: none !important;
             box-shadow: none !important;
-            display: flex !important;
-            flex-direction: column !important;
-            justify-content: flex-start !important;
-            page-break-inside: avoid !important;
-            break-inside: avoid !important;
-            page-break-after: avoid !important;
-            break-after: avoid !important;
-            page-break-before: avoid !important;
-            break-before: avoid !important;
-            overflow: hidden !important;
-        }
-        .footer-wrap {
-            margin-top: auto !important;
-            margin-bottom: 0 !important;
-        }
-        table, tr, td, th, tbody, thead {
             page-break-inside: avoid !important;
             break-inside: avoid !important;
         }
         .no-print, .no-print-toolbar {
             display: none !important;
         }
-
-        /* Swap date picker input to crisp clean text on print */
         .prod-date-input {
             display: none !important;
         }
@@ -429,21 +383,18 @@ function fmtNum(mixed$v): string {
     <div class="toolbar-actions">
         <div class="toolbar-title">
             <span>Warehousing Slip Print Preview</span>
-            <span class="paper-size-tag">9.5" × 5.5" (11"/2)</span>
+            <span class="paper-size-tag">9.5" × 5.5"</span>
         </div>
         <div class="btn-group-print">
             <button class="print-btn" onclick="window.print()">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v8H6z"/></svg>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v8H6z"/></svg>
                 Print Slip
             </button>
             <button class="print-btn secondary" onclick="window.close()">Close</button>
         </div>
     </div>
-    
     <div class="print-hints">
-        <strong>Printer Settings for Continuous Form (9.5" × 5.5"):</strong><br>
-        • <strong>Paper Size:</strong> Select <code>9.5 x 5.5 in</code> (or <code>Half Letter / Fanfold 241 × 140 mm</code>). If not listed, add Custom Paper Size (Width: 9.5", Height: 5.5") in Windows Print Server Properties.<br>
-        • <strong>Margins:</strong> <code>None</code> or <code>Minimum</code> (CSS controls top: 0.19", bottom: 0.13", left: 0.15", right: 0.5")&nbsp;&nbsp;|&nbsp;&nbsp;• <strong>Scale:</strong> <code>100%</code>&nbsp;&nbsp;|&nbsp;&nbsp;• <strong>Headers/Footers:</strong> <code>Unchecked</code>
+        <strong>Penting (Tetapan Printer):</strong> Pastikan pada dialog print, tetapan <strong>Margins</strong> dipilih kepada <strong>None</strong> atau <strong>Minimum</strong>, <strong>Scale</strong> ditetapkan pada <strong>100%</strong>, dan <strong>Headers/Footers</strong> dinyahmark (Unchecked).
     </div>
 </div>
 
@@ -469,10 +420,10 @@ function fmtNum(mixed$v): string {
             <td class="value"><?= $h($pallet['pallet_no']) ?></td>
         </tr>
         <tr>
-            <td class="label">Product Type :</td>
+            <td class="label">Product Type</td>
             <td class="value"><?= $h($pallet['product_type']) ?></td>
             <td class="label">Pallet No.</td>
-            <td class="value">&nbsp;</td> <!-- left blank for warehouse use -->
+            <td class="value">&nbsp;</td>
         </tr>
     </table>
 
@@ -488,7 +439,7 @@ function fmtNum(mixed$v): string {
         </colgroup>
         <thead>
             <tr>
-                <th rowspan="2">Stock Code :</th>
+                <th rowspan="2">Stock Code</th>
                 <th rowspan="2">Lot No.</th>
                 <th colspan="2">Size</th>
                 <th rowspan="2">Coils</th>
@@ -505,12 +456,7 @@ function fmtNum(mixed$v): string {
             <tr>
                 <?php if ($r === null): ?>
                     <td class="data-row"></td>
-                    <td></td>
-                    <td></td>
-                    <td></td>
-                    <td></td>
-                    <td></td>
-                    <td></td>
+                    <td></td><td></td><td></td><td></td><td></td><td></td>
                 <?php else: ?>
                     <td class="data-row" style="text-align:center;"><?= $h($r['stock_code']) ?></td>
                     <td><?= $h($r['lot_no']) ?></td>
@@ -577,69 +523,6 @@ function syncDateText(val) {
         document.getElementById('prodDateText').textContent = parts[2] + '/' + parts[1] + '/' + parts[0];
     }
 }
-
-function applyMargins() {
-    var top = parseFloat(document.getElementById('mTop').value);
-    var bottom = parseFloat(document.getElementById('mBottom').value);
-    var left = parseFloat(document.getElementById('mLeft').value);
-    var right = parseFloat(document.getElementById('mRight').value);
-
-    if (isNaN(top)) top = 0.19;
-    if (isNaN(bottom)) bottom = 0.13;
-    if (isNaN(left)) left = 0.15;
-    if (isNaN(right)) right = 0.5;
-
-    // Update screen sheet padding
-    var sheet = document.querySelector('.sheet');
-    if (sheet) {
-        sheet.style.paddingTop = top + 'in';
-        sheet.style.paddingRight = right + 'in';
-        sheet.style.paddingBottom = bottom + 'in';
-        sheet.style.paddingLeft = left + 'in';
-    }
-
-    // Update print @page margin rule dynamically
-    var styleTag = document.getElementById('dynamicPrintMargins');
-    if (!styleTag) {
-        styleTag = document.createElement('style');
-        styleTag.id = 'dynamicPrintMargins';
-        document.head.appendChild(styleTag);
-    }
-    styleTag.innerHTML = '@media print { @page { size: 9.5in 5.5in; margin: ' + top + 'in ' + right + 'in ' + bottom + 'in ' + left + 'in !important; } }';
-
-    try {
-        localStorage.setItem('slip_margin_top', top);
-        localStorage.setItem('slip_margin_bottom', bottom);
-        localStorage.setItem('slip_margin_left', left);
-        localStorage.setItem('slip_margin_right', right);
-    } catch(e) {}
-}
-
-function resetMargins() {
-    document.getElementById('mTop').value = '0.19';
-    document.getElementById('mBottom').value = '0.13';
-    document.getElementById('mLeft').value = '0.15';
-    document.getElementById('mRight').value = '0.5';
-    applyMargins();
-}
-
-// Load saved margins on startup or initialize default
-(function() {
-    try {
-        var savedTop = localStorage.getItem('slip_margin_top');
-        if (savedTop !== null) {
-            if (parseFloat(savedTop) === 1.9) {
-                savedTop = '0.19';
-                localStorage.setItem('slip_margin_top', '0.19');
-            }
-            document.getElementById('mTop').value = savedTop;
-            document.getElementById('mBottom').value = localStorage.getItem('slip_margin_bottom') || '0.13';
-            document.getElementById('mLeft').value = localStorage.getItem('slip_margin_left') || '0.15';
-            document.getElementById('mRight').value = localStorage.getItem('slip_margin_right') || '0.5';
-            applyMargins();
-        }
-    } catch(e) {}
-})();
 </script>
 
 </body>
