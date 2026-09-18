@@ -1616,6 +1616,23 @@ if (isset($_GET['success'])): ?>
                     </div>
                 </div>
 
+                <!-- ── Stock SOS No Warning Card ── -->
+                <?php $isStockPallet = PalletManager::isStockRefNo($activePallet['ref_no'] ?? ''); ?>
+                <div class="alert alert-warning d-flex align-items-center mb-3 py-2 px-3 <?= $isStockPallet ? '' : 'd-none' ?>" id="palletStockWarningCard" style="border-left: 4px solid #f59e0b; background: #fffbeb; border-color: #fcd34d; color: #92400e;">
+                    <i class="bi bi-exclamation-triangle-fill fs-4 me-2 text-warning flex-shrink-0"></i>
+                    <div class="d-flex justify-content-between align-items-center w-100 flex-wrap gap-2">
+                        <div>
+                            <strong style="color: #b45309;"><i class="bi bi-shield-exclamation me-1"></i>Action Required: Pallet SOS No. is STOCK</strong>
+                            <div style="font-size:12.5px;" class="mt-1">
+                                Pallet SOS No. is currently <strong><span id="warningStockRefText"><?= htmlspecialchars(($activePallet['ref_no'] ?? '') ?: 'STOCK') ?></span></strong>. Sending to QC is blocked until the operator edits the Customer SO number.
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-warning btn-sm fw-bold shadow-sm" onclick="startEditConstraint()" style="background:#fef08a; color:#713f12; border:1px solid #fde047;">
+                            <i class="bi bi-pencil-square me-1"></i> Edit SO Number
+                        </button>
+                    </div>
+                </div>
+
                 <div class="alert <?= $isEditBuilding ? ($isReturnToStock ? 'alert-info border-info-subtle' : 'alert-warning border-warning-subtle') : 'alert-info' ?> py-2 mb-3" style="<?= $isEditBuilding ? ($isReturnToStock ? 'background:#f0f9ff; color:#0c4a6e;' : 'background:#fffbe6; color:#78350f;') : '' ?>">
                     <i class="bi <?= $isEditBuilding ? ($isReturnToStock ? 'bi-info-circle-fill text-info' : 'bi-info-circle-fill text-warning') : 'bi-qr-code-scan' ?> me-1"></i>
                     <?= $isEditBuilding
@@ -1740,17 +1757,15 @@ if (isset($_GET['success'])): ?>
                     $qcAction = $isEdit ? 'resubmit_to_qc' : 'send_to_qc';
                     $qcLabel  = $isEdit ? 'Re-submit to QC' : 'Send to QC';
                     ?>
-                    <form method="post">
+                    <form method="post" id="sendToQcForm">
                         <input type="hidden" name="action"    value="<?= $qcAction ?>">
                         <input type="hidden" name="pallet_id" value="<?= $activePalletId ?>">
                         <button type="submit"
-                                class="btn <?= $isEdit ? 'btn-sm fw-bold' : 'btn-primary btn-sm fw-bold' ?>"
-                                style="<?= $isEdit ? 'background:#fef08a; color:#713f12; border:1px solid #fde047;' : '' ?>"
+                                class="btn btn-warning btn-sm fw-bold"
+                                style="background:#fef08a; color:#713f12; border:1px solid #fde047;"
                                 id="sendToQcBtn"
                                 <?= count($activeItems) < 1 ? 'disabled' : '' ?>
-                                onclick="return confirm('<?= $isEdit
-                                    ? 'Re-submit this edited pallet to QC?'
-                                    : 'Send pallet to QC? No more rolls can be added after this.' ?>')">
+                                onclick="return confirmSendToQC(event, <?= $isEdit ? 'true' : 'false' ?>)">
                             <i class="bi bi-send me-1"></i> <?= $qcLabel ?>
                         </button>
                     </form>
@@ -3158,6 +3173,7 @@ function updateConstraintBadges(p) {
     `;
     currentConstraintCustomer = p.customer_name || '';
     currentConstraintRefNo    = p.ref_no || '';
+    if (typeof updateSendToQcState === 'function') updateSendToQcState();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -3173,6 +3189,7 @@ function refreshConstraintRefBadge(refNo) {
     if (el && refNo !== undefined && refNo !== currentConstraintRefNo) {
         el.textContent = refNo;
         currentConstraintRefNo = refNo;
+        if (typeof updateSendToQcState === 'function') updateSendToQcState();
     }
 }
 
@@ -3606,13 +3623,61 @@ async function removeRoll(palletId, productId, seq, btnEl) {
 // ─────────────────────────────────────────────────────────────
 // UI HELPERS
 // ─────────────────────────────────────────────────────────────
+function isStockRef(ref) {
+    const r = (ref || '').trim().toUpperCase();
+    return r === '' || r === 'STOCK' || r === '-' || r === '—' || r === 'SO-';
+}
+
+function updateSendToQcState() {
+    const btn = document.getElementById('sendToQcBtn');
+    const warnCard = document.getElementById('palletStockWarningCard');
+    const warnRefText = document.getElementById('warningStockRefText');
+    const isStock = isStockRef(typeof currentConstraintRefNo !== 'undefined' ? currentConstraintRefNo : '');
+
+    if (warnRefText) {
+        warnRefText.textContent = (typeof currentConstraintRefNo !== 'undefined' && currentConstraintRefNo ? currentConstraintRefNo.trim() : '') || 'STOCK';
+    }
+    if (warnCard) {
+        if (isStock) {
+            warnCard.classList.remove('d-none');
+        } else {
+            warnCard.classList.add('d-none');
+        }
+    }
+
+    if (btn) {
+        const filledSlots = document.querySelectorAll('#rollList tr[data-filled="1"]').length;
+        btn.disabled = filledSlots < 1;
+        if (filledSlots < 1) {
+            btn.title = 'Add at least 1 roll to send to QC.';
+        } else {
+            btn.removeAttribute('title');
+        }
+    }
+}
+
+function confirmSendToQC(event, isEdit) {
+    if (isStockRef(typeof currentConstraintRefNo !== 'undefined' ? currentConstraintRefNo : '')) {
+        if (event) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+        alert('Cannot ' + (isEdit ? 're-submit' : 'send') + ' to QC: Pallet SOS No. is STOCK.\n\nPlease edit the Customer & SO number first.');
+        if (typeof startEditConstraint === 'function') startEditConstraint();
+        return false;
+    }
+    const msg = isEdit
+        ? 'Re-submit this edited pallet to QC?'
+        : 'Send pallet to QC? No more rolls can be added after this.';
+    return confirm(msg);
+}
+
 function updateProgress(count) {
     const bar   = document.getElementById('palletProgressBar');
     const badge = document.getElementById('rollCountBadge');
-    const btn   = document.getElementById('sendToQcBtn');
     if (bar)   bar.style.width = (count / MAX_ROLLS * 100) + '%';
     if (badge) badge.textContent = count + ' / ' + MAX_ROLLS + ' rolls';
-    if (btn)   btn.disabled = count < 1;
+    updateSendToQcState();
 }
 
 function showFeedback(msg, ok) {
@@ -4402,6 +4467,7 @@ const PALLET_CUSTOMERS_MAP = {
 let constraintEditSaving = false;
 let currentConstraintCustomer = <?= json_encode($activePallet['customer_name'] ?? '') ?>;
 let currentConstraintRefNo    = <?= json_encode($activePallet['ref_no'] ?? '') ?>;
+if (typeof updateSendToQcState === 'function') updateSendToQcState();
 
 function handleConstraintCustomerChange() {
     const sel = document.getElementById('constraintCustomerInput');
@@ -4559,6 +4625,8 @@ async function saveConstraintEdit() {
 
         const refTextEl = document.getElementById('constraintRefNoText');
         if (refTextEl) refTextEl.textContent = currentConstraintRefNo;
+
+        if (typeof updateSendToQcState === 'function') updateSendToQcState();
 
         cancelEditConstraint();
 
