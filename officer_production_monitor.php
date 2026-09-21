@@ -376,15 +376,31 @@ function initChart() {
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                interaction: {
+                    mode: 'index',
+                    intersect: false
+                },
                 plugins: {
                     legend: {
                         position: 'bottom',
                         labels: { font: { weight: 'bold', size: 11 }, boxWidth: 12 }
                     },
                     tooltip: {
+                        filter: function(tooltipItem) {
+                            return tooltipItem.datasetIndex === 0;
+                        },
                         callbacks: {
                             label: function(context) {
                                 return context.dataset.label + ': ' + Math.round(context.raw).toLocaleString() + ' m';
+                            },
+                            afterBody: function(tooltipItems) {
+                                if (!tooltipItems || tooltipItems.length === 0) return [];
+                                const chart = tooltipItems[0].chart;
+                                const slots = chart._slotsData || [];
+                                const slot = slots[tooltipItems[0].dataIndex];
+                                if (!slot) return [];
+                                const recoil = parseInt(slot.recoil_coils) || 0;
+                                return ['Recoiling: ' + recoil + ' coil'];
                             }
                         }
                     }
@@ -435,15 +451,31 @@ function initChart() {
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                interaction: {
+                    mode: 'index',
+                    intersect: false
+                },
                 plugins: {
                     legend: {
                         position: 'bottom',
                         labels: { font: { weight: 'bold', size: 11 }, boxWidth: 12 }
                     },
                     tooltip: {
+                        filter: function(tooltipItem) {
+                            return tooltipItem.datasetIndex === 0;
+                        },
                         callbacks: {
                             label: function(context) {
                                 return context.dataset.label + ': ' + Math.round(context.raw).toLocaleString() + ' m';
+                            },
+                            afterBody: function(tooltipItems) {
+                                if (!tooltipItems || tooltipItems.length === 0) return [];
+                                const chart = tooltipItems[0].chart;
+                                const slots = chart._slotsData || [];
+                                const slot = slots[tooltipItems[0].dataIndex];
+                                if (!slot) return [];
+                                const recoil = parseInt(slot.recoil_coils) || 0;
+                                return ['Recoiling: ' + recoil + ' coil'];
                             }
                         }
                     }
@@ -531,8 +563,12 @@ function loadOfficerData() {
                     const sStr   = ('0' + startD.getDate()).slice(-2) + '/' + ('0' + (startD.getMonth() + 1)).slice(-2);
                     const eStr   = ('0' + endD.getDate()).slice(-2) + '/' + ('0' + (endD.getMonth() + 1)).slice(-2);
                     const lastTotal = Math.round(lastWeekPerf.weekly_produced_total || 0).toLocaleString();
+                    const lastRecoilTotal = parseInt(lastWeekPerf.weekly_recoil_coils_total) || 0;
                     const rangeEl = document.getElementById('lastWeekRangeBadge');
-                    if (rangeEl) rangeEl.innerText = `${sStr} - ${eStr} (${lastTotal} m)`;
+                    if (rangeEl) {
+                        const recoilSummary = lastRecoilTotal > 0 ? ` | ${lastRecoilTotal} coil recoiling` : '';
+                        rangeEl.innerText = `${sStr} - ${eStr} (${lastTotal} m${recoilSummary})`;
+                    }
                 }
                 updateLastWeekChart(lastWeekPerf.slots);
             }
@@ -604,6 +640,7 @@ function renderSlotsTable(slots) {
 function updateCurrentWeekChart(slots) {
     if (!currentWeekChart || !slots) return;
 
+    currentWeekChart._slotsData = slots;
     const producedData = slots.map(s => Math.round(s.produced_meters));
     const targetData   = slots.map(s => Math.round(s.target_meters));
 
@@ -616,6 +653,7 @@ function updateCurrentWeekChart(slots) {
 function updateLastWeekChart(slots) {
     if (!lastWeekChart || !slots) return;
 
+    lastWeekChart._slotsData = slots;
     const producedData = slots.map(s => Math.round(s.produced_meters));
     const targetData   = slots.map(s => Math.round(s.target_meters));
 
