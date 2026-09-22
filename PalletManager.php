@@ -701,7 +701,7 @@ class PalletManager
                 throw new RuntimeException("Product #{$productId} not found.");
             }
 
-            $guard = $this->guardProductForPallet($product);
+            $guard = $this->guardProductForPallet($product, $palletId);
             if (!$guard['ok']) {
                 throw new RuntimeException($guard['msg']);
             }
@@ -1742,7 +1742,7 @@ class PalletManager
             SELECT id, product, lot_no, coil_no, roll_no,
                    width, length, actual_length, nod_length,
                    status, stock_counted, is_voided,
-                   mother_id, customer_name, ref_no
+                   mother_id, customer_name, ref_no, parent_slit_id
             FROM slitting_product
             WHERE id = ? LIMIT 1
         ");
@@ -1753,7 +1753,7 @@ class PalletManager
         return $row ?: null;
     }
 
-    private function guardProductForPallet(array $product): array
+    private function guardProductForPallet(array $product, int $palletId = 0): array
     {
         if ((int)($product['is_voided'] ?? 0) === 1) {
             return ['ok' => false, 'msg' => "Roll #{$product['id']} has been voided."];
@@ -1777,23 +1777,69 @@ class PalletManager
             ];
         }
 
-        // Not already on another pallet
+        // Check if this roll (or any ancestor/descendant/voided version of it with same lot, coil, roll, width)
+        // is already in pallet_items on ANY pallet
+        $pid      = (int)$product['id'];
+        $parentId = (int)($product['parent_slit_id'] ?? 0);
+
+        // Normalize base roll (e.g. "R1", "R-1", "R1_void_5173" -> canonical R1 and R-1)
+        $rawRoll     = trim($product['roll_no'] ?? '');
+        $baseRoll    = preg_replace('/(_void_|_OLD_).*$/i', '', $rawRoll);
+        $cleanDigits = preg_replace('/[^0-9A-Za-z]/', '', $baseRoll);
+        $r1          = 'R' . ltrim($cleanDigits, 'R');
+        $r_dash_1    = 'R-' . ltrim($cleanDigits, 'R');
+        $lotNo       = trim($product['lot_no'] ?? '');
+        $coilNo      = trim($product['coil_no'] ?? '');
+        $width       = (float)($product['width'] ?? 0);
+
         $stmt = $this->conn->prepare("
-            SELECT pi.pallet_id, p.pallet_no
+            SELECT pi.pallet_id, p.pallet_no, sp.id AS matched_id, sp.roll_no AS matched_roll
             FROM pallet_items pi
             JOIN pallets p ON p.id = pi.pallet_id
-            WHERE pi.slitting_product_id = ? LIMIT 1
+            JOIN slitting_product sp ON sp.id = pi.slitting_product_id
+            WHERE (
+                sp.id = ?
+                OR (? > 0 AND sp.id = ?)
+                OR (sp.parent_slit_id IS NOT NULL AND sp.parent_slit_id = ?)
+                OR (
+                    sp.lot_no = ?
+                    AND sp.coil_no = ?
+                    AND ABS(sp.width - ?) < 0.5
+                    AND (
+                        sp.roll_no = ? OR sp.roll_no = ?
+                        OR sp.roll_no LIKE CONCAT(?, '_void_%') OR sp.roll_no LIKE CONCAT(?, '_void_%')
+                        OR sp.roll_no LIKE CONCAT(?, '_OLD_%') OR sp.roll_no LIKE CONCAT(?, '_OLD_%')
+                    )
+                )
+            )
+            LIMIT 1
         ");
-        $pid = (int)$product['id'];
-        $stmt->bind_param("i", $pid);
+        $stmt->bind_param(
+            "iiiissdssssss",
+            $pid,
+            $parentId, $parentId,
+            $pid,
+            $lotNo, $coilNo, $width,
+            $r1, $r_dash_1,
+            $r1, $r_dash_1,
+            $r1, $r_dash_1
+        );
         $stmt->execute();
         $existing = $stmt->get_result()->fetch_assoc();
         $stmt->close();
 
         if ($existing) {
+            $displayRoll = $r_dash_1;
+            if ($palletId > 0 && (int)$existing['pallet_id'] === $palletId) {
+                $isVoid = (strpos($existing['matched_roll'], '_void_') !== false || strpos($existing['matched_roll'], '_OLD_') !== false);
+                return [
+                    'ok'  => false,
+                    'msg' => "Roll {$lotNo} {$coilNo} {$displayRoll} is already on this pallet" . ($isVoid ? " (as a voided roll). Please remove the voided roll first." : "."),
+                ];
+            }
             return [
                 'ok'  => false,
-                'msg' => "Roll #{$product['id']} is already on pallet {$existing['pallet_no']}.",
+                'msg' => "Roll {$lotNo} {$coilNo} {$displayRoll} (width {$width}mm) is already assigned to pallet {$existing['pallet_no']}.",
             ];
         }
         return ['ok' => true, 'msg' => 'OK'];
