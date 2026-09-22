@@ -282,6 +282,94 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         exit;
     }
 
+    /* ── 10. Add Customer Mapping ────────────────────── */
+    if ($action === 'add_customer') {
+        $customer_code = strtoupper(trim($_POST['customer_code'] ?? ''));
+        $customer_name = trim($_POST['customer_name'] ?? '');
+        $category      = trim($_POST['category']      ?? '');
+
+        if (!$customer_code || !$customer_name) {
+            echo json_encode(['ok'=>false, 'msg'=>'Customer code and customer name are required.']);
+            exit;
+        }
+
+        $chk = $conn->prepare("SELECT id FROM customer_mapping WHERE customer_code=?");
+        $chk->bind_param("s", $customer_code);
+        $chk->execute();
+        $chk->store_result();
+        if ($chk->num_rows > 0) {
+            $chk->close();
+            echo json_encode(['ok'=>false, 'msg'=>"Customer code '{$customer_code}' already exists."]);
+            exit;
+        }
+        $chk->close();
+
+        $stmt = $conn->prepare("INSERT INTO customer_mapping (customer_code, customer_name, category) VALUES (?, ?, ?)");
+        $stmt->bind_param("sss", $customer_code, $customer_name, $category);
+        $ok = $stmt->execute();
+        $new_id = $conn->insert_id;
+        $stmt->close();
+
+        echo json_encode([
+            'ok'            => $ok,
+            'msg'           => $ok ? 'Customer mapping added.' : 'Insert failed: '.$conn->error,
+            'id'            => $new_id,
+            'customer_code' => $customer_code,
+            'customer_name' => $customer_name,
+            'category'      => $category,
+        ]);
+        exit;
+    }
+
+    /* ── 11. Update Customer Mapping ─────────────────── */
+    if ($action === 'update_customer') {
+        $cust_id       = intval($_POST['cust_id'] ?? 0);
+        $customer_code = strtoupper(trim($_POST['customer_code'] ?? ''));
+        $customer_name = trim($_POST['customer_name'] ?? '');
+        $category      = trim($_POST['category']      ?? '');
+
+        if (!$customer_code || !$customer_name) {
+            echo json_encode(['ok'=>false, 'msg'=>'Customer code and customer name are required.']);
+            exit;
+        }
+
+        $chk = $conn->prepare("SELECT id FROM customer_mapping WHERE customer_code=? AND id!=?");
+        $chk->bind_param("si", $customer_code, $cust_id);
+        $chk->execute();
+        $chk->store_result();
+        if ($chk->num_rows > 0) {
+            $chk->close();
+            echo json_encode(['ok'=>false, 'msg'=>"Another customer already uses code '{$customer_code}'."]);
+            exit;
+        }
+        $chk->close();
+
+        $stmt = $conn->prepare("UPDATE customer_mapping SET customer_code=?, customer_name=?, category=? WHERE id=?");
+        $stmt->bind_param("sssi", $customer_code, $customer_name, $category, $cust_id);
+        $ok = $stmt->execute();
+        $stmt->close();
+
+        echo json_encode([
+            'ok'            => $ok,
+            'msg'           => $ok ? 'Customer mapping updated.' : 'Update failed: '.$conn->error,
+            'customer_code' => $customer_code,
+            'customer_name' => $customer_name,
+            'category'      => $category,
+        ]);
+        exit;
+    }
+
+    /* ── 12. Delete Customer Mapping ─────────────────── */
+    if ($action === 'delete_customer') {
+        $cust_id = intval($_POST['cust_id'] ?? 0);
+        $stmt = $conn->prepare("DELETE FROM customer_mapping WHERE id=?");
+        $stmt->bind_param("i", $cust_id);
+        $ok = $stmt->execute();
+        $stmt->close();
+        echo json_encode(['ok'=>$ok, 'msg'=> $ok ? 'Customer mapping deleted.' : 'Delete failed.']);
+        exit;
+    }
+
     echo json_encode(['ok'=>false,'msg'=>'Unknown action.']);
     exit;
 }
@@ -302,6 +390,57 @@ while ($r = $mappings->fetch_assoc()) $mapping_rows[] = $r;
 $nci_rows = [];
 $nci_res  = $conn->query("SELECT * FROM nci_product_mapping ORDER BY internal_code");
 while ($r = $nci_res->fetch_assoc()) $nci_rows[] = $r;
+
+// Ensure customer_mapping table exists and is seeded
+$conn->query("CREATE TABLE IF NOT EXISTS customer_mapping (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    customer_code VARCHAR(50) NOT NULL UNIQUE,
+    customer_name VARCHAR(255) NOT NULL,
+    category VARCHAR(100) DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+)");
+
+$cust_chk = $conn->query("SELECT COUNT(*) AS cnt FROM customer_mapping");
+$cust_cnt = $cust_chk ? intval($cust_chk->fetch_assoc()['cnt'] ?? 0) : 0;
+if ($cust_cnt === 0) {
+    $seed_customers = [
+        ['NAE',      'NICHIAS AUTOPARTS EUROPE (NAE)',       'Export'],
+        ['NAX',      'NAX MFG, SA.DE C.V',                   'Export'],
+        ['NCI MFG',  'NCI MFG., INC.',                       'NCI Group'],
+        ['NCI 2',    'NCI MFG (LINE 2)',                     'NCI Group'],
+        ['TAIHO',    'TAIHO MFG OF TN. INC',                 'Automotive'],
+        ['NRI',      'PT NICHIAS ROCKWOOL IND.',             'Nichias Group'],
+        ['ASHUKA',   'ASHUKA TECHNOLOGIES SDN. BHD.',        'Industrial'],
+        ['NIPPON',   'NTC (NIPPON GASKET)',                  'Nichias Group'],
+        ['NTC',      'NICHIAS THAILAND',                     'Nichias Group'],
+        ['SGC',      'SHANGHAI XINGSHENG',                   'Export'],
+        ['STAMPING', 'MK STAMPING',                          'Stamping'],
+        ['YANTAI',   'NICHIAS (SHANGHAI) AUTOPARTS TRADING', 'Nichias Group'],
+        ['NIPP',     'NICHIAS IND. PRODUCTS PVT. LTD.',      'Nichias Group'],
+        ['NVC',      'NICHIAS VIETNAM CO., LTD',             'Nichias Group'],
+        ['NSJ',      'NC-PT NICHIAS SUNIJAYA',               'Nichias Group'],
+        ['NIP',      'SUZHOU NICHIAS IND. PRODUCTS',         'Nichias Group'],
+        ['YTEC',     'YTEC CO., LTD.',                       'Export'],
+        ['NSA',      'NICHIAS SOUTH EAST ASIA (UP PACKING)', 'Nichias Group'],
+        ['MTX',      'NC-PT NRI (FORWARD MATRIX)',           'Nichias Group'],
+        ['SFC',      'SFC',                                  'Nichias Group'],
+        ['STOCK',    'STOCK',                                'Internal Stock'],
+        ['TRIAL',    'TRIAL',                                'Testing / Trial'],
+    ];
+    $s_seed = $conn->prepare("INSERT IGNORE INTO customer_mapping (customer_code, customer_name, category) VALUES (?, ?, ?)");
+    foreach ($seed_customers as $sc) {
+        $s_seed->bind_param("sss", $sc[0], $sc[1], $sc[2]);
+        $s_seed->execute();
+    }
+    $s_seed->close();
+}
+
+$customer_rows = [];
+$cust_res = $conn->query("SELECT * FROM customer_mapping ORDER BY customer_code ASC");
+if ($cust_res) {
+    while ($r = $cust_res->fetch_assoc()) $customer_rows[] = $r;
+}
 
 $page_title = "Settings";
 include 'header.php';
@@ -443,6 +582,12 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
 }
 .row-flash-teal td { animation: rowFlashTeal .8s ease-out forwards; }
 
+@keyframes rowFlashIndigo {
+  0%   { background:#EEF2FF; }
+  100% { background:transparent; }
+}
+.row-flash-indigo td { animation: rowFlashIndigo .8s ease-out forwards; }
+
 /* ── Search box ── */
 .tbl-search {
   position:relative; margin-bottom:14px; max-width:300px;
@@ -552,6 +697,9 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
   </button>
   <button class="stab" onclick="switchTab('nci')" id="tab-nci">
     <i class="bi bi-table"></i> NCI Mapping
+  </button>
+  <button class="stab" onclick="switchTab('customers')" id="tab-customers">
+    <i class="bi bi-people"></i> Customer Mapping
   </button>
 </div>
 
@@ -832,6 +980,74 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
   </div>
 </div>
 
+<!-- ══════════════════════════════════════════════════════════
+     TAB 5 — CUSTOMER MAPPING
+══════════════════════════════════════════════════════════ -->
+<div class="tab-panel" id="panel-customers">
+  <div class="s-card">
+    <div class="s-card-head" style="justify-content:space-between;">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <div class="s-card-icon" style="background:#EEF2FF;color:#4F46E5;"><i class="bi bi-people"></i></div>
+        <div>
+          <div class="s-card-title">Customer Code Mapping</div>
+          <div class="s-card-sub" id="cust-count-sub"><?= count($customer_rows) ?> entries · customer code to official customer name reference</div>
+        </div>
+      </div>
+      <button class="btn-prim" style="background:#4F46E5;" onclick="openAddCustomer()">
+        <i class="bi bi-plus-lg"></i> Add Customer
+      </button>
+    </div>
+    <div class="s-card-body">
+      <div class="tbl-search">
+        <i class="bi bi-search"></i>
+        <input type="text" id="cust-search" placeholder="Search customer code or name…"
+               oninput="filterTable('cust-search','cust-table')">
+      </div>
+      <div class="tbl-wrap">
+        <table class="map-table" id="cust-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Customer Code</th>
+              <th>Customer Name / Full Description</th>
+              <th>Category</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+          <?php foreach ($customer_rows as $ci => $c): ?>
+          <tr data-cust-id="<?= $c['id'] ?>">
+            <td style="color:var(--muted);font-size:11px;" class="cust-num"><?= $ci+1 ?></td>
+            <td class="cust-code"><span class="code-tag" style="background:#EEF2FF;color:#4338CA;font-weight:700;font-size:12px;"><?= htmlspecialchars($c['customer_code']) ?></span></td>
+            <td class="cust-name"><strong><?= htmlspecialchars($c['customer_name']) ?></strong></td>
+            <td class="cust-cat"><span style="font-size:12px;color:var(--muted);"><?= htmlspecialchars($c['category'] ?: '—') ?></span></td>
+            <td style="white-space:nowrap;">
+              <button class="btn-edit btn-sm"
+                      onclick="openEditCustomer(
+                        <?= $c['id'] ?>,
+                        '<?= htmlspecialchars(addslashes($c['customer_code'])) ?>',
+                        '<?= htmlspecialchars(addslashes($c['customer_name'])) ?>',
+                        '<?= htmlspecialchars(addslashes($c['category'] ?? '')) ?>'
+                      )">
+                <i class="bi bi-pencil"></i> Edit
+              </button>
+              <button class="btn-danger btn-sm" style="margin-left:4px;"
+                      onclick="confirmDeleteCustomer(
+                        <?= $c['id'] ?>,
+                        '<?= htmlspecialchars(addslashes($c['customer_code'])) ?>'
+                      )">
+                <i class="bi bi-trash3"></i> Delete
+              </button>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
 
 <!-- ══ MODALS ══════════════════════════════════════════════════ -->
 
@@ -1015,6 +1231,66 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
   </div>
 </div>
 
+<!-- Add Customer Modal -->
+<div class="modal-overlay" id="modal-cust-add">
+  <div class="modal-box sm">
+    <div class="modal-title">
+      <i class="bi bi-plus-circle" style="color:#4F46E5;"></i> Add Customer Mapping
+    </div>
+    <div class="mb-3">
+      <label class="f-label">Customer Code <span style="color:#dc2626;">*</span></label>
+      <input class="f-ctrl" type="text" id="cust-add-code"
+             placeholder="e.g. NSA, NAE" style="text-transform:uppercase;">
+    </div>
+    <div class="mb-3">
+      <label class="f-label">Customer Full Name <span style="color:#dc2626;">*</span></label>
+      <input class="f-ctrl" type="text" id="cust-add-name"
+             placeholder="e.g. NICHIAS SOUTH EAST ASIA (UP PACKING)">
+    </div>
+    <div class="mb-3">
+      <label class="f-label">Category / Group</label>
+      <input class="f-ctrl" type="text" id="cust-add-cat"
+             placeholder="e.g. Nichias Group, Export, Automotive">
+    </div>
+    <div class="divider"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button class="btn-cancel" onclick="closeModal('modal-cust-add')">Cancel</button>
+      <button class="btn-prim" style="background:#4F46E5;" onclick="doAddCustomer()">
+        <i class="bi bi-plus-lg"></i> Add Customer
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Customer Modal -->
+<div class="modal-overlay" id="modal-cust-edit">
+  <div class="modal-box sm">
+    <div class="modal-title">
+      <i class="bi bi-pencil-square" style="color:#4F46E5;"></i> Edit Customer Mapping
+    </div>
+    <input type="hidden" id="cust-edit-id">
+    <div class="mb-3">
+      <label class="f-label">Customer Code <span style="color:#dc2626;">*</span></label>
+      <input class="f-ctrl" type="text" id="cust-edit-code" style="text-transform:uppercase;">
+    </div>
+    <div class="mb-3">
+      <label class="f-label">Customer Full Name <span style="color:#dc2626;">*</span></label>
+      <input class="f-ctrl" type="text" id="cust-edit-name">
+    </div>
+    <div class="mb-3">
+      <label class="f-label">Category / Group</label>
+      <input class="f-ctrl" type="text" id="cust-edit-cat">
+    </div>
+    <div class="divider"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button class="btn-cancel" onclick="closeModal('modal-cust-edit')">Cancel</button>
+      <button class="btn-prim" style="background:#4F46E5;" onclick="doEditCustomer()">
+        <i class="bi bi-check-lg"></i> Save Changes
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- Confirm Delete Modal (shared) -->
 <div class="modal-overlay" id="modal-confirm">
   <div class="modal-box sm">
@@ -1022,7 +1298,7 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
     <div class="modal-title" style="justify-content:center;">Confirm Delete</div>
     <div class="confirm-msg" id="confirm-msg-text"></div>
     <input type="hidden" id="confirm-del-id">
-    <input type="hidden" id="confirm-del-type"> <!-- 'mapping' or 'nci' -->
+    <input type="hidden" id="confirm-del-type"> <!-- 'mapping', 'nci', or 'customer' -->
     <div class="confirm-btns">
       <button class="btn-cancel" onclick="closeModal('modal-confirm')">Cancel</button>
       <button class="btn-confirm-del" onclick="doConfirmedDelete()">
@@ -1166,6 +1442,14 @@ function confirmDeleteNci(id, code) {
   openModal('modal-confirm');
 }
 
+function confirmDeleteCustomer(id, code) {
+  document.getElementById('confirm-del-id').value   = id;
+  document.getElementById('confirm-del-type').value = 'customer';
+  document.getElementById('confirm-msg-text').innerHTML =
+    `This will permanently remove customer mapping <strong>${escHtml(code)}</strong>.`;
+  openModal('modal-confirm');
+}
+
 async function doConfirmedDelete() {
   const id   = document.getElementById('confirm-del-id').value;
   const type = document.getElementById('confirm-del-type').value;
@@ -1173,6 +1457,8 @@ async function doConfirmedDelete() {
 
   if (type === 'nci') {
     await doDeleteNci(id);
+  } else if (type === 'customer') {
+    await doDeleteCustomer(id);
   } else {
     await doDeleteMapping(id);
   }
@@ -1368,6 +1654,133 @@ function renumberNci() {
   if (sub) {
     const n = document.querySelectorAll('#nci-table tbody tr').length;
     sub.textContent = `${n} entries · customer part number reference`;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   CUSTOMER MAPPING CRUD
+═══════════════════════════════════════════════════════════════ */
+
+/* ── Open Add Customer Modal ───────────────────────────────── */
+function openAddCustomer() {
+  ['cust-add-code','cust-add-name','cust-add-cat'].forEach(id => document.getElementById(id).value = '');
+  openModal('modal-cust-add');
+  setTimeout(() => document.getElementById('cust-add-code').focus(), 200);
+}
+
+/* ── Open Edit Customer Modal ──────────────────────────────── */
+function openEditCustomer(id, code, name, cat) {
+  document.getElementById('cust-edit-id').value   = id;
+  document.getElementById('cust-edit-code').value = code;
+  document.getElementById('cust-edit-name').value = name;
+  document.getElementById('cust-edit-cat').value  = cat;
+  openModal('modal-cust-edit');
+  setTimeout(() => document.getElementById('cust-edit-code').focus(), 200);
+}
+
+/* ── Add Customer ───────────────────────────────────────────── */
+async function doAddCustomer() {
+  const code = document.getElementById('cust-add-code').value.trim().toUpperCase();
+  const name = document.getElementById('cust-add-name').value.trim();
+  const cat  = document.getElementById('cust-add-cat').value.trim();
+
+  if (!code || !name) {
+    toast('Customer code and name are required.', false);
+    return;
+  }
+
+  const r = await post({ action: 'add_customer', customer_code: code, customer_name: name, category: cat });
+  toast(r.msg, r.ok);
+
+  if (r.ok) {
+    closeModal('modal-cust-add');
+    const tbody = document.querySelector('#cust-table tbody');
+    const rowCount = tbody.querySelectorAll('tr').length + 1;
+    const tr = document.createElement('tr');
+    tr.dataset.custId = r.id;
+    tr.innerHTML = `
+      <td style="color:var(--muted);font-size:11px;" class="cust-num">${rowCount}</td>
+      <td class="cust-code"><span class="code-tag" style="background:#EEF2FF;color:#4338CA;font-weight:700;font-size:12px;">${escHtml(r.customer_code)}</span></td>
+      <td class="cust-name"><strong>${escHtml(r.customer_name)}</strong></td>
+      <td class="cust-cat"><span style="font-size:12px;color:var(--muted);">${escHtml(r.category || '—')}</span></td>
+      <td style="white-space:nowrap;">
+        <button class="btn-edit btn-sm" onclick="openEditCustomer(${r.id},'${esc(r.customer_code)}','${esc(r.customer_name)}','${esc(r.category)}')">
+          <i class="bi bi-pencil"></i> Edit
+        </button>
+        <button class="btn-danger btn-sm" style="margin-left:4px;" onclick="confirmDeleteCustomer(${r.id},'${esc(r.customer_code)}')">
+          <i class="bi bi-trash3"></i> Delete
+        </button>
+      </td>`;
+    tbody.appendChild(tr);
+    tr.classList.add('row-flash-indigo');
+    tr.addEventListener('animationend', () => tr.classList.remove('row-flash-indigo'), { once: true });
+
+    const sub = document.getElementById('cust-count-sub');
+    if (sub) sub.textContent = `${rowCount} entries · customer code to official customer name reference`;
+  }
+}
+
+/* ── Edit Customer ──────────────────────────────────────────── */
+async function doEditCustomer() {
+  const id   = document.getElementById('cust-edit-id').value;
+  const code = document.getElementById('cust-edit-code').value.trim().toUpperCase();
+  const name = document.getElementById('cust-edit-name').value.trim();
+  const cat  = document.getElementById('cust-edit-cat').value.trim();
+
+  if (!code || !name) {
+    toast('Customer code and name are required.', false);
+    return;
+  }
+
+  const r = await post({ action: 'update_customer', cust_id: id, customer_code: code, customer_name: name, category: cat });
+  toast(r.msg, r.ok);
+
+  if (r.ok) {
+    closeModal('modal-cust-edit');
+    const row = document.querySelector(`#cust-table tr[data-cust-id="${id}"]`);
+    if (row) {
+      row.querySelector('.cust-code').innerHTML = `<span class="code-tag" style="background:#EEF2FF;color:#4338CA;font-weight:700;font-size:12px;">${escHtml(r.customer_code)}</span>`;
+      row.querySelector('.cust-name').innerHTML = `<strong>${escHtml(r.customer_name)}</strong>`;
+      row.querySelector('.cust-cat').innerHTML  = `<span style="font-size:12px;color:var(--muted);">${escHtml(r.category || '—')}</span>`;
+
+      const editBtn = row.querySelector('.btn-edit');
+      if (editBtn) editBtn.setAttribute('onclick', `openEditCustomer(${id},'${esc(r.customer_code)}','${esc(r.customer_name)}','${esc(r.category)}')`);
+      const delBtn = row.querySelector('.btn-danger');
+      if (delBtn) delBtn.setAttribute('onclick', `confirmDeleteCustomer(${id},'${esc(r.customer_code)}')`);
+
+      row.classList.add('row-flash-indigo');
+      row.addEventListener('animationend', () => row.classList.remove('row-flash-indigo'), { once: true });
+    }
+  }
+}
+
+/* ── Delete Customer ────────────────────────────────────────── */
+async function doDeleteCustomer(id) {
+  const r = await post({ action: 'delete_customer', cust_id: id });
+  toast(r.msg, r.ok);
+  if (r.ok) {
+    const row = document.querySelector(`#cust-table tr[data-cust-id="${id}"]`);
+    if (row) {
+      row.style.opacity = '0';
+      row.style.transition = '.3s';
+      setTimeout(() => {
+        row.remove();
+        renumberCustomers();
+      }, 300);
+    }
+  }
+}
+
+/* ── Renumber customer table rows ───────────────────────────── */
+function renumberCustomers() {
+  document.querySelectorAll('#cust-table tbody tr').forEach((tr, i) => {
+    const numCell = tr.querySelector('.cust-num');
+    if (numCell) numCell.textContent = i + 1;
+  });
+  const sub = document.getElementById('cust-count-sub');
+  if (sub) {
+    const n = document.querySelectorAll('#cust-table tbody tr').length;
+    sub.textContent = `${n} entries · customer code to official customer name reference`;
   }
 }
 
