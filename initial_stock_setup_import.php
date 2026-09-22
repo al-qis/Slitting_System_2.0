@@ -178,28 +178,33 @@ foreach ($rowNumbers as $rowNum) {
             );
         }
 
+        $width = (float)($parsed['width'] ?? 0);
+
         // Duplicate check against existing DB rows (same rule as manual form)
         $check = $conn->prepare(
-            "SELECT id FROM slitting_product WHERE lot_no = ? AND coil_no = ? AND roll_no = ?"
+            "SELECT id FROM slitting_product 
+             WHERE lot_no = ? AND coil_no = ? AND roll_no = ?
+               AND ABS(width - ?) < 0.5
+               AND (is_voided = 0 OR is_voided IS NULL)"
         );
-        $check->bind_param("sss", $parsed['lot_no'], $parsed['coil_no'], $parsed['roll_no']);
+        $check->bind_param("sssd", $parsed['lot_no'], $parsed['coil_no'], $parsed['roll_no'], $width);
         $check->execute();
         $dupe = $check->get_result()->num_rows > 0;
         $check->close();
         if ($dupe) {
             throw new InvalidArgumentException(
-                "Duplicate: Lot {$parsed['lot_no']}, Coil {$parsed['coil_no']}, Roll {$parsed['roll_no']} already exists."
+                "Duplicate: Lot {$parsed['lot_no']}, Coil {$parsed['coil_no']}, Roll {$parsed['roll_no']} (Width {$width}mm) already exists."
             );
         }
 
         // Duplicate check WITHIN this same import batch (two rows in
-        // the same file with the same lot+coil+roll would otherwise
+        // the same file with the same lot+coil+roll+width would otherwise
         // both pass the DB check above and both get inserted).
-        $batchKey = $parsed['lot_no'] . '|' . $parsed['coil_no'] . '|' . $parsed['roll_no'];
+        $batchKey = $parsed['lot_no'] . '|' . $parsed['coil_no'] . '|' . $parsed['roll_no'] . '|' . round($width, 2);
         foreach ($toInsert as $already) {
             if ($already['_batch_key'] === $batchKey) {
                 throw new InvalidArgumentException(
-                    "Duplicate within this file: Lot {$parsed['lot_no']}, Coil {$parsed['coil_no']}, Roll {$parsed['roll_no']} appears more than once."
+                    "Duplicate within this file: Lot {$parsed['lot_no']}, Coil {$parsed['coil_no']}, Roll {$parsed['roll_no']} (Width {$width}mm) appears more than once."
                 );
             }
         }
@@ -253,10 +258,10 @@ $insertedIds = [];
 try {
     $stmt = $conn->prepare("
         INSERT INTO slitting_product
-            (mother_id, source, original_source, product, lot_no, coil_no, roll_no,
+            (mother_id, source, original_source, product, lot_no, coil_no, roll_no, roll_key,
              width, length, actual_length, status, is_completed, stock_counted, date_in)
         VALUES
-            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?)
+            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?)
     ");
 
     foreach ($toInsert as $row) {
@@ -265,25 +270,54 @@ try {
         $original_source = 'initial_stock';
         $status          = 'IN';
         $date_in         = date('Y-m-d H:i:s');
+        $product         = $row['product'];
+        $lot_no          = $row['lot_no'];
+        $coil_no         = $row['coil_no'];
+        $roll_no         = $row['roll_no'];
         $width           = (float)$row['width'];
         $length          = (float)$row['length'];
         $actual_length   = (float)$row['actual_length'];
 
-       $stmt->bind_param(
-        "isssssdddss",
-        $mother_id,
-        $source,
-        $original_source,
-        $product,
-        $lot_no,
-        $coil_no,
-        $roll_no,
-        $width,
-        $length,
-        $actual_length,
-        $status,
-        $date_in
-    );
+        // Generate unique DB roll_key incorporating width
+        $base_roll_key   = $lot_no . '_' . $coil_no . '_' . $roll_no . '_' . round($width, 2);
+        $target_roll_key = $base_roll_key;
+        $chk_key = $conn->prepare("SELECT id FROM slitting_product WHERE roll_key = ? AND (is_voided = 0 OR is_voided IS NULL)");
+        $chk_key->bind_param("s", $target_roll_key);
+        $chk_key->execute();
+        if ($chk_key->get_result()->num_rows > 0) {
+            $suffix_num = 1;
+            while (true) {
+                $candidate = $base_roll_key . "_" . $suffix_num;
+                $chk2 = $conn->prepare("SELECT id FROM slitting_product WHERE roll_key = ? AND (is_voided = 0 OR is_voided IS NULL)");
+                $chk2->bind_param("s", $candidate);
+                $chk2->execute();
+                if ($chk2->get_result()->num_rows === 0) {
+                    $target_roll_key = $candidate;
+                    $chk2->close();
+                    break;
+                }
+                $chk2->close();
+                $suffix_num++;
+            }
+        }
+        $chk_key->close();
+
+        $stmt->bind_param(
+            "issssssssddss",
+            $mother_id,
+            $source,
+            $original_source,
+            $product,
+            $lot_no,
+            $coil_no,
+            $roll_no,
+            $target_roll_key,
+            $width,
+            $length,
+            $actual_length,
+            $status,
+            $date_in
+        );
 
         if (!$stmt->execute()) {
             throw new Exception("Row {$row['_excel_row']}: " . $stmt->error);

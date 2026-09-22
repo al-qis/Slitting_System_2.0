@@ -387,6 +387,20 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === 'deliver_by_scan') {
                 LIMIT 1
             ");
             $stmt->bind_param("i", $id);
+        } elseif ($width > 0 && $lot !== '' && $coil !== '') {
+            $stmt = $conn->prepare("
+                SELECT sp.id, sp.is_voided,
+                       pi.pallet_id,
+                       p.status AS pallet_status, p.pallet_no
+                FROM slitting_product sp
+                LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+                LEFT JOIN pallets p       ON p.id = pi.pallet_id
+                WHERE sp.lot_no = ? AND sp.coil_no = ? AND (sp.roll_no = ? OR sp.roll_no = ?)
+                  AND ABS(sp.width - ?) < 0.5
+                ORDER BY sp.id DESC
+                LIMIT 1
+            ");
+            $stmt->bind_param("ssssd", $lot, $coil, $roll, $cleanRoll, $width);
         } elseif ($width > 0 && $roll !== '') {
             $stmt = $conn->prepare("
                 SELECT sp.id, sp.is_voided,
@@ -481,7 +495,8 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === 'deliver_by_scan') {
 // ── Shared: build the flattened Summary Pallet dataset ─────────
 function buildSummaryPalletRows(mysqli $conn): array {
     $rows = $conn->query("
-        SELECT p.id AS pallet_id, p.pallet_no, p.status, p.created_at AS pallet_date, pi.stock_code AS pi_stock_code,
+        SELECT p.id AS pallet_id, p.pallet_no, p.status, p.created_at AS pallet_date, p.ref_no AS pallet_ref_no,
+               pi.stock_code AS pi_stock_code,
                sp.roll_no, sp.lot_no, sp.coil_no, sp.product,
                sp.customer_name, sp.ref_no, sp.width, sp.length, sp.actual_length
         FROM pallets p
@@ -505,6 +520,13 @@ function buildSummaryPalletRows(mysqli $conn): array {
 
         $formattedDate = !empty($r['pallet_date']) ? date('d/m/Y', strtotime($r['pallet_date'])) : '-';
 
+        $rollRef   = trim((string)($r['ref_no'] ?? ''));
+        $palletRef = trim((string)($r['pallet_ref_no'] ?? ''));
+        $isStockRef = ($rollRef === '' || strtoupper($rollRef) === 'STOCK');
+        $effectiveRef = ($isStockRef && $palletRef !== '' && strtoupper($palletRef) !== 'STOCK')
+            ? $palletRef
+            : ($rollRef !== '' ? $rollRef : ($palletRef !== '' ? $palletRef : null));
+
         return [
             'pallet_id'  => $r['pallet_id'],
             'pallet_no'  => $r['pallet_no'],
@@ -515,7 +537,7 @@ function buildSummaryPalletRows(mysqli $conn): array {
             'lot_coil'   => trim(($r['lot_no'] ?? '') . ' ' . ($r['coil_no'] ?? '')),
             'product'    => $r['product'],
             'customer'   => $r['customer_name'],
-            'ref_no'     => $r['ref_no'],
+            'ref_no'     => $effectiveRef,
             'width'      => $r['width'] !== null ? (float)$r['width'] : null,
             'length'     => $lenVal !== null ? (float)$lenVal : null,
         ];
@@ -541,7 +563,7 @@ function filterSummaryPalletRows(array $rows, string $cat, string $val, string $
                 $val = "{$m[3]}/{$m[2]}/{$m[1]}";
             }
             $rows = array_values(array_filter($rows, fn($r) => (string)($r['date'] ?? '') === $val));
-        } elseif ($cat === 'customer' || $cat === 'product') {
+        } elseif ($cat === 'customer' || $cat === 'product' || $cat === 'ref_no') {
             $rows = array_values(array_filter($rows, fn($r) => (string)($r[$cat] ?? '') === $val));
         } elseif ($cat === 'suffix') {
             $rows = array_values(array_filter($rows, function ($r) use ($val) {
@@ -606,7 +628,7 @@ if (isset($_GET['export']) && $_GET['export'] === 'summary_pallet') {
     $rows = buildSummaryPalletRows($conn);
     $rows = filterSummaryPalletRows($rows, $cat, $val, $statusParam, $suffixParam);
 
-    $catLabels = ['customer' => 'Customer', 'product' => 'Product Type', 'date' => 'Date', 'width' => 'Width', 'length' => 'Length', 'suffix' => 'Pallet Suffix'];
+    $catLabels = ['customer' => 'Customer', 'product' => 'Product Type', 'ref_no' => 'SOS No. / Ref No', 'date' => 'Date', 'width' => 'Width', 'length' => 'Length', 'suffix' => 'Pallet Suffix'];
     $filterParts = [];
     if ($val !== '') {
         $filterParts[] = isset($catLabels[$cat]) ? "{$catLabels[$cat]}: {$val}" : "Search: {$val}";
@@ -1594,6 +1616,23 @@ if (isset($_GET['success'])): ?>
                     </div>
                 </div>
 
+                <!-- ── Stock SOS No Warning Card ── -->
+                <?php $isStockPallet = PalletManager::isStockRefNo($activePallet['ref_no'] ?? ''); ?>
+                <div class="alert alert-warning d-flex align-items-center mb-3 py-2 px-3 <?= $isStockPallet ? '' : 'd-none' ?>" id="palletStockWarningCard" style="border-left: 4px solid #f59e0b; background: #fffbeb; border-color: #fcd34d; color: #92400e;">
+                    <i class="bi bi-exclamation-triangle-fill fs-4 me-2 text-warning flex-shrink-0"></i>
+                    <div class="d-flex justify-content-between align-items-center w-100 flex-wrap gap-2">
+                        <div>
+                            <strong style="color: #b45309;"><i class="bi bi-shield-exclamation me-1"></i>Action Required: Pallet SOS No. is STOCK</strong>
+                            <div style="font-size:12.5px;" class="mt-1">
+                                Pallet SOS No. is currently <strong><span id="warningStockRefText"><?= htmlspecialchars(($activePallet['ref_no'] ?? '') ?: 'STOCK') ?></span></strong>. Sending to QC is blocked until the operator edits the Customer SO number.
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-warning btn-sm fw-bold shadow-sm" onclick="startEditConstraint()" style="background:#fef08a; color:#713f12; border:1px solid #fde047;">
+                            <i class="bi bi-pencil-square me-1"></i> Edit SO Number
+                        </button>
+                    </div>
+                </div>
+
                 <div class="alert <?= $isEditBuilding ? ($isReturnToStock ? 'alert-info border-info-subtle' : 'alert-warning border-warning-subtle') : 'alert-info' ?> py-2 mb-3" style="<?= $isEditBuilding ? ($isReturnToStock ? 'background:#f0f9ff; color:#0c4a6e;' : 'background:#fffbe6; color:#78350f;') : '' ?>">
                     <i class="bi <?= $isEditBuilding ? ($isReturnToStock ? 'bi-info-circle-fill text-info' : 'bi-info-circle-fill text-warning') : 'bi-qr-code-scan' ?> me-1"></i>
                     <?= $isEditBuilding
@@ -1718,17 +1757,15 @@ if (isset($_GET['success'])): ?>
                     $qcAction = $isEdit ? 'resubmit_to_qc' : 'send_to_qc';
                     $qcLabel  = $isEdit ? 'Re-submit to QC' : 'Send to QC';
                     ?>
-                    <form method="post">
+                    <form method="post" id="sendToQcForm">
                         <input type="hidden" name="action"    value="<?= $qcAction ?>">
                         <input type="hidden" name="pallet_id" value="<?= $activePalletId ?>">
                         <button type="submit"
-                                class="btn <?= $isEdit ? 'btn-sm fw-bold' : 'btn-primary btn-sm fw-bold' ?>"
-                                style="<?= $isEdit ? 'background:#fef08a; color:#713f12; border:1px solid #fde047;' : '' ?>"
+                                class="btn btn-warning btn-sm fw-bold"
+                                style="background:#fef08a; color:#713f12; border:1px solid #fde047;"
                                 id="sendToQcBtn"
                                 <?= count($activeItems) < 1 ? 'disabled' : '' ?>
-                                onclick="return confirm('<?= $isEdit
-                                    ? 'Re-submit this edited pallet to QC?'
-                                    : 'Send pallet to QC? No more rolls can be added after this.' ?>')">
+                                onclick="return confirmSendToQC(event, <?= $isEdit ? 'true' : 'false' ?>)">
                             <i class="bi bi-send me-1"></i> <?= $qcLabel ?>
                         </button>
                     </form>
@@ -2863,6 +2900,7 @@ if (isset($_GET['success'])): ?>
           <div class="col-md-2">
             <select id="summaryFilterCategory" class="form-select form-select-sm" onchange="onSummaryCategoryChange()">
               <option value="">All Fields</option>
+              <option value="ref_no">SOS No. / Ref No</option>
               <option value="suffix">Pallet Suffix (B, BN, None)</option>
               <option value="date">Date</option>
               <option value="product">Product Type</option>
@@ -3135,6 +3173,7 @@ function updateConstraintBadges(p) {
     `;
     currentConstraintCustomer = p.customer_name || '';
     currentConstraintRefNo    = p.ref_no || '';
+    if (typeof updateSendToQcState === 'function') updateSendToQcState();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -3150,6 +3189,7 @@ function refreshConstraintRefBadge(refNo) {
     if (el && refNo !== undefined && refNo !== currentConstraintRefNo) {
         el.textContent = refNo;
         currentConstraintRefNo = refNo;
+        if (typeof updateSendToQcState === 'function') updateSendToQcState();
     }
 }
 
@@ -3583,13 +3623,61 @@ async function removeRoll(palletId, productId, seq, btnEl) {
 // ─────────────────────────────────────────────────────────────
 // UI HELPERS
 // ─────────────────────────────────────────────────────────────
+function isStockRef(ref) {
+    const r = (ref || '').trim().toUpperCase();
+    return r === '' || r === 'STOCK' || r === '-' || r === '—' || r === 'SO-';
+}
+
+function updateSendToQcState() {
+    const btn = document.getElementById('sendToQcBtn');
+    const warnCard = document.getElementById('palletStockWarningCard');
+    const warnRefText = document.getElementById('warningStockRefText');
+    const isStock = isStockRef(typeof currentConstraintRefNo !== 'undefined' ? currentConstraintRefNo : '');
+
+    if (warnRefText) {
+        warnRefText.textContent = (typeof currentConstraintRefNo !== 'undefined' && currentConstraintRefNo ? currentConstraintRefNo.trim() : '') || 'STOCK';
+    }
+    if (warnCard) {
+        if (isStock) {
+            warnCard.classList.remove('d-none');
+        } else {
+            warnCard.classList.add('d-none');
+        }
+    }
+
+    if (btn) {
+        const filledSlots = document.querySelectorAll('#rollList tr[data-filled="1"]').length;
+        btn.disabled = filledSlots < 1;
+        if (filledSlots < 1) {
+            btn.title = 'Add at least 1 roll to send to QC.';
+        } else {
+            btn.removeAttribute('title');
+        }
+    }
+}
+
+function confirmSendToQC(event, isEdit) {
+    if (isStockRef(typeof currentConstraintRefNo !== 'undefined' ? currentConstraintRefNo : '')) {
+        if (event) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+        alert('Cannot ' + (isEdit ? 're-submit' : 'send') + ' to QC: Pallet SOS No. is STOCK.\n\nPlease edit the Customer & SO number first.');
+        if (typeof startEditConstraint === 'function') startEditConstraint();
+        return false;
+    }
+    const msg = isEdit
+        ? 'Re-submit this edited pallet to QC?'
+        : 'Send pallet to QC? No more rolls can be added after this.';
+    return confirm(msg);
+}
+
 function updateProgress(count) {
     const bar   = document.getElementById('palletProgressBar');
     const badge = document.getElementById('rollCountBadge');
-    const btn   = document.getElementById('sendToQcBtn');
     if (bar)   bar.style.width = (count / MAX_ROLLS * 100) + '%';
     if (badge) badge.textContent = count + ' / ' + MAX_ROLLS + ' rolls';
-    if (btn)   btn.disabled = count < 1;
+    updateSendToQcState();
 }
 
 function showFeedback(msg, ok) {
@@ -3982,10 +4070,10 @@ function onSummaryCategoryChange() {
     if (cat === 'date') {
         dateInput.value = '';
         dateInput.classList.remove('d-none');
-    } else if (cat === 'customer' || cat === 'product') {
+    } else if (cat === 'customer' || cat === 'product' || cat === 'ref_no') {
         const distinct = [...new Set(
             summaryData
-                .map(r => cat === 'customer' ? r.customer : r.product)
+                .map(r => cat === 'customer' ? r.customer : (cat === 'product' ? r.product : r.ref_no))
                 .filter(v => v !== null && v !== '' && v !== '-')
         )].sort();
 
@@ -4032,7 +4120,7 @@ function applySummaryFilter() {
                 rows = rows.filter(r => String(r.date ?? '') === targetDate);
             }
         }
-    } else if (cat === 'customer' || cat === 'product') {
+    } else if (cat === 'customer' || cat === 'product' || cat === 'ref_no') {
         const val = document.getElementById('summaryFilterValueSelect').value;
         if (val !== '') {
             rows = rows.filter(r => String(r[cat] ?? '') === val);
@@ -4379,6 +4467,7 @@ const PALLET_CUSTOMERS_MAP = {
 let constraintEditSaving = false;
 let currentConstraintCustomer = <?= json_encode($activePallet['customer_name'] ?? '') ?>;
 let currentConstraintRefNo    = <?= json_encode($activePallet['ref_no'] ?? '') ?>;
+if (typeof updateSendToQcState === 'function') updateSendToQcState();
 
 function handleConstraintCustomerChange() {
     const sel = document.getElementById('constraintCustomerInput');
@@ -4536,6 +4625,8 @@ async function saveConstraintEdit() {
 
         const refTextEl = document.getElementById('constraintRefNoText');
         if (refTextEl) refTextEl.textContent = currentConstraintRefNo;
+
+        if (typeof updateSendToQcState === 'function') updateSendToQcState();
 
         cancelEditConstraint();
 
@@ -4794,7 +4885,7 @@ function exportSummaryPallet() {
 
     if (cat === 'date') {
         val = document.getElementById('summaryFilterValueDate').value;
-    } else if (cat === 'customer' || cat === 'product' || cat === 'suffix') {
+    } else if (cat === 'customer' || cat === 'product' || cat === 'suffix' || cat === 'ref_no') {
         val = document.getElementById('summaryFilterValueSelect').value;
     } else {
         val = document.getElementById('summaryFilterValueText').value.trim();

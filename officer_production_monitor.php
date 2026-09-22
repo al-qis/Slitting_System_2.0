@@ -9,14 +9,15 @@ if (!isset($_SESSION['role'])) {
 require_once 'config.php';
 
 $page_title = "Papan Pemantauan Pengeluaran Pegawai (Officer Monitor)";
+$hide_sidebar = true;
 include 'header.php';
 
 $shiftTarget = (float)getSystemSetting($conn, 'shift_target_meters', '5200');
 if ($shiftTarget <= 0) {
     $shiftTarget = 5200.0;
 }
-$dailyTarget  = $shiftTarget * 3;
-$weeklyTarget = $dailyTarget * 7;
+$dailyTargetDefault = $shiftTarget * 2; // Default 2 shifts: 10,400 m
+$weeklyTargetDefault = $dailyTargetDefault * 7; // Estimated minimum 14 shifts
 ?>
 
 <!-- Include Chart.js for Weekly Slot Performance Chart -->
@@ -72,6 +73,12 @@ $weeklyTarget = $dailyTarget * 7;
             </p>
         </div>
         <div class="d-flex align-items-center gap-2">
+            <a href="production_monitoring.php" target="_blank" rel="noopener noreferrer" class="btn btn-outline-info fw-semibold px-3 shadow-sm">
+                <i class="bi bi-tv me-1"></i> Live Production Monitor
+            </a>
+            <a href="index.php" class="btn btn-outline-secondary fw-semibold px-3 shadow-sm">
+                <i class="bi bi-arrow-left me-1"></i> Dashboard
+            </a>
             <button type="button" class="btn btn-outline-primary fw-semibold px-3 shadow-sm" data-bs-toggle="modal" data-bs-target="#targetConfigModal">
                 <i class="bi bi-sliders me-1"></i> Tetapan Sasaran Syif
             </button>
@@ -97,7 +104,7 @@ $weeklyTarget = $dailyTarget * 7;
                 <div class="mt-2">
                     <div class="stat-number text-dark" id="displayShiftTarget"><?php echo number_format($shiftTarget, 0); ?> m</div>
                     <div class="small text-muted mt-1">
-                        <i class="bi bi-info-circle me-1"></i> Purata pengeluaran per syif
+                        <i class="bi bi-info-circle me-1"></i> Purata sasaran per syif
                     </div>
                 </div>
             </div>
@@ -113,9 +120,9 @@ $weeklyTarget = $dailyTarget * 7;
                     </span>
                 </div>
                 <div class="mt-2">
-                    <div class="stat-number text-dark" id="displayDailyTarget"><?php echo number_format($dailyTarget, 0); ?> m</div>
-                    <div class="small text-muted mt-1">
-                        <i class="bi bi-stack me-1"></i> 3 Syif x <?php echo number_format($shiftTarget, 0); ?> m
+                    <div class="stat-number text-dark" id="displayDailyTarget"><?php echo number_format($dailyTargetDefault, 0); ?> m</div>
+                    <div class="small text-muted mt-1" id="displayDailyTargetDesc">
+                        <i class="bi bi-stack me-1"></i> Default 2 Syif (10,400 m) / 3 Syif (15,600 m selepas 12am)
                     </div>
                 </div>
             </div>
@@ -131,9 +138,9 @@ $weeklyTarget = $dailyTarget * 7;
                     </span>
                 </div>
                 <div class="mt-2">
-                    <div class="stat-number text-dark" id="displayWeeklyTarget"><?php echo number_format($weeklyTarget, 0); ?> m</div>
+                    <div class="stat-number text-dark" id="displayWeeklyTarget"><?php echo number_format($weeklyTargetDefault, 0); ?> m</div>
                     <div class="small text-muted mt-1">
-                        <i class="bi bi-calculator me-1"></i> 7 Hari (21 Syif Total)
+                        <i class="bi bi-calculator me-1"></i> Jumlah sasaran dinamik 7 slot harian
                     </div>
                 </div>
             </div>
@@ -161,16 +168,39 @@ $weeklyTarget = $dailyTarget * 7;
     <!-- SECTION 2: CHART & WEEKLY TIME SLOTS TABLE                       -->
     <!-- ════════════════════════════════════════════════════════════════ -->
     <div class="row g-4 mb-4">
-        <!-- Visual Chart -->
-        <div class="col-12 col-xl-5">
-            <div class="card officer-card h-100">
-                <div class="card-header bg-white border-bottom p-3">
-                    <h5 class="fw-bold m-0 text-dark">
-                        <i class="bi bi-bar-chart-line text-primary me-2"></i> Graf Pencapaian Slot Harian
-                    </h5>
+        <!-- Visual Charts: 1st (Current Week) & 2nd (Last Week) -->
+        <div class="col-12 col-xl-5 d-flex flex-column gap-4">
+            <!-- 1st Chart: Current Week -->
+            <div class="card officer-card shadow-sm">
+                <div class="card-header bg-white border-bottom p-3 d-flex justify-content-between align-items-center">
+                    <h6 class="fw-bold m-0 text-dark">
+                        <i class="bi bi-bar-chart-line text-primary me-2"></i> Graf Pencapaian Slot Harian (Minggu Ini)
+                    </h6>
+                    <span class="badge bg-primary bg-opacity-10 text-primary border border-primary border-opacity-25 rounded-pill px-2 py-1 small" id="currentWeekRangeBadge">
+                        Minggu Ini
+                    </span>
                 </div>
-                <div class="card-body p-3 d-flex align-items-center justify-content-center">
-                    <canvas id="weeklyPerformanceChart" style="max-height: 380px; width: 100%;"></canvas>
+                <div class="card-body p-3">
+                    <div style="height: 250px; position: relative;">
+                        <canvas id="weeklyPerformanceChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 2nd Chart: Last Week -->
+            <div class="card officer-card shadow-sm">
+                <div class="card-header bg-white border-bottom p-3 d-flex justify-content-between align-items-center">
+                    <h6 class="fw-bold m-0 text-dark">
+                        <i class="bi bi-clock-history text-secondary me-2"></i> Graf Pencapaian Slot Harian (Minggu Lepas)
+                    </h6>
+                    <span class="badge bg-secondary bg-opacity-10 text-secondary border border-secondary border-opacity-25 rounded-pill px-2 py-1 small" id="lastWeekRangeBadge">
+                        Minggu Lepas
+                    </span>
+                </div>
+                <div class="card-body p-3">
+                    <div style="height: 250px; position: relative;">
+                        <canvas id="lastWeekPerformanceChart"></canvas>
+                    </div>
                 </div>
             </div>
         </div>
@@ -195,11 +225,12 @@ $weeklyTarget = $dailyTarget * 7;
                                     <th class="text-end">Sasaran (m)</th>
                                     <th class="text-end">Varian (m)</th>
                                     <th class="text-center">Pencapaian (%)</th>
+                                    <th class="text-center">Recoiling</th>
                                 </tr>
                             </thead>
                             <tbody id="weeklySlotsTableBody">
                                 <tr>
-                                    <td colspan="6" class="text-center py-4 text-muted">
+                                    <td colspan="7" class="text-center py-4 text-muted">
                                         <div class="spinner-border spinner-border-sm me-2 text-primary"></div> Muat turun data slot mingguan...
                                     </td>
                                 </tr>
@@ -289,7 +320,9 @@ $weeklyTarget = $dailyTarget * 7;
 </div>
 
 <script>
-let perfChart = null;
+let currentWeekChart = null;
+let lastWeekChart    = null;
+let perfChart        = null; // Backward compatibility alias
 
 document.addEventListener('DOMContentLoaded', () => {
     initChart();
@@ -310,62 +343,154 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Initialize Chart.js
 function initChart() {
-    const ctx = document.getElementById('weeklyPerformanceChart');
-    if (!ctx) return;
-
-    perfChart = new Chart(ctx, {
-        type: 'bar',
-        data: {
-            labels: ['Isnin', 'Selasa', 'Rabu', 'Khamis', 'Jumaat', 'Sabtu', 'Ahad'],
-            datasets: [
-                {
-                    label: 'Hasil Pengeluaran (m)',
-                    data: [0, 0, 0, 0, 0, 0, 0],
-                    backgroundColor: 'rgba(2, 132, 199, 0.85)',
-                    borderColor: '#0284c7',
-                    borderWidth: 1,
-                    borderRadius: 6
+    // 1. Current Week Performance Chart
+    const ctxCurrent = document.getElementById('weeklyPerformanceChart');
+    if (ctxCurrent) {
+        currentWeekChart = new Chart(ctxCurrent, {
+            type: 'bar',
+            data: {
+                labels: ['Isnin', 'Selasa', 'Rabu', 'Khamis', 'Jumaat', 'Sabtu', 'Ahad'],
+                datasets: [
+                    {
+                        label: 'Hasil Pengeluaran (m)',
+                        data: [0, 0, 0, 0, 0, 0, 0],
+                        backgroundColor: 'rgba(2, 132, 199, 0.85)',
+                        borderColor: '#0284c7',
+                        borderWidth: 1,
+                        borderRadius: 5
+                    },
+                    {
+                        label: 'Sasaran Harian (m)',
+                        data: [0, 0, 0, 0, 0, 0, 0],
+                        type: 'line',
+                        borderColor: '#ef4444',
+                        borderWidth: 2,
+                        borderDash: [5, 5],
+                        fill: false,
+                        pointStyle: 'circle',
+                        pointRadius: 4,
+                        pointBackgroundColor: '#ef4444'
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                    mode: 'index',
+                    intersect: false
                 },
-                {
-                    label: 'Sasaran Harian (m)',
-                    data: [0, 0, 0, 0, 0, 0, 0],
-                    type: 'line',
-                    borderColor: '#ef4444',
-                    borderWidth: 2,
-                    borderDash: [5, 5],
-                    fill: false,
-                    pointStyle: 'circle',
-                    pointRadius: 4,
-                    pointBackgroundColor: '#ef4444'
-                }
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: {
-                    position: 'bottom',
-                    labels: { font: { weight: 'bold' } }
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: { font: { weight: 'bold', size: 11 }, boxWidth: 12 }
+                    },
+                    tooltip: {
+                        filter: function(tooltipItem) {
+                            return tooltipItem.datasetIndex === 0;
+                        },
+                        callbacks: {
+                            label: function(context) {
+                                return context.dataset.label + ': ' + Math.round(context.raw).toLocaleString() + ' m';
+                            },
+                            afterBody: function(tooltipItems) {
+                                if (!tooltipItems || tooltipItems.length === 0) return [];
+                                const chart = tooltipItems[0].chart;
+                                const slots = chart._slotsData || [];
+                                const slot = slots[tooltipItems[0].dataIndex];
+                                if (!slot) return [];
+                                const recoil = parseInt(slot.recoil_coils) || 0;
+                                return ['Recoiling: ' + recoil + ' coil'];
+                            }
+                        }
+                    }
                 },
-                tooltip: {
-                    callbacks: {
-                        label: function(context) {
-                            return context.dataset.label + ': ' + Math.round(context.raw).toLocaleString() + ' m';
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: {
+                            callback: function(value) { return value.toLocaleString() + ' m'; }
                         }
                     }
                 }
+            }
+        });
+        perfChart = currentWeekChart;
+    }
+
+    // 2. Last Week Performance Chart
+    const ctxLast = document.getElementById('lastWeekPerformanceChart');
+    if (ctxLast) {
+        lastWeekChart = new Chart(ctxLast, {
+            type: 'bar',
+            data: {
+                labels: ['Isnin', 'Selasa', 'Rabu', 'Khamis', 'Jumaat', 'Sabtu', 'Ahad'],
+                datasets: [
+                    {
+                        label: 'Hasil Pengeluaran (m)',
+                        data: [0, 0, 0, 0, 0, 0, 0],
+                        backgroundColor: 'rgba(99, 102, 241, 0.85)',
+                        borderColor: '#6366f1',
+                        borderWidth: 1,
+                        borderRadius: 5
+                    },
+                    {
+                        label: 'Sasaran Harian (m)',
+                        data: [0, 0, 0, 0, 0, 0, 0],
+                        type: 'line',
+                        borderColor: '#ef4444',
+                        borderWidth: 2,
+                        borderDash: [5, 5],
+                        fill: false,
+                        pointStyle: 'circle',
+                        pointRadius: 4,
+                        pointBackgroundColor: '#ef4444'
+                    }
+                ]
             },
-            scales: {
-                y: {
-                    beginAtZero: true,
-                    ticks: {
-                        callback: function(value) { return value.toLocaleString() + ' m'; }
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                    mode: 'index',
+                    intersect: false
+                },
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: { font: { weight: 'bold', size: 11 }, boxWidth: 12 }
+                    },
+                    tooltip: {
+                        filter: function(tooltipItem) {
+                            return tooltipItem.datasetIndex === 0;
+                        },
+                        callbacks: {
+                            label: function(context) {
+                                return context.dataset.label + ': ' + Math.round(context.raw).toLocaleString() + ' m';
+                            },
+                            afterBody: function(tooltipItems) {
+                                if (!tooltipItems || tooltipItems.length === 0) return [];
+                                const chart = tooltipItems[0].chart;
+                                const slots = chart._slotsData || [];
+                                const slot = slots[tooltipItems[0].dataIndex];
+                                if (!slot) return [];
+                                const recoil = parseInt(slot.recoil_coils) || 0;
+                                return ['Recoiling: ' + recoil + ' coil'];
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: {
+                            callback: function(value) { return value.toLocaleString() + ' m'; }
+                        }
                     }
                 }
             }
-        }
-    });
+        });
+    }
 }
 
 // Load data from officer_production_ajax.php
@@ -380,15 +505,24 @@ function loadOfficerData() {
 
             // Update KPI Display Numbers
             const st = data.shift_target_meters || 5200;
-            const dt = data.daily_target_meters || (st * 3);
+            const dt = data.daily_target_meters || (st * 2);
             const wt = data.weekly_target_meters || (dt * 7);
+            const perf = data.weekly_performance;
 
             document.getElementById('displayShiftTarget').innerText = Math.round(st).toLocaleString() + ' m';
             document.getElementById('displayDailyTarget').innerText = Math.round(dt).toLocaleString() + ' m';
             document.getElementById('displayWeeklyTarget').innerText = Math.round(wt).toLocaleString() + ' m';
             document.getElementById('lastResetTimestamp').innerText = data.last_weekly_reset_at || '-';
 
-            const perf = data.weekly_performance;
+            const dailyDesc = document.getElementById('displayDailyTargetDesc');
+            if (dailyDesc) {
+                const is3Shifts = (dt >= st * 2.5);
+                const currentSlot = (perf && perf.slots) ? perf.slots.find(s => s.is_today) : null;
+                const isFri = currentSlot ? (currentSlot.is_friday || currentSlot.day_name === 'Jumaat') : false;
+                const triggerDesc = isFri ? 'selepas 1:00 AM (Jumaat)' : 'selepas 12:00 AM';
+                dailyDesc.innerHTML = `<i class="bi bi-stack me-1"></i> ${is3Shifts ? `<strong class="text-primary">3 Syif</strong> (Aktif ${triggerDesc})` : '<strong class="text-secondary">2 Syif</strong> (Default harian)'}`;
+            }
+
             if (perf) {
                 const prodTotal = perf.weekly_produced_total || 0;
                 const overallPct = perf.weekly_overall_pct || 0;
@@ -406,8 +540,37 @@ function loadOfficerData() {
                     pbar.style.width = Math.min(100, Math.max(0, overallPct)) + '%';
                 }
 
+                // Range label for current week cycle
+                if (perf.monday_cycle_start && perf.sunday_cycle_end) {
+                    const startD = new Date(perf.monday_cycle_start.replace(/-/g, '/'));
+                    const endD   = new Date(perf.sunday_cycle_end.replace(/-/g, '/'));
+                    const sStr   = ('0' + startD.getDate()).slice(-2) + '/' + ('0' + (startD.getMonth() + 1)).slice(-2);
+                    const eStr   = ('0' + endD.getDate()).slice(-2) + '/' + ('0' + (endD.getMonth() + 1)).slice(-2);
+                    const rangeEl = document.getElementById('currentWeekRangeBadge');
+                    if (rangeEl) rangeEl.innerText = `${sStr} - ${eStr} (Minggu Ini)`;
+                }
+
                 renderSlotsTable(perf.slots);
-                updateChartData(perf.slots);
+                updateCurrentWeekChart(perf.slots);
+            }
+
+            // Update 2nd Chart: Last Week Performance
+            const lastWeekPerf = data.last_week_performance;
+            if (lastWeekPerf) {
+                if (lastWeekPerf.monday_cycle_start && lastWeekPerf.sunday_cycle_end) {
+                    const startD = new Date(lastWeekPerf.monday_cycle_start.replace(/-/g, '/'));
+                    const endD   = new Date(lastWeekPerf.sunday_cycle_end.replace(/-/g, '/'));
+                    const sStr   = ('0' + startD.getDate()).slice(-2) + '/' + ('0' + (startD.getMonth() + 1)).slice(-2);
+                    const eStr   = ('0' + endD.getDate()).slice(-2) + '/' + ('0' + (endD.getMonth() + 1)).slice(-2);
+                    const lastTotal = Math.round(lastWeekPerf.weekly_produced_total || 0).toLocaleString();
+                    const lastRecoilTotal = parseInt(lastWeekPerf.weekly_recoil_coils_total) || 0;
+                    const rangeEl = document.getElementById('lastWeekRangeBadge');
+                    if (rangeEl) {
+                        const recoilSummary = lastRecoilTotal > 0 ? ` | ${lastRecoilTotal} coil recoiling` : '';
+                        rangeEl.innerText = `${sStr} - ${eStr} (${lastTotal} m${recoilSummary})`;
+                    }
+                }
+                updateLastWeekChart(lastWeekPerf.slots);
             }
         })
         .catch(err => {
@@ -421,7 +584,7 @@ function renderSlotsTable(slots) {
     if (!tbody || !slots) return;
 
     if (slots.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="text-center py-4 text-muted">Tiada data rekod slot mingguan.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center py-4 text-muted">Tiada data rekod slot mingguan.</td></tr>';
         return;
     }
 
@@ -429,6 +592,11 @@ function renderSlotsTable(slots) {
     slots.forEach(slot => {
         const trClass = slot.is_today ? 'bg-today-highlight' : '';
         const todayBadge = slot.is_today ? '<span class="badge bg-info text-dark ms-2">HARI INI</span>' : '';
+        const isFri = (slot.is_friday || slot.day_name === 'Jumaat');
+        const triggerTime = isFri ? '1:00 AM' : '12:00 AM';
+        const shiftsBadge = slot.shifts_count === 3 
+            ? `<span class="badge bg-primary ms-1" title="3 Syif (Pengeluaran dikesan selepas ${triggerTime})">3 Syif</span>`
+            : '<span class="badge bg-light text-dark border ms-1" title="2 Syif (Default)">2 Syif</span>';
         
         const varianceVal = slot.variance_meters;
         const varianceFormatted = (varianceVal > 0 ? '+' : '') + Math.round(varianceVal).toLocaleString() + ' m';
@@ -436,6 +604,11 @@ function renderSlotsTable(slots) {
 
         const pct = slot.percentage;
         const pctBadgeClass = pct >= 100 ? 'bg-success' : (pct >= 50 ? 'bg-warning text-dark' : 'bg-secondary');
+
+        const recoilCoils = parseInt(slot.recoil_coils) || 0;
+        const recoilBadge = recoilCoils > 0 
+            ? `<span class="badge bg-warning text-dark fw-bold px-2 py-1 fs-7"><i class="bi bi-arrow-repeat me-1"></i>${recoilCoils} coil</span>`
+            : `<span class="text-muted small">0</span>`;
 
         html += `
             <tr class="${trClass}">
@@ -446,10 +619,15 @@ function renderSlotsTable(slots) {
                     <i class="bi bi-clock me-1"></i> ${slot.time_slot_label}
                 </td>
                 <td class="text-end fw-bold text-dark">${Math.round(slot.produced_meters).toLocaleString()} m</td>
-                <td class="text-end text-muted">${Math.round(slot.target_meters).toLocaleString()} m</td>
+                <td class="text-end text-muted">
+                    ${Math.round(slot.target_meters).toLocaleString()} m ${shiftsBadge}
+                </td>
                 <td class="text-end ${varianceClass}">${varianceFormatted}</td>
                 <td class="text-center">
                     <span class="badge ${pctBadgeClass} px-2 py-1 fs-7">${pct.toFixed(1)}%</span>
+                </td>
+                <td class="text-center">
+                    ${recoilBadge}
                 </td>
             </tr>
         `;
@@ -458,16 +636,35 @@ function renderSlotsTable(slots) {
     tbody.innerHTML = html;
 }
 
-// Update Chart Data
-function updateChartData(slots) {
-    if (!perfChart || !slots) return;
+// Update Current Week Chart
+function updateCurrentWeekChart(slots) {
+    if (!currentWeekChart || !slots) return;
 
+    currentWeekChart._slotsData = slots;
     const producedData = slots.map(s => Math.round(s.produced_meters));
     const targetData   = slots.map(s => Math.round(s.target_meters));
 
-    perfChart.data.datasets[0].data = producedData;
-    perfChart.data.datasets[1].data = targetData;
-    perfChart.update();
+    currentWeekChart.data.datasets[0].data = producedData;
+    currentWeekChart.data.datasets[1].data = targetData;
+    currentWeekChart.update();
+}
+
+// Update Last Week Chart
+function updateLastWeekChart(slots) {
+    if (!lastWeekChart || !slots) return;
+
+    lastWeekChart._slotsData = slots;
+    const producedData = slots.map(s => Math.round(s.produced_meters));
+    const targetData   = slots.map(s => Math.round(s.target_meters));
+
+    lastWeekChart.data.datasets[0].data = producedData;
+    lastWeekChart.data.datasets[1].data = targetData;
+    lastWeekChart.update();
+}
+
+// Backward compatibility alias
+function updateChartData(slots) {
+    updateCurrentWeekChart(slots);
 }
 
 // Save Shift Target via AJAX

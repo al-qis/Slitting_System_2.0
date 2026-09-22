@@ -2,20 +2,6 @@
 // print_slip.php
 // ============================================================
 // Prints the "Warehousing Slip" (form MS-WH-01(QR)) for one pallet.
-// Linked from pallet.php's Action column: print_slip.php?pallet_no=XYZ
-//
-// Field mapping (per the physical slip):
-//   Customer     -> pallets.customer_name
-//   Date         -> pallets.created_at (falls back to today if null)
-//   SOS No.      -> pallets.ref_no
-//   Serial No.   -> pallets.pallet_no
-//   Product Type -> pallets.product_type
-//   Pallet No.   -> left blank (warehouse fills this in by hand)
-//
-// Main table is one row per roll on the pallet (pallet_items, joined
-// to slitting_product for the roll's own details). "Coils" is always
-// 1 per row, since each pallet_items row already represents a single
-// roll/coil in this system.
 // ============================================================
 
 session_start();
@@ -28,7 +14,6 @@ if (!isset($_SESSION['role'])) {
 include 'config.php';
 require_once 'PalletManager.php';
 
-// ── Securely resolve the pallet from ?pallet_no= ──────────────────
 $palletNo = trim($_GET['pallet_no'] ?? '');
 if ($palletNo === '') {
     die('<p style="font-family:Arial;padding:24px;">Pallet No is required.</p>');
@@ -44,9 +29,6 @@ if (!$pallet) {
     die('<p style="font-family:Arial;padding:24px;">Pallet "' . htmlspecialchars($palletNo) . '" not found.</p>');
 }
 
-// ── Fetch every roll on this pallet ────────────────────────────────
-// std_wgt is joined the same way pallet.php's getPalletItemsWithWeight()
-// does, so Nett Wgt here matches what the app shows elsewhere.
 $stmt = $conn->prepare("
     SELECT pi.seq, pi.stock_code,
            sp.lot_no, sp.coil_no, sp.roll_no, sp.product,
@@ -54,7 +36,7 @@ $stmt = $conn->prepare("
            COALESCE(sw.std_weight, 0) AS std_weight
     FROM pallet_items pi
     JOIN slitting_product sp ON sp.id = pi.slitting_product_id
-    LEFT JOIN std_wgt sw     ON sw.product_code = sp.product
+    LEFT JOIN std_wgt sw    ON sw.product_code = sp.product
     WHERE pi.pallet_id = ?
     ORDER BY pi.seq ASC
 ");
@@ -63,7 +45,6 @@ $stmt->execute();
 $items = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
 $stmt->close();
 
-// ── Build display rows: effective length, Nett Wgt, Stock Code fallback ──
 function calcNettWeight(float $lengthM, float $widthMm, float $stdWeight): float {
     if ($lengthM <= 0 || $widthMm <= 0 || $stdWeight <= 0) return 0.0;
     return ($lengthM * $widthMm / 1000) * $stdWeight;
@@ -83,24 +64,21 @@ foreach ($items as $it) {
         'lot_no'     => trim(($it['lot_no'] ?? '') . ' ' . ($it['coil_no'] ?? '')) ?: '-',
         'length'     => $lenVal,
         'width'      => (float)($it['width'] ?? 0),
-        'coils'      => 1, // each pallet_items row = one roll/coil
+        'coils'      => 1,
         'roll_no'    => $it['roll_no'] ? str_replace('R', 'R-', $it['roll_no']) : '-',
         'nett_wgt'   => calcNettWeight($lenVal, (float)($it['width'] ?? 0), (float)$it['std_weight']),
     ];
 }
 
-// Pad blank rows so the printed table always shows at least 8 lines,
-// matching the physical slip's fixed layout.
 $MIN_ROWS = 8;
 while (count($rows) < $MIN_ROWS) {
-    $rows[] = null; // null = render as an empty row
+    $rows[] = null;
 }
 
 $dateStr = $pallet['created_at'] ? date('d/m/Y', strtotime($pallet['created_at'])) : date('d/m/Y');
-
 $h = fn($s) => htmlspecialchars((string)($s ?? ''), ENT_QUOTES, 'UTF-8');
 
-function fmtNum($v): string {
+function fmtNum(mixed $v): string {
     if ($v === null || $v === '' || (float)$v == 0) return '';
     $f = number_format((float)$v, 2, '.', '');
     return str_ends_with($f, '.00') ? substr($f, 0, -3) : $f;
@@ -111,184 +89,316 @@ function fmtNum($v): string {
 <head>
 <meta charset="UTF-8">
 <title>Warehousing Slip — <?= $h($pallet['pallet_no']) ?></title>
-<style>
+<style id="basePrintStyle">
     * { box-sizing: border-box; }
     body {
         font-family: Arial, Helvetica, sans-serif;
-        background: #eee;
+        background: #e2e8f0;
         margin: 0;
-        padding: 20px;
+        padding: 20px 10px;
         color: #000;
     }
+
+    .sheet-wrapper {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        width: 100%;
+        min-height: 5.5in;
+        overflow: hidden;
+        padding: 10px 0;
+    }
     .sheet {
-        width: 8.5in;
-        max-width: 100%;
-        margin: 0 auto;
+        width: 9.5in;
+        height: 5.5in;
+        max-height: 5.5in;
+        max-width: 9.5in;
         background: #fff;
-        padding: 4mm 5mm;
+        padding: 0 1cm 0.5cm 0.5cm; 
         box-sizing: border-box;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+        border: 1px solid #cbd5e1;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-start;
+        overflow: hidden;
     }
 
     /* ── Header ─────────────────────────────────────────── */
     .slip-header {
         position: relative;
+        width: 20.5cm;
+        margin: 0 auto 1.5mm auto;
         text-align: center;
-        margin-bottom: 2mm;
+        padding-top: 0;
     }
     .slip-header h1 {
-        font-size: 10.5pt;
+        font-size: 12pt;
         font-weight: bold;
         margin: 0;
-        line-height: 1.25;
+        line-height: 1.15;
+        letter-spacing: 0.3px;
     }
     .form-code {
         position: absolute;
         top: 0;
         right: 0;
-        font-size: 8pt;
+        font-size: 10pt;
         font-weight: bold;
     }
 
-    /* ── Top info table ─────────────────────────────────── */
+    /* ── Top info table (Jarak bawah disamakan 0.13in) ── */
     table.info-table {
-        width: 100%;
+        width: 20.5cm;
+        height: 1.9cm;
+        margin: 0 auto 0.13in auto; 
         border-collapse: collapse;
-        margin-bottom: 2mm;
+    }
+    table.info-table tr {
+        height: 0.63cm;
     }
     table.info-table td {
         border: 1px solid #000000;
-        padding: 1mm 2mm;
-        font-size: 10pt;
+        padding: 0 2mm;
+        font-size: 12pt;
         vertical-align: middle;
+        line-height: 1.1;
     }
-    table.info-table td.label {
-        width: 15%;
-        font-weight: normal;
-    }
-    table.info-table td.value {
-        width: 35%;
-        font-weight: 600;
-    }
+    table.info-table td.label { width: 15%; font-weight: normal; }
+    table.info-table td.value { width: 35%; font-weight: bold; }
 
     /* ── Main data table ────────────────────────────────── */
     table.data-table {
-        width: 100%;
+        width: 20.5cm;
+        height: 7cm;
+        margin: 0 auto;
         border-collapse: collapse;
-        margin-bottom: 2mm;
     }
     table.data-table th, table.data-table td {
         border: 1px solid #000000;
-        padding: 0.8mm 1mm;
+        padding: 0.4mm 1mm;
         text-align: center;
-        font-size: 9.5pt;
+        font-size: 12pt;
+        line-height: 1.1;
     }
-    table.data-table thead th { font-weight: bold; background: #f5f5f5; }
-    table.data-table col.col-stock   { width: 20%; }
-    table.data-table col.col-lot     { width: 15%; } /* lot no: 4-7 mixed-case alnum chars, keep roomy */
-    table.data-table col.col-length  { width: 10%; }
-    table.data-table col.col-width   { width: 10%; }
-    table.data-table col.col-coils   { width: 7%;  }
+    table.data-table thead th {
+        font-weight: bold;
+        background: #f5f5f5;
+        padding: 0.4mm 1mm;
+    }
+    table.data-table col.col-stock   { width: 22%; }
+    table.data-table col.col-lot     { width: 18%; }
+    table.data-table col.col-length  { width: 12%; }
+    table.data-table col.col-width   { width: 12%; }
+    table.data-table col.col-coils   { width: 8%;  }
     table.data-table col.col-roll    { width: 12%; }
-    table.data-table col.col-wgt     { width: 12%; }
-    table.data-table td.data-row     { height: 8mm; }
+    table.data-table col.col-wgt     { width: 16%; }
+    
+    table.data-table td.data-row     { height: 6.8mm; }
 
-    /* ── Footer signature blocks ────────────────────────── */
+    /* ── Footer signature blocks (Jarak atas disetkan 0.13in) ── */
     .footer-wrap {
         display: flex;
-        align-items: flex-end; /* legend baseline lines up with the table's bottom (Date) row */
-        margin-bottom: 0;
+        align-items: flex-end;
+        justify-content: space-between;
+        width: 20.5cm;
+        margin: 0.13in auto 0 auto;
     }
     table.footer-table {
-        width: 59%;         /* ← make this smaller/bigger to shrink/grow the box */
-        margin-left: auto;  /* pushes it flush against the right edge */
+        width: 11cm;
+        height: 2.3cm;
         border-collapse: collapse;
         margin-bottom: 0;
+        margin-left: auto;
     }
     table.footer-table th, table.footer-table td {
-        border: 1px solid #bebebe;
-        padding: 1mm 1.5mm;
-        font-size: 8pt;
+        border: 1px solid #000000;
+        padding: 0.2mm 1.5mm;
+        font-size: 10pt;
         vertical-align: top;
     }
-    table.footer-table th { text-align: center; background: #f5f5f5; }
+    table.footer-table th {
+        text-align: center;
+        background: #f5f5f5;
+        font-weight: bold;
+        padding: 0.4mm 1.5mm;
+        height: 0.4cm;
+    }
 
-    /* Row 2: large blank signature space */
     table.footer-table td.sig-space-cell {
-        height: 15mm;
+        height: 1.4cm;
         vertical-align: top;
     }
-    /* Row 3: separate Date row — the border between this <tr> and the
-       signature-space <tr> above is what gives the strict horizontal
-       divider line from the physical form; no extra CSS needed for it,
-       it's just a natural consequence of them being distinct rows. */
     table.footer-table td.date-cell {
-        height: auto;
+        height: 0.5cm;
         vertical-align: middle;
-        padding: 1mm 1.5mm;
+        padding: 0 1.5mm;
     }
 
-    .sig-line { display: flex; align-items: center; gap: 1.5mm; }
-    .sig-line label { font-weight: bold; white-space: nowrap; }
+    .sig-line { display: flex; align-items: center; gap: 1mm; }
+    .sig-line label { font-weight: bold; white-space: nowrap; font-size: 10pt; }
 
-    .prod-name-input, .prod-date-input {
+    .prod-date-input {
         border: none;
         border-bottom: 1px solid #999;
         font-family: inherit;
-        font-size: 8pt;
-        padding: 0.5mm 1mm;
+        font-size: 10pt;
+        padding: 0.2mm 1mm;
         background: #fffef2;
+        width: auto;
     }
-    .prod-name-input { flex: 1; min-width: 0; }
-    .prod-date-input { width: auto; }
+    .prod-date-text { display: none; font-size: 10pt; font-family: inherit; }
 
     .legend {
-        white-space: nowrap; /* keep the whole legend on one line */
-        flex-shrink: 0;      /* don't let the flex container squeeze it to wrap */
-        font-size: 6.5pt;
+        white-space: nowrap;
+        flex-shrink: 0;
+        font-size: 9pt;
+        font-weight: 500;
         padding-right: 2mm;
         box-sizing: border-box;
     }
 
-    .no-print { text-align: center; margin-top: 6mm; }
+    /* ── On-screen Control Toolbar ──────────────────────── */
+    .no-print-toolbar {
+        max-width: 9.5in;
+        margin: 0 auto 14px auto;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+    .toolbar-actions {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 10px;
+        background: #1e293b;
+        color: #fff;
+        padding: 10px 16px;
+        border-radius: 6px;
+    }
+    .toolbar-title {
+        font-size: 14px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .paper-size-tag {
+        background: #0284c7;
+        color: #fff;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 11px;
+        font-weight: bold;
+    }
+    .btn-group-print {
+        display: flex;
+        gap: 8px;
+    }
     .print-btn {
-        padding: 10px 24px;
-        background: #0066cc;
+        padding: 8px 18px;
+        background: #2563eb;
         color: #fff;
         border: none;
         cursor: pointer;
-        font-size: 15px;
+        font-size: 13px;
+        font-weight: 600;
         border-radius: 4px;
-        margin: 0 4px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
     }
-    .print-btn.secondary { background: #666; }
+    .print-btn:hover { background: #1d4ed8; }
+    .print-btn.secondary { background: #475569; }
+    .print-btn.secondary:hover { background: #334155; }
 
-    /* ── Print rules ────────────────────────────────────── */
+    .print-hints {
+        background: #f8fafc;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        padding: 8px 14px;
+        font-size: 11.5px;
+        color: #334155;
+        line-height: 1.4;
+    }
+
+    /* ── Print rules ────────────────────────── */
     @media print {
-        @page { size: 21.5cm 14cm; margin: 3mm; }
-        body { background: #fff; padding: 0; }
-        .sheet { width: 100%; padding: 0; }
-        .no-print { display: none !important; }
-
-        /* Inputs render as plain text on paper — no border, no
-           background, no native date-picker calendar icon. */
-        .prod-name-input, .prod-date-input {
+        @page {
+            size: 9.5in 5.5in;
+            margin-top: 0;
+            margin-bottom: 0.5cm;
+            margin-left: 0.5cm;
+            margin-right: 1cm;
+        }
+        html, body {
+            width: 100% !important;
+            height: 100% !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            background: #fff !important;
+            overflow: hidden !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+        }
+        .sheet-wrapper {
+            display: block !important;
+            width: 100% !important;
+            height: 100% !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            overflow: hidden !important;
+        }
+        .sheet {
+            width: 100% !important;
+            max-width: 100% !important;
+            height: 100% !important;
+            max-height: 100% !important;
+            margin: 0 !important;
+            padding: 0 !important;
             border: none !important;
-            background: transparent !important;
-            -webkit-appearance: none;
-            appearance: none;
+            box-shadow: none !important;
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+        }
+        .no-print, .no-print-toolbar {
+            display: none !important;
+        }
+        .prod-date-input {
+            display: none !important;
+        }
+        .prod-date-text {
+            display: inline !important;
         }
         input[type="date"]::-webkit-calendar-picker-indicator {
             display: none !important;
-        }
-        input[type="date"] {
-            -webkit-appearance: none;
-            appearance: none;
         }
     }
 </style>
 </head>
 <body>
 
+<div class="no-print-toolbar">
+    <div class="toolbar-actions">
+        <div class="toolbar-title">
+            <span>Warehousing Slip Print Preview</span>
+            <span class="paper-size-tag">9.5" × 5.5"</span>
+        </div>
+        <div class="btn-group-print">
+            <button class="print-btn" onclick="window.print()">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v8H6z"/></svg>
+                Print Slip
+            </button>
+            <button class="print-btn secondary" onclick="window.close()">Close</button>
+        </div>
+    </div>
+    <div class="print-hints">
+        <strong>Penting (Tetapan Printer):</strong> Pastikan pada dialog print, tetapan <strong>Margins</strong> dipilih kepada <strong>None</strong> atau <strong>Minimum</strong>, <strong>Scale</strong> ditetapkan pada <strong>100%</strong>, dan <strong>Headers/Footers</strong> dinyahmark (Unchecked).
+    </div>
+</div>
+
+<div class="sheet-wrapper">
 <div class="sheet">
 
     <div class="slip-header">
@@ -310,10 +420,10 @@ function fmtNum($v): string {
             <td class="value"><?= $h($pallet['pallet_no']) ?></td>
         </tr>
         <tr>
-            <td class="label">Product Type :</td>
+            <td class="label">Product Type</td>
             <td class="value"><?= $h($pallet['product_type']) ?></td>
             <td class="label">Pallet No.</td>
-            <td class="value">&nbsp;</td> <!-- left blank for warehouse use -->
+            <td class="value">&nbsp;</td>
         </tr>
     </table>
 
@@ -329,7 +439,7 @@ function fmtNum($v): string {
         </colgroup>
         <thead>
             <tr>
-                <th rowspan="2">Stock Code :</th>
+                <th rowspan="2">Stock Code</th>
                 <th rowspan="2">Lot No.</th>
                 <th colspan="2">Size</th>
                 <th rowspan="2">Coils</th>
@@ -346,12 +456,7 @@ function fmtNum($v): string {
             <tr>
                 <?php if ($r === null): ?>
                     <td class="data-row"></td>
-                    <td></td>
-                    <td></td>
-                    <td></td>
-                    <td></td>
-                    <td></td>
-                    <td></td>
+                    <td></td><td></td><td></td><td></td><td></td><td></td>
                 <?php else: ?>
                     <td class="data-row" style="text-align:center;"><?= $h($r['stock_code']) ?></td>
                     <td><?= $h($r['lot_no']) ?></td>
@@ -388,7 +493,9 @@ function fmtNum($v): string {
                         <div class="sig-line">
                             <label for="prodDate">Date:</label>
                             <input type="date" id="prodDate" name="prod_date"
-                                   class="prod-date-input" value="<?= date('Y-m-d') ?>">
+                                   class="prod-date-input" value="<?= date('Y-m-d') ?>"
+                                   oninput="syncDateText(this.value)">
+                            <span id="prodDateText" class="prod-date-text"><?= date('d/m/Y') ?></span>
                         </div>
                     </td>
                     <td class="date-cell">
@@ -403,11 +510,20 @@ function fmtNum($v): string {
     </div>
 
 </div>
-
-<div class="no-print">
-    <button class="print-btn" onclick="window.print()">Print</button>
-    <button class="print-btn secondary" onclick="window.close()">Close</button>
 </div>
+
+<script>
+function syncDateText(val) {
+    if (!val) {
+        document.getElementById('prodDateText').textContent = '';
+        return;
+    }
+    var parts = val.split('-');
+    if (parts.length === 3) {
+        document.getElementById('prodDateText').textContent = parts[2] + '/' + parts[1] + '/' + parts[0];
+    }
+}
+</script>
 
 </body>
 </html>

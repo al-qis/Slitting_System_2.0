@@ -51,9 +51,10 @@ class PalletManager
      */
     public const STOCK_REF_NO = 'STOCK';
 
-    private static function isStockRefNo(?string $refNo): bool
+    public static function isStockRefNo(?string $refNo): bool
     {
-        return strcasecmp(trim((string)$refNo), self::STOCK_REF_NO) === 0;
+        $clean = strtoupper(trim((string)$refNo));
+        return $clean === '' || $clean === self::STOCK_REF_NO || $clean === '-' || $clean === '—' || $clean === 'SO-';
     }
 
     // =========================================================
@@ -1187,6 +1188,13 @@ class PalletManager
                 );
             }
 
+            if (self::isStockRefNo($pallet['ref_no'])) {
+                $refDisplay = !empty(trim($pallet['ref_no'])) ? "\"{$pallet['ref_no']}\"" : "empty";
+                throw new RuntimeException(
+                    "Cannot re-submit to QC: Pallet SOS No. is {$refDisplay} (STOCK). Operator must edit the Customer SO number first."
+                );
+            }
+
             $palletNo = $pallet['pallet_no'];
 
             // ── Count rolls ───────────────────────────────────
@@ -1454,6 +1462,24 @@ class PalletManager
     {
         $this->conn->begin_transaction();
         try {
+            $stmt = $this->conn->prepare("SELECT * FROM pallets WHERE id = ? FOR UPDATE");
+            $stmt->bind_param("i", $palletId);
+            $stmt->execute();
+            $pallet = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+
+            if (!$pallet) {
+                throw new RuntimeException("Pallet #{$palletId} not found.");
+            }
+            if ($pallet['status'] !== 'building') {
+                throw new RuntimeException("Pallet {$pallet['pallet_no']} is not in building state.");
+            }
+
+            if (self::isStockRefNo($pallet['ref_no'])) {
+                $refDisplay = !empty(trim($pallet['ref_no'])) ? "\"{$pallet['ref_no']}\"" : "empty";
+                throw new RuntimeException("Cannot send to QC: Pallet SOS No. is {$refDisplay} (STOCK). Operator must edit the Customer & SO number first.");
+            }
+
             $stmt = $this->conn->prepare(
                 "SELECT COUNT(*) AS cnt FROM pallet_items WHERE pallet_id = ?"
             );
