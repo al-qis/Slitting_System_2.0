@@ -96,17 +96,62 @@ $coil_width_val = floatval($source_data['width'] ?? $mother_data['width'] ?? 0);
 $isLeftoverCut = $from_stock && (($source_data['source_type'] ?? '') === 'slitting_cut_into_2');
 
 $slittingPlan = [];
-if (!$isLeftoverCut && $mother_id) {
+if ($isLeftoverCut && $stock_id) {
+    // ── Look up an officer-authored slitting plan specifically for this leftover coil ──
     $planStmt = $conn->prepare("
         SELECT roll_seq, planned_width, customer_name, ref_no
         FROM slitting_plans
-        WHERE mother_coil_id = ?
+        WHERE stock_id = ?
+        ORDER BY sort_order ASC, id ASC
+    ");
+    $planStmt->bind_param("i", $stock_id);
+    $planStmt->execute();
+    $slittingPlan = $planStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $planStmt->close();
+} elseif (!$isLeftoverCut && $mother_id) {
+    $planStmt = $conn->prepare("
+        SELECT roll_seq, planned_width, customer_name, ref_no
+        FROM slitting_plans
+        WHERE mother_coil_id = ? AND (stock_id IS NULL OR stock_id = 0)
         ORDER BY sort_order ASC, id ASC
     ");
     $planStmt->bind_param("i", $mother_id);
     $planStmt->execute();
     $slittingPlan = $planStmt->get_result()->fetch_all(MYSQLI_ASSOC);
     $planStmt->close();
+}
+
+// ── Determine next cut letter for this mother coil / leftover ──
+$base_mother_lot = trim($mother_data['lot_no'] ?? $source_data['lot_no'] ?? '');
+$clean_base_lot  = preg_replace('/[a-z]$/i', '', $base_mother_lot);
+
+$used_letters = [];
+if (!empty($mother_id)) {
+    $mId = intval($mother_id);
+    $qLetters = $conn->query("
+        SELECT DISTINCT lot_no FROM slitting_product 
+        WHERE mother_id = $mId AND (is_voided = 0 OR is_voided IS NULL)
+        UNION
+        SELECT DISTINCT lot_no FROM sfc 
+        WHERE mother_id = $mId AND is_deleted = 0
+    ");
+    if ($qLetters) {
+        while ($lRow = $qLetters->fetch_assoc()) {
+            $lLot = trim($lRow['lot_no'] ?? '');
+            if (preg_match('/^' . preg_quote($clean_base_lot, '/') . '([a-z])$/i', $lLot, $matches)) {
+                $used_letters[strtolower($matches[1])] = true;
+            }
+        }
+    }
+}
+
+$alphabet = range('a', 'z');
+$next_cut_letter = 'a';
+foreach ($alphabet as $letter) {
+    if (!isset($used_letters[$letter])) {
+        $next_cut_letter = $letter;
+        break;
+    }
 }
 ?>
 <!DOCTYPE html>
@@ -329,11 +374,13 @@ if (!$isLeftoverCut && $mother_id) {
 
 <script>
 const sourceData = {
-    lotNo: '<?= htmlspecialchars($source_data['lot_no'] ?? '') ?>',
+    lotNo: '<?= htmlspecialchars($clean_base_lot !== '' ? $clean_base_lot : ($source_data['lot_no'] ?? '')) ?>',
     coilNo: '<?= htmlspecialchars($source_data['coil_no'] ?? '') ?>',
     originalLength: <?= floatval($source_data['length'] ?? 0) ?>,
     originalWidth: <?= floatval($source_data['width'] ?? $mother_data['width'] ?? 0) ?>,
     fromStock: <?= $from_stock ? 'true' : 'false' ?>,
+    isLeftover: <?= $isLeftoverCut ? 'true' : 'false' ?>,
+    nextCutLetter: '<?= $next_cut_letter ?>',
     product: '<?= htmlspecialchars($mother_data['product'] ?? '') ?>'
 };
 
@@ -489,18 +536,44 @@ function generateForm(){
         ? (slitVal > 0 ? slitVal : 0)
         : sourceData.originalLength;
 
-    // ── Bulk "Apply to All" toolbar for Width ──
+    // Determine default cut letter:
+    // Only fresh mother coil on "Cut Into 2" defaults to 'a' (the first cut roll-out).
+    // Leftover mother coil when slitted stays NO suffix (Standard).
+    // Fresh mother coil on Normal cut also stays NO suffix (Standard).
+    const defaultCutLetter = (!sourceData.isLeftover && cutType === 'cut_into_2')
+        ? 'a'
+        : '';
+
+    // ── Bulk "Apply to All" toolbar for Width & Cut Letter ──
     let html = `
         <div id="bulkApplyBar" class="mb-2 d-flex flex-wrap gap-2 align-items-center">
             <i class="bi bi-lightning-charge-fill text-primary"></i>
-            <strong class="small">Apply Width to All Rolls:</strong>
-            <div class="input-group input-group-sm" style="width:200px;">
+            <strong class="small">Apply Width:</strong>
+            <div class="input-group input-group-sm" style="width:170px;">
                 <input type="number" step="0.1" id="bulkWidthInput" class="form-control" placeholder="e.g. 50">
                 <span class="input-group-text">mm</span>
             </div>
             <button type="button" class="btn btn-primary btn-sm" onclick="applyWidthToAll()">
-                <i class="bi bi-check2-all me-1"></i>Apply to All ${total} Rolls
+                <i class="bi bi-check2-all me-1"></i>Apply Width
             </button>
+
+            <div class="vr mx-1"></div>
+            <strong class="small">Cut Letter:</strong>
+            <div class="input-group input-group-sm" style="width:130px;">
+                <select id="bulkLetterSelect" class="form-select">
+                    <option value="" ${defaultCutLetter === '' ? 'selected' : ''}>Standard</option>
+                    <option value="a" ${defaultCutLetter === 'a' ? 'selected' : ''}>a</option>
+                    <option value="b">b</option>
+                    <option value="c">c</option>
+                    <option value="d">d</option>
+                    <option value="e">e</option>
+                    <option value="f">f</option>
+                </select>
+            </div>
+            <button type="button" class="btn btn-outline-primary btn-sm" onclick="applyLetterToAll()">
+                <i class="bi bi-check-all me-1"></i>Apply Letter
+            </button>
+
             <span class="text-muted small ms-auto">${total} roll${total>1?'s':''} — scroll the table below if needed</span>
         </div>
         <div id="rollsTableWrap">
@@ -520,7 +593,17 @@ function generateForm(){
 
     for (let i = 1; i <= total; i++) {
         const valWidth = prevWidths[i - 1] !== undefined ? prevWidths[i - 1] : '';
-        const valLetter = prevCutLetters[i - 1] || '';
+        let valLetter = prevCutLetters[i - 1];
+        if (sourceData.isLeftover) {
+            // Leftover mother coil stays NO suffix unless user explicitly selected something
+            valLetter = (valLetter !== undefined && valLetter !== null) ? valLetter : '';
+        } else if (cutType === 'cut_into_2') {
+            valLetter = (valLetter !== undefined && valLetter !== null && valLetter !== '') ? valLetter : 'a';
+        } else {
+            // Fresh coil normal cut -> no suffix
+            valLetter = (valLetter === 'a') ? '' : (valLetter || '');
+        }
+
         const isSfc = prevSfcs[i - 1] ? 'checked' : '';
         const sfcActive = prevSfcs[i - 1] ? 'sfc-active' : '';
         const rowActive = prevSfcs[i - 1] ? 'sfc-row-active' : '';
@@ -538,6 +621,8 @@ function generateForm(){
                             <option value="b" ${valLetter === 'b' ? 'selected' : ''}>b</option>
                             <option value="c" ${valLetter === 'c' ? 'selected' : ''}>c</option>
                             <option value="d" ${valLetter === 'd' ? 'selected' : ''}>d</option>
+                            <option value="e" ${valLetter === 'e' ? 'selected' : ''}>e</option>
+                            <option value="f" ${valLetter === 'f' ? 'selected' : ''}>f</option>
                         </select>
                     </td>
                     <td>
@@ -556,7 +641,7 @@ function generateForm(){
                         </label>
                     </td>
                     <td>
-                        <small class="text-primary" id="infoBadge${i-1}">
+                        <small class="text-primary fw-semibold" id="infoBadge${i-1}">
                             <i class="bi bi-tag me-1"></i>${sourceData.lotNo}${valLetter} ${sourceData.coilNo}-R${i}
                         </small>
                     </td>
@@ -573,6 +658,14 @@ function generateForm(){
     container.innerHTML = html;
     const submitBtn = document.getElementById('submitBtn');
     if (submitBtn) submitBtn.style.display = 'inline-block';
+}
+
+function applyLetterToAll() {
+    const bulkLetter = document.getElementById('bulkLetterSelect')?.value ?? '';
+    document.querySelectorAll('select[name="cut_letter[]"]').forEach((sel, idx) => {
+        sel.value = bulkLetter;
+        updateLotLabel(idx);
+    });
 }
 
 function applyWidthToAll() {

@@ -126,7 +126,9 @@ try {
         $leftover_length = floatval($_POST['stock']         ?? 0); // form field still named 'stock'
 
         if ($leftover_length > 0) {
-            $new_lot_no = $lot_no;
+            $base_lot_src = !empty($mother['lot_no']) ? $mother['lot_no'] : $lot_no;
+            // Clean away any letter suffix so leftover mother coil stays clean base lot (e.g. 222225)
+            $new_lot_no = preg_replace('/[a-z]$/i', '', $base_lot_src);
             $grade_val  = $mother['grade'] ?? '';
             $width_val  = floatval($mother['width']);
 
@@ -165,9 +167,14 @@ try {
     // ── Fetch Slitting Plan (if any) to map customer & ref_no by roll sequence ──────
     $planCustomerMap = [];
     $planRefMap      = [];
-    if ($mother_id) {
-        $planRes = $conn->query("SELECT roll_seq, customer_name, ref_no FROM slitting_plans WHERE mother_coil_id = " . intval($mother_id) . " ORDER BY sort_order ASC, id ASC");
-        if ($planRes) {
+    $planRes = null;
+    if ($stock_id > 0) {
+        $planRes = $conn->query("SELECT roll_seq, customer_name, ref_no FROM slitting_plans WHERE stock_id = " . intval($stock_id) . " ORDER BY sort_order ASC, id ASC");
+    }
+    if ((!$planRes || $planRes->num_rows === 0) && $mother_id > 0) {
+        $planRes = $conn->query("SELECT roll_seq, customer_name, ref_no FROM slitting_plans WHERE mother_coil_id = " . intval($mother_id) . " AND (stock_id IS NULL OR stock_id = 0) ORDER BY sort_order ASC, id ASC");
+    }
+    if ($planRes) {
             $pIdx = 0;
             while ($pRow = $planRes->fetch_assoc()) {
                 $cName = trim($pRow['customer_name'] ?? '');
@@ -180,16 +187,28 @@ try {
                 if ($cName !== '') $planCustomerMap['idx_' . $pIdx] = $cName;
                 if ($rNo !== '')   $planRefMap['idx_' . $pIdx]      = $rNo;
                 $pIdx++;
-            }
         }
     }
+
+    // ── Pre-calculate fallback default cut letter for cut_into_2 ──
+    $fallback_cut_letter = '';
+    $is_leftover_source  = ($stock_id > 0);
+    // Only auto-assign 'a' if it's Cut Into 2 on a fresh mother coil (leftover mother coils stay NO suffix)
+    if ($cut_type === 'cut_into_2' && !$is_leftover_source) {
+        $fallback_cut_letter = 'a';
+    }
+
+    $clean_base_lot_no = preg_replace('/[a-z]$/i', '', $lot_no);
 
     // ── Process each roll ───────────────────────────────────────
     foreach ($roll_nos as $index => $roll_no) {
         $length       = floatval($lengths[$index]  ?? 0);
         $width        = floatval($widths[$index]   ?? 0);
         $cut_letter   = trim($cut_letters[$index]  ?? '');
-        $roll_lot_no  = $lot_no . $cut_letter;
+        if ($cut_letter === '' && $cut_type === 'cut_into_2' && !$is_leftover_source) {
+            $cut_letter = $fallback_cut_letter;
+        }
+        $roll_lot_no  = $clean_base_lot_no . $cut_letter;
         $roll_no_safe = $roll_no;
 
         $plannedCustomer = null;
