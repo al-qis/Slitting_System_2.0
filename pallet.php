@@ -132,7 +132,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
             SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
                    sp.width, sp.actual_length, sp.length, sp.nod_length,
                    sp.stock_counted, sp.status, sp.is_voided,
-                   sp.customer_name, sp.ref_no,
+                   sp.customer_name, sp.ref_no, sp.parent_slit_id,
                    pi.pallet_id, p.pallet_no,
                    COALESCE(sw.std_weight, 0) AS std_weight
             FROM slitting_product sp
@@ -148,7 +148,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
             SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
                    sp.width, sp.actual_length, sp.length, sp.nod_length,
                    sp.stock_counted, sp.status, sp.is_voided,
-                   sp.customer_name, sp.ref_no,
+                   sp.customer_name, sp.ref_no, sp.parent_slit_id,
                    pi.pallet_id, p.pallet_no,
                    COALESCE(sw.std_weight, 0) AS std_weight
             FROM slitting_product sp
@@ -168,7 +168,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
             SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
                    sp.width, sp.actual_length, sp.length, sp.nod_length,
                    sp.stock_counted, sp.status, sp.is_voided,
-                   sp.customer_name, sp.ref_no,
+                   sp.customer_name, sp.ref_no, sp.parent_slit_id,
                    pi.pallet_id, p.pallet_no,
                    COALESCE(sw.std_weight, 0) AS std_weight
             FROM slitting_product sp
@@ -187,7 +187,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
             SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
                    sp.width, sp.actual_length, sp.length, sp.nod_length,
                    sp.stock_counted, sp.status, sp.is_voided,
-                   sp.customer_name, sp.ref_no,
+                   sp.customer_name, sp.ref_no, sp.parent_slit_id,
                    pi.pallet_id, p.pallet_no,
                    COALESCE(sw.std_weight, 0) AS std_weight
             FROM slitting_product sp
@@ -205,6 +205,64 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
     $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
     if (!$row) { echo json_encode(['ok' => false, 'msg' => "Roll not found: {$lot} {$coil} {$roll}"]); exit; }
+
+    // If the active row is not directly in a pallet, check if this roll identity
+    // (or its pre-recoil parent/voided counterpart) is already in pallet_items on any pallet
+    if (empty($row['pallet_id'])) {
+        $rawR        = trim($row['roll_no'] ?? '');
+        $baseR       = preg_replace('/(_void_|_OLD_).*$/i', '', $rawR);
+        $cleanDigits = preg_replace('/[^0-9A-Za-z]/', '', $baseR);
+        $r1          = 'R' . ltrim($cleanDigits, 'R');
+        $r_dash_1    = 'R-' . ltrim($cleanDigits, 'R');
+        $parentSlitId = (int)($row['parent_slit_id'] ?? 0);
+        $pid          = (int)$row['id'];
+        $lotNo        = trim($row['lot_no'] ?? '');
+        $coilNo       = trim($row['coil_no'] ?? '');
+        $widthVal     = (float)($row['width'] ?? 0);
+
+        $chkPallet = $conn->prepare("
+            SELECT pi.pallet_id, p.pallet_no, sp.id AS matched_id, sp.roll_no AS matched_roll
+            FROM pallet_items pi
+            JOIN pallets p ON p.id = pi.pallet_id
+            JOIN slitting_product sp ON sp.id = pi.slitting_product_id
+            WHERE (
+                sp.id = ?
+                OR (? > 0 AND sp.id = ?)
+                OR (sp.parent_slit_id IS NOT NULL AND sp.parent_slit_id = ?)
+                OR (
+                    sp.lot_no = ?
+                    AND sp.coil_no = ?
+                    AND ABS(sp.width - ?) < 0.5
+                    AND (
+                        sp.roll_no = ? OR sp.roll_no = ?
+                        OR sp.roll_no LIKE CONCAT(?, '_void_%') OR sp.roll_no LIKE CONCAT(?, '_void_%')
+                        OR sp.roll_no LIKE CONCAT(?, '_OLD_%') OR sp.roll_no LIKE CONCAT(?, '_OLD_%')
+                    )
+                )
+            )
+            LIMIT 1
+        ");
+        $chkPallet->bind_param(
+            "iiiissdssssss",
+            $pid,
+            $parentSlitId, $parentSlitId,
+            $pid,
+            $lotNo, $coilNo, $widthVal,
+            $r1, $r_dash_1,
+            $r1, $r_dash_1,
+            $r1, $r_dash_1
+        );
+        $chkPallet->execute();
+        $palletRes = $chkPallet->get_result()->fetch_assoc();
+        $chkPallet->close();
+
+        if ($palletRes) {
+            $row['pallet_id'] = (int)$palletRes['pallet_id'];
+            $row['pallet_no'] = $palletRes['pallet_no'];
+            $row['matched_roll_on_pallet'] = $palletRes['matched_roll'];
+        }
+    }
+
     $rawLen = (!empty($row['actual_length']) && $row['actual_length'] > 0) ? (float)$row['actual_length'] : (float)$row['length'];
     $nodLen = !empty($row['nod_length']) ? (float)$row['nod_length'] : 0.0;
     $lenForCode = max(0.0, $rawLen - $nodLen);
@@ -3413,8 +3471,12 @@ async function lookupAndAdd(lot, coil, roll, width = '', id = '') {
         // ── Already on THIS pallet → duplicate scan of a roll we
         //    just added. Silently ignore so a camera double-decode
         //    cannot trigger a server "already on pallet" error or
-        //    jam the UI. It's already shown in a slot. ───────────
+        //    jam the UI. It's already shown in a slot.
+        //    If it's on this pallet as a voided roll, inform the operator. ───────────
         if (p.pallet_id && p.pallet_id == PALLET_ID) {
+            if (p.matched_roll_on_pallet && (p.matched_roll_on_pallet.includes('_void_') || p.matched_roll_on_pallet.includes('_OLD_'))) {
+                showFeedback(`Roll is already on this pallet as voided roll (${escHtml(p.matched_roll_on_pallet)}). Please remove the voided roll first.`, false);
+            }
             return;
         }
 
