@@ -169,15 +169,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
                 log_source_tracking($conn, 0, 'reslit_product', $original_source, 'sfc', 'RESLIT_FROM_SFC');
 
             } elseif ($action === 'SELL') {
-                $isBalance = (strtoupper(trim($sfc['roll_no'] ?? '')) === 'BALANCE' || strtoupper(trim($sfc['status'] ?? '')) === 'BALANCE');
-                if ($isBalance) {
-                    $conn->rollback();
-                    die("<div style='color:red; font-family:sans-serif; padding:20px; border:1px solid red; background:#fff5f5;'>
-                            <h2>Action Denied</h2>
-                            <p><strong>Reason:</strong> Balance coils cannot be sold directly. They must be sent to Recoil or Reslit.</p>
-                            <button onclick='history.back()' style='padding:8px 16px; margin-top:10px;'>Go Back</button>
-                         </div>");
-                }
                 $actLen = (float)($sfc['length'] ?? 0);
                 $stmt = $conn->prepare("INSERT INTO slitting_product
                     (mother_id, product, lot_no, coil_no, roll_no, width, length, actual_length,
@@ -694,10 +685,6 @@ include 'header.php';
         <p class="text-muted small mb-4">SFC ID: <span id="sfcIdDisplay" class="fw-bold text-dark"></span></p>
         <form id="actionForm" method="post" action="sfc.php">
             <input type="hidden" name="sfc_id" id="sfc_id_input">
-            <div id="balanceNotice" class="alert alert-warning py-2 mb-3 small d-none" style="font-size:12px;">
-                <i class="bi bi-exclamation-triangle-fill me-1"></i>
-                <strong>Balance Coil:</strong> Can only be sent to <strong>RECOIL</strong> or <strong>RESLIT</strong>.
-            </div>
             <div class="d-grid gap-3">
                 <button type="submit" name="action" value="RECOIL" id="sfcRecoilBtn"
                         class="btn btn-warning py-2 fw-bold shadow-sm"
@@ -927,15 +914,7 @@ document.addEventListener('DOMContentLoaded', function () {
         document.getElementById('sfcDetails').textContent   = details;
 
         const sellBtn = document.getElementById('sfcSellBtn');
-        const notice  = document.getElementById('balanceNotice');
-
-        if (String(isBalance) === '1' || isBalance === true) {
-            if (sellBtn) sellBtn.classList.add('d-none');
-            if (notice)  notice.classList.remove('d-none');
-        } else {
-            if (sellBtn) sellBtn.classList.remove('d-none');
-            if (notice)  notice.classList.add('d-none');
-        }
+        if (sellBtn) sellBtn.classList.remove('d-none');
         actionModal.show();
     }
 
