@@ -779,11 +779,25 @@ function addToRecoilingQueue(raw, source) {
         showIntakeFeedback(data.ok, data.msg);
         input.value = '';
         if (data.ok) {
-            // Brief pause so the confirmation is actually seen before the
-            // page reloads to show the newly-added pending roll — the
-            // input's `autofocus` attribute takes care of re-focusing it
-            // on the fresh page load, ready for the very next scan.
-            setTimeout(() => window.location.reload(), 1400);
+            if (data.action === 'open_modal' && data.roll) {
+                // 2nd scan: Open Recoiling Process modal directly!
+                const dummyBtn = {
+                    dataset: {
+                        rid: data.roll.rid,
+                        product: data.roll.product,
+                        lot: data.roll.lot_no,
+                        coil: data.roll.coil_no,
+                        roll: data.roll.roll_no,
+                        width: data.roll.width,
+                        length: data.roll.length,
+                        source: data.roll.source || 'recoiling_product'
+                    }
+                };
+                openRecoilModal(dummyBtn);
+            } else {
+                // 1st scan: Brief pause then reload to show new pending item in table
+                setTimeout(() => window.location.reload(), 1400);
+            }
         } else {
             // Failed — no reload, so refocus immediately so the operator
             // can correct and retry without touching the mouse.

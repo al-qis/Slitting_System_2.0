@@ -716,11 +716,21 @@ function addToReslitQueue(raw, source) {
         showIntakeFeedback(data.ok, data.msg);
         input.value = '';
         if (data.ok) {
-            // Brief pause so the confirmation is actually seen before the
-            // page reloads to show the newly-added pending roll — the
-            // input's `autofocus` attribute takes care of re-focusing it
-            // on the fresh page load, ready for the very next scan.
-            setTimeout(() => window.location.reload(), 1400);
+            if (data.action === 'open_modal' && data.roll) {
+                // 2nd scan: Open Reslit Process modal directly!
+                showReslitModal(
+                    data.roll.id,
+                    data.roll.product,
+                    data.roll.lot_no,
+                    data.roll.coil_no,
+                    data.roll.roll_no,
+                    data.roll.width,
+                    data.roll.length
+                );
+            } else {
+                // 1st scan: Brief pause then reload to show new pending item in table
+                setTimeout(() => window.location.reload(), 1400);
+            }
         } else {
             // Failed — no reload, so refocus immediately so the operator
             // can correct and retry without touching the mouse.
