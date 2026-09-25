@@ -927,12 +927,20 @@ foreach ($activeItems as $item) {
     $itemsBySeq[(int)$item['seq']] = $item;
 }
 
-// Pre-calculate total Est. Weight for PHP-rendered slots
+// Pre-calculate total Est. Weight and check for STOCK rolls/SO
 $totalEstWgt = 0.0;
+$hasStockRoll = false;
+$stockRollsList = [];
 foreach ($activeItems as $item) {
     $len = (float)($item['actual_length'] ?: $item['length']);
     $totalEstWgt += calcEstWeight($len, (float)$item['width'], (float)$item['std_weight']);
+    if (PalletManager::isStockRefNo($item['ref_no'] ?? '')) {
+        $hasStockRoll = true;
+        $stockRollsList[] = trim($item['lot_no'] . ' ' . $item['coil_no'] . ' ' . str_replace('R', 'R-', $item['roll_no']));
+    }
 }
+$isStockPalletRef = PalletManager::isStockRefNo($activePallet['ref_no'] ?? '');
+$isSoStock = $isStockPalletRef || $hasStockRoll;
 
 // Pallets rejected by QC — still queried server-side because the
 // "Need Attention" banner near the top of the page renders on first
@@ -1502,7 +1510,7 @@ if (isset($_GET['success'])): ?>
                             </tr>
                             <tr>
                                 <td class="bg-light fw-bold text-muted">SOS No.</td>
-                                <td class="fw-bold text-dark"><span id="constraintRefNoText"><?= htmlspecialchars($activePallet['ref_no']) ?></span></td>
+                                <td class="fw-bold text-dark"><span id="constraintRefNoText" class="<?= $isSoStock ? 'text-danger fw-bold' : '' ?>" style="<?= $isSoStock ? 'color:#dc2626 !important;' : '' ?>"><?= htmlspecialchars($activePallet['ref_no']) ?></span></td>
                                 <td class="bg-light fw-bold text-muted">Serial No.</td>
                                 <td class="fw-bold text-primary"><?= htmlspecialchars($activePallet['pallet_no']) ?></td>
                             </tr>
@@ -1756,8 +1764,9 @@ if (isset($_GET['success'])): ?>
                             $itemNod = (float)($item['nod_length'] ?? 0);
                             $hasNod  = $itemNod > 0;
                             $netLen  = $itemLen - $itemNod;
+                            $isItemStock = PalletManager::isStockRefNo($item['ref_no'] ?? '');
                         ?>
-                        <tr id="slot<?= $s ?>" data-slot="<?= $s ?>" data-filled="1" data-product-id="<?= $item['product_id'] ?>" data-weight="<?= number_format($itemWgt, 4) ?>">
+                        <tr id="slot<?= $s ?>" data-slot="<?= $s ?>" data-filled="1" data-product-id="<?= $item['product_id'] ?>" data-weight="<?= number_format($itemWgt, 4) ?>" data-roll-ref="<?= htmlspecialchars($item['ref_no'] ?? '') ?>" data-lot-coil="<?= htmlspecialchars($item['lot_no'] . ' ' . $item['coil_no']) ?>" data-roll-no="<?= htmlspecialchars(str_replace('R','R-',$item['roll_no'])) ?>" data-is-stock="<?= $isItemStock ? '1' : '0' ?>">
                             <td class="fw-bold text-start ps-3" style="font-family:monospace; font-size:12px;"><?= htmlspecialchars(($item['stock_code'] ?? '') ?: '-') ?></td>
                             <td><?= htmlspecialchars($item['lot_no']) ?> <?= htmlspecialchars($item['coil_no']) ?></td>
                             <td>
@@ -1768,7 +1777,12 @@ if (isset($_GET['success'])): ?>
                             </td>
                             <td><?= formatWidthDisplay($item['width']) ?></td>
                             <td>1</td>
-                            <td class="fw-bold"><?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?></td>
+                            <td class="fw-bold">
+                                <?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?>
+                                <?php if ($isItemStock): ?>
+                                <br><span class="badge bg-danger-subtle text-danger border border-danger-subtle ms-1" style="font-size:10px;">SO: STOCK</span>
+                                <?php endif; ?>
+                            </td>
                             <td class="fw-bold text-end pe-3 text-primary"><?= $itemWgt > 0 ? number_format($itemWgt, 2) : '-' ?></td>
                             <td>
                                 <button type="button" class="btn btn-outline-danger btn-sm py-0 px-2" title="Remove this roll" data-product-id="<?= $item['product_id'] ?>" onclick="removeRoll(<?= $activePalletId ?>, <?= $item['product_id'] ?>, <?= $s ?>, this)">
@@ -1888,7 +1902,7 @@ if (isset($_GET['success'])): ?>
                         </tr>
                         <tr>
                             <td class="bg-light fw-bold text-muted">SOS No.</td>
-                            <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['ref_no'] ?: '-') ?></td>
+                            <td class="fw-bold <?= $isSoStock ? 'text-danger' : 'text-dark' ?>" style="<?= $isSoStock ? 'color:#dc2626 !important;' : '' ?>"><?= htmlspecialchars($activePallet['ref_no'] ?: '-') ?></td>
                             <td class="bg-light fw-bold text-muted">Serial No.</td>
                             <td class="fw-bold text-primary"><?= htmlspecialchars($activePallet['pallet_no'] ?: '-') ?></td>
                         </tr>
@@ -2068,7 +2082,7 @@ if (isset($_GET['success'])): ?>
                         </tr>
                         <tr>
                             <td class="bg-light fw-bold text-muted">SOS No.</td>
-                            <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['ref_no'] ?: '-') ?></td>
+                            <td class="fw-bold <?= $isSoStock ? 'text-danger' : 'text-dark' ?>" style="<?= $isSoStock ? 'color:#dc2626 !important;' : '' ?>"><?= htmlspecialchars($activePallet['ref_no'] ?: '-') ?></td>
                             <td class="bg-light fw-bold text-muted">Serial No.</td>
                             <td class="fw-bold text-primary"><?= htmlspecialchars($activePallet['pallet_no'] ?: '-') ?></td>
                         </tr>
@@ -2215,7 +2229,7 @@ if (isset($_GET['success'])): ?>
                         </tr>
                         <tr>
                             <td class="bg-light fw-bold text-muted">SOS No.</td>
-                            <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['ref_no'] ?: '-') ?></td>
+                            <td class="fw-bold <?= $isSoStock ? 'text-danger' : 'text-dark' ?>" style="<?= $isSoStock ? 'color:#dc2626 !important;' : '' ?>"><?= htmlspecialchars($activePallet['ref_no'] ?: '-') ?></td>
                             <td class="bg-light fw-bold text-muted">Serial No.</td>
                             <td class="fw-bold text-primary"><?= htmlspecialchars($activePallet['pallet_no'] ?: '-') ?></td>
                         </tr>
@@ -2373,7 +2387,7 @@ if (isset($_GET['success'])): ?>
                         </tr>
                         <tr>
                             <td class="bg-light fw-bold text-muted">SOS No.</td>
-                            <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['ref_no'] ?: '-') ?></td>
+                            <td class="fw-bold <?= $isSoStock ? 'text-danger' : 'text-dark' ?>" style="<?= $isSoStock ? 'color:#dc2626 !important;' : '' ?>"><?= htmlspecialchars($activePallet['ref_no'] ?: '-') ?></td>
                             <td class="bg-light fw-bold text-muted">Serial No.</td>
                             <td class="fw-bold text-primary"><?= htmlspecialchars($activePallet['pallet_no'] ?: '-') ?></td>
                         </tr>
@@ -2775,6 +2789,39 @@ if (isset($_GET['success'])): ?>
       </div>
       <div class="modal-footer py-2 px-3 bg-light">
         <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── STOCK SO WARNING MODAL (RED POPUP) ───────────────────── -->
+<div class="modal fade" id="soStockAlertModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content shadow border-danger" style="border-width: 2px;">
+      <div class="modal-header bg-danger text-white py-2">
+        <h5 class="modal-title fs-6 fw-bold text-white d-flex align-items-center gap-2">
+          <i class="bi bi-exclamation-triangle-fill fs-5"></i> Sila Semak Roll SO Detail
+        </h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body py-3">
+        <div class="alert alert-danger mb-3 py-2 px-3 fw-bold d-flex align-items-center gap-2" style="background:#fef2f2; color:#991b1b; border-color:#fca5a5;">
+          <i class="bi bi-shield-exclamation fs-4 flex-shrink-0"></i>
+          <div>
+            Roll di bawah masih mempunyai detail SO sebagai <strong>STOCK</strong>:
+          </div>
+        </div>
+        <div class="p-3 bg-light rounded border border-danger-subtle" style="max-height:220px; overflow-y:auto;" id="soStockRollsListContainer">
+          <!-- List of stock rolls inserted dynamically -->
+        </div>
+      </div>
+      <div class="modal-footer py-2 px-3 bg-light d-flex justify-content-between">
+        <button type="button" class="btn btn-secondary btn-sm fw-bold" data-bs-dismiss="modal">
+          <i class="bi bi-x-lg me-1"></i> Batal / Edit SO
+        </button>
+        <button type="button" class="btn btn-danger btn-sm fw-bold" id="soStockModalProceedBtn">
+          Teruskan Hantar ke QC <i class="bi bi-send ms-1"></i>
+        </button>
       </div>
     </div>
   </div>
@@ -3561,10 +3608,19 @@ function fillSlot(seq, p) {
            </span>`
         : '';
 
+    const isRollStock = isStockRef(p.ref_no);
     slotEl.classList.remove('table-light', 'text-muted');
     slotEl.setAttribute('data-filled', '1');
     slotEl.setAttribute('data-product-id', p.id);
     slotEl.setAttribute('data-weight', wgt.toFixed(4));
+    slotEl.setAttribute('data-roll-ref', p.ref_no || '');
+    slotEl.setAttribute('data-lot-coil', (p.lot_no || '') + ' ' + (p.coil_no || ''));
+    slotEl.setAttribute('data-roll-no', (p.roll_no || '').replace(/^R/, 'R-'));
+    slotEl.setAttribute('data-is-stock', isRollStock ? '1' : '0');
+
+    const stockBadge = isRollStock
+        ? `<br><span class="badge bg-danger-subtle text-danger border border-danger-subtle ms-1" style="font-size:10px;">SO: STOCK</span>`
+        : '';
 
     slotEl.innerHTML = `
         <td class="fw-bold text-start ps-3" style="font-family:monospace; font-size:12px;">
@@ -3576,7 +3632,7 @@ function fillSlot(seq, p) {
         <td>${len.toFixed(1)}${nodChip}</td>
         <td>${p.width !== null && p.width !== undefined ? (+p.width) : '-'}</td>
         <td>1</td>
-        <td class="fw-bold">${escHtml(p.roll_no.replace(/^R/, 'R-'))}</td>
+        <td class="fw-bold">${escHtml(p.roll_no.replace(/^R/, 'R-'))}${stockBadge}</td>
         <td class="fw-bold text-end pe-3 text-primary">${wgtStr}</td>
         <td>
             <button type="button"
@@ -3694,13 +3750,39 @@ function updateSendToQcState() {
     const btn = document.getElementById('sendToQcBtn');
     const warnCard = document.getElementById('palletStockWarningCard');
     const warnRefText = document.getElementById('warningStockRefText');
-    const isStock = isStockRef(typeof currentConstraintRefNo !== 'undefined' ? currentConstraintRefNo : '');
+    const constraintRefEl = document.getElementById('constraintRefNoText');
+
+    const palletRef = typeof currentConstraintRefNo !== 'undefined' ? currentConstraintRefNo : '';
+    const isPalletStock = isStockRef(palletRef);
+
+    let hasStockRoll = false;
+    document.querySelectorAll('#rollList tr[data-filled="1"]').forEach(tr => {
+        const ref = tr.getAttribute('data-roll-ref') || '';
+        const isStockAttr = tr.getAttribute('data-is-stock');
+        if (isStockAttr === '1' || isStockRef(ref)) {
+            hasStockRoll = true;
+        }
+    });
+
+    const isSoStock = isPalletStock || hasStockRoll;
+
+    if (constraintRefEl) {
+        if (isSoStock) {
+            constraintRefEl.classList.add('text-danger', 'fw-bold');
+            constraintRefEl.classList.remove('text-dark');
+            constraintRefEl.style.color = '#dc2626';
+        } else {
+            constraintRefEl.classList.remove('text-danger', 'fw-bold');
+            constraintRefEl.classList.add('text-dark');
+            constraintRefEl.style.color = '';
+        }
+    }
 
     if (warnRefText) {
         warnRefText.textContent = (typeof currentConstraintRefNo !== 'undefined' && currentConstraintRefNo ? currentConstraintRefNo.trim() : '') || 'STOCK';
     }
     if (warnCard) {
-        if (isStock) {
+        if (isPalletStock) {
             warnCard.classList.remove('d-none');
         } else {
             warnCard.classList.add('d-none');
@@ -3728,10 +3810,79 @@ function confirmSendToQC(event, isEdit) {
         if (typeof startEditConstraint === 'function') startEditConstraint();
         return false;
     }
+
+    // List rolls where SO detail is STOCK
+    const stockRolls = [];
+    document.querySelectorAll('#rollList tr[data-filled="1"]').forEach(tr => {
+        const ref = tr.getAttribute('data-roll-ref') || '';
+        const isStockAttr = tr.getAttribute('data-is-stock');
+        if (isStockAttr === '1' || isStockRef(ref)) {
+            const lotCoil = tr.getAttribute('data-lot-coil') || '';
+            const rollNo = tr.getAttribute('data-roll-no') || '';
+            const fullRoll = (lotCoil + ' ' + rollNo).trim();
+            if (fullRoll) {
+                stockRolls.push(fullRoll);
+            }
+        }
+    });
+
+    if (stockRolls.length > 0) {
+        if (event) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+        showRedStockModal(stockRolls, isEdit);
+        return false;
+    }
+
     const msg = isEdit
         ? 'Re-submit this edited pallet to QC?'
         : 'Send pallet to QC? No more rolls can be added after this.';
     return confirm(msg);
+}
+
+function showRedStockModal(stockRolls, isEdit) {
+    const container = document.getElementById('soStockRollsListContainer');
+    if (container) {
+        container.innerHTML = `
+            <div class="fw-bold mb-2 text-danger" style="font-size:13px;">sila semak roll SO detail:</div>
+            <ul class="mb-0 ps-3 text-danger fw-bold" style="font-size:13.5px; line-height:1.6;">
+                ${stockRolls.map(r => `<li>${escHtml(r)}</li>`).join('')}
+            </ul>
+        `;
+    }
+
+    const proceedBtn = document.getElementById('soStockModalProceedBtn');
+    if (proceedBtn) {
+        proceedBtn.onclick = function() {
+            const modalEl = document.getElementById('soStockAlertModal');
+            if (modalEl) {
+                if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+                    const inst = bootstrap.Modal.getInstance(modalEl);
+                    if (inst) inst.hide();
+                } else if (typeof $ !== 'undefined' && $.fn && $.fn.modal) {
+                    $(modalEl).modal('hide');
+                }
+            }
+            const msg = isEdit
+                ? 'Re-submit this edited pallet to QC?'
+                : 'Send pallet to QC? No more rolls can be added after this.';
+            if (confirm(msg)) {
+                const form = document.getElementById('sendToQcForm');
+                if (form) form.submit();
+            }
+        };
+    }
+
+    const modalEl = document.getElementById('soStockAlertModal');
+    if (modalEl) {
+        if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+            const modal = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
+            modal.show();
+        } else if (typeof $ !== 'undefined' && $.fn && $.fn.modal) {
+            $(modalEl).modal('show');
+        }
+    }
 }
 
 function updateProgress(count) {

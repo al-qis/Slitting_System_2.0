@@ -156,6 +156,56 @@ if ($lot_no === '' || $coil_no === '' || $roll_no === '') {
 
 $conn->begin_transaction();
 try {
+    // ── STEP 0: Check if roll is ALREADY in recoiling_product queue (2nd scan) ──
+    $chkRecoil = $conn->prepare("
+        SELECT rp.id, rp.status, rp.mother_id,
+               IFNULL(rp.product, mc.product) as product,
+               IFNULL(rp.lot_no, mc.lot_no) as lot_no,
+               IFNULL(rp.coil_no, mc.coil_no) as coil_no,
+               rp.roll_no,
+               IFNULL(rp.width, mc.width) as width,
+               IFNULL(rp.actual_length, IFNULL(rp.length, mc.length)) as actual_length
+        FROM recoiling_product rp
+        LEFT JOIN mother_coil mc ON rp.mother_id = mc.id
+        WHERE (
+            (LOWER(rp.lot_no) = LOWER(?) OR (rp.lot_no IS NULL AND LOWER(mc.lot_no) = LOWER(?)))
+            AND (LOWER(rp.coil_no) = LOWER(?) OR (rp.coil_no IS NULL AND LOWER(mc.coil_no) = LOWER(?)))
+            AND LOWER(rp.roll_no) = LOWER(?)
+        )
+        ORDER BY rp.id DESC
+        LIMIT 1
+    ");
+    $chkRecoil->bind_param("sssss", $lot_no, $lot_no, $coil_no, $coil_no, $roll_no);
+    $chkRecoil->execute();
+    $existingRecoil = $chkRecoil->get_result()->fetch_assoc();
+    $chkRecoil->close();
+
+    if ($existingRecoil) {
+        if ($existingRecoil['status'] === 'completed') {
+            throw new Exception("This roll has already completed the recoiling process.");
+        }
+        // Roll is already pending or in_progress in recoiling_product queue!
+        // 2nd Scan action: Return open_modal signal to open process modal directly.
+        $conn->commit();
+        echo json_encode([
+            'ok'             => true,
+            'already_exists' => true,
+            'action'         => 'open_modal',
+            'msg'            => "Opening Recoiling Process for {$existingRecoil['lot_no']} {$existingRecoil['coil_no']} {$existingRecoil['roll_no']}...",
+            'roll'           => [
+                'rid'     => (int)$existingRecoil['id'],
+                'product' => $existingRecoil['product'] ?? '',
+                'lot_no'  => $existingRecoil['lot_no'] ?? '',
+                'coil_no' => $existingRecoil['coil_no'] ?? '',
+                'roll_no' => $existingRecoil['roll_no'] ?? '',
+                'width'   => (float)($existingRecoil['width'] ?? 0),
+                'length'  => (float)($existingRecoil['actual_length'] ?? 0),
+                'source'  => 'recoiling_product',
+            ],
+        ]);
+        exit;
+    }
+
     // Lock the matching slitting_product row for the duration of this
     // transaction, so two simultaneous scans of the same roll can't both
     // succeed.
