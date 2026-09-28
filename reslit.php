@@ -401,7 +401,9 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
                             data-search="<?= htmlspecialchars($parentSearchBlob) ?>">
                             <td><?= $rowNum ?></td>
                             <td>
-                                <?php if($row['status'] === 'pending'): ?>
+                                <?php if($row['status'] === 'in_progress'): ?>
+                                    <span class="badge bg-primary">IN PROGRESS</span>
+                                <?php elseif($row['status'] === 'pending'): ?>
                                     <span class="badge bg-warning text-dark">PENDING</span>
                                 <?php else: ?>
                                     <span class="badge bg-success">COMPLETED</span>
@@ -421,7 +423,7 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
                             </td>
                             <td class="small"><?= htmlspecialchars($row['date_in'] ?? '-') ?></td>
                             <td>
-                                <?php if ($row['status'] === 'pending'): ?>
+                                <?php if ($row['status'] === 'pending' || $row['status'] === 'in_progress'): ?>
                                     <button class="btn btn-primary btn-sm mb-1" 
                                             onclick="showReslitModal(<?= (int)$row['id'] ?>, '<?= htmlspecialchars($row['product'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['lot_no'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['coil_no'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['roll_no'] ?? '', ENT_QUOTES) ?>', <?= (float)($row['width'] ?? 0) ?>, <?= (float)($row['effective_length'] ?? ($row['length'] ?? 0)) ?>)">
                                         <i class="bi bi-play-circle"></i> Reslit
@@ -432,14 +434,16 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
                                         // slitting_product_id set -> Finish Product, otherwise -> SFC Inventory.
                                         $sendBackOrigin = !empty($row['slitting_product_id']) ? 'Finished Product' : 'SFC Inventory';
                                     ?>
-                                    <button type="button"
-                                            class="btn btn-outline-danger btn-sm mb-1 btn-send-back-reslit"
-                                            data-rid="<?= (int)$row['id'] ?>"
-                                            data-origin="<?= htmlspecialchars($sendBackOrigin, ENT_QUOTES) ?>"
-                                            data-label="<?= htmlspecialchars(($row['lot_no'] ?? '-') . ' ' . ($row['coil_no'] ?? '') . ' / Roll ' . ($row['roll_no'] ?? '-')) ?>"
-                                            title="Send this item back to <?= htmlspecialchars($sendBackOrigin) ?>">
-                                        <i class="bi bi-arrow-return-left"></i> Send Back
-                                    </button>
+                                    <?php if ($row['status'] === 'pending'): ?>
+                                        <button type="button"
+                                                class="btn btn-outline-danger btn-sm mb-1 btn-send-back-reslit"
+                                                data-rid="<?= (int)$row['id'] ?>"
+                                                data-origin="<?= htmlspecialchars($sendBackOrigin, ENT_QUOTES) ?>"
+                                                data-label="<?= htmlspecialchars(($row['lot_no'] ?? '-') . ' ' . ($row['coil_no'] ?? '') . ' / Roll ' . ($row['roll_no'] ?? '-')) ?>"
+                                                title="Send this item back to <?= htmlspecialchars($sendBackOrigin) ?>">
+                                            <i class="bi bi-arrow-return-left"></i> Send Back
+                                        </button>
+                                    <?php endif; ?>
                                 <?php else: ?>
                                     <span class="badge bg-light text-dark border">Done</span>
                                 <?php endif; ?>
@@ -803,7 +807,16 @@ function applyReslitFilters() {
 }
 
 function showReslitModal(id, product, lot_no, coil_no, roll_no, width, length) {
+    reslitFormSubmitted = false;
     productData = { id, product, lot_no, coil_no, roll_no, width, length };
+
+    if (id > 0) {
+        const fd = new FormData();
+        fd.append('action', 'start_reslit_process');
+        fd.append('id', id);
+        fetch('reslit_handler.php', { method: 'POST', body: fd }).catch(console.error);
+    }
+
     document.getElementById('reslit_id').value = id;
     document.getElementById('modal_product').textContent = product;
     document.getElementById('modal_lot').textContent = lot_no + ' ' + coil_no;
@@ -817,7 +830,7 @@ function showReslitModal(id, product, lot_no, coil_no, roll_no, width, length) {
     document.getElementById('rollCountSection').style.display = 'none';
     document.getElementById('slittingForm').innerHTML = '';
     document.getElementById('submitBtn').style.display = 'none';
-    new bootstrap.Modal(document.getElementById('reslitModal')).show();
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('reslitModal')).show();
 }
 
 function calculateReslitStock() {
@@ -1112,9 +1125,46 @@ function escHtml(s) {
     return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+let reslitFormSubmitted = false;
+
 document.addEventListener('DOMContentLoaded', function () {
     // Apply the default 'pending' filter to the table on first load
     applyReslitFilters();
+
+    const reslitFormEl = document.getElementById('reslitForm');
+    if (reslitFormEl) {
+        reslitFormEl.addEventListener('submit', function (e) {
+            if (!confirm('Complete reslitting? This cannot be undone.')) {
+                e.preventDefault();
+                return;
+            }
+            reslitFormSubmitted = true;
+        });
+    }
+
+    const reslitModalEl = document.getElementById('reslitModal');
+    if (reslitModalEl) {
+        reslitModalEl.addEventListener('hidden.bs.modal', function () {
+            if (!reslitFormSubmitted && productData.id > 0) {
+                const fd = new FormData();
+                fd.append('action', 'cancel_reslit_process');
+                fd.append('id', productData.id);
+                fetch('reslit_handler.php', { method: 'POST', body: fd }).catch(console.error);
+            }
+        });
+    }
+
+    window.addEventListener('beforeunload', function () {
+        if (!reslitFormSubmitted && productData.id > 0) {
+            const m = document.getElementById('reslitModal');
+            if (m && m.classList.contains('show')) {
+                const fd = new FormData();
+                fd.append('action', 'cancel_reslit_process');
+                fd.append('id', productData.id);
+                navigator.sendBeacon('reslit_handler.php', fd);
+            }
+        }
+    });
 
     // Initialize the shared camera scanner widget (same library used by
     // sfc.php / finish_product.php / recoiling.php) — it manages its own

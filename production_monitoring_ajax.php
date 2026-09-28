@@ -393,6 +393,8 @@ if ($action === 'get_data') {
             sp.product,
             GROUP_CONCAT(DISTINCT CASE WHEN sp.customer_name IS NOT NULL AND TRIM(sp.customer_name) != '' AND TRIM(sp.customer_name) != '-' THEN TRIM(sp.customer_name) END SEPARATOR ', ') AS customer_name,
             MIN(sp.date_in) AS start_time,
+            NULL AS active_started_at,
+            'pending' AS job_status,
             MAX(sp.date_in) AS latest_time,
             MAX(sp.id) AS max_id,
             COUNT(sp.id) AS total_rolls,
@@ -413,7 +415,7 @@ if ($action === 'get_data') {
         }
     }
 
-    // 2. Active Recoiling Coils (ONLY in_progress — pending recoiling coils are NOT shown on monitoring)
+    // 2. Active Recoiling Coils (ONLY in_progress — triggered when operator clicks Recoil or 2nd scan)
     $recoiling_pending_res = $conn->query("
         SELECT 
             'Recoiling' AS proc_name,
@@ -424,7 +426,9 @@ if ($action === 'get_data') {
             rp.product,
             MAX(rp.slitting_product_id) AS slitting_product_id,
             '' AS customer_name,
-            MIN(COALESCE(rp.started_at, rp.date_in)) AS start_time,
+            MAX(rp.started_at) AS active_started_at,
+            'in_progress' AS job_status,
+            COALESCE(MAX(rp.started_at), MIN(rp.date_in)) AS start_time,
             MAX(COALESCE(rp.started_at, rp.date_in)) AS latest_time,
             MAX(rp.id) AS max_id,
             COUNT(rp.id) AS total_rolls,
@@ -443,7 +447,7 @@ if ($action === 'get_data') {
         }
     }
 
-    // 3. Pending Reslit Coils
+    // 3. Active Reslit Coils (ONLY in_progress — triggered when operator clicks Reslit or 2nd scan)
     $reslit_pending_res = $conn->query("
         SELECT 
             'Reslit' AS proc_name,
@@ -452,7 +456,9 @@ if ($action === 'get_data') {
             rp.coil_no,
             rp.product,
             '' AS customer_name,
-            MIN(COALESCE(rp.started_at, rp.date_in)) AS start_time,
+            MAX(rp.started_at) AS active_started_at,
+            'in_progress' AS job_status,
+            COALESCE(MAX(rp.started_at), MIN(rp.date_in)) AS start_time,
             MAX(COALESCE(rp.started_at, rp.date_in)) AS latest_time,
             MAX(rp.id) AS max_id,
             COUNT(rp.id) AS total_rolls,
@@ -462,7 +468,7 @@ if ($action === 'get_data') {
             'reslit' AS original_source,
             MAX(COALESCE(rp.length, rp.actual_length, 0)) AS length
         FROM reslit_product rp
-        WHERE rp.status IN ('pending', 'in_progress')
+        WHERE rp.status = 'in_progress'
         GROUP BY rp.mother_id, rp.lot_no, rp.coil_no, rp.product
     ");
     if ($reslit_pending_res) {
@@ -471,10 +477,29 @@ if ($action === 'get_data') {
         }
     }
 
-    // Sort active jobs in FIFO order: earliest start_time first (start_time ASC, max_id ASC).
-    // An already running coil keeps Slot 1 (Running), and a newly started recoiling job queues
-    // into Slot 2+ (Waiting List). If no coil is running, the recoiling job takes Slot 1 (Running).
+    // Sort active jobs:
+    // Priority 1: Actively running jobs (Recoiling in_progress, Reslit in_progress, Slitting with completed_rolls > 0)
+    // Priority 2: Pending jobs waiting in queue
     usort($all_active_jobs, function ($a, $b) {
+        $aIsActive = (($a['job_status'] ?? '') === 'in_progress' || ($a['proc_name'] ?? '') === 'Recoiling' || ($a['proc_name'] ?? '') === 'Reslit' || (int)($a['completed_rolls'] ?? 0) > 0);
+        $bIsActive = (($b['job_status'] ?? '') === 'in_progress' || ($b['proc_name'] ?? '') === 'Recoiling' || ($b['proc_name'] ?? '') === 'Reslit' || (int)($b['completed_rolls'] ?? 0) > 0);
+
+        if ($aIsActive && !$bIsActive) {
+            return -1; // Active running job takes Slot 1 (Section A)
+        }
+        if (!$aIsActive && $bIsActive) {
+            return 1;
+        }
+
+        if ($aIsActive && $bIsActive) {
+            $tA = strtotime($a['active_started_at'] ?? $a['start_time'] ?? '1970-01-01');
+            $tB = strtotime($b['active_started_at'] ?? $b['start_time'] ?? '1970-01-01');
+            if ($tA === $tB) {
+                return ((int)($b['max_id'] ?? 0)) <=> ((int)($a['max_id'] ?? 0));
+            }
+            return $tB <=> $tA; // Latest started active process first
+        }
+
         $tA = strtotime($a['start_time'] ?? '1970-01-01');
         $tB = strtotime($b['start_time'] ?? '1970-01-01');
         if ($tA === $tB) {
@@ -637,8 +662,8 @@ if ($action === 'get_data') {
         }
 
         // Determine effective start timestamp:
-        // Elapsed time starts from when the 5-minute packing of the previous coil ended (or when this coil began)
-        $rawStartTimeStr = $active_item['start_time'];
+        // Elapsed time starts from when this active job was started (or when the 5-minute packing of previous coil ended)
+        $rawStartTimeStr = !empty($active_item['active_started_at']) ? $active_item['active_started_at'] : $active_item['start_time'];
         $rawStartTs      = $rawStartTimeStr ? strtotime($rawStartTimeStr) : time();
 
         // Check completion time of the most recently finished coil overall
@@ -748,8 +773,19 @@ if ($action === 'get_data') {
     $waiting_list = [];
     $pos = 1;
 
-    // Type 1: Prepared Coils (IN (pending)) waiting in queue
+    // Type 1: Prepared Coils (IN (pending)) waiting in queue (Slitting Coils only)
     foreach ($queued_in_pending as $item) {
+        $proc = resolveProcessDetails(
+            $item['is_recoiled'] ?? 0,
+            $item['is_reslitted'] ?? 0,
+            $item['original_source'] ?? ''
+        );
+
+        // Exclude Recoiling and Reslit coils from Section B (Waiting List Queue)
+        if (($item['proc_name'] ?? '') === 'Recoiling' || ($item['proc_name'] ?? '') === 'Reslit' || $proc['process_type'] !== 'Slitting') {
+            continue;
+        }
+
         $m_id = (int)$item['mother_id'];
         $l_no = $item['lot_no'];
         $c_no = $item['coil_no'];
@@ -780,20 +816,9 @@ if ($action === 'get_data') {
         $date_str = $item['start_time'];
         $time_fmt = $date_str ? date('d M Y, h:i A', strtotime($date_str)) : '-';
 
-        $proc = resolveProcessDetails(
-            $item['is_recoiled'] ?? 0,
-            $item['is_reslitted'] ?? 0,
-            $item['original_source'] ?? ''
-        );
-
         $roll_suffix = (!empty($item['roll_no']) && $item['roll_no'] !== '-') ? ' ' . $item['roll_no'] : '';
 
         $status_desc = 'Prepared';
-        if (($item['proc_name'] ?? '') === 'Recoiling') {
-            $status_desc = 'Recoiling Queue';
-        } elseif (($item['proc_name'] ?? '') === 'Reslit') {
-            $status_desc = 'Reslit Queue';
-        }
 
         $item_len = (float)($item['length'] ?? 0);
         if ($item_len <= 0 && $m_id > 0) {

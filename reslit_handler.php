@@ -41,6 +41,38 @@ function log_process(
     $stmt->close();
 }
 
+// ── AJAX Action: Operator opened modal / started reslit process ───────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'start_reslit_process') {
+    header('Content-Type: application/json');
+    $reslit_id = intval($_POST['id'] ?? 0);
+    if ($reslit_id > 0) {
+        $stmt = $conn->prepare("UPDATE reslit_product SET status = 'in_progress', started_at = COALESCE(started_at, NOW()) WHERE id = ? AND status != 'completed'");
+        $stmt->bind_param("i", $reslit_id);
+        $ok = $stmt->execute();
+        $stmt->close();
+        echo json_encode(['success' => $ok]);
+        exit;
+    }
+    echo json_encode(['success' => false, 'error' => 'Invalid ID']);
+    exit;
+}
+
+// ── AJAX Action: Operator cancelled / closed modal without completing ────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'cancel_reslit_process') {
+    header('Content-Type: application/json');
+    $reslit_id = intval($_POST['id'] ?? 0);
+    if ($reslit_id > 0) {
+        $stmt = $conn->prepare("UPDATE reslit_product SET status = 'pending', started_at = NULL WHERE id = ? AND status = 'in_progress'");
+        $stmt->bind_param("i", $reslit_id);
+        $ok = $stmt->execute();
+        $stmt->close();
+        echo json_encode(['success' => $ok]);
+        exit;
+    }
+    echo json_encode(['success' => false, 'error' => 'Invalid ID']);
+    exit;
+}
+
 if (
     $_SERVER['REQUEST_METHOD'] !== 'POST'
     || ($_POST['action'] ?? '') !== 'complete_reslit_direct'
