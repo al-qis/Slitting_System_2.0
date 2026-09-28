@@ -328,20 +328,20 @@ class PalletManager
             $upd->execute();
             $upd->close();
 
-            // Propagate to every roll currently on this pallet, so
-            // slitting_product never drifts out of sync with the pallet.
-            // Customer always propagates (a pallet has exactly one
-            // Customer). Ref No only propagates to rolls that carry a
-            // real SO number — rolls flagged "STOCK" keep their Ref No
-            // untouched, since STOCK isn't tied to any specific SO.
+            // Propagate to rolls on this pallet: if a roll has empty/STOCK
+            // customer or ref_no, update it; otherwise preserve the roll's
+            // original slitted Customer & Ref No so sticker data remains intact.
             $stockRef = self::STOCK_REF_NO;
             $propagate = $this->conn->prepare("
                 UPDATE slitting_product sp
                 JOIN pallet_items pi ON pi.slitting_product_id = sp.id
-                SET sp.customer_name = ?,
+                SET sp.customer_name = CASE
+                        WHEN sp.customer_name IS NULL OR TRIM(sp.customer_name) = '' OR UPPER(TRIM(sp.customer_name)) = 'STOCK' THEN ?
+                        ELSE sp.customer_name
+                    END,
                     sp.ref_no = CASE
-                        WHEN UPPER(TRIM(sp.ref_no)) = UPPER(?) THEN sp.ref_no
-                        ELSE ?
+                        WHEN UPPER(TRIM(sp.ref_no)) = UPPER(?) OR TRIM(sp.ref_no) = '' THEN ?
+                        ELSE sp.ref_no
                     END
                 WHERE pi.pallet_id = ?
             ");
