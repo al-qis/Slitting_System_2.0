@@ -921,24 +921,51 @@ function calcEstWeight(float $lengthM, float $widthMm, float $stdWeight): float 
 
 $activeItems = $activePallet ? getPalletItemsWithWeight($conn, $activePalletId) : [];
 
-// Build a lookup: seq → item, so PHP can render all 8 slots in order
+// Pre-calculate total Est. Weight, check for STOCK rolls/SO and Unmatched Customer/SO
+$totalEstWgt = 0.0;
+$hasStockRoll = false;
+$hasUnmatchedRoll = false;
+$stockRollsList = [];
+$unmatchedRollsList = [];
+
+$palletCust = trim($activePallet['customer_name'] ?? '');
+$palletRef  = trim($activePallet['ref_no'] ?? '');
+
+foreach ($activeItems as &$item) {
+    $len = (float)($item['actual_length'] ?: $item['length']);
+    $totalEstWgt += calcEstWeight($len, (float)$item['width'], (float)$item['std_weight']);
+
+    $rollCust = trim($item['customer_name'] ?? '');
+    $rollRef  = trim($item['ref_no'] ?? '');
+
+    $isStockRoll = PalletManager::isStockRefNo($rollRef);
+    if ($isStockRoll) {
+        $hasStockRoll = true;
+        $stockRollsList[] = trim($item['lot_no'] . ' ' . $item['coil_no'] . ' ' . str_replace('R', 'R-', $item['roll_no']));
+    }
+
+    $isCustMismatch = ($rollCust !== '' && $palletCust !== '' && strtolower($rollCust) !== strtolower($palletCust));
+    $isRefMismatch  = (!PalletManager::isStockRefNo($rollRef) && !PalletManager::isStockRefNo($palletRef) && $rollRef !== $palletRef);
+    $isUnmatched    = $isCustMismatch || $isRefMismatch;
+
+    $item['is_stock_ref'] = $isStockRoll;
+    $item['is_unmatched'] = $isUnmatched;
+    $item['unmatched_reason'] = $isUnmatched ? "Sticker: {$rollCust} / {$rollRef}" : '';
+
+    if ($isUnmatched) {
+        $hasUnmatchedRoll = true;
+        $unmatchedRollsList[] = trim($item['lot_no'] . ' ' . $item['coil_no'] . ' ' . str_replace('R', 'R-', $item['roll_no']))
+            . " (Sticker: {$rollCust}, {$rollRef} | Pallet: {$palletCust}, {$palletRef})";
+    }
+}
+unset($item);
+
+// Re-index $itemsBySeq with enriched items
 $itemsBySeq = [];
 foreach ($activeItems as $item) {
     $itemsBySeq[(int)$item['seq']] = $item;
 }
 
-// Pre-calculate total Est. Weight and check for STOCK rolls/SO
-$totalEstWgt = 0.0;
-$hasStockRoll = false;
-$stockRollsList = [];
-foreach ($activeItems as $item) {
-    $len = (float)($item['actual_length'] ?: $item['length']);
-    $totalEstWgt += calcEstWeight($len, (float)$item['width'], (float)$item['std_weight']);
-    if (PalletManager::isStockRefNo($item['ref_no'] ?? '')) {
-        $hasStockRoll = true;
-        $stockRollsList[] = trim($item['lot_no'] . ' ' . $item['coil_no'] . ' ' . str_replace('R', 'R-', $item['roll_no']));
-    }
-}
 $isStockPalletRef = PalletManager::isStockRefNo($activePallet['ref_no'] ?? '');
 $isSoStock = $isStockPalletRef || $hasStockRoll;
 
@@ -1699,6 +1726,24 @@ if (isset($_GET['success'])): ?>
                     </div>
                 </div>
 
+                <!-- ── Unmatched Customer / SO Warning Card ── -->
+                <div class="alert alert-warning d-flex align-items-center mb-3 py-2 px-3 <?= $hasUnmatchedRoll ? '' : 'd-none' ?>" id="palletUnmatchedWarningCard" style="border-left: 4px solid #f59e0b; background: #fffbeb; border-color: #fcd34d; color: #92400e;">
+                    <i class="bi bi-exclamation-triangle-fill fs-4 me-2 text-warning flex-shrink-0"></i>
+                    <div class="d-flex justify-content-between align-items-center w-100 flex-wrap gap-2">
+                        <div>
+                            <strong style="color: #b45309;"><i class="bi bi-shield-exclamation me-1"></i>Warning: Customer / SO Mismatch Detected!</strong>
+                            <div style="font-size:12.5px;" class="mt-1">
+                                Pallet Header is set to <strong><?= htmlspecialchars($palletCust) ?> (<?= htmlspecialchars($palletRef) ?>)</strong>, but coil(s) on this pallet have different sticker details:
+                                <ul class="mb-0 mt-1 ps-3">
+                                    <?php foreach ($unmatchedRollsList as $unm): ?>
+                                    <li><strong><?= htmlspecialchars($unm) ?></strong></li>
+                                    <?php endforeach; ?>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="alert <?= $isEditBuilding ? ($isReturnToStock ? 'alert-info border-info-subtle' : 'alert-warning border-warning-subtle') : 'alert-info' ?> py-2 mb-3" style="<?= $isEditBuilding ? ($isReturnToStock ? 'background:#f0f9ff; color:#0c4a6e;' : 'background:#fffbe6; color:#78350f;') : '' ?>">
                     <i class="bi <?= $isEditBuilding ? ($isReturnToStock ? 'bi-info-circle-fill text-info' : 'bi-info-circle-fill text-warning') : 'bi-qr-code-scan' ?> me-1"></i>
                     <?= $isEditBuilding
@@ -1764,9 +1809,11 @@ if (isset($_GET['success'])): ?>
                             $itemNod = (float)($item['nod_length'] ?? 0);
                             $hasNod  = $itemNod > 0;
                             $netLen  = $itemLen - $itemNod;
-                            $isItemStock = PalletManager::isStockRefNo($item['ref_no'] ?? '');
+                            $isItemStock = !empty($item['is_stock_ref']);
+                            $isItemUnm   = !empty($item['is_unmatched']);
+                            $unmInfo     = $item['unmatched_reason'] ?? '';
                         ?>
-                        <tr id="slot<?= $s ?>" data-slot="<?= $s ?>" data-filled="1" data-product-id="<?= $item['product_id'] ?>" data-weight="<?= number_format($itemWgt, 4) ?>" data-roll-ref="<?= htmlspecialchars($item['ref_no'] ?? '') ?>" data-lot-coil="<?= htmlspecialchars($item['lot_no'] . ' ' . $item['coil_no']) ?>" data-roll-no="<?= htmlspecialchars(str_replace('R','R-',$item['roll_no'])) ?>" data-is-stock="<?= $isItemStock ? '1' : '0' ?>">
+                        <tr id="slot<?= $s ?>" data-slot="<?= $s ?>" data-filled="1" data-product-id="<?= $item['product_id'] ?>" data-weight="<?= number_format($itemWgt, 4) ?>" data-roll-ref="<?= htmlspecialchars($item['ref_no'] ?? '') ?>" data-roll-customer="<?= htmlspecialchars($item['customer_name'] ?? '') ?>" data-lot-coil="<?= htmlspecialchars($item['lot_no'] . ' ' . $item['coil_no']) ?>" data-roll-no="<?= htmlspecialchars(str_replace('R','R-',$item['roll_no'])) ?>" data-is-stock="<?= $isItemStock ? '1' : '0' ?>" data-is-unmatched="<?= $isItemUnm ? '1' : '0' ?>" data-unmatched-info="<?= htmlspecialchars("Sticker: " . ($item['customer_name'] ?? '') . " / " . ($item['ref_no'] ?? '') . " vs Pallet: {$palletCust} / {$palletRef}") ?>">
                             <td class="fw-bold text-start ps-3" style="font-family:monospace; font-size:12px;"><?= htmlspecialchars(($item['stock_code'] ?? '') ?: '-') ?></td>
                             <td><?= htmlspecialchars($item['lot_no']) ?> <?= htmlspecialchars($item['coil_no']) ?></td>
                             <td>
@@ -1781,6 +1828,9 @@ if (isset($_GET['success'])): ?>
                                 <?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?>
                                 <?php if ($isItemStock): ?>
                                 <br><span class="badge bg-danger-subtle text-danger border border-danger-subtle ms-1" style="font-size:10px;">SO: STOCK</span>
+                                <?php endif; ?>
+                                <?php if ($isItemUnm): ?>
+                                <br><span class="badge bg-warning-subtle text-warning-emphasis border border-warning ms-1" style="font-size:10px;" title="Sticker: <?= htmlspecialchars($item['customer_name'] ?? '') ?> (<?= htmlspecialchars($item['ref_no'] ?? '') ?>)"><i class="bi bi-exclamation-triangle me-1"></i>Sticker: <?= htmlspecialchars($item['customer_name'] ?? '') ?> (<?= htmlspecialchars($item['ref_no'] ?? '') ?>)</span>
                                 <?php endif; ?>
                             </td>
                             <td class="fw-bold text-end pe-3 text-primary"><?= $itemWgt > 0 ? number_format($itemWgt, 2) : '-' ?></td>
@@ -3811,27 +3861,34 @@ function confirmSendToQC(event, isEdit) {
         return false;
     }
 
-    // List rolls where SO detail is STOCK
-    const stockRolls = [];
+    // List rolls where SO detail is STOCK or Unmatched Customer/SO
+    const problemRolls = [];
     document.querySelectorAll('#rollList tr[data-filled="1"]').forEach(tr => {
         const ref = tr.getAttribute('data-roll-ref') || '';
         const isStockAttr = tr.getAttribute('data-is-stock');
-        if (isStockAttr === '1' || isStockRef(ref)) {
+        const isUnmatchedAttr = tr.getAttribute('data-is-unmatched');
+        const isStock = isStockAttr === '1' || isStockRef(ref);
+        const isUnm   = isUnmatchedAttr === '1';
+
+        if (isStock || isUnm) {
             const lotCoil = tr.getAttribute('data-lot-coil') || '';
             const rollNo = tr.getAttribute('data-roll-no') || '';
             const fullRoll = (lotCoil + ' ' + rollNo).trim();
+            const detailStr = isUnm
+                ? (' — ' + (tr.getAttribute('data-unmatched-info') || 'Unmatched Customer/SO'))
+                : ' (SO: STOCK)';
             if (fullRoll) {
-                stockRolls.push(fullRoll);
+                problemRolls.push(fullRoll + detailStr);
             }
         }
     });
 
-    if (stockRolls.length > 0) {
+    if (problemRolls.length > 0) {
         if (event) {
             event.preventDefault();
             event.stopPropagation();
         }
-        showRedStockModal(stockRolls, isEdit);
+        showRedStockModal(problemRolls, isEdit);
         return false;
     }
 
@@ -3841,13 +3898,13 @@ function confirmSendToQC(event, isEdit) {
     return confirm(msg);
 }
 
-function showRedStockModal(stockRolls, isEdit) {
+function showRedStockModal(problemRolls, isEdit) {
     const container = document.getElementById('soStockRollsListContainer');
     if (container) {
         container.innerHTML = `
-            <div class="fw-bold mb-2 text-danger" style="font-size:13px;">sila semak roll SO detail:</div>
-            <ul class="mb-0 ps-3 text-danger fw-bold" style="font-size:13.5px; line-height:1.6;">
-                ${stockRolls.map(r => `<li>${escHtml(r)}</li>`).join('')}
+            <div class="fw-bold mb-2 text-danger" style="font-size:13px;">sila semak roll detail (STOCK / Unmatched Customer & SO):</div>
+            <ul class="mb-0 ps-3 text-danger fw-bold" style="font-size:13px; line-height:1.6;">
+                ${problemRolls.map(r => `<li>${escHtml(r)}</li>`).join('')}
             </ul>
         `;
     }
