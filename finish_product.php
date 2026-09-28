@@ -1693,7 +1693,20 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                     </div>
                 </td>
                 <td><?= htmlspecialchars($row['product'] ?? '') ?></td>
-                <td class="lot-coil-cell"><?= htmlspecialchars($lotCoilRoll) ?></td>
+                <td class="lot-coil-cell">
+                    <?= htmlspecialchars($lotCoilRoll) ?>
+                    <?php
+                        $rowRef = trim($row['ref_no'] ?? '');
+                        $rowCust = trim($row['customer_name'] ?? '');
+                        $isRowStock = (strcasecmp($rowRef, 'STOCK') === 0 || strcasecmp($rowCust, 'STOCK') === 0);
+                    ?>
+                    <?php if ($isRowStock): ?>
+                        <br><span class="badge badge-warning-stock" style="font-size:9px;"><i class="bi bi-exclamation-octagon-fill me-1"></i>SO: STOCK</span>
+                    <?php endif; ?>
+                    <?php if (!empty($rowCust) || !empty($rowRef)): ?>
+                        <br><small class="text-muted" style="font-size:10px;"><?= htmlspecialchars($rowCust) ?><?= $rowRef ? ' (' . htmlspecialchars($rowRef) . ')' : '' ?></small>
+                    <?php endif; ?>
+                </td>
                 <td><?= $row['width'] ?></td>
                 <td><?= $row['length'] ?></td>
                 <td id="actual-display-<?= $row['id'] ?>"><?= $row['actual_length'] ?></td>

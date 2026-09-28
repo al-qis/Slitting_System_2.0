@@ -23,6 +23,42 @@
         .nav-link:hover { background: rgba(255,255,255,0.1); color: #fff !important; }
         .active-nav { background: #0d6efd !important; color: #fff !important; font-weight: 600; }
         .sidebar-logo { border-bottom: 1px solid #444; padding-bottom: 1rem; margin-bottom: 1rem; }
+
+        /* Global Warning Badges requested by user */
+        /* Red Warning: Sticker SO Number = STOCK */
+        .badge-warning-stock {
+            background-color: #dc3545 !important;
+            color: #ffffff !important;
+            font-weight: 700;
+            border: 1px solid #b02a37 !important;
+            padding: 3px 7px;
+            border-radius: 4px;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+        }
+        .warning-stock-input {
+            border-color: #dc3545 !important;
+            background-color: #fff5f5 !important;
+            color: #dc3545 !important;
+            font-weight: bold;
+        }
+
+        /* Light Purple Warning: Mismatched Customer Details (Name / SO Num) */
+        .badge-warning-cust-mismatch {
+            background-color: #f3e8ff !important;
+            color: #6b21a8 !important;
+            border: 1px solid #d8b4fe !important;
+            font-weight: 700;
+            padding: 3px 7px;
+            border-radius: 4px;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+        }
+        .row-cust-mismatch {
+            background-color: #faf5ff !important;
+        }
     </style>
 </head>
 <body>

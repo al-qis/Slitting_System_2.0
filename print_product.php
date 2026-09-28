@@ -493,6 +493,12 @@ $lastPrintedAtDisplay = $lastPrintedAt ? date('d M Y H:i', strtotime($lastPrinte
 </div>
 <?php endif; ?>
 
+<?php if (strtoupper(trim($ref_no ?? '')) === 'STOCK' && !$embed): ?>
+<div class="no-print" style="max-width:500px;margin:0 auto 12px;padding:10px 16px;background:#dc3545;color:#ffffff;border-radius:6px;font-size:13px;font-weight:bold;text-align:center;box-shadow:0 2px 6px rgba(220,53,69,0.3);">
+    🚨 WARNING: STICKER SO NUMBER IS STOCK
+</div>
+<?php endif; ?>
+
 <div class="sticker-bg-wrap">
 <?php
 if (function_exists('render_sticker')) {
