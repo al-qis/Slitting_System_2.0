@@ -345,6 +345,9 @@ $totalCopies = array_sum(array_column($clean, 'copies'));
             <div class="product"><?= htmlspecialchars($row['product_label']) ?></div>
             <div class="sub"><?= htmlspecialchars($row['lot_coil_label']) ?> · Roll <?= htmlspecialchars($row['roll_label']) ?></div>
             <div class="cust"><?= htmlspecialchars($row['customer_to_save']) ?> · Ref: <?= htmlspecialchars($row['ref_no']) ?>
+                <?php if (strtoupper(trim($row['ref_no'])) === 'STOCK'): ?>
+                    <span class="badge badge-warning-stock ms-1"><i class="bi bi-exclamation-octagon-fill me-1"></i>SO: STOCK</span>
+                <?php endif; ?>
                 <?php if (!empty($row['was_already_printed'])): ?>
                     <span style="color:#c62828;font-weight:700;">· REPRINT</span>
                 <?php endif; ?>

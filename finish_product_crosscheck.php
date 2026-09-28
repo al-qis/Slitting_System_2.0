@@ -142,8 +142,20 @@ while ($row = $result->fetch_assoc()) {
     if ($plannedLot === '') { $plannedLot = $actualLot; } // fallback if not recorded on mother coil
     $lotMatch = (strcasecmp($actualLot, $plannedLot) === 0);
 
+    // 4. Customer Details Comparison (Actual vs Planned)
+    $actualCust = trim($row['customer_name'] ?? '');
+    $plannedCust = trim($row['plan_customer'] ?? '');
+    $custMatch = ($plannedCust === '' || strcasecmp($actualCust, $plannedCust) === 0);
+
+    $actualRef = trim($row['ref_no'] ?? '');
+    $plannedRef = trim($row['plan_ref_no'] ?? '');
+    $refMatch = ($plannedRef === '' || strcasecmp($actualRef, $plannedRef) === 0);
+
+    $isCustMismatch = (!$custMatch || !$refMatch);
+    $isStockRef = (strcasecmp($actualRef, 'STOCK') === 0);
+
     // Overall Roll Validation Status
-    $isDiscrepancy = (!$widthMatch || !$lengthMatch || !$lotMatch);
+    $isDiscrepancy = (!$widthMatch || !$lengthMatch || !$lotMatch || $isCustMismatch);
 
     // Reasons breakdown
     $reasons = [];
@@ -158,6 +170,15 @@ while ($row = $result->fetch_assoc()) {
     if (!$lotMatch) {
         $reasons[] = sprintf("Lot No: Actual '%s' vs Plan '%s'", $actualLot, $plannedLot);
         $lotMismatches++;
+    }
+    if (!$custMatch) {
+        $reasons[] = sprintf("Customer Name: Actual '%s' vs Plan '%s'", $actualCust, $plannedCust);
+    }
+    if (!$refMatch) {
+        $reasons[] = sprintf("Customer Ref/SO No: Actual '%s' vs Plan '%s'", $actualRef, $plannedRef);
+    }
+    if ($isStockRef) {
+        $reasons[] = "SO Number is STOCK";
     }
 
     // Apply Status Filter

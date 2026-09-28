@@ -1827,10 +1827,10 @@ if (isset($_GET['success'])): ?>
                             <td class="fw-bold">
                                 <?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?>
                                 <?php if ($isItemStock): ?>
-                                <br><span class="badge bg-danger-subtle text-danger border border-danger-subtle ms-1" style="font-size:10px;">SO: STOCK</span>
+                                <br><span class="badge badge-warning-stock ms-1" style="font-size:10px;"><i class="bi bi-exclamation-octagon-fill me-1"></i>SO: STOCK</span>
                                 <?php endif; ?>
                                 <?php if ($isItemUnm): ?>
-                                <br><span class="badge bg-warning-subtle text-warning-emphasis border border-warning ms-1" style="font-size:10px;" title="Sticker: <?= htmlspecialchars($item['customer_name'] ?? '') ?> (<?= htmlspecialchars($item['ref_no'] ?? '') ?>)"><i class="bi bi-exclamation-triangle me-1"></i>Sticker: <?= htmlspecialchars($item['customer_name'] ?? '') ?> (<?= htmlspecialchars($item['ref_no'] ?? '') ?>)</span>
+                                <br><span class="badge badge-warning-cust-mismatch ms-1" style="font-size:10px;" title="Sticker: <?= htmlspecialchars($item['customer_name'] ?? '') ?> (<?= htmlspecialchars($item['ref_no'] ?? '') ?>)"><i class="bi bi-exclamation-triangle-fill me-1"></i>Customer Detail Mismatch</span>
                                 <?php endif; ?>
                             </td>
                             <td class="fw-bold text-end pe-3 text-primary"><?= $itemWgt > 0 ? number_format($itemWgt, 2) : '-' ?></td>
@@ -3668,8 +3668,21 @@ function fillSlot(seq, p) {
     slotEl.setAttribute('data-roll-no', (p.roll_no || '').replace(/^R/, 'R-'));
     slotEl.setAttribute('data-is-stock', isRollStock ? '1' : '0');
 
+    const palletCust = (document.getElementById('constraintCustomerText')?.innerText || '').trim();
+    const palletRef  = (document.getElementById('constraintRefNoText')?.innerText || '').trim();
+    const rollCust   = (p.customer_name || '').trim();
+    const rollRef    = (p.ref_no || '').trim();
+
+    const isCustMismatch = (rollCust !== '' && palletCust !== '' && rollCust.toLowerCase() !== palletCust.toLowerCase());
+    const isRefMismatch  = (!isStockRef(rollRef) && !isStockRef(palletRef) && rollRef !== palletRef);
+    const isUnmatched    = isCustMismatch || isRefMismatch;
+
     const stockBadge = isRollStock
-        ? `<br><span class="badge bg-danger-subtle text-danger border border-danger-subtle ms-1" style="font-size:10px;">SO: STOCK</span>`
+        ? `<br><span class="badge badge-warning-stock ms-1" style="font-size:10px;"><i class="bi bi-exclamation-octagon-fill me-1"></i>SO: STOCK</span>`
+        : '';
+
+    const unmBadge = isUnmatched
+        ? `<br><span class="badge badge-warning-cust-mismatch ms-1" style="font-size:10px;" title="Sticker: ${escHtml(rollCust)} (${escHtml(rollRef)})"><i class="bi bi-exclamation-triangle-fill me-1"></i>Customer Detail Mismatch</span>`
         : '';
 
     slotEl.innerHTML = `
@@ -3682,7 +3695,7 @@ function fillSlot(seq, p) {
         <td>${len.toFixed(1)}${nodChip}</td>
         <td>${p.width !== null && p.width !== undefined ? (+p.width) : '-'}</td>
         <td>1</td>
-        <td class="fw-bold">${escHtml(p.roll_no.replace(/^R/, 'R-'))}${stockBadge}</td>
+        <td class="fw-bold">${escHtml(p.roll_no.replace(/^R/, 'R-'))}${stockBadge}${unmBadge}</td>
         <td class="fw-bold text-end pe-3 text-primary">${wgtStr}</td>
         <td>
             <button type="button"
@@ -3698,6 +3711,79 @@ function fillSlot(seq, p) {
     slotEl.classList.add('scan-flash');
     slotEl.addEventListener('animationend', () => slotEl.classList.remove('scan-flash'), { once: true });
     recalcTotalWeight();
+    reevaluatePalletMismatches();
+}
+
+function reevaluatePalletMismatches() {
+    const palletCustEl = document.getElementById('constraintCustomerText');
+    const palletRefEl  = document.getElementById('constraintRefNoText');
+    const palletCust   = (palletCustEl ? palletCustEl.innerText : '').trim();
+    const palletRef    = (palletRefEl ? palletRefEl.innerText : '').trim();
+    const warningCard  = document.getElementById('palletUnmatchedWarningCard');
+    const problemRollsList = [];
+
+    document.querySelectorAll('#rollList tr[data-filled="1"]').forEach(tr => {
+        const rollCust = (tr.getAttribute('data-roll-customer') || '').trim();
+        const rollRef  = (tr.getAttribute('data-roll-ref') || '').trim();
+        const lotCoil  = tr.getAttribute('data-lot-coil') || '';
+        const rollNo   = tr.getAttribute('data-roll-no') || '';
+        const fullRoll = (lotCoil + ' ' + rollNo).trim();
+
+        const isRollStock    = isStockRef(rollRef);
+        const isCustMismatch = (rollCust !== '' && palletCust !== '' && rollCust.toLowerCase() !== palletCust.toLowerCase());
+        const isRefMismatch  = (!isStockRef(rollRef) && !isStockRef(palletRef) && rollRef !== palletRef);
+        const isUnmatched    = isCustMismatch || isRefMismatch;
+
+        tr.setAttribute('data-is-unmatched', isUnmatched ? '1' : '0');
+        const unmInfo = isUnmatched ? `Sticker: ${rollCust} / ${rollRef} vs Pallet: ${palletCust} / ${palletRef}` : '';
+        tr.setAttribute('data-unmatched-info', unmInfo);
+
+        const rollTd = tr.querySelector('td.fw-bold:nth-child(6)');
+        if (rollTd) {
+            rollTd.querySelectorAll('.badge-warning-stock, .badge-warning-cust-mismatch').forEach(el => el.remove());
+            rollTd.querySelectorAll('br').forEach(br => br.remove());
+
+            if (isRollStock) {
+                const br = document.createElement('br');
+                const span = document.createElement('span');
+                span.className = 'badge badge-warning-stock ms-1';
+                span.style.fontSize = '10px';
+                span.innerHTML = '<i class="bi bi-exclamation-octagon-fill me-1"></i>SO: STOCK';
+                rollTd.appendChild(br);
+                rollTd.appendChild(span);
+            }
+
+            if (isUnmatched) {
+                const br = document.createElement('br');
+                const span = document.createElement('span');
+                span.className = 'badge badge-warning-cust-mismatch ms-1';
+                span.style.fontSize = '10px';
+                span.title = `Sticker: ${rollCust} (${rollRef})`;
+                span.innerHTML = '<i class="bi bi-exclamation-triangle-fill me-1"></i>Customer Detail Mismatch';
+                rollTd.appendChild(br);
+                rollTd.appendChild(span);
+
+                problemRollsList.push(`${fullRoll} (Sticker: ${rollCust}, ${rollRef} | Pallet: ${palletCust}, ${palletRef})`);
+            }
+        }
+    });
+
+    if (warningCard) {
+        if (problemRollsList.length > 0) {
+            warningCard.classList.remove('d-none');
+            const detailBox = warningCard.querySelector('div[style*="font-size:12.5px"], div[style*="font-size: 12.5px"]');
+            if (detailBox) {
+                detailBox.innerHTML = `
+                    Pallet Header is set to <strong>${escHtml(palletCust)} (${escHtml(palletRef)})</strong>, but coil(s) on this pallet have different sticker details:
+                    <ul class="mb-0 mt-1 ps-3">
+                        ${problemRollsList.map(r => `<li><strong>${escHtml(r)}</strong></li>`).join('')}
+                    </ul>
+                `;
+            }
+        } else {
+            warningCard.classList.add('d-none');
+        }
+    }
 }
 
 function clearSlot(seq) {
@@ -3717,6 +3803,7 @@ function clearSlot(seq) {
         <td>&mdash;</td>
         <td>&mdash;</td>
     `;
+    reevaluatePalletMismatches();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -4456,26 +4543,39 @@ function clearSummaryFilter() {
 let palletRenameSaving = false;
 
 function startEditPalletRename() {
-    document.getElementById('palletRenameDisplay').classList.add('d-none');
-    document.getElementById('palletRenameEditBtn').classList.add('d-none');
+    const disp = document.getElementById('palletRenameDisplay');
+    const btn  = document.getElementById('palletRenameEditBtn');
+    if (disp) disp.classList.add('d-none');
+    if (btn)  btn.classList.add('d-none');
     const form = document.getElementById('palletRenameForm');
-    form.classList.remove('d-none');
-    form.classList.add('d-flex');
+    if (form) {
+        form.classList.remove('d-none');
+        form.classList.add('d-flex');
+    }
     hidePalletRenameError();
 
     const input = document.getElementById('palletRenameInput');
-    input.value = currentPalletNo;
-    input.focus();
-    input.select();
+    if (input && typeof currentPalletNo !== 'undefined') {
+        input.value = currentPalletNo;
+        input.focus();
+        input.select();
+    }
 }
 
 function cancelEditPalletRename() {
     const form = document.getElementById('palletRenameForm');
-    form.classList.add('d-none');
-    form.classList.remove('d-flex');
-    document.getElementById('palletRenameDisplay').classList.remove('d-none');
-    document.getElementById('palletRenameEditBtn').classList.remove('d-none');
-    document.getElementById('palletRenameInput').value = currentPalletNo;
+    const disp = document.getElementById('palletRenameDisplay');
+    const btn  = document.getElementById('palletRenameEditBtn');
+    if (form) {
+        form.classList.add('d-none');
+        form.classList.remove('d-flex');
+    }
+    if (disp) disp.classList.remove('d-none');
+    if (btn)  btn.classList.remove('d-none');
+    const input = document.getElementById('palletRenameInput');
+    if (input && typeof currentPalletNo !== 'undefined') {
+        input.value = currentPalletNo;
+    }
     hidePalletRenameError();
 }
 
@@ -4486,11 +4586,13 @@ function onPalletRenameKeydown(event) {
 
 function showPalletRenameError(msg) {
     const el = document.getElementById('palletRenameError');
+    if (!el) return;
     el.textContent = msg;
     el.classList.remove('d-none');
 }
 function hidePalletRenameError() {
-    document.getElementById('palletRenameError').classList.add('d-none');
+    const el = document.getElementById('palletRenameError');
+    if (el) el.classList.add('d-none');
 }
 
 async function savePalletRename() {
@@ -4761,11 +4863,15 @@ function handleConstraintCustomerChange() {
 }
 
 function startEditConstraint() {
-    document.getElementById('constraintDisplayGroup').classList.add('d-none');
+    const dispGroup = document.getElementById('constraintDisplayGroup');
+    if (dispGroup) dispGroup.classList.add('d-none');
     const form = document.getElementById('constraintEditForm');
-    form.classList.remove('d-none');
-    form.classList.add('d-flex');
-    document.getElementById('constraintHintText').classList.add('d-none');
+    if (form) {
+        form.classList.remove('d-none');
+        form.classList.add('d-flex');
+    }
+    const hint = document.getElementById('constraintHintText');
+    if (hint) hint.classList.add('d-none');
     hideConstraintEditError();
 
     const customerSelect = document.getElementById('constraintCustomerInput');
@@ -4773,7 +4879,7 @@ function startEditConstraint() {
     const refNoInput     = document.getElementById('constraintRefNoInput');
 
     let matchedCode = '';
-    if (currentConstraintCustomer) {
+    if (typeof currentConstraintCustomer !== 'undefined' && currentConstraintCustomer) {
         if (PALLET_CUSTOMERS_MAP[currentConstraintCustomer]) {
             matchedCode = currentConstraintCustomer;
         } else {
@@ -4786,36 +4892,47 @@ function startEditConstraint() {
         }
     }
 
-    if (matchedCode) {
-        customerSelect.value = matchedCode;
-        if (customInput) customInput.style.display = 'none';
-    } else if (currentConstraintCustomer) {
-        customerSelect.value = 'OTHER';
-        if (customInput) {
-            customInput.value = currentConstraintCustomer;
-            customInput.style.display = 'block';
+    if (customerSelect) {
+        if (matchedCode) {
+            customerSelect.value = matchedCode;
+            if (customInput) customInput.style.display = 'none';
+        } else if (typeof currentConstraintCustomer !== 'undefined' && currentConstraintCustomer) {
+            customerSelect.value = 'OTHER';
+            if (customInput) {
+                customInput.value = currentConstraintCustomer;
+                customInput.style.display = 'block';
+            }
+        } else {
+            customerSelect.value = '';
+            if (customInput) customInput.style.display = 'none';
         }
-    } else {
-        customerSelect.value = '';
-        if (customInput) customInput.style.display = 'none';
     }
 
-    refNoInput.value = currentConstraintRefNo;
-    customerSelect.focus();
+    if (refNoInput && typeof currentConstraintRefNo !== 'undefined') {
+        refNoInput.value = currentConstraintRefNo;
+    }
+    if (customerSelect) customerSelect.focus();
 }
 
 function cancelEditConstraint() {
     const form = document.getElementById('constraintEditForm');
-    form.classList.add('d-none');
-    form.classList.remove('d-flex');
-    document.getElementById('constraintDisplayGroup').classList.remove('d-none');
-    document.getElementById('constraintHintText').classList.remove('d-none');
+    if (form) {
+        form.classList.add('d-none');
+        form.classList.remove('d-flex');
+    }
+    const dispGroup = document.getElementById('constraintDisplayGroup');
+    if (dispGroup) dispGroup.classList.remove('d-none');
+    const hint = document.getElementById('constraintHintText');
+    if (hint) hint.classList.remove('d-none');
 
     const customerSelect = document.getElementById('constraintCustomerInput');
     const customInput    = document.getElementById('constraintCustomCustomerInput');
+    const refNoInput     = document.getElementById('constraintRefNoInput');
     if (customerSelect) customerSelect.value = '';
     if (customInput) { customInput.value = ''; customInput.style.display = 'none'; }
-    document.getElementById('constraintRefNoInput').value = currentConstraintRefNo;
+    if (refNoInput && typeof currentConstraintRefNo !== 'undefined') {
+        refNoInput.value = currentConstraintRefNo;
+    }
     hideConstraintEditError();
 }
 
@@ -4826,6 +4943,7 @@ function onConstraintEditKeydown(event) {
 
 function showConstraintEditError(msg) {
     const el = document.getElementById('constraintEditError');
+    if (!el) return;
     el.textContent = msg;
     el.classList.remove('d-none');
 }
@@ -4895,6 +5013,9 @@ async function saveConstraintEdit() {
 
         const refTextEl = document.getElementById('constraintRefNoText');
         if (refTextEl) refTextEl.textContent = currentConstraintRefNo;
+
+        // Re-evaluate all mismatches & update warning card now that header changed!
+        reevaluatePalletMismatches();
 
         if (typeof updateSendToQcState === 'function') updateSendToQcState();
 
