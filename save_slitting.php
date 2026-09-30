@@ -270,7 +270,7 @@ try {
 
         // ── Keep roll_no clean for UI/stickers/reports & generate unique DB roll_key ────
         $display_roll_no = $roll_no_safe; // Clean roll name e.g. "R3"
-        $base_roll_key   = $roll_lot_no . $coil_no . $display_roll_no;
+        $base_roll_key   = $roll_lot_no . '_' . $coil_no . '_' . $display_roll_no . '_' . round($width, 2);
         $target_roll_key = $base_roll_key;
 
         $check_key_stmt = $conn->prepare(
