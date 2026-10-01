@@ -235,6 +235,12 @@ $uploadedFileName = $_SESSION['last_d365_filename'] ?? '';
             </div>
             
             <div class="d-flex align-items-center gap-2">
+                <!-- Download Sample Template Button -->
+                <a href="reconcile_side_by_side.php?action=download_template" class="btn btn-outline-secondary fw-semibold shadow-sm d-flex align-items-center gap-2">
+                    <i class="bi bi-download"></i>
+                    <span>Download Sample D365 Template</span>
+                </a>
+
                 <!-- Export to Excel Button (Core Requirement 4) -->
                 <form action="reconcile_side_by_side.php" method="POST" class="m-0">
                     <input type="hidden" name="month" value="<?= $selectedMonth ?>">
