@@ -266,6 +266,7 @@ $uploadedFileName = $_SESSION['last_d365_filename'] ?? '';
                             <i class="bi bi-calendar3 me-1"></i> Select Month (Ground Truth)
                         </label>
                         <select name="month" class="form-select fw-semibold">
+                            <option value="0" <?= $selectedMonth === 0 ? 'selected' : '' ?>>All Months (All Active Scans)</option>
                             <?php foreach ($monthNames as $mNum => $mName): ?>
                                 <option value="<?= $mNum ?>" <?= $selectedMonth === $mNum ? 'selected' : '' ?>>
                                     <?= $mName ?>
