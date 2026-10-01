@@ -472,6 +472,18 @@ $scannedRows = fetchScannedPhysicalStore($pdo, $selectedMonth, $selectedYear);
 // Reconcile 3-way data
 $reconciledResults = evaluateReconciliation($scannedRows, $d365Map);
 
+// Handle sample template download
+if ($action === 'download_template') {
+    $sampleFile = __DIR__ . '/sample_d365_template.xlsx';
+    if (file_exists($sampleFile)) {
+        header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        header('Content-Disposition: attachment; filename="Sample_D365_Export_Template.xlsx"');
+        header('Content-Length: ' . filesize($sampleFile));
+        readfile($sampleFile);
+        exit;
+    }
+}
+
 // Trigger Excel Download if requested
 if ($action === 'export') {
     $monthName = $monthNames[$selectedMonth] ?? 'Month';
