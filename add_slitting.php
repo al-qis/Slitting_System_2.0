@@ -695,32 +695,9 @@ function updateLotLabel(idx) {
 
 // ── SFC Balance Warning Interceptor (≥ 80mm) ────────────────
 let isBypassingSfcWarning = false;
-let isSubmitting = false;
-
-function disableSubmitButton() {
-    if (isSubmitting) return;
-    isSubmitting = true;
-    const submitBtn = document.getElementById('submitBtn');
-    if (submitBtn) {
-        submitBtn.disabled = true;
-        submitBtn.classList.add('disabled');
-        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Saving Production Data... Please wait';
-    }
-}
 
 function checkAndShowSfcModal(e) {
-    if (isSubmitting) {
-        if (e) {
-            e.preventDefault();
-            e.stopPropagation();
-        }
-        return false;
-    }
-
-    if (isBypassingSfcWarning) {
-        disableSubmitButton();
-        return true;
-    }
+    if (isBypassingSfcWarning) return true;
 
     let originalWidth = parseFloat(sourceData.originalWidth) || 0;
     
@@ -767,7 +744,6 @@ function checkAndShowSfcModal(e) {
         }
         return false;
     }
-    disableSubmitButton();
     return true;
 }
 
@@ -831,7 +807,6 @@ function handleSfcChoice(choice) {
         }
 
         isBypassingSfcWarning = true;
-        disableSubmitButton();
         const mainForm = document.querySelector('form');
         if (mainForm) mainForm.submit();
     }
