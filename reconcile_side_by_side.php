@@ -164,12 +164,37 @@ function readD365Spreadsheet(string $filePath): array {
         $colMtr  = null;
 
         foreach ($headerRow as $colLetter => $cellVal) {
-            $headerText = strtolower(trim((string)$cellVal));
-            if (in_array($headerText, ['d365 item number', 'item number', 'item_number', 'item no', 'item_no', 'product', 'd365_item_number', 'item'], true)) {
+            $headerText = strtolower(trim(preg_replace('/\s+/', ' ', (string)$cellVal)));
+            
+            // 1. Item Number matching (Item number, D365 ITEM NUMBER, Product, etc.)
+            if ($colItem === null && (
+                in_array($headerText, ['item number', 'item_number', 'd365 item number', 'd365_item_number', 'item no', 'item_no', 'product', 'item', 'item_code', 'item code'], true) ||
+                strpos($headerText, 'item') !== false ||
+                strpos($headerText, 'product') !== false
+            )) {
                 $colItem = $colLetter;
-            } elseif (in_array($headerText, ['d365 lot no', 'lot no', 'lot_no', 'lot number', 'lot_number', 'lot', 'd365_lot_no'], true)) {
+            } 
+            
+            // 2. Batch Number / Lot No matching (Batch number, D365 LOT NO, Lot no, Batch no, etc.)
+            if ($colLot === null && (
+                in_array($headerText, ['batch number', 'batch_number', 'batch no', 'batch_no', 'batch', 'd365 lot no', 'd365_lot_no', 'lot no', 'lot_no', 'lot number', 'lot_number', 'lot', 'serial number', 'serial_number'], true) ||
+                strpos($headerText, 'batch') !== false ||
+                strpos($headerText, 'lot') !== false ||
+                strpos($headerText, 'serial') !== false
+            )) {
                 $colLot = $colLetter;
-            } elseif (in_array($headerText, ['mtr', 'meter', 'meters', 'length', 'qty', 'actual mtr', 'erp mtr', 'd365 mtr', 'd365_mtr'], true)) {
+            }
+
+            // 3. Physical Inventory / MTR matching (Physical inventory, MTR, Meter, Length, Qty, etc.)
+            if ($colMtr === null && (
+                in_array($headerText, ['physical inventory', 'physical_inventory', 'physical inv', 'physical_inv', 'inventory', 'physical qty', 'physical_qty', 'mtr', 'meter', 'meters', 'length', 'qty', 'quantity', 'actual mtr', 'erp mtr', 'd365 mtr', 'd365_mtr', 'on hand', 'on_hand'], true) ||
+                strpos($headerText, 'inventory') !== false ||
+                strpos($headerText, 'physical') !== false ||
+                strpos($headerText, 'mtr') !== false ||
+                strpos($headerText, 'meter') !== false ||
+                strpos($headerText, 'length') !== false ||
+                strpos($headerText, 'qty') !== false
+            )) {
                 $colMtr = $colLetter;
             }
         }
