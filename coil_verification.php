@@ -14,6 +14,7 @@ require_once __DIR__ . '/reconcile_side_by_side.php';
 
 // Prepare Summary Metrics
 $totalRows = count($reconciledResults);
+$actualScannedCount = count($scannedRows ?? []);
 $trueCount = 0;
 $falseCount = 0;
 $totalNodVariance = 0.0;
@@ -319,10 +320,10 @@ $uploadedFileName = $_SESSION['last_d365_filename'] ?? '';
                 <div class="kpi-card kpi-total card-custom">
                     <div class="d-flex justify-content-between align-items-center">
                         <div>
-                            <div class="text-uppercase fw-bold opacity-75 small">Total Reconciled</div>
-                            <h2 class="fw-bold mb-0 mt-1"><?= number_format($totalRows) ?></h2>
+                            <div class="text-uppercase fw-bold opacity-75 small">Actual Coil Scanned</div>
+                            <h2 class="fw-bold mb-0 mt-1"><?= number_format($actualScannedCount) ?></h2>
                         </div>
-                        <div class="fs-1 opacity-50"><i class="bi bi-table"></i></div>
+                        <div class="fs-1 opacity-50"><i class="bi bi-upc-scan"></i></div>
                     </div>
                 </div>
             </div>
