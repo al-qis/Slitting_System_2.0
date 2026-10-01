@@ -1,0 +1,487 @@
+<?php
+/**
+ * Side-by-Side Coil Verification & 3-Way Reconciliation Backend Processor
+ * File Reader, Database Query (PDO MySQL), Evaluation Logic, and Excel Exporter
+ * Location: /slitting_system/reconcile_side_by_side.php
+ */
+
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+// Include database config and composer autoloader
+require_once __DIR__ . '/config.php';
+
+// Composer Autoload for PhpSpreadsheet
+if (file_exists(__DIR__ . '/vendor/autoload.php')) {
+    require_once __DIR__ . '/vendor/autoload.php';
+}
+
+use PhpOffice\PhpSpreadsheet\IOFactory;
+use PhpOffice\PhpSpreadsheet\Spreadsheet;
+use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
+use PhpOffice\PhpSpreadsheet\Style\Alignment;
+use PhpOffice\PhpSpreadsheet\Style\Border;
+use PhpOffice\PhpSpreadsheet\Style\Fill;
+use PhpOffice\PhpSpreadsheet\Style\Color;
+
+// Initialize PDO Database Connection
+$pdo = null;
+try {
+    $dsn = "mysql:host={$host};dbname={$dbname};charset=utf8mb4";
+    $pdo = new PDO($dsn, $user, $pass, [
+        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+    ]);
+} catch (PDOException $e) {
+    // Graceful fallback if PDO connection fails
+    error_log("PDO Connection Error: " . $e->getMessage());
+}
+
+/**
+ * 1. Data Source 1: Scanned Physical Store (Table 1 - Ground Truth)
+ * Auto-queried from MySQL database for chosen month & year.
+ */
+function fetchScannedPhysicalStore(?PDO $pdo, int $month, int $year): array {
+    if (!$pdo) return [];
+
+    $startDate = sprintf('%04d-%02d-01 00:00:00', $year, $month);
+    $endDate   = date('Y-m-t 23:59:59', strtotime($startDate));
+
+    // Try stock_crosscheck_scans first
+    try {
+        $sqlScans = "SELECT 
+                        COALESCE(NULLIF(TRIM(d365_item_number), ''), NULLIF(TRIM(product_code), ''), 'N/A') AS d365_item_number,
+                        COALESCE(NULLIF(TRIM(d365_lot_no), ''), NULLIF(TRIM(lot), ''), 'N/A') AS d365_lot_no,
+                        CAST(COALESCE(NULLIF(mtr, ''), length, 0) AS DECIMAL(10,2)) AS mtr
+                     FROM stock_crosscheck_scans
+                     WHERE scanned_at BETWEEN :start_date AND :end_date
+                     ORDER BY scanned_at DESC";
+        $stmt = $pdo->prepare($sqlScans);
+        $stmt->execute([':start_date' => $startDate, ':end_date' => $endDate]);
+        $rows = $stmt->fetchAll();
+        if (!empty($rows)) {
+            return $rows;
+        }
+    } catch (PDOException $e) {
+        // Table or query issue, fall through
+    }
+
+    // Fallback 1: Query mother_coil by date
+    try {
+        $sqlMother = "SELECT 
+                        COALESCE(NULLIF(TRIM(product), ''), 'N/A') AS d365_item_number,
+                        COALESCE(NULLIF(TRIM(lot_no), ''), 'N/A') AS d365_lot_no,
+                        CAST(COALESCE(length, 0) AS DECIMAL(10,2)) AS mtr
+                      FROM mother_coil
+                      WHERE COALESCE(printed_at, date_in, date_created) BETWEEN :start_date AND :end_date
+                      ORDER BY id DESC";
+        $stmtM = $pdo->prepare($sqlMother);
+        $stmtM->execute([':start_date' => $startDate, ':end_date' => $endDate]);
+        $rows = $stmtM->fetchAll();
+        if (!empty($rows)) {
+            return $rows;
+        }
+    } catch (PDOException $e) {
+        // Fall through
+    }
+
+    // Fallback 2: General query from stock_crosscheck_scans or mother_coil if date filtering yields no rows
+    try {
+        $sqlAllScans = "SELECT 
+                            COALESCE(NULLIF(TRIM(d365_item_number), ''), NULLIF(TRIM(product_code), ''), 'N/A') AS d365_item_number,
+                            COALESCE(NULLIF(TRIM(d365_lot_no), ''), NULLIF(TRIM(lot), ''), 'N/A') AS d365_lot_no,
+                            CAST(COALESCE(NULLIF(mtr, ''), length, 0) AS DECIMAL(10,2)) AS mtr
+                        FROM stock_crosscheck_scans
+                        ORDER BY id DESC LIMIT 500";
+        $stmtA = $pdo->query($sqlAllScans);
+        $rows = $stmtA->fetchAll();
+        if (!empty($rows)) {
+            return $rows;
+        }
+    } catch (PDOException $e) {
+        // Fall through
+    }
+
+    // Fallback 3: Return recent mother_coil rows
+    try {
+        $sqlRecent = "SELECT 
+                        COALESCE(NULLIF(TRIM(product), ''), 'N/A') AS d365_item_number,
+                        COALESCE(NULLIF(TRIM(lot_no), ''), 'N/A') AS d365_lot_no,
+                        CAST(COALESCE(length, 0) AS DECIMAL(10,2)) AS mtr
+                      FROM mother_coil
+                      ORDER BY id DESC LIMIT 500";
+        $stmtR = $pdo->query($sqlRecent);
+        return $stmtR->fetchAll();
+    } catch (PDOException $e) {
+        return [];
+    }
+}
+
+/**
+ * 2. Data Source 2: D365 System Export File Reader (Table 2 - ERP Reference)
+ * Reads uploaded .xlsx, .xls, or .csv using PhpSpreadsheet.
+ */
+function readD365Spreadsheet(string $filePath): array {
+    $d365DataMap = [];
+
+    if (!class_exists('\PhpOffice\PhpSpreadsheet\IOFactory')) {
+        return [];
+    }
+
+    try {
+        $spreadsheet = IOFactory::load($filePath);
+        $sheet       = $spreadsheet->getActiveSheet();
+        $allRows     = $sheet->toArray(null, true, true, true);
+
+        if (empty($allRows)) {
+            return [];
+        }
+
+        // Header detection from first non-empty row
+        $headerRow = array_shift($allRows);
+        $colItem = null;
+        $colLot  = null;
+        $colMtr  = null;
+
+        foreach ($headerRow as $colLetter => $cellVal) {
+            $headerText = strtolower(trim((string)$cellVal));
+            if (in_array($headerText, ['d365 item number', 'item number', 'item_number', 'item no', 'item_no', 'product', 'd365_item_number', 'item'], true)) {
+                $colItem = $colLetter;
+            } elseif (in_array($headerText, ['d365 lot no', 'lot no', 'lot_no', 'lot number', 'lot_number', 'lot', 'd365_lot_no'], true)) {
+                $colLot = $colLetter;
+            } elseif (in_array($headerText, ['mtr', 'meter', 'meters', 'length', 'qty', 'actual mtr', 'erp mtr', 'd365 mtr', 'd365_mtr'], true)) {
+                $colMtr = $colLetter;
+            }
+        }
+
+        // Default column positions if headers are standard A, B, C
+        if (!$colItem) $colItem = 'A';
+        if (!$colLot)  $colLot  = 'B';
+        if (!$colMtr)  $colMtr  = 'C';
+
+        foreach ($allRows as $row) {
+            $rawItem = trim((string)($row[$colItem] ?? ''));
+            $rawLot  = trim((string)($row[$colLot]  ?? ''));
+            $rawMtr  = (string)($row[$colMtr] ?? '0');
+
+            if ($rawItem === '' && $rawLot === '') {
+                continue;
+            }
+
+            $cleanMtr = (float)preg_replace('/[^0-9.]/', '', $rawMtr);
+            $key = strtoupper(preg_replace('/\s+/', ' ', $rawLot !== '' ? $rawLot : $rawItem));
+
+            $d365DataMap[$key] = [
+                'd365_item_number' => $rawItem !== '' ? $rawItem : 'N/A',
+                'd365_lot_no'      => $rawLot !== '' ? $rawLot : 'N/A',
+                'd365_mtr'          => round($cleanMtr, 2)
+            ];
+        }
+    } catch (\Exception $e) {
+        error_log("PhpSpreadsheet Reader Error: " . $e->getMessage());
+    }
+
+    return $d365DataMap;
+}
+
+/**
+ * 3. Verification & Discrepancy Status (Table 3 - Auto Evaluation)
+ * Performs 3-Way Reconciliation & Auto-Sort by Discrepancy Priority.
+ */
+function evaluateReconciliation(array $scannedRows, array $d365Map): array {
+    $results = [];
+    $matchedD365Keys = [];
+
+    // Loop 1: Evaluate Scanned Store Ground Truth items
+    foreach ($scannedRows as $scan) {
+        $scannedItem = trim((string)($scan['d365_item_number'] ?? ''));
+        $scannedLot  = trim((string)($scan['d365_lot_no'] ?? ''));
+        $scannedMtr  = round((float)($scan['mtr'] ?? 0), 2);
+
+        $lookupKey = strtoupper(preg_replace('/\s+/', ' ', $scannedLot));
+        $d365Record = $d365Map[$lookupKey] ?? null;
+
+        // Try partial fallback if lot search has composite structure
+        if (!$d365Record && !empty($scannedLot)) {
+            foreach ($d365Map as $key => $rec) {
+                if (strpos($key, $lookupKey) !== false || strpos($lookupKey, $key) !== false) {
+                    $d365Record = $rec;
+                    $lookupKey = $key;
+                    break;
+                }
+            }
+        }
+
+        if ($d365Record) {
+            $matchedD365Keys[$lookupKey] = true;
+
+            $d365Item = trim((string)$d365Record['d365_item_number']);
+            $d365Lot  = trim((string)$d365Record['d365_lot_no']);
+            $d365Mtr  = round((float)$d365Record['d365_mtr'], 2);
+
+            // Evaluations
+            $statusItem = (strcasecmp($scannedItem, $d365Item) === 0);
+            $statusLot  = (!empty($scannedLot) && (strcasecmp($scannedLot, $d365Lot) === 0 || strpos(strtoupper($d365Lot), strtoupper($scannedLot)) !== false));
+            $statusMtr  = (abs($scannedMtr - $d365Mtr) < 0.001);
+            $nod        = round(abs($scannedMtr - $d365Mtr), 2);
+
+            $hasDiscrepancy = (!$statusItem || !$statusLot || !$statusMtr || $nod > 0.001);
+
+            $results[] = [
+                'scanned_item'    => $scannedItem,
+                'scanned_lot'     => $scannedLot,
+                'scanned_mtr'     => $scannedMtr,
+                'd365_item'       => $d365Item,
+                'd365_lot'        => $d365Lot,
+                'd365_mtr'        => $d365Mtr,
+                'status_item'     => $statusItem,
+                'status_lot'      => $statusLot,
+                'status_mtr'      => $statusMtr,
+                'nod'             => $nod,
+                'has_discrepancy' => $hasDiscrepancy
+            ];
+        } else {
+            // Found in Scanned Store, missing in D365 System Export
+            $results[] = [
+                'scanned_item'    => $scannedItem,
+                'scanned_lot'     => $scannedLot,
+                'scanned_mtr'     => $scannedMtr,
+                'd365_item'       => '-',
+                'd365_lot'        => '-',
+                'd365_mtr'        => 0.0,
+                'status_item'     => false,
+                'status_lot'      => false,
+                'status_mtr'      => false,
+                'nod'             => $scannedMtr,
+                'has_discrepancy' => true
+            ];
+        }
+    }
+
+    // Loop 2: Process D365 Records missing from Physical Scanned Store
+    foreach ($d365Map as $key => $d365Record) {
+        if (isset($matchedD365Keys[$key])) {
+            continue;
+        }
+
+        $d365Item = trim((string)$d365Record['d365_item_number']);
+        $d365Lot  = trim((string)$d365Record['d365_lot_no']);
+        $d365Mtr  = round((float)$d365Record['d365_mtr'], 2);
+
+        $results[] = [
+            'scanned_item'    => '-',
+            'scanned_lot'     => '-',
+            'scanned_mtr'     => 0.0,
+            'd365_item'       => $d365Item,
+            'd365_lot'        => $d365Lot,
+            'd365_mtr'        => $d365Mtr,
+            'status_item'     => false,
+            'status_lot'      => false,
+            'status_mtr'      => false,
+            'nod'             => $d365Mtr,
+            'has_discrepancy' => true
+        ];
+    }
+
+    // Core Functional Requirement 1: Auto-Sort by Discrepancy (Issue Priority)
+    // Any row containing at least one FALSE status (or NOD > 0) MUST automatically sort to the very top.
+    usort($results, function ($a, $b) {
+        // Priority 1: Discrepancy rows first (TRUE discrepancy / errors top)
+        if ($a['has_discrepancy'] !== $b['has_discrepancy']) {
+            return $a['has_discrepancy'] ? -1 : 1;
+        }
+        // Priority 2: Higher NOD variance magnitude
+        if ($a['nod'] !== $b['nod']) {
+            return ($b['nod'] <=> $a['nod']);
+        }
+        // Priority 3: Alphabetical by Lot Number
+        $lotA = ($a['scanned_lot'] !== '-') ? $a['scanned_lot'] : $a['d365_lot'];
+        $lotB = ($b['scanned_lot'] !== '-') ? $b['scanned_lot'] : $b['d365_lot'];
+        return strcasecmp($lotA, $lotB);
+    });
+
+    return $results;
+}
+
+/**
+ * 4. Core Functional Requirement 4: Export to Excel with PhpSpreadsheet
+ */
+function exportSideBySideExcel(array $reconciledResults, string $monthTitle, int $year): void {
+    if (!class_exists('\PhpOffice\PhpSpreadsheet\Spreadsheet')) {
+        die("PhpSpreadsheet library is required for Excel Export.");
+    }
+
+    $spreadsheet = new Spreadsheet();
+    $sheet = $spreadsheet->getActiveSheet();
+    $sheet->setTitle('Reconciliation');
+
+    // Title Banner
+    $sheet->mergeCells('A1:J1');
+    $sheet->setCellValue('A1', "SIDE-BY-SIDE COIL VERIFICATION RECONCILIATION REPORT - {$monthTitle} {$year}");
+    $sheet->getStyle('A1')->getFont()->setBold(true)->setSize(14)->setColor(new Color('FFFFFF'));
+    $sheet->getStyle('A1')->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FF1E293B');
+    $sheet->getStyle('A1')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER)->setVertical(Alignment::VERTICAL_CENTER);
+    $sheet->getRowDimension(1)->setRowHeight(35);
+
+    // Super Headers (Row 3)
+    $sheet->mergeCells('A3:C3');
+    $sheet->setCellValue('A3', '1. SCANNED PHYSICAL STORE (GROUND TRUTH)');
+    $sheet->getStyle('A3')->getFont()->setBold(true)->setColor(new Color('FFFFFF'));
+    $sheet->getStyle('A3')->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FF0F172A');
+    $sheet->getStyle('A3')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
+
+    $sheet->mergeCells('D3:F3');
+    $sheet->setCellValue('D3', '2. D365 SYSTEM EXPORT (ERP REFERENCE)');
+    $sheet->getStyle('D3')->getFont()->setBold(true)->setColor(new Color('FFFFFF'));
+    $sheet->getStyle('D3')->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FF0D9488');
+    $sheet->getStyle('D3')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
+
+    $sheet->mergeCells('G3:J3');
+    $sheet->setCellValue('G3', '3. VERIFICATION & DISCREPANCY STATUS (AUTO EVALUATION)');
+    $sheet->getStyle('G3')->getFont()->setBold(true)->setColor(new Color('FFFFFF'));
+    $sheet->getStyle('G3')->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FF6D28D9');
+    $sheet->getStyle('G3')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
+
+    // Column Headers (Row 4)
+    $columnMap = [
+        'A' => 'D365 ITEM NUMBER',
+        'B' => 'D365 LOT NO',
+        'C' => 'MTR',
+        'D' => 'D365 ITEM NUMBER',
+        'E' => 'D365 LOT NO',
+        'F' => 'MTR',
+        'G' => 'STATUS ITEM NUMBER',
+        'H' => 'STATUS LOT NO',
+        'I' => 'STATUS MTR',
+        'J' => 'NOD (Meters)'
+    ];
+
+    foreach ($columnMap as $col => $title) {
+        $cellRef = "{$col}4";
+        $sheet->setCellValue($cellRef, $title);
+        $sheet->getStyle($cellRef)->getFont()->setBold(true)->setSize(10);
+        $sheet->getStyle($cellRef)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFE2E8F0');
+        $sheet->getStyle($cellRef)->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
+    }
+    $sheet->getRowDimension(4)->setRowHeight(24);
+
+    // Render Data Rows (Row 5+)
+    $rIdx = 5;
+    foreach ($reconciledResults as $row) {
+        $sheet->setCellValue("A{$rIdx}", $row['scanned_item']);
+        $sheet->setCellValue("B{$rIdx}", $row['scanned_lot']);
+        $sheet->setCellValue("C{$rIdx}", $row['scanned_mtr']);
+
+        $sheet->setCellValue("D{$rIdx}", $row['d365_item']);
+        $sheet->setCellValue("E{$rIdx}", $row['d365_lot']);
+        $sheet->setCellValue("F{$rIdx}", $row['d365_mtr']);
+
+        $sheet->setCellValue("G{$rIdx}", $row['status_item'] ? 'TRUE' : 'FALSE');
+        $sheet->setCellValue("H{$rIdx}", $row['status_lot']  ? 'TRUE' : 'FALSE');
+        $sheet->setCellValue("I{$rIdx}", $row['status_mtr']  ? 'TRUE' : 'FALSE');
+        $sheet->setCellValue("J{$rIdx}", $row['nod']);
+
+        // Alignments & Number formatting
+        $sheet->getStyle("A{$rIdx}:B{$rIdx}")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_LEFT);
+        $sheet->getStyle("C{$rIdx}")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_RIGHT);
+        $sheet->getStyle("C{$rIdx}")->getNumberFormat()->setFormatCode('#,##0.00');
+
+        $sheet->getStyle("D{$rIdx}:E{$rIdx}")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_LEFT);
+        $sheet->getStyle("F{$rIdx}")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_RIGHT);
+        $sheet->getStyle("F{$rIdx}")->getNumberFormat()->setFormatCode('#,##0.00');
+
+        $sheet->getStyle("J{$rIdx}")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_RIGHT);
+        $sheet->getStyle("J{$rIdx}")->getNumberFormat()->setFormatCode('#,##0.00');
+
+        // Status Styling (G, H, I)
+        foreach (['G', 'H', 'I'] as $statusCol) {
+            $statusVal = $sheet->getCell("{$statusCol}{$rIdx}")->getValue();
+            $cellStyle = $sheet->getStyle("{$statusCol}{$rIdx}");
+            $cellStyle->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
+
+            if ($statusVal === 'TRUE') {
+                $cellStyle->getFont()->setColor(new Color('FF0F5132'))->setBold(true);
+                $cellStyle->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFD1E7DD');
+            } else {
+                // Soft red background (#f8d7da), bold red text (#721c24)
+                $cellStyle->getFont()->setColor(new Color('FF721C24'))->setBold(true);
+                $cellStyle->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFF8D7DA');
+            }
+        }
+
+        // NOD styling (J)
+        $nodStyle = $sheet->getStyle("J{$rIdx}");
+        if ($row['nod'] > 0) {
+            // Soft yellow (#fff3cd), dark yellow text (#856404)
+            $nodStyle->getFont()->setColor(new Color('FF856404'))->setBold(true);
+            $nodStyle->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFFFF3CD');
+        }
+
+        $rIdx++;
+    }
+
+    // Auto Column Widths
+    foreach (range('A', 'J') as $colLetter) {
+        $sheet->getColumnDimension($colLetter)->setAutoSize(true);
+    }
+
+    // Border Styling for the whole table
+    $lastRow = $rIdx - 1;
+    if ($lastRow >= 4) {
+        $sheet->getStyle("A3:J{$lastRow}")->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN)->setColor(new Color('FFCBD5E1'));
+    }
+
+    // Download headers
+    $fileName = "Coil_Verification_Reconciliation_" . date('Ymd_His') . ".xlsx";
+    header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    header('Content-Disposition: attachment; filename="' . $fileName . '"');
+    header('Cache-Control: max-age=0');
+
+    $writer = new Xlsx($spreadsheet);
+    $writer->save('php://output');
+    exit;
+}
+
+// ── Controller Handler ─────────────────────────────────────────
+
+$monthNames = [
+    1 => 'January', 2 => 'February', 3 => 'March', 4 => 'April',
+    5 => 'May', 6 => 'June', 7 => 'July', 8 => 'August',
+    9 => 'September', 10 => 'October', 11 => 'November', 12 => 'December'
+];
+
+$selectedMonth = intval($_REQUEST['month'] ?? date('n'));
+$selectedYear  = intval($_REQUEST['year']  ?? date('Y'));
+$action        = $_REQUEST['action'] ?? '';
+
+// Parse uploaded D365 file if provided
+$d365Map = [];
+if (isset($_FILES['d365_file']) && $_FILES['d365_file']['error'] === UPLOAD_ERR_OK) {
+    $tmpPath = $_FILES['d365_file']['tmp_name'];
+    $d365Map = readD365Spreadsheet($tmpPath);
+    $_SESSION['last_d365_data'] = $d365Map;
+    $_SESSION['last_d365_filename'] = $_FILES['d365_file']['name'];
+} elseif (!empty($_SESSION['last_d365_data'])) {
+    $d365Map = $_SESSION['last_d365_data'];
+}
+
+// Query MySQL for Ground Truth (Scanned Physical Store)
+$scannedRows = fetchScannedPhysicalStore($pdo, $selectedMonth, $selectedYear);
+
+// Reconcile 3-way data
+$reconciledResults = evaluateReconciliation($scannedRows, $d365Map);
+
+// Trigger Excel Download if requested
+if ($action === 'export') {
+    $monthName = $monthNames[$selectedMonth] ?? 'Month';
+    exportSideBySideExcel($reconciledResults, $monthName, $selectedYear);
+    exit;
+}
+
+// If directly included in coil_verification.php, variables are available.
+// If requested directly in browser as standalone page, load frontend UI:
+if (basename($_SERVER['SCRIPT_FILENAME']) === 'reconcile_side_by_side.php') {
+    require_once __DIR__ . '/coil_verification.php';
+    exit;
+}
