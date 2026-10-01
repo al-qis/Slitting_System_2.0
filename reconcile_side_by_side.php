@@ -45,10 +45,29 @@ try {
 function fetchScannedPhysicalStore(?PDO $pdo, int $month, int $year): array {
     if (!$pdo) return [];
 
+    // If month is 0 (All Months), fetch ALL scans from stock_crosscheck_scans
+    if ($month === 0) {
+        try {
+            $sqlAll = "SELECT 
+                            COALESCE(NULLIF(TRIM(d365_item_number), ''), NULLIF(TRIM(product_code), ''), 'N/A') AS d365_item_number,
+                            COALESCE(NULLIF(TRIM(d365_lot_no), ''), NULLIF(TRIM(lot), ''), 'N/A') AS d365_lot_no,
+                            CAST(COALESCE(NULLIF(mtr, ''), length, 0) AS DECIMAL(10,2)) AS mtr
+                       FROM stock_crosscheck_scans
+                       ORDER BY id DESC";
+            $stmtA = $pdo->query($sqlAll);
+            $rows = $stmtA->fetchAll();
+            if (!empty($rows)) {
+                return $rows;
+            }
+        } catch (PDOException $e) {
+            // Fall through
+        }
+    }
+
     $startDate = sprintf('%04d-%02d-01 00:00:00', $year, $month);
     $endDate   = date('Y-m-t 23:59:59', strtotime($startDate));
 
-    // Try stock_crosscheck_scans first
+    // Try stock_crosscheck_scans first with date filter
     try {
         $sqlScans = "SELECT 
                         COALESCE(NULLIF(TRIM(d365_item_number), ''), NULLIF(TRIM(product_code), ''), 'N/A') AS d365_item_number,
