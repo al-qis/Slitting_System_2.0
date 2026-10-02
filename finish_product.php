@@ -136,7 +136,7 @@ $sort_dir = (isset($_GET['sort_dir']) && strtoupper($_GET['sort_dir']) === 'ASC'
 //         produced_month (production report) | stock_month_end (point-in-time snapshot)
 // Defaults to "in_pending" (the IN tab) when the page first loads.
 $filter_card = $_GET['filter'] ?? 'in_pending';
-if (!in_array($filter_card, ['in_pending', 'stock', 'palletised', 'waiting', 'deliver', 'produced_month', 'stock_month_end'], true)) {
+if (!in_array($filter_card, ['in_pending', 'stock', 'palletised', 'waiting', 'waiting_deliver', 'deliver', 'produced_month', 'stock_month_end'], true)) {
     $filter_card = 'in_pending';
 }
 
@@ -781,6 +781,9 @@ if ($filter_card === 'in_pending') {
 } elseif ($filter_card === 'waiting') {
     $cardCondition = " AND sp.status = 'WAITING'";
     $sortColumn    = 'sp.date_out';
+} elseif ($filter_card === 'waiting_deliver') {
+    $cardCondition = " AND (sp.status = 'APPROVED' OR p.status = 'approved') AND sp.status != 'DELIVERED' AND (p.status IS NULL OR p.status != 'delivered')";
+    $sortColumn    = 'sp.date_out';
 } elseif ($filter_card === 'deliver') {
     $cardCondition = " AND sp.status = 'DELIVERED'";
     $sortColumn    = 'sp.delivered_at';
@@ -884,7 +887,9 @@ if ($filter_card === 'produced_month') {
           AND (
               sp.status = 'IN'
               OR sp.status = 'WAITING'
-              OR (sp.status IN ('OUT','APPROVED','REJECTED')
+              OR sp.status = 'APPROVED'
+              OR p.status = 'approved'
+              OR (sp.status IN ('OUT','REJECTED')
                   AND MONTH(sp.date_out) = ? AND YEAR(sp.date_out) = ?{$dayCondOut})
               OR (sp.status = 'DELIVERED'
                   AND MONTH(sp.delivered_at) = ? AND YEAR(sp.delivered_at) = ?{$dayCondDelivered})
@@ -980,7 +985,7 @@ $result = $stmt->get_result();
 $stmt->close();
 
 // Summary counts
-// IN / STOCK / WAITING / PALLETISED reflect *live* current warehouse state,
+// IN / STOCK / WAITING / PALLETISED / WAITING DELIVER reflect *live* current warehouse state,
 // so they are cumulative and intentionally ignore the Month/Year filter.
 // DELIVER is a completed, dated transaction, so it stays scoped to the
 // selected month.
@@ -997,6 +1002,25 @@ $palletised = $conn->query("
     JOIN pallets p ON p.id = pi.pallet_id
     JOIN slitting_product sp ON sp.id = pi.slitting_product_id
     WHERE p.status = 'building'
+")->fetch_assoc()['total'];
+
+// Total coils (rolls) on approved pallets waiting for delivery
+$waiting_deliver = $conn->query("
+    SELECT IFNULL(COUNT(*),0) AS total
+    FROM slitting_product sp
+    LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+    LEFT JOIN pallets p ON p.id = pi.pallet_id
+    WHERE sp.is_voided = 0
+      AND (sp.status = 'APPROVED' OR p.status = 'approved')
+      AND sp.status != 'DELIVERED'
+      AND (p.status IS NULL OR p.status != 'delivered')
+")->fetch_assoc()['total'];
+
+// Total approved pallets
+$approved_pallets_count = $conn->query("
+    SELECT IFNULL(COUNT(*),0) AS total
+    FROM pallets
+    WHERE status = 'approved'
 ")->fetch_assoc()['total'];
 
 // ── Report card counts (Produced This Month / Stock as of Month-End) ──
@@ -1377,7 +1401,7 @@ table td.lot-coil-cell {
 <!-- ================================================================
      KPI SUMMARY CARDS — clickable filters
 ================================================================ -->
-<div class="d-flex mb-3 gap-2 flex-wrap">
+<div class="d-flex mb-3 gap-2 flex-wrap align-items-stretch">
 
     <!-- IN (Pending) -->
     <?php $isActiveIn = ($filter_card === 'in_pending'); ?>
@@ -1444,6 +1468,26 @@ table td.lot-coil-cell {
         </div>
     </a>
 
+    <!-- WAITING DELIVER (Approved Pallets) -->
+    <?php $isActiveWaitDel = ($filter_card === 'waiting_deliver'); ?>
+    <a href="<?= cardUrl('waiting_deliver', $month, $year, $search) ?>"
+       class="kpi-card-link flex-fill <?= $isActiveWaitDel ? 'active-kpi' : '' ?>"
+       title="Show Waiting Deliver (Approved Pallet) rolls only"
+       style="color:#15803d;">
+        <div class="card text-center h-100" style="background:#dcfce7; border-color:#86efac;">
+            <div class="card-body p-2">
+                <h6 class="mb-1" style="color:#15803d;">WAITING DELIVER</h6>
+                <h2 class="mb-0" style="color:#15803d;"><?= (int)$waiting_deliver ?></h2>
+                <small style="font-size:10px; color:#166534; font-weight:600; display:block;">
+                    <?= (int)$approved_pallets_count ?> Approved Pallet<?= $approved_pallets_count != 1 ? 's' : '' ?>
+                </small>
+                <?php if ($isActiveWaitDel): ?>
+                    <span class="kpi-active-dot" style="color:#15803d;">▲ filtered</span>
+                <?php endif; ?>
+            </div>
+        </div>
+    </a>
+
     <!-- DELIVER -->
     <?php $isActiveDel = ($filter_card === 'deliver'); ?>
     <a href="<?= cardUrl('deliver', $month, $year, $search) ?>"
@@ -1468,20 +1512,26 @@ table td.lot-coil-cell {
      questions ("what happened in month X") instead of "what's true
      right now".
 ================================================================ -->
-<div class="d-flex mb-3 gap-2 flex-wrap">
+<div class="d-flex mb-3 gap-2 flex-wrap align-items-stretch">
 
     <!-- Produced This Month -->
     <?php $isActivePM = ($filter_card === 'produced_month'); ?>
     <a href="<?= cardUrl('produced_month', $month, $year, $search) ?>"
        class="kpi-card-link flex-fill <?= $isActivePM ? 'active-kpi' : '' ?>"
-       title="Show every roll produced (date in) during the selected month">
+       title="Show every roll produced (date in) during the selected month"
+       style="color:#7e22ce;">
         <div class="card text-center h-100" style="background:#fdf4ff; border-color:#d8b4fe;">
-            <div class="card-body p-2">
-                <h6 class="mb-1" style="color:#7e22ce;"><i class="bi bi-calendar-plus me-1"></i>PRODUCED (<?= date("M", mktime(0,0,0,$month,1)) ?>)</h6>
-                <h2 class="mb-0" style="color:#7e22ce;"><?= $producedMonthCount ?></h2>
-                <?php if ($isActivePM): ?>
-                    <span class="kpi-active-dot" style="color:#7e22ce;">▲ filtered</span>
-                <?php endif; ?>
+            <div class="card-body p-2 d-flex flex-column justify-content-between">
+                <div>
+                    <h6 class="kpi-title mb-1" style="color:#7e22ce;"><i class="bi bi-calendar-plus me-1"></i>PRODUCED</h6>
+                    <h2 class="kpi-value mb-0" style="color:#7e22ce;"><?= $producedMonthCount ?></h2>
+                </div>
+                <div>
+                    <span class="kpi-subtext" style="color:#7e22ce;"><?= date("M Y", mktime(0,0,0,$month,1,$year)) ?></span>
+                    <?php if ($isActivePM): ?>
+                        <span class="kpi-active-dot" style="color:#7e22ce;">▲ filtered</span>
+                    <?php endif; ?>
+                </div>
             </div>
         </div>
     </a>
@@ -1490,14 +1540,20 @@ table td.lot-coil-cell {
     <?php $isActiveSME = ($filter_card === 'stock_month_end'); ?>
     <a href="<?= cardUrl('stock_month_end', $month, $year, $search) ?>"
        class="kpi-card-link flex-fill <?= $isActiveSME ? 'active-kpi' : '' ?>"
-       title="Reconstructed stock balance as of the end of the selected month">
+       title="Reconstructed stock balance as of the end of the selected month"
+       style="color:#c2410c;">
         <div class="card text-center h-100" style="background:#fff7ed; border-color:#fdba74;">
-            <div class="card-body p-2">
-                <h6 class="mb-1" style="color:#c2410c;"><i class="bi bi-clock-history me-1"></i>STOCK @ END OF <?= strtoupper(date("M", mktime(0,0,0,$month,1))) ?></h6>
-                <h2 class="mb-0" style="color:#c2410c;"><?= $stockMonthEndCount ?></h2>
-                <?php if ($isActiveSME): ?>
-                    <span class="kpi-active-dot" style="color:#c2410c;">▲ filtered</span>
-                <?php endif; ?>
+            <div class="card-body p-2 d-flex flex-column justify-content-between">
+                <div>
+                    <h6 class="kpi-title mb-1" style="color:#c2410c;"><i class="bi bi-clock-history me-1"></i>STOCK @ END</h6>
+                    <h2 class="kpi-value mb-0" style="color:#c2410c;"><?= $stockMonthEndCount ?></h2>
+                </div>
+                <div>
+                    <span class="kpi-subtext" style="color:#c2410c;">End of <?= date("M Y", mktime(0,0,0,$month,1,$year)) ?></span>
+                    <?php if ($isActiveSME): ?>
+                        <span class="kpi-active-dot" style="color:#c2410c;">▲ filtered</span>
+                    <?php endif; ?>
+                </div>
             </div>
         </div>
     </a>
@@ -1512,14 +1568,20 @@ table td.lot-coil-cell {
     ?>
     <a href="?<?= http_build_query($nodCardParams) ?>"
        class="kpi-card-link flex-fill <?= $isActiveNod ? 'active-kpi' : '' ?>"
-       title="Show only rolls with a Notice of Defect recorded during the selected month">
+       title="Show only rolls with a Notice of Defect recorded during the selected month"
+       style="color:#92400e;">
         <div class="card text-center h-100" style="background:#fffbeb; border-color:#fcd34d;">
-            <div class="card-body p-2">
-                <h6 class="mb-1" style="color:#92400e;"><i class="bi bi-exclamation-triangle-fill me-1"></i>NOD (<?= date("M", mktime(0,0,0,$month,1)) ?>)</h6>
-                <h2 class="mb-0" style="color:#92400e;"><?= $nodMonthCount ?></h2>
-                <?php if ($isActiveNod): ?>
-                    <span class="kpi-active-dot" style="color:#92400e;">▲ filtered</span>
-                <?php endif; ?>
+            <div class="card-body p-2 d-flex flex-column justify-content-between">
+                <div>
+                    <h6 class="kpi-title mb-1" style="color:#92400e;"><i class="bi bi-exclamation-triangle-fill me-1"></i>NOD</h6>
+                    <h2 class="kpi-value mb-0" style="color:#92400e;"><?= $nodMonthCount ?></h2>
+                </div>
+                <div>
+                    <span class="kpi-subtext" style="color:#92400e;">Defect Reports (<?= date("M", mktime(0,0,0,$month,1)) ?>)</span>
+                    <?php if ($isActiveNod): ?>
+                        <span class="kpi-active-dot" style="color:#92400e;">▲ filtered</span>
+                    <?php endif; ?>
+                </div>
             </div>
         </div>
     </a>
@@ -1535,6 +1597,7 @@ table td.lot-coil-cell {
         'stock'            => 'Finish Good Stock only',
         'palletised'       => 'Palletised rolls only',
         'waiting'          => 'Waiting QC only',
+        'waiting_deliver'  => 'Waiting Deliver (Approved Pallets) only',
         'deliver'          => 'Delivered only',
         'produced_month'   => 'Produced during ' . date("F Y", mktime(0,0,0,$month,1,$year)),
         'stock_month_end'  => 'Reconstructed stock balance as of end of ' . date("F Y", mktime(0,0,0,$month,1,$year)),
