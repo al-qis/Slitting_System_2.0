@@ -41,7 +41,30 @@ class CoilReconciliationModel
                 ORDER BY id DESC
             ");
 
-            return $stmt->fetchAll() ?: [];
+            $rows = $stmt->fetchAll() ?: [];
+
+            // Apply D365 product aliases for side-by-side reconciliation
+            $aliases = [
+                'DS-8460' => 'JCM',
+                'JZ-4020' => 'QB',
+                'MV-4020' => 'JPM',
+            ];
+
+            foreach ($rows as &$row) {
+                $item = $row['d365_item_number'];
+                foreach ($aliases as $code => $alias) {
+                    if (str_starts_with($item, 'SF-' . $code . '-')) {
+                        $row['d365_item_number'] = 'SF-' . $alias . '-' . substr($item, strlen('SF-' . $code . '-'));
+                        break;
+                    } elseif ($item === $code || $item === 'SF-' . $code) {
+                        $row['d365_item_number'] = 'SF-' . $alias;
+                        break;
+                    }
+                }
+            }
+            unset($row);
+
+            return $rows;
         } catch (PDOException $e) {
             error_log("Scanned Physical Store query error: " . $e->getMessage());
             return [];
