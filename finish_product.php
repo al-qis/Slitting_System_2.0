@@ -1474,7 +1474,7 @@ table td.lot-coil-cell {
        class="kpi-card-link flex-fill <?= $isActiveWaitDel ? 'active-kpi' : '' ?>"
        title="Show Waiting Deliver (Approved Pallet) rolls only"
        style="color:#15803d;">
-        <div class="card text-center h-100" style="background:#dcfce7; border-color:#86efac;">
+        <div class="card text-center h-100" style="background:#dcfce7; border:2px solid #22c55e; color:#15803d;">
             <div class="card-body p-2">
                 <h6 class="mb-1" style="color:#15803d;">WAITING DELIVER</h6>
                 <h2 class="mb-0" style="color:#15803d;"><?= (int)$waiting_deliver ?></h2>
