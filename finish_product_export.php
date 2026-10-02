@@ -41,7 +41,7 @@ $filter_lot  = isset($_GET['lot_no'])  ? trim($_GET['lot_no'])  : '';
 $filter_coil = isset($_GET['coil_no']) ? trim($_GET['coil_no']) : '';
 
 $filter_card = $_GET['filter'] ?? 'in_pending';
-if (!in_array($filter_card, ['in_pending', 'stock', 'palletised', 'waiting', 'deliver', 'produced_month', 'stock_month_end'], true)) {
+if (!in_array($filter_card, ['in_pending', 'stock', 'palletised', 'waiting', 'waiting_deliver', 'deliver', 'produced_month', 'stock_month_end'], true)) {
     $filter_card = 'in_pending';
 }
 
@@ -69,6 +69,9 @@ if ($filter_card === 'in_pending') {
     $sortColumn    = 'sp.date_in';
 } elseif ($filter_card === 'waiting') {
     $cardCondition = " AND sp.status = 'WAITING'";
+    $sortColumn    = 'sp.date_out';
+} elseif ($filter_card === 'waiting_deliver') {
+    $cardCondition = " AND (sp.status = 'APPROVED' OR p.status = 'approved') AND sp.status != 'DELIVERED' AND (p.status IS NULL OR p.status != 'delivered')";
     $sortColumn    = 'sp.date_out';
 } elseif ($filter_card === 'deliver') {
     $cardCondition = " AND sp.status = 'DELIVERED'";
@@ -149,7 +152,9 @@ if ($filter_card === 'produced_month') {
           AND (
               sp.status = 'IN'
               OR sp.status = 'WAITING'
-              OR (sp.status IN ('OUT','APPROVED','REJECTED')
+              OR sp.status = 'APPROVED'
+              OR p.status = 'approved'
+              OR (sp.status IN ('OUT','REJECTED')
                   AND MONTH(sp.date_out) = ? AND YEAR(sp.date_out) = ?{$dayCondOut})
               OR (sp.status = 'DELIVERED'
                   AND MONTH(sp.delivered_at) = ? AND YEAR(sp.delivered_at) = ?{$dayCondDelivered})
@@ -222,6 +227,7 @@ $tabLabels = [
     'stock'           => 'Finish Good Stock',
     'palletised'      => 'Palletised',
     'waiting'         => 'Waiting QC',
+    'waiting_deliver' => 'Waiting Deliver (Approved Pallets)',
     'deliver'         => 'Delivered',
     'produced_month'  => 'Produced This Month',
     'stock_month_end' => 'Stock Balance (Month End)',
