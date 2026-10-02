@@ -40,44 +40,20 @@ try {
 
 /**
  * 1. Data Source 1: Scanned Physical Store (Table 1 - Ground Truth)
- * Auto-queried from MySQL database for chosen month & year.
+ * Auto-queried from MySQL database (stock_crosscheck_scans).
  */
-function fetchScannedPhysicalStore(?PDO $pdo, int $month, int $year): array {
+function fetchScannedPhysicalStore(?PDO $pdo): array {
     if (!$pdo) return [];
 
-    // If month is 0 (All Months), fetch ALL scans from stock_crosscheck_scans
-    if ($month === 0) {
-        try {
-            $sqlAll = "SELECT 
-                            COALESCE(NULLIF(TRIM(d365_item_number), ''), NULLIF(TRIM(product_code), ''), 'N/A') AS d365_item_number,
-                            COALESCE(NULLIF(TRIM(d365_lot_no), ''), NULLIF(TRIM(lot), ''), 'N/A') AS d365_lot_no,
-                            CAST(COALESCE(NULLIF(mtr, ''), length, 0) AS DECIMAL(10,2)) AS mtr
-                       FROM stock_crosscheck_scans
-                       ORDER BY id DESC";
-            $stmtA = $pdo->query($sqlAll);
-            $rows = $stmtA->fetchAll();
-            if (!empty($rows)) {
-                return $rows;
-            }
-        } catch (PDOException $e) {
-            // Fall through
-        }
-    }
-
-    $startDate = sprintf('%04d-%02d-01 00:00:00', $year, $month);
-    $endDate   = date('Y-m-t 23:59:59', strtotime($startDate));
-
-    // Try stock_crosscheck_scans first with date filter
+    // Query all active scanned records from stock_crosscheck_scans
     try {
         $sqlScans = "SELECT 
                         COALESCE(NULLIF(TRIM(d365_item_number), ''), NULLIF(TRIM(product_code), ''), 'N/A') AS d365_item_number,
                         COALESCE(NULLIF(TRIM(d365_lot_no), ''), NULLIF(TRIM(lot), ''), 'N/A') AS d365_lot_no,
                         CAST(COALESCE(NULLIF(mtr, ''), length, 0) AS DECIMAL(10,2)) AS mtr
                      FROM stock_crosscheck_scans
-                     WHERE scanned_at BETWEEN :start_date AND :end_date
-                     ORDER BY scanned_at DESC";
-        $stmt = $pdo->prepare($sqlScans);
-        $stmt->execute([':start_date' => $startDate, ':end_date' => $endDate]);
+                     ORDER BY id DESC";
+        $stmt = $pdo->query($sqlScans);
         $rows = $stmt->fetchAll();
         if (!empty($rows)) {
             return $rows;
@@ -86,43 +62,7 @@ function fetchScannedPhysicalStore(?PDO $pdo, int $month, int $year): array {
         // Table or query issue, fall through
     }
 
-    // Fallback 1: Query mother_coil by date
-    try {
-        $sqlMother = "SELECT 
-                        COALESCE(NULLIF(TRIM(product), ''), 'N/A') AS d365_item_number,
-                        COALESCE(NULLIF(TRIM(lot_no), ''), 'N/A') AS d365_lot_no,
-                        CAST(COALESCE(length, 0) AS DECIMAL(10,2)) AS mtr
-                      FROM mother_coil
-                      WHERE COALESCE(printed_at, date_in, date_created) BETWEEN :start_date AND :end_date
-                      ORDER BY id DESC";
-        $stmtM = $pdo->prepare($sqlMother);
-        $stmtM->execute([':start_date' => $startDate, ':end_date' => $endDate]);
-        $rows = $stmtM->fetchAll();
-        if (!empty($rows)) {
-            return $rows;
-        }
-    } catch (PDOException $e) {
-        // Fall through
-    }
-
-    // Fallback 2: General query from stock_crosscheck_scans or mother_coil if date filtering yields no rows
-    try {
-        $sqlAllScans = "SELECT 
-                            COALESCE(NULLIF(TRIM(d365_item_number), ''), NULLIF(TRIM(product_code), ''), 'N/A') AS d365_item_number,
-                            COALESCE(NULLIF(TRIM(d365_lot_no), ''), NULLIF(TRIM(lot), ''), 'N/A') AS d365_lot_no,
-                            CAST(COALESCE(NULLIF(mtr, ''), length, 0) AS DECIMAL(10,2)) AS mtr
-                        FROM stock_crosscheck_scans
-                        ORDER BY id DESC LIMIT 500";
-        $stmtA = $pdo->query($sqlAllScans);
-        $rows = $stmtA->fetchAll();
-        if (!empty($rows)) {
-            return $rows;
-        }
-    } catch (PDOException $e) {
-        // Fall through
-    }
-
-    // Fallback 3: Return recent mother_coil rows
+    // Fallback: Query mother_coil
     try {
         $sqlRecent = "SELECT 
                         COALESCE(NULLIF(TRIM(product), ''), 'N/A') AS d365_item_number,
@@ -351,7 +291,7 @@ function evaluateReconciliation(array $scannedRows, array $d365Map): array {
 /**
  * 4. Core Functional Requirement 4: Export to Excel with PhpSpreadsheet
  */
-function exportSideBySideExcel(array $reconciledResults, string $monthTitle, int $year): void {
+function exportSideBySideExcel(array $reconciledResults): void {
     if (!class_exists('\PhpOffice\PhpSpreadsheet\Spreadsheet')) {
         die("PhpSpreadsheet library is required for Excel Export.");
     }
@@ -362,7 +302,7 @@ function exportSideBySideExcel(array $reconciledResults, string $monthTitle, int
 
     // Title Banner
     $sheet->mergeCells('A1:J1');
-    $sheet->setCellValue('A1', "SIDE-BY-SIDE COIL VERIFICATION RECONCILIATION REPORT - {$monthTitle} {$year}");
+    $sheet->setCellValue('A1', "SIDE-BY-SIDE COIL VERIFICATION RECONCILIATION REPORT");
     $sheet->getStyle('A1')->getFont()->setBold(true)->setSize(14)->setColor(new Color('FFFFFF'));
     $sheet->getStyle('A1')->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FF1E293B');
     $sheet->getStyle('A1')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER)->setVertical(Alignment::VERTICAL_CENTER);
@@ -489,15 +429,14 @@ function exportSideBySideExcel(array $reconciledResults, string $monthTitle, int
 
 // ── Controller Handler ─────────────────────────────────────────
 
-$monthNames = [
-    1 => 'January', 2 => 'February', 3 => 'March', 4 => 'April',
-    5 => 'May', 6 => 'June', 7 => 'July', 8 => 'August',
-    9 => 'September', 10 => 'October', 11 => 'November', 12 => 'December'
-];
+$action = $_REQUEST['action'] ?? '';
 
-$selectedMonth = intval($_REQUEST['month'] ?? date('n'));
-$selectedYear  = intval($_REQUEST['year']  ?? date('Y'));
-$action        = $_REQUEST['action'] ?? '';
+// Clear uploaded session file if requested
+if ($action === 'clear_file') {
+    unset($_SESSION['last_d365_data'], $_SESSION['last_d365_filename']);
+    header('Location: coil_verification.php');
+    exit;
+}
 
 // Parse uploaded D365 file if provided
 $d365Map = [];
@@ -510,8 +449,8 @@ if (isset($_FILES['d365_file']) && $_FILES['d365_file']['error'] === UPLOAD_ERR_
     $d365Map = $_SESSION['last_d365_data'];
 }
 
-// Query MySQL for Ground Truth (Scanned Physical Store)
-$scannedRows = fetchScannedPhysicalStore($pdo, $selectedMonth, $selectedYear);
+// Query MySQL for Ground Truth (Scanned Physical Store - All Scans)
+$scannedRows = fetchScannedPhysicalStore($pdo);
 
 // Reconcile 3-way data
 $reconciledResults = evaluateReconciliation($scannedRows, $d365Map);
@@ -530,8 +469,7 @@ if ($action === 'download_template') {
 
 // Trigger Excel Download if requested
 if ($action === 'export') {
-    $monthName = $monthNames[$selectedMonth] ?? 'Month';
-    exportSideBySideExcel($reconciledResults, $monthName, $selectedYear);
+    exportSideBySideExcel($reconciledResults);
     exit;
 }
 
