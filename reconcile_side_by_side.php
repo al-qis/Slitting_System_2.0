@@ -63,16 +63,26 @@ function fetchScannedPhysicalStore(?PDO $pdo): array {
     }
 
     // Fallback: Query mother_coil
+function fetchScannedPhysicalStore(?PDO $pdo, int $month, int $year): array {
+    // Ground Truth = actual scanned records only.
+    // No month/year filtering and no fallback to other tables.
+    if (!$pdo) {
+        return [];
+    }
+
     try {
-        $sqlRecent = "SELECT 
-                        COALESCE(NULLIF(TRIM(product), ''), 'N/A') AS d365_item_number,
-                        COALESCE(NULLIF(TRIM(lot_no), ''), 'N/A') AS d365_lot_no,
-                        CAST(COALESCE(length, 0) AS DECIMAL(10,2)) AS mtr
-                      FROM mother_coil
-                      ORDER BY id DESC LIMIT 500";
-        $stmtR = $pdo->query($sqlRecent);
-        return $stmtR->fetchAll();
+        $stmt = $pdo->query("
+            SELECT
+                COALESCE(NULLIF(TRIM(d365_item_number), ''), NULLIF(TRIM(product_code), ''), 'N/A') AS d365_item_number,
+                COALESCE(NULLIF(TRIM(d365_lot_no), ''), NULLIF(TRIM(lot), ''), 'N/A') AS d365_lot_no,
+                CAST(COALESCE(NULLIF(mtr, ''), length, 0) AS DECIMAL(10,2)) AS mtr
+            FROM stock_crosscheck_scans
+            ORDER BY id DESC
+        ");
+
+        return $stmt->fetchAll();
     } catch (PDOException $e) {
+        error_log("Scanned Physical Store query error: " . $e->getMessage());
         return [];
     }
 }
@@ -81,6 +91,45 @@ function fetchScannedPhysicalStore(?PDO $pdo): array {
  * 2. Data Source 2: D365 System Export File Reader (Table 2 - ERP Reference)
  * Reads uploaded .xlsx, .xls, or .csv using PhpSpreadsheet.
  */
+/**
+ * Normalize Lot No. for reconciliation matching.
+ *
+ * Purpose:
+ * - Treat formatting variants such as HPM-06 and HPM-6 as the same lot.
+ * - Preserve meaningful values such as 45Z08.
+ * - Keep the original lot text for display/export.
+ */
+function normalizeLotKey(string $lot): string {
+    $lot = strtoupper(trim($lot));
+
+    // Normalize different dash characters to a normal hyphen.
+    $lot = str_replace(
+        ['‐', '‑', '‒', '–', '—', '−'],
+        '-',
+        $lot
+    );
+
+    // Normalize whitespace around hyphens.
+    $lot = preg_replace('/\s*-\s*/', '-', $lot);
+
+    // Remove leading zeroes ONLY from numeric portions immediately after a hyphen.
+    // Example: HPM-06 -> HPM-6
+    // Important: 45Z08 remains 45Z08.
+    $lot = preg_replace_callback(
+        '/-(0+)(\d+)/',
+        static function ($matches) {
+            $number = ltrim($matches[2], '0');
+            return '-' . ($number === '' ? '0' : $number);
+        },
+        $lot
+    );
+
+    // Collapse repeated whitespace elsewhere.
+    $lot = preg_replace('/\s+/', ' ', $lot);
+
+    return $lot;
+}
+
 function readD365Spreadsheet(string $filePath): array {
     $d365DataMap = [];
 
@@ -154,7 +203,7 @@ function readD365Spreadsheet(string $filePath): array {
             }
 
             $cleanMtr = (float)preg_replace('/[^0-9.]/', '', $rawMtr);
-            $key = strtoupper(preg_replace('/\s+/', ' ', $rawLot !== '' ? $rawLot : $rawItem));
+            $key = normalizeLotKey($rawLot !== '' ? $rawLot : $rawItem);
 
             $d365DataMap[$key] = [
                 'd365_item_number' => $rawItem !== '' ? $rawItem : 'N/A',
@@ -175,43 +224,117 @@ function readD365Spreadsheet(string $filePath): array {
  */
 function evaluateReconciliation(array $scannedRows, array $d365Map): array {
     $results = [];
-    $matchedD365Keys = [];
 
-    // Loop 1: Evaluate Scanned Store Ground Truth items
+    /*
+     * 1-to-1 reconciliation
+     * ----------------------
+     * Every D365 record gets a unique internal index and can be consumed only once.
+     * Matching priority:
+     *   1. Exact normalized LOT + exact ITEM
+     *   2. Exact normalized LOT
+     *
+     * This prevents two scanned rows from pointing to the same D365 row and
+     * guarantees that a matched pair is rendered on the same reconciliation row.
+     */
+
+    // Convert the associative D365 map into a list so duplicate/similar lots
+    // are still kept as separate records.
+    $d365Records = [];
+    foreach ($d365Map as $originalKey => $record) {
+        $d365Records[] = [
+            'original_key' => $originalKey,
+            'item_key'     => strtoupper(trim((string)($record['d365_item_number'] ?? ''))),
+            'lot_key'      => normalizeLotKey((string)($record['d365_lot_no'] ?? '')),
+            'record'       => $record
+        ];
+    }
+
+    $usedD365Indexes = [];
+
+    // Find ONE unused D365 record for a scanned record.
+    $findD365Match = function (string $scannedItem, string $scannedLot) use (
+        &$d365Records,
+        &$usedD365Indexes
+    ) {
+        $itemKey = strtoupper(trim($scannedItem));
+        $lotKey  = normalizeLotKey($scannedLot);
+
+        // Pass 1: strongest match = Item + normalized Lot.
+        foreach ($d365Records as $idx => $candidate) {
+            if (isset($usedD365Indexes[$idx])) {
+                continue;
+            }
+
+            if (
+                $candidate['item_key'] === $itemKey &&
+                $candidate['lot_key'] === $lotKey &&
+                $lotKey !== ''
+            ) {
+                $usedD365Indexes[$idx] = true;
+                return $candidate['record'];
+            }
+        }
+
+        // Pass 2: normalized Lot only.
+        // Used only when the exact Item + Lot combination was not found.
+        foreach ($d365Records as $idx => $candidate) {
+            if (isset($usedD365Indexes[$idx])) {
+                continue;
+            }
+
+            if (
+                $candidate['lot_key'] === $lotKey &&
+                $lotKey !== ''
+            ) {
+                $usedD365Indexes[$idx] = true;
+                return $candidate['record'];
+            }
+        }
+
+        return null;
+    };
+
+    // Loop 1: Every scanned record produces exactly ONE reconciliation row.
     foreach ($scannedRows as $scan) {
         $scannedItem = trim((string)($scan['d365_item_number'] ?? ''));
         $scannedLot  = trim((string)($scan['d365_lot_no'] ?? ''));
         $scannedMtr  = round((float)($scan['mtr'] ?? 0), 2);
 
-        $lookupKey = strtoupper(preg_replace('/\s+/', ' ', $scannedLot));
-        $d365Record = $d365Map[$lookupKey] ?? null;
+        $d365Record = $findD365Match($scannedItem, $scannedLot);
 
-        // Try partial fallback if lot search has composite structure
-        if (!$d365Record && !empty($scannedLot)) {
-            foreach ($d365Map as $key => $rec) {
-                if (strpos($key, $lookupKey) !== false || strpos($lookupKey, $key) !== false) {
-                    $d365Record = $rec;
-                    $lookupKey = $key;
-                    break;
-                }
-            }
-        }
+        if ($d365Record !== null) {
+            $d365Item = trim((string)($d365Record['d365_item_number'] ?? ''));
+            $d365Lot  = trim((string)($d365Record['d365_lot_no'] ?? ''));
+            $d365Mtr  = round((float)($d365Record['d365_mtr'] ?? 0), 2);
 
-        if ($d365Record) {
-            $matchedD365Keys[$lookupKey] = true;
+            // Compare Item Number exactly (case-insensitive).
+            $statusItem = (
+                $scannedItem !== '' &&
+                strcasecmp($scannedItem, $d365Item) === 0
+            );
 
-            $d365Item = trim((string)$d365Record['d365_item_number']);
-            $d365Lot  = trim((string)$d365Record['d365_lot_no']);
-            $d365Mtr  = round((float)$d365Record['d365_mtr'], 2);
+            // Compare Lot Number using normalized keys.
+            // HPM-06 == HPM-6, while display values remain untouched.
+            $normalizedScannedLot = normalizeLotKey($scannedLot);
+            $normalizedD365Lot    = normalizeLotKey($d365Lot);
 
-            // Evaluations
-            $statusItem = (strcasecmp($scannedItem, $d365Item) === 0);
-            $statusLot  = (!empty($scannedLot) && (strcasecmp($scannedLot, $d365Lot) === 0 || strpos(strtoupper($d365Lot), strtoupper($scannedLot)) !== false));
-            $statusMtr  = (abs($scannedMtr - $d365Mtr) < 0.001);
-            $nod        = round(abs($scannedMtr - $d365Mtr), 2);
+            $statusLot = (
+                $normalizedScannedLot !== '' &&
+                $normalizedScannedLot === $normalizedD365Lot
+            );
 
-            $hasDiscrepancy = (!$statusItem || !$statusLot || !$statusMtr || $nod > 0.001);
+            // Compare MTR numerically.
+            $statusMtr = (abs($scannedMtr - $d365Mtr) < 0.001);
+            $nod       = round(abs($scannedMtr - $d365Mtr), 2);
 
+            $hasDiscrepancy = (
+                !$statusItem ||
+                !$statusLot ||
+                !$statusMtr ||
+                $nod > 0.001
+            );
+
+            // IMPORTANT: scanned + matched D365 stay in ONE row.
             $results[] = [
                 'scanned_item'    => $scannedItem,
                 'scanned_lot'     => $scannedLot,
@@ -226,7 +349,7 @@ function evaluateReconciliation(array $scannedRows, array $d365Map): array {
                 'has_discrepancy' => $hasDiscrepancy
             ];
         } else {
-            // Found in Scanned Store, missing in D365 System Export
+            // Scanned record has no unused D365 counterpart.
             $results[] = [
                 'scanned_item'    => $scannedItem,
                 'scanned_lot'     => $scannedLot,
@@ -243,15 +366,18 @@ function evaluateReconciliation(array $scannedRows, array $d365Map): array {
         }
     }
 
-    // Loop 2: Process D365 Records missing from Physical Scanned Store
-    foreach ($d365Map as $key => $d365Record) {
-        if (isset($matchedD365Keys[$key])) {
+    // Loop 2: Any D365 record not consumed by a scanned record is genuinely
+    // D365-only and gets its own discrepancy row.
+    foreach ($d365Records as $idx => $candidate) {
+        if (isset($usedD365Indexes[$idx])) {
             continue;
         }
 
-        $d365Item = trim((string)$d365Record['d365_item_number']);
-        $d365Lot  = trim((string)$d365Record['d365_lot_no']);
-        $d365Mtr  = round((float)$d365Record['d365_mtr'], 2);
+        $d365Record = $candidate['record'];
+
+        $d365Item = trim((string)($d365Record['d365_item_number'] ?? ''));
+        $d365Lot  = trim((string)($d365Record['d365_lot_no'] ?? ''));
+        $d365Mtr  = round((float)($d365Record['d365_mtr'] ?? 0), 2);
 
         $results[] = [
             'scanned_item'    => '-',
@@ -268,10 +394,8 @@ function evaluateReconciliation(array $scannedRows, array $d365Map): array {
         ];
     }
 
-    // Core Functional Requirement 1: Auto-Sort by Discrepancy (Issue Priority)
-    // Any row containing at least one FALSE status (or NOD > 0) MUST automatically sort to the very top.
+    // Auto-sort discrepancy rows to the top.
     usort($results, function ($a, $b) {
-        // Priority 1: Discrepancy rows first (TRUE discrepancy / errors top)
         if ($a['has_discrepancy'] !== $b['has_discrepancy']) {
             return $a['has_discrepancy'] ? -1 : 1;
         }
@@ -281,10 +405,14 @@ function evaluateReconciliation(array $scannedRows, array $d365Map): array {
         $cmpItem = strcasecmp($itemA, $itemB);
         if ($cmpItem !== 0) {
             return $cmpItem;
+
+        if ($a['nod'] !== $b['nod']) {
+            return ($b['nod'] <=> $a['nod']);
         }
-        // Priority 3: Alphabetical by Lot Number
+
         $lotA = ($a['scanned_lot'] !== '-') ? $a['scanned_lot'] : $a['d365_lot'];
         $lotB = ($b['scanned_lot'] !== '-') ? $b['scanned_lot'] : $b['d365_lot'];
+
         return strcasecmp($lotA, $lotB);
     });
 
