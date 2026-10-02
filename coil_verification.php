@@ -244,8 +244,6 @@ $uploadedFileName = $_SESSION['last_d365_filename'] ?? '';
 
                 <!-- Export to Excel Button (Core Requirement 4) -->
                 <form action="reconcile_side_by_side.php" method="POST" class="m-0">
-                    <input type="hidden" name="month" value="<?= $selectedMonth ?>">
-                    <input type="hidden" name="year" value="<?= $selectedYear ?>">
                     <input type="hidden" name="action" value="export">
                     <button type="submit" class="btn btn-success fw-bold shadow-sm d-flex align-items-center gap-2">
                         <i class="bi bi-file-earmark-excel-fill fs-5"></i>
@@ -259,35 +257,6 @@ $uploadedFileName = $_SESSION['last_d365_filename'] ?? '';
         <div class="card card-custom mb-4">
             <div class="card-body p-4">
                 <form action="reconcile_side_by_side.php" method="POST" enctype="multipart/form-data" class="row g-3 align-items-end">
-                    
-                    <!-- Month Selector -->
-                    <div class="col-md-3 col-sm-6">
-                        <label class="form-label fw-bold text-secondary mb-1">
-                            <i class="bi bi-calendar3 me-1"></i> Select Month (Ground Truth)
-                        </label>
-                        <select name="month" class="form-select fw-semibold">
-                            <option value="0" <?= $selectedMonth === 0 ? 'selected' : '' ?>>All Months (All Active Scans)</option>
-                            <?php foreach ($monthNames as $mNum => $mName): ?>
-                                <option value="<?= $mNum ?>" <?= $selectedMonth === $mNum ? 'selected' : '' ?>>
-                                    <?= $mName ?>
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-
-                    <!-- Year Selector -->
-                    <div class="col-md-2 col-sm-6">
-                        <label class="form-label fw-bold text-secondary mb-1">
-                            <i class="bi bi-calendar-event me-1"></i> Year
-                        </label>
-                        <select name="year" class="form-select fw-semibold">
-                            <?php for ($y = date('Y'); $y >= date('Y') - 3; $y--): ?>
-                                <option value="<?= $y ?>" <?= $selectedYear === $y ? 'selected' : '' ?>>
-                                    <?= $y ?>
-                                </option>
-                            <?php endfor; ?>
-                        </select>
-                    </div>
 
                     <!-- File Upload Input (Core Requirement 3) -->
                     <div class="col-md-5">
