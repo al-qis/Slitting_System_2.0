@@ -40,8 +40,29 @@ try {
 
 /**
  * 1. Data Source 1: Scanned Physical Store (Table 1 - Ground Truth)
- * Auto-queried from MySQL database for chosen month & year.
+ * Auto-queried from MySQL database (stock_crosscheck_scans).
  */
+function fetchScannedPhysicalStore(?PDO $pdo): array {
+    if (!$pdo) return [];
+
+    // Query all active scanned records from stock_crosscheck_scans
+    try {
+        $sqlScans = "SELECT 
+                        COALESCE(NULLIF(TRIM(d365_item_number), ''), NULLIF(TRIM(product_code), ''), 'N/A') AS d365_item_number,
+                        COALESCE(NULLIF(TRIM(d365_lot_no), ''), NULLIF(TRIM(lot), ''), 'N/A') AS d365_lot_no,
+                        CAST(COALESCE(NULLIF(mtr, ''), length, 0) AS DECIMAL(10,2)) AS mtr
+                     FROM stock_crosscheck_scans
+                     ORDER BY id DESC";
+        $stmt = $pdo->query($sqlScans);
+        $rows = $stmt->fetchAll();
+        if (!empty($rows)) {
+            return $rows;
+        }
+    } catch (PDOException $e) {
+        // Table or query issue, fall through
+    }
+
+    // Fallback: Query mother_coil
 function fetchScannedPhysicalStore(?PDO $pdo, int $month, int $year): array {
     // Ground Truth = actual scanned records only.
     // No month/year filtering and no fallback to other tables.
@@ -378,6 +399,12 @@ function evaluateReconciliation(array $scannedRows, array $d365Map): array {
         if ($a['has_discrepancy'] !== $b['has_discrepancy']) {
             return $a['has_discrepancy'] ? -1 : 1;
         }
+        // Priority 2: Auto-Sort A-Z by Item Number
+        $itemA = ($a['scanned_item'] !== '-') ? $a['scanned_item'] : $a['d365_item'];
+        $itemB = ($b['scanned_item'] !== '-') ? $b['scanned_item'] : $b['d365_item'];
+        $cmpItem = strcasecmp($itemA, $itemB);
+        if ($cmpItem !== 0) {
+            return $cmpItem;
 
         if ($a['nod'] !== $b['nod']) {
             return ($b['nod'] <=> $a['nod']);
@@ -395,7 +422,7 @@ function evaluateReconciliation(array $scannedRows, array $d365Map): array {
 /**
  * 4. Core Functional Requirement 4: Export to Excel with PhpSpreadsheet
  */
-function exportSideBySideExcel(array $reconciledResults, string $monthTitle, int $year): void {
+function exportSideBySideExcel(array $reconciledResults): void {
     if (!class_exists('\PhpOffice\PhpSpreadsheet\Spreadsheet')) {
         die("PhpSpreadsheet library is required for Excel Export.");
     }
@@ -406,7 +433,7 @@ function exportSideBySideExcel(array $reconciledResults, string $monthTitle, int
 
     // Title Banner
     $sheet->mergeCells('A1:J1');
-    $sheet->setCellValue('A1', "SIDE-BY-SIDE COIL VERIFICATION RECONCILIATION REPORT - {$monthTitle} {$year}");
+    $sheet->setCellValue('A1', "SIDE-BY-SIDE COIL VERIFICATION RECONCILIATION REPORT");
     $sheet->getStyle('A1')->getFont()->setBold(true)->setSize(14)->setColor(new Color('FFFFFF'));
     $sheet->getStyle('A1')->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FF1E293B');
     $sheet->getStyle('A1')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER)->setVertical(Alignment::VERTICAL_CENTER);
@@ -533,15 +560,14 @@ function exportSideBySideExcel(array $reconciledResults, string $monthTitle, int
 
 // ── Controller Handler ─────────────────────────────────────────
 
-$monthNames = [
-    1 => 'January', 2 => 'February', 3 => 'March', 4 => 'April',
-    5 => 'May', 6 => 'June', 7 => 'July', 8 => 'August',
-    9 => 'September', 10 => 'October', 11 => 'November', 12 => 'December'
-];
+$action = $_REQUEST['action'] ?? '';
 
-$selectedMonth = intval($_REQUEST['month'] ?? date('n'));
-$selectedYear  = intval($_REQUEST['year']  ?? date('Y'));
-$action        = $_REQUEST['action'] ?? '';
+// Clear uploaded session file if requested
+if ($action === 'clear_file') {
+    unset($_SESSION['last_d365_data'], $_SESSION['last_d365_filename']);
+    header('Location: coil_verification.php');
+    exit;
+}
 
 // Parse uploaded D365 file if provided
 $d365Map = [];
@@ -554,8 +580,8 @@ if (isset($_FILES['d365_file']) && $_FILES['d365_file']['error'] === UPLOAD_ERR_
     $d365Map = $_SESSION['last_d365_data'];
 }
 
-// Query MySQL for Ground Truth (Scanned Physical Store)
-$scannedRows = fetchScannedPhysicalStore($pdo, $selectedMonth, $selectedYear);
+// Query MySQL for Ground Truth (Scanned Physical Store - All Scans)
+$scannedRows = fetchScannedPhysicalStore($pdo);
 
 // Reconcile 3-way data
 $reconciledResults = evaluateReconciliation($scannedRows, $d365Map);
@@ -574,8 +600,7 @@ if ($action === 'download_template') {
 
 // Trigger Excel Download if requested
 if ($action === 'export') {
-    $monthName = $monthNames[$selectedMonth] ?? 'Month';
-    exportSideBySideExcel($reconciledResults, $monthName, $selectedYear);
+    exportSideBySideExcel($reconciledResults);
     exit;
 }
 
