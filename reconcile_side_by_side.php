@@ -42,7 +42,7 @@ try {
  * 1. Data Source 1: Scanned Physical Store (Table 1 - Ground Truth)
  * Auto-queried from MySQL database for chosen month & year.
  */
-function fetchScannedPhysicalStore(?PDO $pdo, int $month, int $year): array {
+function fetchScannedPhysicalStore(?PDO $pdo): array {
     // Ground Truth = actual scanned records only.
     // No month/year filtering and no fallback to other tables.
     if (!$pdo) {
@@ -182,9 +182,7 @@ function readD365Spreadsheet(string $filePath): array {
             }
 
             $cleanMtr = (float)preg_replace('/[^0-9.]/', '', $rawMtr);
-            $key = normalizeLotKey($rawLot !== '' ? $rawLot : $rawItem);
-
-            $d365DataMap[$key] = [
+            $d365DataMap[] = [
                 'd365_item_number' => $rawItem !== '' ? $rawItem : 'N/A',
                 'd365_lot_no'      => $rawLot !== '' ? $rawLot : 'N/A',
                 'd365_mtr'          => round($cleanMtr, 2)
@@ -543,6 +541,13 @@ $selectedMonth = intval($_REQUEST['month'] ?? date('n'));
 $selectedYear  = intval($_REQUEST['year']  ?? date('Y'));
 $action        = $_REQUEST['action'] ?? '';
 
+// Clear uploaded D365 file
+if ($action === 'clear_file') {
+    unset($_SESSION['last_d365_data'], $_SESSION['last_d365_filename']);
+    header('Location: coil_verification.php');
+    exit;
+}
+
 // Parse uploaded D365 file if provided
 $d365Map = [];
 if (isset($_FILES['d365_file']) && $_FILES['d365_file']['error'] === UPLOAD_ERR_OK) {
@@ -555,7 +560,7 @@ if (isset($_FILES['d365_file']) && $_FILES['d365_file']['error'] === UPLOAD_ERR_
 }
 
 // Query MySQL for Ground Truth (Scanned Physical Store)
-$scannedRows = fetchScannedPhysicalStore($pdo, $selectedMonth, $selectedYear);
+$scannedRows = fetchScannedPhysicalStore($pdo);
 
 // Reconcile 3-way data
 $reconciledResults = evaluateReconciliation($scannedRows, $d365Map);
