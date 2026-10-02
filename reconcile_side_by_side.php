@@ -371,20 +371,33 @@ function evaluateReconciliation(array $scannedRows, array $d365Map): array {
         ];
     }
 
-    // Auto-sort discrepancy rows to the top.
+    // Sort the reconciliation table A-Z by Item Number.
+    // For matched rows, scanned item is used; for D365-only rows, D365 item is used.
     usort($results, function ($a, $b) {
+        $itemA = ($a['scanned_item'] !== '-') ? $a['scanned_item'] : $a['d365_item'];
+        $itemB = ($b['scanned_item'] !== '-') ? $b['scanned_item'] : $b['d365_item'];
+
+        $itemCompare = strnatcasecmp((string)$itemA, (string)$itemB);
+        if ($itemCompare !== 0) {
+            return $itemCompare;
+        }
+
+        // If the item number is the same, keep discrepancies first.
         if ($a['has_discrepancy'] !== $b['has_discrepancy']) {
             return $a['has_discrepancy'] ? -1 : 1;
         }
 
-        if ($a['nod'] !== $b['nod']) {
-            return ($b['nod'] <=> $a['nod']);
-        }
-
+        // Then sort by Lot Number A-Z.
         $lotA = ($a['scanned_lot'] !== '-') ? $a['scanned_lot'] : $a['d365_lot'];
         $lotB = ($b['scanned_lot'] !== '-') ? $b['scanned_lot'] : $b['d365_lot'];
 
-        return strcasecmp($lotA, $lotB);
+        $lotCompare = strnatcasecmp((string)$lotA, (string)$lotB);
+        if ($lotCompare !== 0) {
+            return $lotCompare;
+        }
+
+        // Finally, larger variance first when item and lot are identical.
+        return ($b['nod'] <=> $a['nod']);
     });
 
     return $results;
