@@ -503,8 +503,8 @@ class CoilReconciliationModel
             // NOD styling (J)
             $nodStyle = $sheet->getStyle("J{$rIdx}");
             if ($row['nod'] > 0) {
-                $nodStyle->getFont()->setColor(new Color('FF856404'))->setBold(true);
-                $nodStyle->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFFFF3CD');
+                $nodStyle->getFont()->setColor(new Color('FF721C24'))->setBold(true);
+                $nodStyle->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFF8D7DA');
             }
 
             $rIdx++;

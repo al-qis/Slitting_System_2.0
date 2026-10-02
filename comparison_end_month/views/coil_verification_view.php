@@ -250,6 +250,9 @@ $totalNodVariance   = $metrics['totalNodVariance'] ?? 0.0;
                                 <span class="input-group-text bg-light text-success fw-semibold" title="Uploaded File">
                                     <i class="bi bi-check-circle-fill me-1"></i> <?= htmlspecialchars($uploadedFileName) ?>
                                 </span>
+                                <a href="coil_verification.php?action=clear_file" class="btn btn-outline-danger fw-semibold" title="Remove Uploaded File">
+                                    <i class="bi bi-trash-fill me-1"></i> Remove File
+                                </a>
                             <?php endif; ?>
                         </div>
                     </div>
@@ -447,12 +450,12 @@ $totalNodVariance   = $metrics['totalNodVariance'] ?? 0.0;
                                     <!-- Table 1: Scanned Physical Store -->
                                     <td class="fw-semibold text-dark"><?= htmlspecialchars($row['scanned_item']) ?></td>
                                     <td><code class="text-dark bg-light px-2 py-1 rounded"><?= htmlspecialchars($row['scanned_lot']) ?></code></td>
-                                    <td class="text-end fw-bold text-primary col-sep"><?= number_format($row['scanned_mtr'], 2) ?></td>
+                                    <td class="text-end fw-bold text-dark col-sep"><?= number_format($row['scanned_mtr'], 2) ?></td>
 
                                     <!-- Table 2: D365 System Export -->
                                     <td class="fw-semibold text-dark"><?= htmlspecialchars($row['d365_item']) ?></td>
                                     <td><code class="text-dark bg-light px-2 py-1 rounded"><?= htmlspecialchars($row['d365_lot']) ?></code></td>
-                                    <td class="text-end fw-bold text-success col-sep"><?= number_format($row['d365_mtr'], 2) ?></td>
+                                    <td class="text-end fw-bold text-dark col-sep"><?= number_format($row['d365_mtr'], 2) ?></td>
 
                                     <!-- Table 3: Verification & Status -->
                                     
@@ -484,7 +487,7 @@ $totalNodVariance   = $metrics['totalNodVariance'] ?? 0.0;
                                     </td>
 
                                     <!-- NOD (Number of Difference) -->
-                                    <td class="text-end <?= $row['nod'] > 0 ? 'cell-nod-diff' : 'text-muted' ?>">
+                                    <td class="text-end <?= $row['nod'] > 0 ? 'cell-false' : 'text-muted' ?>">
                                         <?php if ($row['nod'] > 0): ?>
                                             <span class="badge bg-warning text-dark border border-warning px-2 py-1">
                                                 <i class="bi bi-exclamation-circle-fill me-1"></i><?= number_format($row['nod'], 2) ?>
