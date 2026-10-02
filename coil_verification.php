@@ -18,6 +18,8 @@ $actualScannedCount = count($scannedRows ?? []);
 $trueCount = 0;
 $falseCount = 0;
 $totalNodVariance = 0.0;
+$d365Count = count($d365Map ?? []);
+$coilNodCount = 0;
 
 foreach ($reconciledResults as $row) {
     if ($row['has_discrepancy']) {
@@ -26,6 +28,9 @@ foreach ($reconciledResults as $row) {
         $trueCount++;
     }
     $totalNodVariance += $row['nod'];
+    if ((float)$row['nod'] > 0) {
+        $coilNodCount++;
+    }
 }
 
 $uploadedFileName = $_SESSION['last_d365_filename'] ?? '';
@@ -244,6 +249,8 @@ $uploadedFileName = $_SESSION['last_d365_filename'] ?? '';
 
                 <!-- Export to Excel Button (Core Requirement 4) -->
                 <form action="reconcile_side_by_side.php" method="POST" class="m-0">
+                    <input type="hidden" name="month" value="<?= $selectedMonth ?>">
+                    <input type="hidden" name="year" value="<?= $selectedYear ?>">
                     <input type="hidden" name="action" value="export">
                     <button type="submit" class="btn btn-success fw-bold shadow-sm d-flex align-items-center gap-2">
                         <i class="bi bi-file-earmark-excel-fill fs-5"></i>
@@ -253,31 +260,57 @@ $uploadedFileName = $_SESSION['last_d365_filename'] ?? '';
             </div>
         </div>
 
-        <!-- Controls Card: File Upload -->
+        <!-- Controls Card: File Upload & Date Selection -->
         <div class="card card-custom mb-4">
             <div class="card-body p-4">
                 <form action="reconcile_side_by_side.php" method="POST" enctype="multipart/form-data" class="row g-3 align-items-end">
                     
+                    <!-- Month Selector -->
+                    <div class="col-md-3 col-sm-6">
+                        <label class="form-label fw-bold text-secondary mb-1">
+                            <i class="bi bi-calendar3 me-1"></i> Select Month (Ground Truth)
+                        </label>
+                        <select name="month" class="form-select fw-semibold">
+                            <option value="0" <?= $selectedMonth === 0 ? 'selected' : '' ?>>All Months (All Active Scans)</option>
+                            <?php foreach ($monthNames as $mNum => $mName): ?>
+                                <option value="<?= $mNum ?>" <?= $selectedMonth === $mNum ? 'selected' : '' ?>>
+                                    <?= $mName ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <!-- Year Selector -->
+                    <div class="col-md-2 col-sm-6">
+                        <label class="form-label fw-bold text-secondary mb-1">
+                            <i class="bi bi-calendar-event me-1"></i> Year
+                        </label>
+                        <select name="year" class="form-select fw-semibold">
+                            <?php for ($y = date('Y'); $y >= date('Y') - 3; $y--): ?>
+                                <option value="<?= $y ?>" <?= $selectedYear === $y ? 'selected' : '' ?>>
+                                    <?= $y ?>
+                                </option>
+                            <?php endfor; ?>
+                        </select>
+                    </div>
+
                     <!-- File Upload Input (Core Requirement 3) -->
-                    <div class="col-md-9">
+                    <div class="col-md-5">
                         <label class="form-label fw-bold text-secondary mb-1">
                             <i class="bi bi-file-earmark-spreadsheet me-1"></i> Upload D365 System Export (.xlsx, .csv)
                         </label>
                         <div class="input-group">
-                            <input type="file" name="d365_file" class="form-control" accept=".xlsx, .xls, .csv">
+                            <input type="file" name="d365_file" class="form-form-control form-control" accept=".xlsx, .xls, .csv">
                             <?php if (!empty($uploadedFileName)): ?>
-                                <span class="input-group-text bg-light text-success fw-semibold border-success" title="Active Uploaded File">
+                                <span class="input-group-text bg-light text-success fw-semibold" title="Uploaded File">
                                     <i class="bi bi-check-circle-fill me-1"></i> <?= htmlspecialchars($uploadedFileName) ?>
-                                    <a href="reconcile_side_by_side.php?action=clear_file" class="btn btn-sm btn-outline-danger ms-2 py-0 px-2 fw-bold" title="Remove Uploaded File">
-                                        <i class="bi bi-trash3-fill me-1"></i> Remove File
-                                    </a>
                                 </span>
                             <?php endif; ?>
                         </div>
                     </div>
 
                     <!-- Submit / Reconcile Button -->
-                    <div class="col-md-3">
+                    <div class="col-md-2">
                         <button type="submit" class="btn btn-primary w-100 fw-bold shadow-sm d-flex align-items-center justify-content-center gap-2">
                             <i class="bi bi-arrow-repeat fs-5"></i>
                             <span>Reconcile Data</span>
@@ -289,7 +322,7 @@ $uploadedFileName = $_SESSION['last_d365_filename'] ?? '';
 
         <!-- KPI Summary Cards -->
         <div class="row g-3 mb-4">
-            <div class="col-xl-3 col-md-6">
+            <div class="col-xl-2 col-md-4 col-6">
                 <div class="kpi-card kpi-total card-custom">
                     <div class="d-flex justify-content-between align-items-center">
                         <div>
@@ -301,7 +334,19 @@ $uploadedFileName = $_SESSION['last_d365_filename'] ?? '';
                 </div>
             </div>
 
-            <div class="col-xl-3 col-md-6">
+            <div class="col-xl-2 col-md-4 col-6">
+                <div class="kpi-card card-custom">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <div class="text-uppercase fw-bold opacity-75 small">Bilangan D365</div>
+                            <h2 class="fw-bold mb-0 mt-1"><?= number_format($d365Count) ?></h2>
+                        </div>
+                        <div class="fs-1 opacity-50"><i class="bi bi-file-earmark-spreadsheet"></i></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-xl-2 col-md-4 col-6">
                 <div class="kpi-card kpi-true card-custom">
                     <div class="d-flex justify-content-between align-items-center">
                         <div>
@@ -313,7 +358,7 @@ $uploadedFileName = $_SESSION['last_d365_filename'] ?? '';
                 </div>
             </div>
 
-            <div class="col-xl-3 col-md-6">
+            <div class="col-xl-2 col-md-4 col-6">
                 <div class="kpi-card kpi-false card-custom">
                     <div class="d-flex justify-content-between align-items-center">
                         <div>
@@ -325,7 +370,19 @@ $uploadedFileName = $_SESSION['last_d365_filename'] ?? '';
                 </div>
             </div>
 
-            <div class="col-xl-3 col-md-6">
+            <div class="col-xl-2 col-md-4 col-6">
+                <div class="kpi-card kpi-nod card-custom">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <div class="text-uppercase fw-bold opacity-75 small">Bilangan Coil NOD</div>
+                            <h2 class="fw-bold mb-0 mt-1"><?= number_format($coilNodCount) ?></h2>
+                        </div>
+                        <div class="fs-1 opacity-50"><i class="bi bi-exclamation-diamond-fill"></i></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-xl-2 col-md-4 col-6">
                 <div class="kpi-card kpi-nod card-custom">
                     <div class="d-flex justify-content-between align-items-center">
                         <div>

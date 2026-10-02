@@ -40,30 +40,9 @@ try {
 
 /**
  * 1. Data Source 1: Scanned Physical Store (Table 1 - Ground Truth)
- * Auto-queried from MySQL database (stock_crosscheck_scans).
+ * Auto-queried from MySQL database for chosen month & year.
  */
 function fetchScannedPhysicalStore(?PDO $pdo): array {
-    if (!$pdo) return [];
-
-    // Query all active scanned records from stock_crosscheck_scans
-    try {
-        $sqlScans = "SELECT 
-                        COALESCE(NULLIF(TRIM(d365_item_number), ''), NULLIF(TRIM(product_code), ''), 'N/A') AS d365_item_number,
-                        COALESCE(NULLIF(TRIM(d365_lot_no), ''), NULLIF(TRIM(lot), ''), 'N/A') AS d365_lot_no,
-                        CAST(COALESCE(NULLIF(mtr, ''), length, 0) AS DECIMAL(10,2)) AS mtr
-                     FROM stock_crosscheck_scans
-                     ORDER BY id DESC";
-        $stmt = $pdo->query($sqlScans);
-        $rows = $stmt->fetchAll();
-        if (!empty($rows)) {
-            return $rows;
-        }
-    } catch (PDOException $e) {
-        // Table or query issue, fall through
-    }
-
-    // Fallback: Query mother_coil
-function fetchScannedPhysicalStore(?PDO $pdo, int $month, int $year): array {
     // Ground Truth = actual scanned records only.
     // No month/year filtering and no fallback to other tables.
     if (!$pdo) {
@@ -203,9 +182,7 @@ function readD365Spreadsheet(string $filePath): array {
             }
 
             $cleanMtr = (float)preg_replace('/[^0-9.]/', '', $rawMtr);
-            $key = normalizeLotKey($rawLot !== '' ? $rawLot : $rawItem);
-
-            $d365DataMap[$key] = [
+            $d365DataMap[] = [
                 'd365_item_number' => $rawItem !== '' ? $rawItem : 'N/A',
                 'd365_lot_no'      => $rawLot !== '' ? $rawLot : 'N/A',
                 'd365_mtr'          => round($cleanMtr, 2)
@@ -394,26 +371,33 @@ function evaluateReconciliation(array $scannedRows, array $d365Map): array {
         ];
     }
 
-    // Auto-sort discrepancy rows to the top.
+    // Sort the reconciliation table A-Z by Item Number.
+    // For matched rows, scanned item is used; for D365-only rows, D365 item is used.
     usort($results, function ($a, $b) {
+        $itemA = ($a['scanned_item'] !== '-') ? $a['scanned_item'] : $a['d365_item'];
+        $itemB = ($b['scanned_item'] !== '-') ? $b['scanned_item'] : $b['d365_item'];
+
+        $itemCompare = strnatcasecmp((string)$itemA, (string)$itemB);
+        if ($itemCompare !== 0) {
+            return $itemCompare;
+        }
+
+        // If the item number is the same, keep discrepancies first.
         if ($a['has_discrepancy'] !== $b['has_discrepancy']) {
             return $a['has_discrepancy'] ? -1 : 1;
         }
-        // Priority 2: Auto-Sort A-Z by Item Number
-        $itemA = ($a['scanned_item'] !== '-') ? $a['scanned_item'] : $a['d365_item'];
-        $itemB = ($b['scanned_item'] !== '-') ? $b['scanned_item'] : $b['d365_item'];
-        $cmpItem = strcasecmp($itemA, $itemB);
-        if ($cmpItem !== 0) {
-            return $cmpItem;
 
-        if ($a['nod'] !== $b['nod']) {
-            return ($b['nod'] <=> $a['nod']);
-        }
-
+        // Then sort by Lot Number A-Z.
         $lotA = ($a['scanned_lot'] !== '-') ? $a['scanned_lot'] : $a['d365_lot'];
         $lotB = ($b['scanned_lot'] !== '-') ? $b['scanned_lot'] : $b['d365_lot'];
 
-        return strcasecmp($lotA, $lotB);
+        $lotCompare = strnatcasecmp((string)$lotA, (string)$lotB);
+        if ($lotCompare !== 0) {
+            return $lotCompare;
+        }
+
+        // Finally, larger variance first when item and lot are identical.
+        return ($b['nod'] <=> $a['nod']);
     });
 
     return $results;
@@ -422,7 +406,7 @@ function evaluateReconciliation(array $scannedRows, array $d365Map): array {
 /**
  * 4. Core Functional Requirement 4: Export to Excel with PhpSpreadsheet
  */
-function exportSideBySideExcel(array $reconciledResults): void {
+function exportSideBySideExcel(array $reconciledResults, string $monthTitle, int $year): void {
     if (!class_exists('\PhpOffice\PhpSpreadsheet\Spreadsheet')) {
         die("PhpSpreadsheet library is required for Excel Export.");
     }
@@ -433,7 +417,7 @@ function exportSideBySideExcel(array $reconciledResults): void {
 
     // Title Banner
     $sheet->mergeCells('A1:J1');
-    $sheet->setCellValue('A1', "SIDE-BY-SIDE COIL VERIFICATION RECONCILIATION REPORT");
+    $sheet->setCellValue('A1', "SIDE-BY-SIDE COIL VERIFICATION RECONCILIATION REPORT - {$monthTitle} {$year}");
     $sheet->getStyle('A1')->getFont()->setBold(true)->setSize(14)->setColor(new Color('FFFFFF'));
     $sheet->getStyle('A1')->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FF1E293B');
     $sheet->getStyle('A1')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER)->setVertical(Alignment::VERTICAL_CENTER);
@@ -560,9 +544,17 @@ function exportSideBySideExcel(array $reconciledResults): void {
 
 // ── Controller Handler ─────────────────────────────────────────
 
-$action = $_REQUEST['action'] ?? '';
+$monthNames = [
+    1 => 'January', 2 => 'February', 3 => 'March', 4 => 'April',
+    5 => 'May', 6 => 'June', 7 => 'July', 8 => 'August',
+    9 => 'September', 10 => 'October', 11 => 'November', 12 => 'December'
+];
 
-// Clear uploaded session file if requested
+$selectedMonth = intval($_REQUEST['month'] ?? date('n'));
+$selectedYear  = intval($_REQUEST['year']  ?? date('Y'));
+$action        = $_REQUEST['action'] ?? '';
+
+// Clear uploaded D365 file
 if ($action === 'clear_file') {
     unset($_SESSION['last_d365_data'], $_SESSION['last_d365_filename']);
     header('Location: coil_verification.php');
@@ -580,7 +572,7 @@ if (isset($_FILES['d365_file']) && $_FILES['d365_file']['error'] === UPLOAD_ERR_
     $d365Map = $_SESSION['last_d365_data'];
 }
 
-// Query MySQL for Ground Truth (Scanned Physical Store - All Scans)
+// Query MySQL for Ground Truth (Scanned Physical Store)
 $scannedRows = fetchScannedPhysicalStore($pdo);
 
 // Reconcile 3-way data
@@ -600,7 +592,8 @@ if ($action === 'download_template') {
 
 // Trigger Excel Download if requested
 if ($action === 'export') {
-    exportSideBySideExcel($reconciledResults);
+    $monthName = $monthNames[$selectedMonth] ?? 'Month';
+    exportSideBySideExcel($reconciledResults, $monthName, $selectedYear);
     exit;
 }
 
