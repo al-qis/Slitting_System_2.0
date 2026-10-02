@@ -44,22 +44,27 @@ class CoilReconciliationModel
             $rows = $stmt->fetchAll() ?: [];
 
             // Apply D365 product aliases for side-by-side reconciliation
-            $aliases = [
-                'DS-8460' => 'JCM',
-                'JZ-4020' => 'QB',
-                'MV-4020' => 'JPM',
-            ];
-
             foreach ($rows as &$row) {
                 $item = $row['d365_item_number'];
-                foreach ($aliases as $code => $alias) {
-                    if (str_starts_with($item, 'SF-' . $code . '-')) {
-                        $row['d365_item_number'] = 'SF-' . $alias . '-' . substr($item, strlen('SF-' . $code . '-'));
-                        break;
-                    } elseif ($item === $code || $item === 'SF-' . $code) {
-                        $row['d365_item_number'] = 'SF-' . $alias;
-                        break;
+
+                // 1. DS-8460: ONLY width 97 is aliased to JCM; other widths remain DS-8460
+                if (preg_match('/^SF-DS-8460-(.+)$/i', $item, $m) || preg_match('/^DS-8460-(.+)$/i', $item, $m)) {
+                    $widthVal = (float)$m[1];
+                    if (abs($widthVal - 97.0) < 0.01) {
+                        $row['d365_item_number'] = preg_replace('/DS-8460/i', 'JCM', $item);
                     }
+                }
+                // 2. JZ-4020 -> QB
+                elseif (str_starts_with(strtoupper($item), 'SF-JZ-4020-')) {
+                    $row['d365_item_number'] = 'SF-QB-' . substr($item, strlen('SF-JZ-4020-'));
+                } elseif (strcasecmp($item, 'JZ-4020') === 0 || strcasecmp($item, 'SF-JZ-4020') === 0) {
+                    $row['d365_item_number'] = 'SF-QB';
+                }
+                // 3. MV-4020 -> JPM
+                elseif (str_starts_with(strtoupper($item), 'SF-MV-4020-')) {
+                    $row['d365_item_number'] = 'SF-JPM-' . substr($item, strlen('SF-MV-4020-'));
+                } elseif (strcasecmp($item, 'MV-4020') === 0 || strcasecmp($item, 'SF-MV-4020') === 0) {
+                    $row['d365_item_number'] = 'SF-JPM';
                 }
             }
             unset($row);

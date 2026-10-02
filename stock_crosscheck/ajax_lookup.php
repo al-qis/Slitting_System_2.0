@@ -179,10 +179,15 @@ $length = cleanNumber($length);
 // aliased products come up.
 $d365ProductAliases = [
     'MV-4020' => 'JPM',
-    'DS-8460' => 'JCM',
     'JZ-4020' => 'QB',
 ];
-$d365ProductCode = $d365ProductAliases[$productCode] ?? $productCode;
+
+if ($productCode === 'DS-8460') {
+    // ONLY width 97 maps to JCM for DS-8460; other widths remain DS-8460
+    $d365ProductCode = (abs((float)$width - 97.0) < 0.01) ? 'JCM' : 'DS-8460';
+} else {
+    $d365ProductCode = $d365ProductAliases[$productCode] ?? $productCode;
+}
 
 // ---- 5. Format Coil to two digits (CH-2 -> CH-02) -------------------------
 $coilFormatted = formatCoil($coil);
