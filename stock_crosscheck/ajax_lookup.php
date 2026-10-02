@@ -179,6 +179,8 @@ $length = cleanNumber($length);
 // aliased products come up.
 $d365ProductAliases = [
     'MV-4020' => 'JPM',
+    'DS-8460' => 'JCM',
+    'JZ-4020' => 'QB',
 ];
 $d365ProductCode = $d365ProductAliases[$productCode] ?? $productCode;
 
