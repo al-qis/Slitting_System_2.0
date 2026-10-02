@@ -275,9 +275,12 @@ function evaluateReconciliation(array $scannedRows, array $d365Map): array {
         if ($a['has_discrepancy'] !== $b['has_discrepancy']) {
             return $a['has_discrepancy'] ? -1 : 1;
         }
-        // Priority 2: Higher NOD variance magnitude
-        if ($a['nod'] !== $b['nod']) {
-            return ($b['nod'] <=> $a['nod']);
+        // Priority 2: Auto-Sort A-Z by Item Number
+        $itemA = ($a['scanned_item'] !== '-') ? $a['scanned_item'] : $a['d365_item'];
+        $itemB = ($b['scanned_item'] !== '-') ? $b['scanned_item'] : $b['d365_item'];
+        $cmpItem = strcasecmp($itemA, $itemB);
+        if ($cmpItem !== 0) {
+            return $cmpItem;
         }
         // Priority 3: Alphabetical by Lot Number
         $lotA = ($a['scanned_lot'] !== '-') ? $a['scanned_lot'] : $a['d365_lot'];
