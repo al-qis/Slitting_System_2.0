@@ -207,10 +207,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
 
 // ── PIN verify via AJAX ──────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['verify_pin'])) {
-    $enteredPin    = trim($_POST['verify_pin']);
-    $supervisorPin = '1234';
-    header('Content-Type: application/json');
-    echo json_encode(['success' => ($enteredPin === $supervisorPin)]);
+    require __DIR__ . '/control_system/verify_supervisor_pin.php';
     exit;
 }
 
@@ -608,7 +605,7 @@ include 'header.php';
                         ?>
                             <div class="d-flex gap-1">
                                 <button type="button"
-                                        class="btn btn-primary btn-sm px-3 rounded-pill actionBtn shadow-sm"
+                                        class="btn btn-primary btn-sm px-3 rounded-pill actionBtn btn-process shadow-sm" data-id="<?= $row['sfc_id'] ?>"
                                         data-sfc-id="<?= $row['sfc_id'] ?>"
                                         data-sfc-lot="<?= htmlspecialchars($row['lot_no']) ?>"
                                         data-sfc-coil="<?= htmlspecialchars($row['coil_no']) ?>"
@@ -645,26 +642,29 @@ include 'header.php';
 </div>
 </form>
 
-<!-- PIN Modal -->
-<div class="modal fade" id="pinModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
-  <div class="modal-dialog modal-dialog-centered modal-sm">
+<!-- Supervisor Authorization Required Modal -->
+<div class="modal fade" id="supervisorAuthModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+  <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content border-0 shadow">
-      <div class="modal-header bg-warning text-dark">
-        <h5 class="modal-title"><i class="bi bi-shield-lock-fill me-2"></i>Supervisor PIN</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      <div class="modal-header bg-primary text-white">
+        <h5 class="modal-title fw-bold"><i class="bi bi-shield-lock-fill me-2"></i>Supervisor Authorization Required</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
-      <div class="modal-body text-center p-4">
-        <p class="text-muted small mb-3">Enter supervisor PIN to proceed.</p>
-        <input type="password" id="pinInput" class="form-control form-control-lg text-center mb-2"
-               placeholder="••••" maxlength="10" autocomplete="off">
-        <div id="pinError" class="text-danger small d-none mt-1">
-            <i class="bi bi-x-circle me-1"></i>Incorrect PIN. Try again.
+      <div class="modal-body p-4">
+        <p class="text-secondary small mb-3">Processing this item requires supervisor permission. Please enter your authorization PIN to proceed.</p>
+        <div id="modalAlert" class="alert alert-danger d-none my-2" role="alert">
+            <span id="modalAlertText"></span>
+        </div>
+        <div class="mb-3">
+            <label for="supervisorPin" class="form-label fw-semibold">Supervisor Passkey / Code</label>
+            <input type="password" id="supervisorPin" class="form-control text-center font-monospace fw-bolder text-primary" style="font-size: 1.8rem; letter-spacing: 5px;"
+                   placeholder="••••••" maxlength="20" inputmode="numeric" autocomplete="off" required>
         </div>
       </div>
-      <div class="modal-footer justify-content-center border-0 pt-0">
+      <div class="modal-footer bg-light justify-content-between border-0">
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-        <button type="button" id="pinSubmitBtn" class="btn btn-warning fw-bold px-4">
-            <i class="bi bi-unlock-fill me-1"></i> Unlock
+        <button type="button" id="btnConfirmProcess" class="btn btn-primary fw-bold px-4">
+            <i class="bi bi-check-circle me-1"></i> Confirm & Process
         </button>
       </div>
     </div>
@@ -897,16 +897,31 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    const pinModal     = new bootstrap.Modal(document.getElementById('pinModal'));
-    const actionModal  = new bootstrap.Modal(document.getElementById('actionModal'));
-    const deleteModal  = new bootstrap.Modal(document.getElementById('deleteModal'));
-    const pinInput     = document.getElementById('pinInput');
-    const pinError     = document.getElementById('pinError');
-    const pinSubmitBtn = document.getElementById('pinSubmitBtn');
-    const qrInput      = document.getElementById('qrScanInput');
-    const qrAlert      = document.getElementById('qrAlert');
+    const supervisorAuthModal = new bootstrap.Modal(document.getElementById('supervisorAuthModal'));
+    const actionModal         = new bootstrap.Modal(document.getElementById('actionModal'));
+    const deleteModal         = new bootstrap.Modal(document.getElementById('deleteModal'));
+    const supervisorPin       = document.getElementById('supervisorPin');
+    const modalAlert          = document.getElementById('modalAlert');
+    const modalAlertText      = document.getElementById('modalAlertText');
+    const btnConfirmProcess   = document.getElementById('btnConfirmProcess');
+    const qrInput             = document.getElementById('qrScanInput');
+    const qrAlert             = document.getElementById('qrAlert');
 
-    let pendingSfcId = null, pendingSfcDetails = null;
+    let pendingSfcId = null, pendingSfcDetails = null, pendingActionType = 'process', pendingSfcIsBalance = '0';
+
+    function showModalError(msg) {
+        if (modalAlertText && modalAlert) {
+            modalAlertText.textContent = msg;
+            modalAlert.classList.remove('d-none');
+        }
+    }
+
+    function hideModalError() {
+        if (modalAlertText && modalAlert) {
+            modalAlertText.textContent = '';
+            modalAlert.classList.add('d-none');
+        }
+    }
 
     function openActionModal(sfcId, details, isBalance) {
         document.getElementById('sfc_id_input').value      = sfcId;
@@ -924,24 +939,34 @@ document.addEventListener('DOMContentLoaded', function () {
         deleteModal.show();
     }
 
-    document.querySelectorAll('.actionBtn').forEach(btn => {
+    // Catch click on any .btn-process or .actionBtn button
+    document.querySelectorAll('.btn-process, .actionBtn').forEach(btn => {
         btn.addEventListener('click', function () {
-            openActionModal(this.dataset.sfcId, this.dataset.sfcDetails, this.dataset.sfcIsBalance);
+            pendingSfcId        = this.dataset.id || this.dataset.sfcId;
+            pendingSfcDetails   = this.dataset.sfcDetails || ('SFC Item #' + pendingSfcId);
+            pendingSfcIsBalance = this.dataset.sfcIsBalance || '0';
+            pendingActionType   = 'process';
+            supervisorPin.value = '';
+            hideModalError();
+            supervisorAuthModal.show();
+            document.getElementById('supervisorAuthModal').addEventListener('shown.bs.modal', function h() {
+                supervisorPin.focus();
+                this.removeEventListener('shown.bs.modal', h);
+            });
         });
     });
 
-    // Delete also goes through the same supervisor PIN gate as Process —
-    // it's at least as consequential, so it gets the same safeguard,
-    // followed by the dedicated confirmation dialog requested below.
+    // Delete button
     document.querySelectorAll('.deleteBtn').forEach(btn => {
         btn.addEventListener('click', function () {
-            pendingSfcId      = this.dataset.sfcId;
-            pendingSfcDetails = this.dataset.sfcDetails;
-            pinInput.value    = '';
-            pinError.classList.add('d-none');
-            pinModal.show();
-            document.getElementById('pinModal').addEventListener('shown.bs.modal', function h() {
-                pinInput.focus();
+            pendingSfcId        = this.dataset.sfcId || this.dataset.id;
+            pendingSfcDetails   = this.dataset.sfcDetails;
+            pendingActionType   = 'delete';
+            supervisorPin.value = '';
+            hideModalError();
+            supervisorAuthModal.show();
+            document.getElementById('supervisorAuthModal').addEventListener('shown.bs.modal', function h() {
+                supervisorPin.focus();
                 this.removeEventListener('shown.bs.modal', h);
             });
         });
@@ -951,43 +976,52 @@ document.addEventListener('DOMContentLoaded', function () {
         document.getElementById('deleteForm').submit();
     });
 
-    function submitPin() {
-        const pin = pinInput.value.trim();
-        if (!pin) return;
-        pinSubmitBtn.disabled = true;
-        pinSubmitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Checking...';
+    function submitSupervisorPin() {
+        const pin = supervisorPin.value.trim();
+        if (!pin) {
+            showModalError('Please enter your supervisor PIN.');
+            supervisorPin.focus();
+            return;
+        }
 
-        fetch('sfc.php', {
+        hideModalError();
+        btnConfirmProcess.disabled = true;
+        btnConfirmProcess.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Verifying...';
+
+        fetch('control_system/verify_supervisor_pin.php', {
             method: 'POST',
-            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'verify_pin=' + encodeURIComponent(pin)
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ pin: pin, item_id: pendingSfcId || 0 })
         })
         .then(r => r.json())
         .then(data => {
             if (data.success) {
-                pinModal.hide();
-                document.getElementById('pinModal').addEventListener('hidden.bs.modal', function h() {
+                supervisorAuthModal.hide();
+                document.getElementById('supervisorAuthModal').addEventListener('hidden.bs.modal', function h() {
                     this.removeEventListener('hidden.bs.modal', h);
-                    openDeleteModal(pendingSfcId, pendingSfcDetails);
+                    if (pendingActionType === 'delete') {
+                        openDeleteModal(pendingSfcId, pendingSfcDetails);
+                    } else {
+                        openActionModal(pendingSfcId, pendingSfcDetails, pendingSfcIsBalance);
+                    }
                 });
             } else {
-                pinError.classList.remove('d-none');
-                pinInput.value = '';
-                pinInput.focus();
+                showModalError(data.message || 'Invalid Supervisor PIN. Access denied.');
+                supervisorPin.value = '';
+                supervisorPin.focus();
             }
         })
-        .catch(() => {
-            pinError.innerHTML = '<i class="bi bi-wifi-off me-1"></i>Network error.';
-            pinError.classList.remove('d-none');
+        .catch(err => {
+            showModalError('Verification failed. Connection error.');
         })
         .finally(() => {
-            pinSubmitBtn.disabled = false;
-            pinSubmitBtn.innerHTML = '<i class="bi bi-unlock-fill me-1"></i> Unlock';
+            btnConfirmProcess.disabled = false;
+            btnConfirmProcess.innerHTML = '<i class="bi bi-check-circle me-1"></i> Confirm & Process';
         });
     }
 
-    pinSubmitBtn.addEventListener('click', submitPin);
-    pinInput.addEventListener('keydown', e => { if (e.key === 'Enter') submitPin(); });
+    btnConfirmProcess.addEventListener('click', submitSupervisorPin);
+    supervisorPin.addEventListener('keydown', e => { if (e.key === 'Enter') submitSupervisorPin(); });
 
     function showAlert(type, msg) {
         qrAlert.className = 'alert alert-' + type + ' py-2 mb-3 shadow-sm';

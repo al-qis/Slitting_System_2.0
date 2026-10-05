@@ -12,6 +12,8 @@ if ($_SESSION['role'] !== 'slitting') {
 }
 
 include 'config.php';
+require_once __DIR__ . '/control_system/config_store.php';
+$isReslitActive = function_exists('isButtonActive') ? isButtonActive('reslit_reslit') : true;
 
 // ── Excel Download ────────────────────────────────────────────
 if (isset($_GET['download']) && $_GET['download'] === 'excel') {
@@ -442,10 +444,16 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
                             <td class="small"><?= htmlspecialchars($row['date_in'] ?? '-') ?></td>
                             <td>
                                 <?php if ($row['status'] === 'pending' || $row['status'] === 'in_progress'): ?>
-                                    <button class="btn btn-primary btn-sm mb-1" 
-                                            onclick="showReslitModal(<?= (int)$row['id'] ?>, '<?= htmlspecialchars($row['product'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['lot_no'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['coil_no'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['roll_no'] ?? '', ENT_QUOTES) ?>', <?= (float)($row['width'] ?? 0) ?>, <?= (float)($row['effective_length'] ?? ($row['length'] ?? 0)) ?>)">
-                                        <i class="bi bi-play-circle"></i> Reslit
-                                    </button>
+                                    <?php if ($isReslitActive): ?>
+                                        <button class="btn btn-primary btn-sm mb-1" 
+                                                onclick="showReslitModal(<?= (int)$row['id'] ?>, '<?= htmlspecialchars($row['product'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['lot_no'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['coil_no'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['roll_no'] ?? '', ENT_QUOTES) ?>', <?= (float)($row['width'] ?? 0) ?>, <?= (float)($row['effective_length'] ?? ($row['length'] ?? 0)) ?>)">
+                                            <i class="bi bi-play-circle"></i> Reslit
+                                        </button>
+                                    <?php else: ?>
+                                        <button class="btn btn-secondary btn-sm mb-1 disabled opacity-75" title="Reslit button function is BLOCKED by Control Center" disabled>
+                                            <i class="bi bi-slash-circle"></i> Reslit
+                                        </button>
+                                    <?php endif; ?>
                                     <a href="edit_reslit.php?id=<?= $row['id'] ?>" class="btn btn-warning btn-sm mb-1"><i class="bi bi-pencil"></i></a>
                                     <?php
                                         // Route label mirrors reslit_send_back.php's own routing rule:
@@ -850,7 +858,12 @@ function applyReslitFilters() {
     }
 }
 
+const isReslitActive = <?= $isReslitActive ? 'true' : 'false' ?>;
 function showReslitModal(id, product, lot_no, coil_no, roll_no, width, length) {
+    if (!isReslitActive) {
+        alert('The Reslit button function is currently BLOCKED in Control Center.');
+        return;
+    }
     reslitFormSubmitted = false;
     productData = { id, product, lot_no, coil_no, roll_no, width, length };
 

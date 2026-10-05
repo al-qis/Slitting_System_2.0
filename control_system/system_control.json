@@ -1,0 +1,11 @@
+{
+    "supervisor_pin": "133724",
+    "button_states": {
+        "recoiling_recoil": "active",
+        "reslit_reslit": "active",
+        "finish_stock_edit": "active",
+        "finish_produced_edit": "active"
+    },
+    "last_updated": "2026-10-05 14:08:00",
+    "updated_by": "slitting"
+}
