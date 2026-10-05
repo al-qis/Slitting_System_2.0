@@ -1087,12 +1087,13 @@ if (isset($_GET['edit'])) {
     $res = $conn->query("SELECT * FROM slitting_product WHERE id=$eid");
     if ($res && $res->num_rows > 0) {
         $tempData = $res->fetch_assoc();
-        $isStockItem = ($tempData['status'] === 'IN');
+        $isProducedSection = ($filter_card === 'produced_month' || ($tempData['status'] ?? '') !== 'IN');
         $isAlreadyCompleted = (intval($tempData['is_completed'] ?? 0) === 1);
 
         // Only block if editing an ALREADY COMPLETED item (Edit button), NOT initial length entry (Update button)
         if ($isAlreadyCompleted) {
-            if (($isStockItem && !$isFinishStockEditActive) || (!$isStockItem && !$isFinishProducedEditActive)) {
+            $isEditActive = $isProducedSection ? $isFinishProducedEditActive : $isFinishStockEditActive;
+            if (!$isEditActive) {
                 echo "<script>alert('The Edit button function for this section is currently BLOCKED in Control Center.'); window.location.href='finish_product.php';</script>";
                 exit;
             }
@@ -1857,8 +1858,12 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                 </small>
 
             <?php else: ?>
-                <!-- Stock counted, not yet on a pallet -->
-                <?php if ($isFinishStockEditActive): ?>
+                <!-- Stock / Produced item counted, not yet on a pallet -->
+                <?php 
+                    $isProducedRow = ($filter_card === 'produced_month' || ($row['status'] ?? '') !== 'IN');
+                    $isRowEditActive = $isProducedRow ? $isFinishProducedEditActive : $isFinishStockEditActive;
+                ?>
+                <?php if ($isRowEditActive): ?>
                     <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
                        class="btn btn-outline-primary btn-sm w-100">Edit</a>
                 <?php else: ?>
