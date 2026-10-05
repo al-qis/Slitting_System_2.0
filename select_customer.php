@@ -92,7 +92,15 @@ if (!isset($_GET['id'])) {
 
 $id   = intval($_GET['id']);
 $from = trim($_GET['from'] ?? $_POST['from'] ?? '');
-$backUrl = ($from === 'slitting_product') ? 'slitting_product.php' : 'finish_product.php';
+if ($from === 'slitting_product') {
+    $backUrl = 'slitting_product.php';
+} elseif ($from === 'recoiling') {
+    $backUrl = 'recoiling.php';
+} elseif ($from === 'reslit') {
+    $backUrl = 'reslit.php';
+} else {
+    $backUrl = 'finish_product.php';
+}
 
 // ── Fetch product ───────────────────────────────────────────────
 $result = $conn->query("SELECT * FROM slitting_product WHERE id=$id");
@@ -270,7 +278,7 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
         <div class="roll-number"><?= htmlspecialchars($product['roll_no'] ?? '') ?></div>
     </div>
 
-    <form method="POST" action="print_product.php" id="mainForm">
+    <form method="POST" action="print_product.php<?= (!empty($_GET['autoprint']) || !empty($_GET['auto_print'])) ? '?autoprint=1' : '' ?>" id="mainForm">
         <input type="hidden" name="id" value="<?= $id ?>">
         <input type="hidden" name="from" value="<?= htmlspecialchars($from) ?>">
 
@@ -425,24 +433,23 @@ function applyMaskForCustomer(val) {
         return; // STOCK override or NCI dedicated logic — no masking
     }
 
+    refNoMask = IMask(refNoInput, {
+        mask: [
+            { mask: 'SO-00-0000' },
+            {
+                mask: 'MS-0000000[ a]',
+                blocks: { a: { mask: /[A-Z]/ } },
+                prepareChar: (str) => str.toUpperCase()
+            }
+        ]
+    });
+
     if (val === 'STAMPING') {
-        // MS + 7 digits, optional trailing space + uppercase letter
-        refNoMask = IMask(refNoInput, {
-            mask: 'MS-0000000[ a]',
-            blocks: {
-                a: { mask: /[A-Z]/ }
-            },
-            prepareChar: (str) => str.toUpperCase()
-        });
-        if (!refNoInput.value || refNoInput.value === 'STOCK') {
+        if (!refNoInput.value || refNoInput.value.startsWith('SO-') || refNoInput.value === 'STOCK') {
             refNoMask.value = 'MS-';
         }
     } else {
-        // Default rule: SO-XX-XXXX (no spaces)
-        refNoMask = IMask(refNoInput, {
-            mask: 'SO-00-0000'
-        });
-        if (!refNoInput.value || refNoInput.value === 'STOCK') {
+        if (!refNoInput.value || refNoInput.value.startsWith('MS-') || refNoInput.value === 'STOCK') {
             refNoMask.value = 'SO-';
         }
     }
@@ -455,8 +462,8 @@ function refNoMatchesActiveRule() {
     if (stockOverride.checked) return val === 'STOCK';
     if (NCI_CUSTOMERS.includes(cust)) return val !== ''; // dedicated logic, just require non-empty
 
-    if (cust === 'STAMPING') return /^MS-\d{7}( [A-Z])?$/.test(val);
-    return /^SO-\d{2}-\d{4}$/.test(val);
+    if (cust === 'STAMPING') return /^MS-\d{7}( [A-Z])?$/i.test(val);
+    return /^SO-\d{2}-\d{4}$/i.test(val) || /^MS-\d{7}( [A-Z])?$/i.test(val);
 }
 
 // Safety net: for customers where no IMask pattern is active (e.g. NCI MFG /
@@ -652,6 +659,13 @@ document.getElementById('mainForm').addEventListener('submit', (e) => {
     }
 
     checkNciMatch(custVal);
+
+    <?php if (!empty($_GET['autoprint']) || !empty($_GET['auto_print'])): ?>
+    setTimeout(() => {
+        const mainForm = document.getElementById('mainForm');
+        if (mainForm) mainForm.submit();
+    }, 400);
+    <?php endif; ?>
 })();
 </script>
 </body>

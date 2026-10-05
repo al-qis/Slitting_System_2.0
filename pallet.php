@@ -3880,7 +3880,7 @@ async function removeRoll(palletId, productId, seq, btnEl) {
 // ─────────────────────────────────────────────────────────────
 function isStockRef(ref) {
     const r = (ref || '').trim().toUpperCase();
-    return r === '' || r === 'STOCK' || r === '-' || r === '—' || r === 'SO-';
+    return r === '' || r === 'STOCK' || r === '-' || r === '—' || r === 'SO-' || r === 'MS-';
 }
 
 function updateSendToQcState() {

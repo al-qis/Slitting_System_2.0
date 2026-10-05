@@ -234,6 +234,7 @@ try {
     $total_actual_length = 0.0;
     $summary_width       = 0.0;
     $all_remarks         = [];
+    $created_slit_ids    = [];
 
     for ($i = 0; $i < $total_rolls; $i++) {
         $new_width     = floatval($_POST['new_width'][$i]     ?? 0);
@@ -317,6 +318,7 @@ try {
             throw new Exception("Insert failed: " . $insert_stmt->error);
         }
         $new_slit_id = $conn->insert_id;
+        $created_slit_ids[] = $new_slit_id;
         $insert_stmt->close();
 
         log_process($conn, 'slitting', $new_slit_id, $mother_id_val,
@@ -355,7 +357,16 @@ try {
     );
 
     $conn->commit();
-    header("Location: recoiling.php?success=completed&id=$id");
+    $print_ids_param = !empty($created_slit_ids) ? implode(',', $created_slit_ids) : '';
+    if (!empty($created_slit_ids)) {
+        if (count($created_slit_ids) === 1) {
+            header("Location: select_customer.php?id=" . $created_slit_ids[0] . "&from=recoiling");
+        } else {
+            header("Location: mixed_batch_setup.php?ids=" . urlencode($print_ids_param) . "&from=recoiling");
+        }
+    } else {
+        header("Location: recoiling.php?success=completed&id=$id");
+    }
     exit;
 
 } catch (Throwable $e) {
