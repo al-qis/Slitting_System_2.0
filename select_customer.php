@@ -92,7 +92,15 @@ if (!isset($_GET['id'])) {
 
 $id   = intval($_GET['id']);
 $from = trim($_GET['from'] ?? $_POST['from'] ?? '');
-$backUrl = ($from === 'slitting_product') ? 'slitting_product.php' : 'finish_product.php';
+if ($from === 'slitting_product') {
+    $backUrl = 'slitting_product.php';
+} elseif ($from === 'recoiling') {
+    $backUrl = 'recoiling.php';
+} elseif ($from === 'reslit') {
+    $backUrl = 'reslit.php';
+} else {
+    $backUrl = 'finish_product.php';
+}
 
 // ── Fetch product ───────────────────────────────────────────────
 $result = $conn->query("SELECT * FROM slitting_product WHERE id=$id");
@@ -270,7 +278,7 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
         <div class="roll-number"><?= htmlspecialchars($product['roll_no'] ?? '') ?></div>
     </div>
 
-    <form method="POST" action="print_product.php" id="mainForm">
+    <form method="POST" action="print_product.php<?= (!empty($_GET['autoprint']) || !empty($_GET['auto_print'])) ? '?autoprint=1' : '' ?>" id="mainForm">
         <input type="hidden" name="id" value="<?= $id ?>">
         <input type="hidden" name="from" value="<?= htmlspecialchars($from) ?>">
 
@@ -652,6 +660,13 @@ document.getElementById('mainForm').addEventListener('submit', (e) => {
     }
 
     checkNciMatch(custVal);
+
+    <?php if (!empty($_GET['autoprint']) || !empty($_GET['auto_print'])): ?>
+    setTimeout(() => {
+        const mainForm = document.getElementById('mainForm');
+        if (mainForm) mainForm.submit();
+    }, 400);
+    <?php endif; ?>
 })();
 </script>
 </body>

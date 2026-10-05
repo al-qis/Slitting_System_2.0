@@ -291,13 +291,31 @@ include 'header.php';
     </div>
 </div>
 
-<?php if(isset($_GET['success'])): ?>
+<?php 
+$autoPrintUrl = '';
+if(isset($_GET['success'])): 
+    $printBtnHtml = '';
+    if ($_GET['success'] === 'completed') {
+        $printIdsRaw = $_GET['print_ids'] ?? '';
+        $printIds = array_values(array_filter(array_map('intval', explode(',', $printIdsRaw))));
+        if (!empty($printIds)) {
+            $printUrl = (count($printIds) === 1)
+                ? "select_customer.php?id=" . $printIds[0] . "&from=reslit"
+                : "mixed_batch_setup.php?ids=" . implode(',', $printIds) . "&from=reslit";
+            
+            $printBtnHtml = ' <a href="' . htmlspecialchars($printUrl) . '" target="_blank" class="btn btn-sm btn-success text-white fw-bold ms-2 shadow-sm"><i class="bi bi-printer-fill me-1"></i> Print Sticker Now</a>';
+            if (!empty($_GET['auto_print'])) {
+                $autoPrintUrl = $printUrl . "&autoprint=1";
+            }
+        }
+    }
+?>
     <div class="alert alert-success alert-dismissible fade show shadow-sm mb-4">
         <i class="bi bi-check-circle-fill me-2"></i>
         <?php 
             if($_GET['success'] === 'added') echo "Product successfully added to reslit list!";
             elseif($_GET['success'] === 'started') echo "Reslit process started!";
-            elseif($_GET['success'] === 'completed') echo "Reslit completed! Product added to stock.";
+            elseif($_GET['success'] === 'completed') echo "Reslit completed! Product added to stock." . $printBtnHtml;
             elseif($_GET['success'] === 'returned_fp') echo "<strong>Sent back to Finished Product.</strong> This item has been removed from the Reslit queue.";
             elseif($_GET['success'] === 'returned_sfc') echo "<strong>Sent back to SFC Inventory.</strong> This item has been removed from the Reslit queue.";
             elseif($_GET['success'] === 'returned') echo "<strong>Sent back.</strong> This item has been removed from the Reslit queue.";
@@ -445,7 +463,27 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
                                         </button>
                                     <?php endif; ?>
                                 <?php else: ?>
-                                    <span class="badge bg-light text-dark border">Done</span>
+                                    <?php
+                                    $reslitProdIds = [];
+                                    if (!empty($row['slitting_product_id'])) {
+                                        $spRes = $conn->query("SELECT id FROM slitting_product WHERE source = 'reslit' AND parent_slit_id = " . (int)$row['slitting_product_id'] . " AND (is_voided = 0 OR is_voided IS NULL)");
+                                        if ($spRes && $spRes->num_rows > 0) {
+                                            while ($spRow = $spRes->fetch_assoc()) {
+                                                $reslitProdIds[] = (int)$spRow['id'];
+                                            }
+                                        }
+                                    }
+                                    if (!empty($reslitProdIds)):
+                                        $reslitPrintUrl = (count($reslitProdIds) === 1)
+                                            ? "select_customer.php?id=" . $reslitProdIds[0] . "&from=reslit"
+                                            : "mixed_batch_setup.php?ids=" . implode(',', $reslitProdIds) . "&from=reslit";
+                                    ?>
+                                        <a href="<?= htmlspecialchars($reslitPrintUrl) ?>" target="_blank" class="btn btn-outline-success btn-sm shadow-sm" title="Print Sticker">
+                                            <i class="bi bi-printer-fill me-1"></i> Print Sticker
+                                        </a>
+                                    <?php else: ?>
+                                        <span class="badge bg-light text-dark border">Done</span>
+                                    <?php endif; ?>
                                 <?php endif; ?>
                             </td>
                         </tr>
@@ -661,6 +699,12 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
 
                     <div id="slittingForm"></div>
                     <div class="form-text mt-1"><i class="bi bi-box-seam-fill me-1 text-primary"></i>Tick <strong>To SFC</strong> for any roll that should be sent to SFC instead of finished stock.</div>
+                    <div class="form-check form-switch mt-3 p-2 bg-light border rounded">
+                        <input class="form-check-input ms-0 me-2" type="checkbox" name="auto_print" id="reslit_auto_print" value="1" checked>
+                        <label class="form-check-label fw-bold text-primary" for="reslit_auto_print">
+                            <i class="bi bi-printer-fill me-1"></i> Cetak sticker automatik selepas selesai
+                        </label>
+                    </div>
                 </div>
                 <div class="modal-footer bg-light">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -1211,5 +1255,13 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 });
 </script>
+
+<?php if (!empty($autoPrintUrl)): ?>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    window.open(<?= json_encode($autoPrintUrl) ?>, '_blank');
+});
+</script>
+<?php endif; ?>
 
 <?php include 'footer.php'; ?>

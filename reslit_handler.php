@@ -208,6 +208,7 @@ try {
     }
 
     $total_actual = 0;
+    $created_slit_ids = [];
 
     // ── Insert pass ───────────────────────────────────────────
     foreach ($roll_numbers as $index => $roll_label) {
@@ -309,6 +310,7 @@ try {
         );
         $stmt_ins->execute();
         $new_slit_id = $conn->insert_id;
+        $created_slit_ids[] = $new_slit_id;
         $stmt_ins->close();
 
         log_process($conn, 'slitting', $new_slit_id, $mother_id_val,
@@ -424,6 +426,7 @@ try {
                 throw new Exception("Failed to insert leftover into Finished Product: " . $stmt_leftover->error);
             }
             $leftover_slit_id = $conn->insert_id;
+            $created_slit_ids[] = $leftover_slit_id;
             $stmt_leftover->close();
 
             log_process($conn, 'slitting', $leftover_slit_id, $mother_id_val,
@@ -450,7 +453,16 @@ try {
         "Output rolls: " . count($roll_numbers) . ", total={$total_actual}m");
 
     $conn->commit();
-    header("Location: reslit.php?success=completed");
+    $print_ids_param = !empty($created_slit_ids) ? implode(',', $created_slit_ids) : '';
+    if (!empty($created_slit_ids)) {
+        if (count($created_slit_ids) === 1) {
+            header("Location: select_customer.php?id=" . $created_slit_ids[0] . "&from=reslit");
+        } else {
+            header("Location: mixed_batch_setup.php?ids=" . urlencode($print_ids_param) . "&from=reslit");
+        }
+    } else {
+        header("Location: reslit.php?success=completed");
+    }
     exit;
 
 } catch (Exception $e) {

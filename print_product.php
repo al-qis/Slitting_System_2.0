@@ -169,7 +169,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     die("Product ID required");
 }
 
-$backUrl           = ($from === 'slitting_product') ? 'slitting_product.php' : 'finish_product.php';
+if ($from === 'slitting_product') {
+    $backUrl = 'slitting_product.php';
+} elseif ($from === 'recoiling') {
+    $backUrl = 'recoiling.php';
+} elseif ($from === 'reslit') {
+    $backUrl = 'reslit.php';
+} else {
+    $backUrl = 'finish_product.php';
+}
 $changeCustomerUrl = "select_customer.php?id={$id}" . ($from !== '' ? "&from=" . urlencode($from) : "");
 
 // ── Resolve copies (1–3, defaults to 1) ───────────────────────────
@@ -667,6 +675,15 @@ function escHtml(s) {
     return String(s ?? '').replace(/[&<>"']/g,
         c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+
+<?php if (!empty($_REQUEST['autoprint']) || !empty($_REQUEST['auto_print'])): ?>
+window.addEventListener('DOMContentLoaded', () => {
+    setTimeout(async () => {
+        await markPrinted();
+        window.print();
+    }, 400);
+});
+<?php endif; ?>
 </script>
 
 </body>

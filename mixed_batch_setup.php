@@ -68,6 +68,10 @@ if ($from === 'slitting_product') {
         'search'       => $backSearch !== '' ? $backSearch : null,
         'print_status' => $backPrintFilter !== '' ? $backPrintFilter : null,
     ]));
+} elseif ($from === 'recoiling') {
+    $backUrl = 'recoiling.php';
+} elseif ($from === 'reslit') {
+    $backUrl = 'reslit.php';
 } else {
     $backUrl = 'finish_product.php?' . http_build_query(array_filter([
         'month'  => $backMonth,
@@ -649,6 +653,14 @@ async function saveOnly() {
         saveBtn.innerHTML = '<i class="bi bi-save me-1"></i> Save Only';
     }
 }
+
+<?php if (!empty($_GET['autoprint']) || !empty($_GET['auto_print'])): ?>
+window.addEventListener('DOMContentLoaded', () => {
+    setTimeout(() => {
+        printAllStickers();
+    }, 400);
+});
+<?php endif; ?>
 </script>
 </body>
 </html>

@@ -175,7 +175,7 @@ $query = "
 $result = $conn->query($query);
 
 $childRes = $conn->query("
-    SELECT recoiling_id, lot_no, coil_no, roll_no, width, length, actual_length
+    SELECT id, recoiling_id, lot_no, coil_no, roll_no, width, length, actual_length
     FROM slitting_product
     WHERE recoiling_id IS NOT NULL
     ORDER BY recoiling_id ASC, id ASC
@@ -225,6 +225,19 @@ if (isset($_GET['error'])) {
         $alertMessage = "<strong>Sent back to Finished Product.</strong> This item has been removed from the Recoiling queue.";
     } else {
         $alertMessage = "<strong>Recoiling completed successfully!</strong> The product has been saved.";
+        
+        $printIdsRaw = $_GET['print_ids'] ?? '';
+        $printIds = array_values(array_filter(array_map('intval', explode(',', $printIdsRaw))));
+        if (!empty($printIds)) {
+            $printUrl = (count($printIds) === 1)
+                ? "select_customer.php?id=" . $printIds[0] . "&from=recoiling"
+                : "mixed_batch_setup.php?ids=" . implode(',', $printIds) . "&from=recoiling";
+            
+            $alertMessage .= ' <a href="' . htmlspecialchars($printUrl) . '" target="_blank" class="btn btn-sm btn-success text-white fw-bold ms-2 shadow-sm"><i class="bi bi-printer-fill me-1"></i> Print Sticker Now</a>';
+            if (!empty($_GET['auto_print'])) {
+                $autoPrintUrl = $printUrl . "&autoprint=1";
+            }
+        }
     }
 }
 
@@ -458,7 +471,24 @@ include 'header.php';
                             <?php endif; ?>
                             </div>
                         <?php else: ?>
-                            <span class="badge bg-light text-dark border">Done</span>
+                            <?php
+                            $rowKidIds = [];
+                            if (!empty($kids)) {
+                                foreach ($kids as $k) {
+                                    if (!empty($k['id'])) $rowKidIds[] = (int)$k['id'];
+                                }
+                            }
+                            if (!empty($rowKidIds)):
+                                $rowPrintUrl = (count($rowKidIds) === 1)
+                                    ? "select_customer.php?id=" . $rowKidIds[0] . "&from=recoiling"
+                                    : "mixed_batch_setup.php?ids=" . implode(',', $rowKidIds) . "&from=recoiling";
+                            ?>
+                                <a href="<?= htmlspecialchars($rowPrintUrl) ?>" target="_blank" class="btn btn-outline-success btn-sm shadow-sm" title="Print Sticker">
+                                    <i class="bi bi-printer-fill me-1"></i> Print Sticker
+                                </a>
+                            <?php else: ?>
+                                <span class="badge bg-light text-dark border">Done</span>
+                            <?php endif; ?>
                         <?php endif; ?>
                     </td>
                 </tr>
@@ -703,6 +733,12 @@ include 'header.php';
                         <hr>
                         <h6 class="mb-3 fw-bold">Step 2: Enter Details</h6>
                         <div id="rollsContainer"></div>
+                        <div class="form-check form-switch mt-3 p-2 bg-light border rounded">
+                            <input class="form-check-input ms-0 me-2" type="checkbox" name="auto_print" id="recoil_auto_print" value="1" checked>
+                            <label class="form-check-label fw-bold text-primary" for="recoil_auto_print">
+                                <i class="bi bi-printer-fill me-1"></i> Cetak sticker automatik selepas selesai
+                            </label>
+                        </div>
                     </div>
 
                 </div>
@@ -1356,5 +1392,13 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 });
 </script>
+
+<?php if (!empty($autoPrintUrl)): ?>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    window.open(<?= json_encode($autoPrintUrl) ?>, '_blank');
+});
+</script>
+<?php endif; ?>
 
 <?php include 'footer.php'; ?>
