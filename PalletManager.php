@@ -54,7 +54,7 @@ class PalletManager
     public static function isStockRefNo(?string $refNo): bool
     {
         $clean = strtoupper(trim((string)$refNo));
-        return $clean === '' || $clean === self::STOCK_REF_NO || $clean === '-' || $clean === '—' || $clean === 'SO-';
+        return $clean === '' || $clean === self::STOCK_REF_NO || $clean === '-' || $clean === '—' || $clean === 'SO-' || $clean === 'MS-';
     }
 
     // =========================================================

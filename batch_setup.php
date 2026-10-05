@@ -380,20 +380,23 @@ function applyMaskForRow(idx, val) {
         return; // STOCK override or NCI dedicated logic — no masking
     }
 
+    refNoMasks[idx] = IMask(refEl, {
+        mask: [
+            { mask: 'SO-00-0000' },
+            {
+                mask: 'MS-0000000[ a]',
+                blocks: { a: { mask: /[A-Z]/ } },
+                prepareChar: (str) => str.toUpperCase()
+            }
+        ]
+    });
+
     if (val === 'STAMPING') {
-        // MS + 7 digits, optional trailing space + uppercase letter
-        refNoMasks[idx] = IMask(refEl, {
-            mask: 'MS-0000000[ a]',
-            blocks: { a: { mask: /[A-Z]/ } },
-            prepareChar: (str) => str.toUpperCase()
-        });
-        if (!refNoMasks[idx].value || refNoMasks[idx].value === 'SO-' || refNoMasks[idx].value === 'STOCK') {
+        if (!refNoMasks[idx].value || refNoMasks[idx].value.startsWith('SO-') || refNoMasks[idx].value === 'STOCK') {
             refNoMasks[idx].value = 'MS-';
         }
     } else {
-        // Default rule: SO-XX-XXXX (no spaces)
-        refNoMasks[idx] = IMask(refEl, { mask: 'SO-00-0000' });
-        if (!refNoMasks[idx].value || refNoMasks[idx].value === 'STOCK') {
+        if (!refNoMasks[idx].value || refNoMasks[idx].value.startsWith('MS-') || refNoMasks[idx].value === 'STOCK') {
             refNoMasks[idx].value = 'SO-';
         }
     }
@@ -410,8 +413,8 @@ function refNoMatchesActiveRuleForRow(idx) {
     const cust = custEl.value;
 
     if (NCI_CUSTOMERS.includes(cust)) return val !== '';
-    if (cust === 'STAMPING') return /^MS-\d{7}( [A-Z])?$/.test(val);
-    return /^SO-\d{2}-\d{4}$/.test(val);
+    if (cust === 'STAMPING') return /^MS-\d{7}( [A-Z])?$/i.test(val);
+    return /^SO-\d{2}-\d{4}$/i.test(val) || /^MS-\d{7}( [A-Z])?$/i.test(val);
 }
 
 function escHtml(s) {

@@ -433,24 +433,23 @@ function applyMaskForCustomer(val) {
         return; // STOCK override or NCI dedicated logic — no masking
     }
 
+    refNoMask = IMask(refNoInput, {
+        mask: [
+            { mask: 'SO-00-0000' },
+            {
+                mask: 'MS-0000000[ a]',
+                blocks: { a: { mask: /[A-Z]/ } },
+                prepareChar: (str) => str.toUpperCase()
+            }
+        ]
+    });
+
     if (val === 'STAMPING') {
-        // MS + 7 digits, optional trailing space + uppercase letter
-        refNoMask = IMask(refNoInput, {
-            mask: 'MS-0000000[ a]',
-            blocks: {
-                a: { mask: /[A-Z]/ }
-            },
-            prepareChar: (str) => str.toUpperCase()
-        });
-        if (!refNoInput.value || refNoInput.value === 'STOCK') {
+        if (!refNoInput.value || refNoInput.value.startsWith('SO-') || refNoInput.value === 'STOCK') {
             refNoMask.value = 'MS-';
         }
     } else {
-        // Default rule: SO-XX-XXXX (no spaces)
-        refNoMask = IMask(refNoInput, {
-            mask: 'SO-00-0000'
-        });
-        if (!refNoInput.value || refNoInput.value === 'STOCK') {
+        if (!refNoInput.value || refNoInput.value.startsWith('MS-') || refNoInput.value === 'STOCK') {
             refNoMask.value = 'SO-';
         }
     }
@@ -463,8 +462,8 @@ function refNoMatchesActiveRule() {
     if (stockOverride.checked) return val === 'STOCK';
     if (NCI_CUSTOMERS.includes(cust)) return val !== ''; // dedicated logic, just require non-empty
 
-    if (cust === 'STAMPING') return /^MS-\d{7}( [A-Z])?$/.test(val);
-    return /^SO-\d{2}-\d{4}$/.test(val);
+    if (cust === 'STAMPING') return /^MS-\d{7}( [A-Z])?$/i.test(val);
+    return /^SO-\d{2}-\d{4}$/i.test(val) || /^MS-\d{7}( [A-Z])?$/i.test(val);
 }
 
 // Safety net: for customers where no IMask pattern is active (e.g. NCI MFG /

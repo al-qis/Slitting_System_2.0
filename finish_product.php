@@ -2184,18 +2184,23 @@ function modalApplyMaskForRow(idx, val) {
         return;
     }
 
+    modalRefNoMasks[idx] = IMask(refEl, {
+        mask: [
+            { mask: 'SO-00-0000' },
+            {
+                mask: 'MS-0000000[ a]',
+                blocks: { a: { mask: /[A-Z]/ } },
+                prepareChar: (str) => str.toUpperCase()
+            }
+        ]
+    });
+
     if (val === 'STAMPING') {
-        modalRefNoMasks[idx] = IMask(refEl, {
-            mask: 'MS-0000000[ a]',
-            blocks: { a: { mask: /[A-Z]/ } },
-            prepareChar: (str) => str.toUpperCase()
-        });
-        if (!modalRefNoMasks[idx].value || modalRefNoMasks[idx].value === 'SO-' || modalRefNoMasks[idx].value === 'STOCK') {
+        if (!modalRefNoMasks[idx].value || modalRefNoMasks[idx].value.startsWith('SO-') || modalRefNoMasks[idx].value === 'STOCK') {
             modalRefNoMasks[idx].value = 'MS-';
         }
     } else {
-        modalRefNoMasks[idx] = IMask(refEl, { mask: 'SO-00-0000' });
-        if (!modalRefNoMasks[idx].value || modalRefNoMasks[idx].value === 'STOCK') {
+        if (!modalRefNoMasks[idx].value || modalRefNoMasks[idx].value.startsWith('MS-') || modalRefNoMasks[idx].value === 'STOCK') {
             modalRefNoMasks[idx].value = 'SO-';
         }
     }
@@ -2212,8 +2217,8 @@ function modalRefNoMatchesActiveRuleForRow(idx) {
     const cust = custEl.value;
 
     if (MODAL_NCI_CUSTOMERS.includes(cust)) return val !== '';
-    if (cust === 'STAMPING') return /^MS-\d{7}( [A-Z])?$/.test(val);
-    return /^SO-\d{2}-\d{4}$/.test(val);
+    if (cust === 'STAMPING') return /^MS-\d{7}( [A-Z])?$/i.test(val);
+    return /^SO-\d{2}-\d{4}$/i.test(val) || /^MS-\d{7}( [A-Z])?$/i.test(val);
 }
 
 function modalGetRowCount() {
