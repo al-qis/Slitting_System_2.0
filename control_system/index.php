@@ -139,7 +139,6 @@ $buttonMeta = [
 
 $page_title = "Control Center";
 $pathPrefix = '../';
-$hide_sidebar = true;
 include __DIR__ . '/../header.php';
 ?>
 

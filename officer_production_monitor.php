@@ -9,7 +9,6 @@ if (!isset($_SESSION['role'])) {
 require_once 'config.php';
 
 $page_title = "Papan Pemantauan Pengeluaran Pegawai (Officer Monitor)";
-$hide_sidebar = true;
 include 'header.php';
 
 $shiftTarget = (float)getSystemSetting($conn, 'shift_target_meters', '5200');
