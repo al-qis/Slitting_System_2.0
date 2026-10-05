@@ -362,8 +362,13 @@ usort($rolls, function ($a, $b) {
                         <div class="text-muted nci-note mt-1" data-row="<?= $idx ?>" style="display:none;"></div>
                     </td>
                     <td>
+                        <div class="form-check mb-1">
+                            <input class="form-check-input row-stock-override" type="checkbox"
+                                   id="rowStock<?= $idx ?>" data-row="<?= $idx ?>" <?= $isStock ? 'checked' : '' ?>>
+                            <label class="form-check-label small" for="rowStock<?= $idx ?>">Set to STOCK</label>
+                        </div>
                         <input type="text" class="form-control form-control-sm row-refno" data-row="<?= $idx ?>"
-                               value="<?= htmlspecialchars($displayRefNo) ?>" placeholder="SO-00-0000">
+                               value="<?= htmlspecialchars($displayRefNo) ?>" placeholder="SO-00-0000" <?= $isStock ? 'readonly' : '' ?>>
                     </td>
                     <td>
                         <select class="form-select form-select-sm row-copies" data-row="<?= $idx ?>">
@@ -407,8 +412,63 @@ usort($rolls, function ($a, $b) {
 </form>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://unpkg.com/imask"></script>
 <script>
 const NCI_CUSTOMERS = ['NCI MFG', 'NCI 2'];
+
+const refNoMasks = {}; // rowIdx -> IMask instance
+
+function destroyRefMaskForRow(idx) {
+    if (refNoMasks[idx]) { refNoMasks[idx].destroy(); refNoMasks[idx] = null; }
+}
+
+function applyMaskForRow(idx, val) {
+    destroyRefMaskForRow(idx);
+
+    const refEl   = document.querySelector(`.row-refno[data-row="${idx}"]`);
+    const stockEl = document.querySelector(`.row-stock-override[data-row="${idx}"]`);
+    if (!refEl) return;
+
+    if (stockEl?.checked || NCI_CUSTOMERS.includes(val)) {
+        return; // STOCK override or NCI dedicated logic — no masking
+    }
+
+    refNoMasks[idx] = IMask(refEl, {
+        mask: [
+            { mask: 'SO-00-0000' },
+            {
+                mask: 'MS-0000000[ a]',
+                blocks: { a: { mask: /[A-Z]/ } },
+                prepareChar: (str) => str.toUpperCase()
+            }
+        ]
+    });
+
+    if (val === 'STAMPING') {
+        if (!refNoMasks[idx].value || refNoMasks[idx].value.startsWith('SO-') || refNoMasks[idx].value === 'STOCK') {
+            refNoMasks[idx].value = 'MS-';
+        }
+    } else {
+        if (!refNoMasks[idx].value || refNoMasks[idx].value.startsWith('MS-') || refNoMasks[idx].value === 'STOCK') {
+            refNoMasks[idx].value = 'SO-';
+        }
+    }
+}
+
+function refNoMatchesActiveRuleForRow(idx) {
+    const refEl   = document.querySelector(`.row-refno[data-row="${idx}"]`);
+    const custEl  = document.querySelector(`.row-customer[data-row="${idx}"]`);
+    const stockEl = document.querySelector(`.row-stock-override[data-row="${idx}"]`);
+    if (!refEl || !custEl) return true;
+
+    if (stockEl?.checked) return true;
+    const val = refEl.value.trim();
+    const cust = custEl.value;
+
+    if (NCI_CUSTOMERS.includes(cust)) return val !== '';
+    if (cust === 'STAMPING') return /^MS-\d{7}( [A-Z])?$/i.test(val);
+    return /^SO-\d{2}-\d{4}$/i.test(val) || /^MS-\d{7}( [A-Z])?$/i.test(val);
+}
 
 function escHtml(s) {
     return String(s ?? '').replace(/[&<>"']/g,
@@ -435,16 +495,25 @@ async function handleRowCustomerChange(rowIdx) {
 
     otherEl.style.display = (val === 'OTHER') ? 'block' : 'none';
 
+    const stockEl = document.querySelector(`.row-stock-override[data-row="${rowIdx}"]`);
+
     if (val === 'STOCK') {
+        destroyRefMaskForRow(rowIdx);
+        if (stockEl) stockEl.checked = true;
         refEl.value = 'STOCK';
+        refEl.readOnly = true;
         noteEl.style.display = 'none';
         noteEl.innerHTML = '';
         return;
     }
 
+    if (stockEl) stockEl.checked = false;
+    refEl.readOnly = false;
     if (refEl.value === 'STOCK' || !refEl.value.trim()) {
         refEl.value = 'SO-';
     }
+
+    applyMaskForRow(rowIdx, val);
 
     if (!NCI_CUSTOMERS.includes(val)) {
         noteEl.style.display = 'none';
@@ -549,8 +618,14 @@ function collectSelections() {
         const copies = (parsedCopies >= 1 && parsedCopies <= 3) ? parsedCopies : 2;
         const length = lengthEl ? parseFloat(lengthEl.value) : 0;
 
+        const stockEl = document.querySelector(`.row-stock-override[data-row="${idx}"]`);
         if (!customer) { setRowStatus(idx, 'Select a customer', true); hasError = true; return; }
         if (!ref_no)   { setRowStatus(idx, 'Ref No required', true);   hasError = true; return; }
+        if (!stockEl?.checked && !refNoMatchesActiveRuleForRow(idx)) {
+            setRowStatus(idx, 'Invalid Ref No format', true);
+            hasError = true;
+            return;
+        }
         if (isNaN(length) || length <= 0) { setRowStatus(idx, 'Length must be > 0', true); hasError = true; return; }
 
         setRowStatus(idx, `OK · ${copies}x`, false);
@@ -653,6 +728,52 @@ async function saveOnly() {
         saveBtn.innerHTML = '<i class="bi bi-save me-1"></i> Save Only';
     }
 }
+
+// ── Per-row "Set to STOCK" checkbox ────────────────────────────────
+document.querySelectorAll('.row-stock-override').forEach((cb) => {
+    const idx = cb.dataset.row;
+    cb.addEventListener('change', () => {
+        const refEl  = document.querySelector(`.row-refno[data-row="${idx}"]`);
+        const custEl = document.querySelector(`.row-customer[data-row="${idx}"]`);
+        if (cb.checked) {
+            destroyRefMaskForRow(idx);
+            refEl.value = 'STOCK';
+            refEl.readOnly = true;
+            if (custEl && custEl.value === '') {
+                custEl.value = 'STOCK';
+            }
+        } else {
+            refEl.readOnly = false;
+            refEl.value = 'SO-';
+            if (custEl && custEl.value === 'STOCK') {
+                custEl.value = '';
+            }
+            applyMaskForRow(idx, custEl ? custEl.value : '');
+        }
+    });
+});
+
+// ── On load: apply masking (or restore STOCK state) for every row ──
+(function initRowRefNoMasks() {
+    const rowCount = getRowCount();
+    for (let idx = 0; idx < rowCount; idx++) {
+        const custEl  = document.querySelector(`.row-customer[data-row="${idx}"]`);
+        const refEl   = document.querySelector(`.row-refno[data-row="${idx}"]`);
+        const stockEl = document.querySelector(`.row-stock-override[data-row="${idx}"]`);
+        if (!custEl || !refEl) continue;
+
+        if (stockEl?.checked || refEl.value.trim() === 'STOCK') {
+            if (stockEl) stockEl.checked = true;
+            refEl.value = 'STOCK';
+            refEl.readOnly = true;
+        } else {
+            if (!refEl.value.trim()) {
+                refEl.value = 'SO-';
+            }
+            applyMaskForRow(idx, custEl.value);
+        }
+    }
+})();
 
 <?php if (!empty($_GET['autoprint']) || !empty($_GET['auto_print'])): ?>
 window.addEventListener('DOMContentLoaded', () => {
