@@ -241,7 +241,6 @@ include __DIR__ . '/../header.php';
             <div class="card border-0 shadow-sm">
                 <div class="card-header bg-dark text-white fw-bold py-2 px-3 d-flex justify-content-between align-items-center">
                     <span class="small"><i class="bi bi-toggle-on text-info me-2"></i>System Button Control & Lockout</span>
-                    <span class="badge bg-secondary" style="font-size: 11px;">Slitting System v2.0</span>
                 </div>
                 <div class="card-body p-0">
                     <div class="table-responsive">
