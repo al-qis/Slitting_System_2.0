@@ -211,3 +211,11 @@ code,
 h2 { font-size: 1.5rem    !important; } /* 24 px */
 h5 { font-size: 1.125rem  !important; } /* 18 px */
 h6 { font-size: 1rem      !important; } /* 16 px */
+
+/* ── Supervisor Passkey Large Font Exception ────────────────── */
+.passkey-display,
+input#supervisorPinInput,
+#supervisorPinInput {
+    font-size: 38px !important;
+    letter-spacing: 6px !important;
+}

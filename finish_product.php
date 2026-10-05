@@ -31,6 +31,9 @@ if ($_SESSION['role'] !== 'slitting') {
 }
 
 include 'config.php';
+require_once __DIR__ . '/control_system/config_store.php';
+$isFinishStockEditActive = function_exists('isButtonActive') ? isButtonActive('finish_stock_edit') : true;
+$isFinishProducedEditActive = function_exists('isButtonActive') ? isButtonActive('finish_produced_edit') : true;
 
 // ============================================================
 // INLINED PALLET HELPERS — no external file needed
@@ -1083,7 +1086,18 @@ if (isset($_GET['edit'])) {
     $eid = intval($_GET['edit']);
     $res = $conn->query("SELECT * FROM slitting_product WHERE id=$eid");
     if ($res && $res->num_rows > 0) {
-        $editData = $res->fetch_assoc();
+        $tempData = $res->fetch_assoc();
+        $isStockItem = ($tempData['status'] === 'IN');
+        $isAlreadyCompleted = (intval($tempData['is_completed'] ?? 0) === 1);
+
+        // Only block if editing an ALREADY COMPLETED item (Edit button), NOT initial length entry (Update button)
+        if ($isAlreadyCompleted) {
+            if (($isStockItem && !$isFinishStockEditActive) || (!$isStockItem && !$isFinishProducedEditActive)) {
+                echo "<script>alert('The Edit button function for this section is currently BLOCKED in Control Center.'); window.location.href='finish_product.php';</script>";
+                exit;
+            }
+        }
+        $editData = $tempData;
 
         $lotNoFetch    = trim($editData['lot_no'] ?? '');
         $coilNoFetch   = trim($editData['coil_no'] ?? '');
@@ -1828,7 +1842,7 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
         <div class="d-flex flex-column gap-1">
 
             <?php if ($row['is_completed'] == 0): ?>
-                <!-- No actual length yet — must update first -->
+                <!-- No actual length yet — must update first (unblocked) -->
                 <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
                    class="btn btn-primary btn-sm w-100">Update</a>
 
@@ -1844,8 +1858,12 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
 
             <?php else: ?>
                 <!-- Stock counted, not yet on a pallet -->
-                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
-                   class="btn btn-outline-primary btn-sm w-100">Edit</a>
+                <?php if ($isFinishStockEditActive): ?>
+                    <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
+                       class="btn btn-outline-primary btn-sm w-100">Edit</a>
+                <?php else: ?>
+                    <button type="button" class="btn btn-secondary btn-sm w-100 disabled opacity-75" title="Edit is BLOCKED by Control Center" disabled><i class="bi bi-slash-circle me-1"></i> Edit (Blocked)</button>
+                <?php endif; ?>
                 <button type="button" class="btn btn-primary btn-sm w-100"
                         onclick="openSendToSfcModal(<?= (int)$row['id'] ?>, '<?= htmlspecialchars($row['product'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['lot_no'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['coil_no'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['roll_no'] ?? '', ENT_QUOTES) ?>', <?= (float)($row['width'] ?? 0) ?>, <?= (float)($row['actual_length'] ?: $row['length']) ?>)">
                     <i class="bi bi-box-seam me-1"></i> Send to SFC
@@ -2184,16 +2202,17 @@ function modalApplyMaskForRow(idx, val) {
         return;
     }
 
-    modalRefNoMasks[idx] = IMask(refEl, {
-        mask: [
-            { mask: 'SO-00-0000' },
-            {
-                mask: 'MS-0000000[ a]',
-                blocks: { a: { mask: /[A-Z]/ } },
-                prepareChar: (str) => str.toUpperCase()
-            }
-        ]
-    });
+    if (val === 'STAMPING') {
+        modalRefNoMasks[idx] = IMask(refEl, {
+            mask: 'MS-0000000[ a]',
+            blocks: { a: { mask: /[A-Z]/ } },
+            prepareChar: (str) => str.toUpperCase()
+        });
+    } else {
+        modalRefNoMasks[idx] = IMask(refEl, {
+            mask: 'SO-00-0000'
+        });
+    }
 
     if (val === 'STAMPING') {
         if (!modalRefNoMasks[idx].value || modalRefNoMasks[idx].value.startsWith('SO-') || modalRefNoMasks[idx].value === 'STOCK') {
@@ -2218,7 +2237,7 @@ function modalRefNoMatchesActiveRuleForRow(idx) {
 
     if (MODAL_NCI_CUSTOMERS.includes(cust)) return val !== '';
     if (cust === 'STAMPING') return /^MS-\d{7}( [A-Z])?$/i.test(val);
-    return /^SO-\d{2}-\d{4}$/i.test(val) || /^MS-\d{7}( [A-Z])?$/i.test(val);
+    return /^SO-\d{2}-\d{4}$/i.test(val);
 }
 
 function modalGetRowCount() {
@@ -2279,18 +2298,39 @@ async function modalHandleRowCustomerChange(rowIdx) {
     }
 }
 
+let modalCopyAllRefMask = null;
+function updateModalCopyAllRefMask(custVal) {
+    if (modalCopyAllRefMask) { modalCopyAllRefMask.destroy(); modalCopyAllRefMask = null; }
+    const el = document.getElementById('modalCopyAllRefNo');
+    if (!el) return;
+
+    if (custVal === 'STOCK') {
+        el.value = 'STOCK';
+        return;
+    }
+
+    if (custVal === 'STAMPING') {
+        modalCopyAllRefMask = IMask(el, {
+            mask: 'MS-0000000[ a]',
+            blocks: { a: { mask: /[A-Z]/ } },
+            prepareChar: (str) => str.toUpperCase()
+        });
+        if (!el.value || el.value.startsWith('SO-') || el.value === 'STOCK') {
+            el.value = 'MS-';
+        }
+    } else {
+        modalCopyAllRefMask = IMask(el, { mask: 'SO-00-0000' });
+        if (!el.value || el.value.startsWith('MS-') || el.value === 'STOCK') {
+            el.value = 'SO-';
+        }
+    }
+}
+
 document.getElementById('modalCopyAllCustomer')?.addEventListener('change', function () {
     const val = this.value;
     document.getElementById('modalCopyAllCustomOther').style.display =
         (val === 'OTHER') ? 'block' : 'none';
-    const copyAllRefEl = document.getElementById('modalCopyAllRefNo');
-    if (copyAllRefEl) {
-        if (val === 'STOCK') {
-            copyAllRefEl.value = 'STOCK';
-        } else if (copyAllRefEl.value === 'STOCK') {
-            copyAllRefEl.value = 'SO-';
-        }
-    }
+    updateModalCopyAllRefMask(val);
 });
 
 document.querySelectorAll('.modal-row-stock-override').forEach((cb) => {

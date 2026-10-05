@@ -10,6 +10,8 @@ if ($_SESSION['role'] !== 'slitting') {
 }
 
 include 'config.php';
+require_once __DIR__ . '/control_system/config_store.php';
+$isRecoilActive = function_exists('isButtonActive') ? isButtonActive('recoiling_recoil') : true;
 
 // ── Excel Download ────────────────────────────────────────────
 if (isset($_GET['download']) && $_GET['download'] === 'excel') {
@@ -448,18 +450,24 @@ include 'header.php';
                     <td>
                         <?php if ($canRecoil): ?>
                             <div class="d-flex flex-column gap-1">
-                            <button type="button"
-                                    class="btn btn-primary btn-sm btn-recoil"
-                                    data-rid="<?= $rid ?>"
-                                    data-product="<?= htmlspecialchars($row['product'] ?? '') ?>"
-                                    data-lot="<?= htmlspecialchars($row['lot_no'] ?? '') ?>"
-                                    data-coil="<?= htmlspecialchars($row['coil_no'] ?? '') ?>"
-                                    data-roll="<?= htmlspecialchars($row['roll_no'] ?? '') ?>"
-                                    data-width="<?= (float)($row['width'] ?? 0) ?>"
-                                    data-length="<?= (float)($row['actual_length'] ?? 0) ?>"
-                                    data-source="<?= htmlspecialchars($source) ?>">
-                                <i class="bi bi-play-circle"></i> Recoil
-                            </button>
+                            <?php if ($isRecoilActive): ?>
+                                <button type="button"
+                                        class="btn btn-primary btn-sm btn-recoil"
+                                        data-rid="<?= $rid ?>"
+                                        data-product="<?= htmlspecialchars($row['product'] ?? '') ?>"
+                                        data-lot="<?= htmlspecialchars($row['lot_no'] ?? '') ?>"
+                                        data-coil="<?= htmlspecialchars($row['coil_no'] ?? '') ?>"
+                                        data-roll="<?= htmlspecialchars($row['roll_no'] ?? '') ?>"
+                                        data-width="<?= (float)($row['width'] ?? 0) ?>"
+                                        data-length="<?= (float)($row['actual_length'] ?? 0) ?>"
+                                        data-source="<?= htmlspecialchars($source) ?>">
+                                    <i class="bi bi-play-circle"></i> Recoil
+                                </button>
+                            <?php else: ?>
+                                <button type="button" class="btn btn-secondary btn-sm disabled opacity-75" title="Recoil button function is BLOCKED by Control Center" disabled>
+                                    <i class="bi bi-slash-circle me-1"></i> Recoil
+                                </button>
+                            <?php endif; ?>
                             <?php if ($status === 'pending'): ?>
                                 <button type="button"
                                         class="btn btn-outline-danger btn-sm btn-send-back-recoil"
@@ -914,10 +922,15 @@ function applyRecoilFilters() {
 }
 
 
+const isRecoilActive = <?= $isRecoilActive ? 'true' : 'false' ?>;
 document.addEventListener('DOMContentLoaded', function () {
     document.body.addEventListener('click', function (e) {
         const btn = e.target.closest('.btn-recoil');
         if (!btn) return;
+        if (!isRecoilActive) {
+            alert('The Recoil button function is currently BLOCKED in Control Center.');
+            return;
+        }
         openRecoilModal(btn);
     });
 

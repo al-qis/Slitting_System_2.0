@@ -433,16 +433,17 @@ function applyMaskForRow(idx, val) {
         return; // STOCK override or NCI dedicated logic — no masking
     }
 
-    refNoMasks[idx] = IMask(refEl, {
-        mask: [
-            { mask: 'SO-00-0000' },
-            {
-                mask: 'MS-0000000[ a]',
-                blocks: { a: { mask: /[A-Z]/ } },
-                prepareChar: (str) => str.toUpperCase()
-            }
-        ]
-    });
+    if (val === 'STAMPING') {
+        refNoMasks[idx] = IMask(refEl, {
+            mask: 'MS-0000000[ a]',
+            blocks: { a: { mask: /[A-Z]/ } },
+            prepareChar: (str) => str.toUpperCase()
+        });
+    } else {
+        refNoMasks[idx] = IMask(refEl, {
+            mask: 'SO-00-0000'
+        });
+    }
 
     if (val === 'STAMPING') {
         if (!refNoMasks[idx].value || refNoMasks[idx].value.startsWith('SO-') || refNoMasks[idx].value === 'STOCK') {
@@ -467,7 +468,7 @@ function refNoMatchesActiveRuleForRow(idx) {
 
     if (NCI_CUSTOMERS.includes(cust)) return val !== '';
     if (cust === 'STAMPING') return /^MS-\d{7}( [A-Z])?$/i.test(val);
-    return /^SO-\d{2}-\d{4}$/i.test(val) || /^MS-\d{7}( [A-Z])?$/i.test(val);
+    return /^SO-\d{2}-\d{4}$/i.test(val);
 }
 
 function escHtml(s) {
@@ -539,9 +540,39 @@ async function handleRowCustomerChange(rowIdx) {
     }
 }
 
+let copyAllRefMask = null;
+function updateCopyAllRefMask(custVal) {
+    if (copyAllRefMask) { copyAllRefMask.destroy(); copyAllRefMask = null; }
+    const el = document.getElementById('copyAllRefNo');
+    if (!el) return;
+
+    if (custVal === 'STOCK') {
+        el.value = 'STOCK';
+        return;
+    }
+
+    if (custVal === 'STAMPING') {
+        copyAllRefMask = IMask(el, {
+            mask: 'MS-0000000[ a]',
+            blocks: { a: { mask: /[A-Z]/ } },
+            prepareChar: (str) => str.toUpperCase()
+        });
+        if (!el.value || el.value.startsWith('SO-') || el.value === 'STOCK') {
+            el.value = 'MS-';
+        }
+    } else {
+        copyAllRefMask = IMask(el, { mask: 'SO-00-0000' });
+        if (!el.value || el.value.startsWith('MS-') || el.value === 'STOCK') {
+            el.value = 'SO-';
+        }
+    }
+}
+
 document.getElementById('copyAllCustomer')?.addEventListener('change', function () {
+    const val = this.value;
     document.getElementById('copyAllCustomOther').style.display =
-        (this.value === 'OTHER') ? 'block' : 'none';
+        (val === 'OTHER') ? 'block' : 'none';
+    updateCopyAllRefMask(val);
 });
 
 // ── Apply to All Rows (convenience only — every row stays editable) ──

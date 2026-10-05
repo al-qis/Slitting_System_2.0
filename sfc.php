@@ -207,7 +207,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
 
 // ── PIN verify via AJAX ──────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['verify_pin'])) {
-    require __DIR__ . '/Verification_SV/verify_supervisor_pin.php';
+    require __DIR__ . '/control_system/verify_supervisor_pin.php';
     exit;
 }
 
@@ -656,9 +656,9 @@ include 'header.php';
             <span id="modalAlertText"></span>
         </div>
         <div class="mb-3">
-            <label for="supervisorPin" class="form-label fw-semibold">Supervisor PIN / Password</label>
-            <input type="password" id="supervisorPin" class="form-control text-center fs-4"
-                   placeholder="••••" maxlength="20" inputmode="numeric" autocomplete="off" required>
+            <label for="supervisorPin" class="form-label fw-semibold">Supervisor Passkey / Code</label>
+            <input type="password" id="supervisorPin" class="form-control text-center font-monospace fw-bolder text-primary" style="font-size: 1.8rem; letter-spacing: 5px;"
+                   placeholder="••••••" maxlength="20" inputmode="numeric" autocomplete="off" required>
         </div>
       </div>
       <div class="modal-footer bg-light justify-content-between border-0">
@@ -988,7 +988,7 @@ document.addEventListener('DOMContentLoaded', function () {
         btnConfirmProcess.disabled = true;
         btnConfirmProcess.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Verifying...';
 
-        fetch('Verification_SV/verify_supervisor_pin.php', {
+        fetch('control_system/verify_supervisor_pin.php', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ pin: pin, item_id: pendingSfcId || 0 })

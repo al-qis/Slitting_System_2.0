@@ -1,23 +1,37 @@
 <?php
 /**
  * Ajax Endpoint: Verify Supervisor PIN
- * Location: /Verification_SV/verify_supervisor_pin.php
+ * Location: /control_system/verify_supervisor_pin.php
  */
 
 session_start();
 header('Content-Type: application/json; charset=UTF-8');
 
-// Include system configuration / database connection
+// Include system configuration & Control Center storage
 $configPath = __DIR__ . '/../config.php';
 if (file_exists($configPath)) {
     require_once $configPath;
+}
+
+$controlStorePath = __DIR__ . '/config_store.php';
+if (file_exists($controlStorePath)) {
+    require_once $controlStorePath;
 }
 
 // Reject direct GET browser access with an informative message
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     echo json_encode([
         'success' => false,
-        'message' => 'This script is a backend API endpoint. Access it by opening sfc_inventory.php or sfc.php in your browser and clicking Process.'
+        'message' => 'This script is a backend API endpoint. Access it by opening sfc.php in your browser and clicking Process.'
+    ]);
+    exit;
+}
+
+// Check if SFC Process feature is BLOCKED in Control Center
+if (function_exists('isButtonActive') && !isButtonActive('sfc_process')) {
+    echo json_encode([
+        'success' => false,
+        'message' => 'SFC Process button function is currently BLOCKED in Control Center.'
     ]);
     exit;
 }
@@ -45,37 +59,21 @@ if (empty($pin) || $itemId <= 0) {
 
 $isAuthorized = false;
 
-// 1. Verify against database `users` table using MySQLi prepared statements
-if (isset($conn) && $conn instanceof mysqli && !$conn->connect_error) {
-    // Query users with supervisor/admin/slitting roles using prepared statement
-    $stmt = $conn->prepare("SELECT id, username, password, role FROM users WHERE role IN ('supervisor', 'admin', 'slitting', 'mkl3')");
-    if ($stmt) {
-        $stmt->execute();
-        $result = $stmt->get_result();
-        while ($user = $result->fetch_assoc()) {
-            // Verify pin against password hash or plain text PIN comparison
-            if (password_verify($pin, $user['password']) || $pin === $user['password']) {
-                $isAuthorized = true;
-                break;
-            }
-        }
-        $stmt->close();
-    }
-}
-
-// 2. Hashed secret / fallback verification (e.g. standard supervisor secret PIN '1234')
-if (!$isAuthorized) {
-    // Hashed secret for PIN '1234' (password_hash('1234', PASSWORD_BCRYPT))
-    $hashedSecret = '$2y$10$8utZ6odMkhIqAKYZrNS2u7q8zDYRdrXnNHhr1hzCub1b9evcF.K';
-    if ($pin === '1234' || password_verify($pin, $hashedSecret)) {
-        $isAuthorized = true;
-    }
+// Verify strictly against Control Center active supervisor PIN
+$activePin = function_exists('getSupervisorPin') ? getSupervisorPin() : '1234';
+if ($activePin !== '' && $pin === $activePin) {
+    $isAuthorized = true;
 }
 
 // Return JSON response
 if ($isAuthorized) {
     $_SESSION['supervisor_authorized'] = true;
     $_SESSION['supervisor_auth_time'] = time();
+
+    // Auto-generate new passkey in Control Center for the next coil operation
+    if (function_exists('rotateSupervisorPin')) {
+        rotateSupervisorPin();
+    }
 
     echo json_encode([
         'success'  => true,
