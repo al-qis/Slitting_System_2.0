@@ -647,7 +647,7 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
                             <div class="col-12"><strong>Length:</strong> <span id="modal_length">-</span> mtr</div>
                         </div>
                     </div>
-                    
+
                     <div class="mb-4">
                         <h6 class="fw-bold">Step 1: Select Cut Type</h6>
                         <div class="d-flex gap-4">

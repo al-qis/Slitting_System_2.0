@@ -313,25 +313,28 @@ try {
         $leftover_col   = ($col_row['cnt'] > 0) ? 'leftover_length' : 'stock';
 
         // Build insert dynamically based on which column exists
-        $stock_code = generateStockCode($conn);
+        $prod_month_opt = trim($_POST['production_month'] ?? 'current');
+        $prod_date      = resolveProductionMonthDate($prod_month_opt);
+        $date_in_val    = ($prod_month_opt === 'current') ? date('Y-m-d H:i:s') : $prod_date . ' ' . date('H:i:s');
+        $stock_code     = generateStockCode($conn, $prod_date);
         $insert_stmt = $conn->prepare(
             "INSERT INTO slitting_product
                  (product, lot_no, coil_no, roll_no, roll_key, width, length,
                   mother_id, status, cut_type, slit_quantity,
                   customer_name, ref_no, {$leftover_col}, parent_slit_id, date_in, source, stock_code)
              VALUES
-                 (?, ?, ?, ?, ?, ?, ?, ?, 'IN', ?, ?, ?, ?, NULL, NULL, NOW(), ?, ?)"
+                 (?, ?, ?, ?, ?, ?, ?, ?, 'IN', ?, ?, ?, ?, NULL, NULL, ?, ?, ?)"
         );
         if (!$insert_stmt) {
             throw new Exception("Prepare failed: " . $conn->error);
         }
-        // types: s s s s s d d i s d s s s s
+        // types: s s s s s d d i s d s s s s s
         $insert_stmt->bind_param(
-            "sssssddisdssss",
+            "sssssddisdsssss",
             $roll_product, $roll_lot_no, $coil_no, $display_roll_no, $target_roll_key,
             $width, $length, $mother_id,
             $cut_type, $slit_quantity_val, $plannedCustomer, $plannedRefNo,
-            $source_type, $stock_code
+            $date_in_val, $source_type, $stock_code
         );
         if (!$insert_stmt->execute()) {
             throw new Exception("Failed to insert slitting product: " . $insert_stmt->error);

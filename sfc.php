@@ -170,15 +170,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
 
             } elseif ($action === 'SELL') {
                 $actLen = (float)($sfc['length'] ?? 0);
-                $stock_code = generateStockCode($conn);
+                $prod_month_opt = trim($_POST['production_month'] ?? 'current');
+                $prod_date      = resolveProductionMonthDate($prod_month_opt);
+                $date_in_val    = ($prod_month_opt === 'current') ? date('Y-m-d H:i:s') : $prod_date . ' ' . date('H:i:s');
+                $stock_code     = generateStockCode($conn, $prod_date);
                 $stmt = $conn->prepare("INSERT INTO slitting_product
                     (mother_id, product, lot_no, coil_no, roll_no, width, length, actual_length,
                      status, is_completed, stock_counted, date_in, date_out, cut_type, source, original_source, stock_code)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, NOW(), NULL, 'sfc_sell', 'sfc', ?, ?)");
-                $stmt->bind_param("issssdddss",
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, ?, NULL, 'sfc_sell', 'sfc', ?, ?)");
+                $stmt->bind_param("issssdddsss",
                     $sfc['mother_id'],
                     $sfc['product'], $sfc['lot_no'], $sfc['coil_no'],
-                    $sfc['roll_no'], $sfc['width'],  $sfc['length'], $actLen, $original_source, $stock_code);
+                    $sfc['roll_no'], $sfc['width'],  $sfc['length'], $actLen, $date_in_val, $original_source, $stock_code);
                 $stmt->execute();
                 $stmt->close();
                 log_source_tracking($conn, 0, 'slitting_product', $original_source, 'sfc', 'SELL_FROM_SFC');
@@ -686,6 +689,21 @@ include 'header.php';
         <p class="text-muted small mb-4">SFC ID: <span id="sfcIdDisplay" class="fw-bold text-dark"></span></p>
         <form id="actionForm" method="post" action="sfc.php">
             <input type="hidden" name="sfc_id" id="sfc_id_input">
+            
+            <div class="mb-3 text-start">
+                <label for="sfc_production_month" class="form-label fw-bold text-primary-emphasis small">
+                    <i class="bi bi-calendar-check me-1"></i>Production Month (Stock Code Start for SELL):
+                </label>
+                <select name="production_month" id="sfc_production_month" class="form-select form-select-sm">
+                    <?php $prodOptions = getProductionMonthOptions(); ?>
+                    <?php foreach ($prodOptions as $optKey => $opt): ?>
+                        <option value="<?= $opt['value'] ?>" <?= $optKey === 'current' ? 'selected' : '' ?>>
+                            <?= htmlspecialchars($opt['label']) ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+
             <div class="d-grid gap-3">
                 <button type="submit" name="action" value="RECOIL" id="sfcRecoilBtn"
                         class="btn btn-warning py-2 fw-bold shadow-sm"

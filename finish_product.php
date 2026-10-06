@@ -2012,26 +2012,78 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
 
             <!-- Modal Body -->
             <div class="modal-body p-3 bg-light">
+                <?php
+                    $allCustomerUnassigned = true;
+                    $allRefNoUnassigned = true;
+                    foreach ($batchRolls as $r) {
+                        $c = trim($r['customer_name'] ?? '');
+                        $rf = trim($r['ref_no'] ?? '');
+                        if ($c !== '') {
+                            $allCustomerUnassigned = false;
+                        }
+                        if ($rf !== '' && $rf !== 'SO-' && $rf !== 'STOCK') {
+                            $allRefNoUnassigned = false;
+                        }
+                    }
+                    $canCopyAllCustRef = ($allCustomerUnassigned && $allRefNoUnassigned);
+                ?>
                 <!-- Consolidated Batch Assignment Panel Toolbar (Copy to All Rows) -->
                 <div class="card mb-3 shadow-sm border-danger-subtle" style="background: #fff8f8;">
                     <div class="card-header bg-danger-subtle fw-bold py-2 text-danger-emphasis d-flex justify-content-between align-items-center">
-                        <span><i class="bi bi-sliders me-1"></i> Batch Assignment Toolbar — Copy Actual Length to All Rows</span>
+                        <span><i class="bi bi-sliders me-1"></i> Batch Assignment Toolbar — Copy <?= $canCopyAllCustRef ? 'Customer, Ref No &amp; Actual Length' : 'Actual Length' ?> to All Rows</span>
                         <span class="badge bg-danger text-white"><?= htmlspecialchars($editData['product'] ?? '') ?></span>
                     </div>
                     <div class="card-body py-2">
                         <div class="row g-2 align-items-end">
-                            <div class="col-12 col-md-6">
+                            <div class="<?= $canCopyAllCustRef ? 'col-6 col-md-3' : 'col-12 col-md-6' ?>">
                                 <label class="small fw-bold mb-1">Actual Length (meters)</label>
                                 <input type="number" step="0.01" min="0" class="form-control form-control-sm" id="modalCopyAllActualLength"
                                        placeholder="e.g. 500" value="<?= htmlspecialchars((string)($editData['actual_length'] ?? '')) ?>">
                             </div>
+                            <?php if ($canCopyAllCustRef): ?>
+                            <div class="col-12 col-md-4">
+                                <label class="small fw-bold mb-1">Customer</label>
+                                <select class="form-select form-select-sm" id="modalCopyAllCustomer">
+                                    <option value="">-- Select Customer --</option>
+                                    <option value="NAE">NICHIAS AUTOPARTS EUROPE (NAE)</option>
+                                    <option value="NAX">NAX MFG, SA.DE C.V</option>
+                                    <option value="NCI MFG">NCI MFG., INC.</option>
+                                    <option value="TAIHO">TAIHO MFG OF TN. INC</option>
+                                    <option value="NRI">PT NICHIAS ROCKWOOL IND.</option>
+                                    <option value="ASHUKA">ASHUKA TECHNOLOGIES SDN. BHD.</option>
+                                    <option value="NIPPON">NTC(NIPPON GASKET)</option>
+                                    <option value="NTC">NICHIAS THAILAND</option>
+                                    <option value="SGC">SHANGHAI XINGSHENG</option>
+                                    <option value="STAMPING">MK STAMPING</option>
+                                    <option value="YANTAI">NICHIAS (SHANGHAI) AUTOPARTS TRADING</option>
+                                    <option value="NIPP">NICHIAS IND.PRODUCTS PVT. LTD.</option>
+                                    <option value="NVC">NICHIAS VIETNAM CO., LTD</option>
+                                    <option value="NSJ">NC-PT NICHIAS SUNIJAYA</option>
+                                    <option value="NIP">SUZHOU NICHIAS IND. PRODUCTS</option>
+                                    <option value="YTEC">YTEC CO., LTD.</option>
+                                    <option value="NSA">NICHIAS SOUTH EAST ASIA (UP PACKING)</option>
+                                    <option value="NCI 2">NCI 2</option>
+                                    <option value="STOCK">STOCK</option>
+                                    <option value="TRIAL">TRIAL</option>
+                                    <option value="OTHER">OTHER (type below)</option>
+                                </select>
+                                <input type="text" class="form-control form-control-sm mt-1" id="modalCopyAllCustomOther"
+                                       placeholder="Customer name (if OTHER)" style="display:none;">
+                            </div>
+                            <div class="col-8 col-md-3">
+                                <label class="small fw-bold mb-1">Ref No</label>
+                                <input type="text" class="form-control form-control-sm" id="modalCopyAllRefNo" value="SO-" placeholder="SO-00-0000">
+                            </div>
+                            <div class="col-12 col-md-2">
+                            <?php else: ?>
                             <div class="col-12 col-md-6">
+                            <?php endif; ?>
                                 <button type="button" class="btn btn-outline-danger btn-sm w-100 fw-bold" onclick="modalCopyToAllRows()">
                                     <i class="bi bi-arrow-down-square me-1"></i> Copy to All
                                 </button>
                             </div>
                         </div>
-                        <div class="form-text mb-0">Fills every row below with Actual Length — then adjust any row if needed.</div>
+                        <div class="form-text mb-0"><?= $canCopyAllCustRef ? 'Fills every row below with Customer, Ref No, and Actual Length — then adjust any row if needed.' : 'Fills every row below with Actual Length — then adjust any row if needed.' ?></div>
                     </div>
                 </div>
 
@@ -2046,13 +2098,12 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                             <table class="table table-bordered table-hover table-sm mb-0 align-middle" id="modalBatchGridTable">
                                 <thead class="table-dark sticky-top" style="z-index: 5;">
                                     <tr>
-                                        <th style="width:13%;">Roll No &amp; Product</th>
-                                        <th style="width:13%;">Width / Actual Length</th>
-                                        <th style="width:14%;">Stock Code</th>
-                                        <th style="width:24%;">Customer</th>
-                                        <th style="width:20%;">Ref No.</th>
-                                        <th style="width:8%;">Copies</th>
-                                        <th style="width:8%;">Status</th>
+                                        <th style="width:16%;">Roll No &amp; Product</th>
+                                        <th style="width:16%;">Width / Actual Length</th>
+                                        <th style="width:26%;">Customer</th>
+                                        <th style="width:22%;">Ref No.</th>
+                                        <th style="width:10%;">Copies</th>
+                                        <th style="width:10%;">Status</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -2087,10 +2138,6 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                                             </div>
                                         </td>
                                         <td>
-                                            <input type="text" class="form-control form-control-sm modal-row-stock-code font-monospace" data-row="<?= $idx ?>"
-                                                   value="<?= htmlspecialchars($r['stock_code'] ?? '') ?>" placeholder="YYMM-XXXX" style="font-size:11px;">
-                                        </td>
-                                        <td>
                                             <?php
                                                 $saved = trim($r['customer_name'] ?? '');
                                                 $knownCustomers = ['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA','NIPPON','NTC','SGC','STAMPING','YANTAI','NIPP','NVC','NSJ','NIP','YTEC','NSA','NCI 2','STOCK','TRIAL'];
@@ -2099,9 +2146,12 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                                                 $rawRefNo = trim($r['ref_no'] ?? '');
                                                 $isStock = ($saved === 'STOCK' || $rawRefNo === 'STOCK');
                                                 $displayRefNo = $isStock ? 'STOCK' : ($rawRefNo !== '' ? $rawRefNo : 'SO-');
+
+                                                $hasCustomer = ($saved !== '');
+                                                $hasRefNo = ($rawRefNo !== '' && $rawRefNo !== 'SO-');
                                             ?>
                                             <select class="form-select form-select-sm modal-row-customer" data-row="<?= $idx ?>"
-                                                    onchange="modalHandleRowCustomerChange(<?= $idx ?>)" disabled>
+                                                    onchange="modalHandleRowCustomerChange(<?= $idx ?>)" <?= $hasCustomer ? 'disabled' : '' ?>>
                                                 <option value=""         <?= $saved===''         ?'selected':'' ?>>-- Select Customer --</option>
                                                 <option value="NAE"      <?= $saved==='NAE'      ?'selected':'' ?>>NICHIAS AUTOPARTS EUROPE (NAE)</option>
                                                 <option value="NAX"      <?= $saved==='NAX'      ?'selected':'' ?>>NAX MFG, SA.DE C.V</option>
@@ -2127,17 +2177,17 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                                             </select>
                                             <input type="text" class="form-control form-control-sm modal-row-custom-customer mt-1" data-row="<?= $idx ?>"
                                                    placeholder="Enter customer name" style="display:<?= $isOther?'block':'none' ?>;"
-                                                   value="<?= $isOther ? htmlspecialchars($saved) : '' ?>" disabled>
+                                                   value="<?= $isOther ? htmlspecialchars($saved) : '' ?>" <?= $hasCustomer ? 'disabled' : '' ?>>
                                             <div class="text-muted modal-nci-note mt-1" data-row="<?= $idx ?>" style="display:none; font-size:11px;"></div>
                                         </td>
                                         <td>
                                             <div class="form-check mb-1">
                                                 <input class="form-check-input modal-row-stock-override" type="checkbox"
-                                                       id="modalRowStock<?= $idx ?>" data-row="<?= $idx ?>" <?= $isStock ? 'checked' : '' ?> disabled>
+                                                       id="modalRowStock<?= $idx ?>" data-row="<?= $idx ?>" <?= $isStock ? 'checked' : '' ?> <?= ($hasCustomer || $hasRefNo) ? 'disabled' : '' ?>>
                                                 <label class="form-check-label small" for="modalRowStock<?= $idx ?>">Set to STOCK</label>
                                             </div>
                                             <input type="text" class="form-control form-control-sm modal-row-refno" data-row="<?= $idx ?>"
-                                                   value="<?= htmlspecialchars($displayRefNo) ?>" placeholder="SO-00-0000" readonly disabled>
+                                                   value="<?= htmlspecialchars($displayRefNo) ?>" placeholder="SO-00-0000" <?= ($hasRefNo || $isStock) ? 'readonly disabled' : '' ?>>
                                         </td>
                                         <td>
                                             <select class="form-select form-select-sm modal-row-copies" data-row="<?= $idx ?>">
@@ -2388,18 +2438,49 @@ document.querySelectorAll('.modal-row-stock-override').forEach((cb) => {
 })();
 
 async function modalCopyToAllRows() {
+    const sel       = document.getElementById('modalCopyAllCustomer');
+    const otherEl   = document.getElementById('modalCopyAllCustomOther');
+    const refEl     = document.getElementById('modalCopyAllRefNo');
     const lengthEl  = document.getElementById('modalCopyAllActualLength');
-    const lengthVal = lengthEl ? lengthEl.value.trim() : '';
 
-    if (!lengthVal || parseFloat(lengthVal) <= 0) {
-        alert('Set Actual Length to copy to all rows.');
+    const customerVal = sel ? sel.value : '';
+    const refVal      = refEl ? refEl.value.trim().replace(/\s+/g, '') : '';
+    const lengthVal   = lengthEl ? lengthEl.value.trim() : '';
+
+    if (!customerVal && !lengthVal) {
+        alert('Set Customer or Actual Length to copy to all rows.');
+        return;
+    }
+    if (customerVal === 'OTHER' && otherEl && !otherEl.value.trim()) {
+        alert('Enter the customer name.');
         return;
     }
 
     const rowCount = modalGetRowCount();
     for (let idx = 0; idx < rowCount; idx++) {
+        const rowSel      = document.querySelector(`.modal-row-customer[data-row="${idx}"]`);
+        const rowOtherEl  = document.querySelector(`.modal-row-custom-customer[data-row="${idx}"]`);
+        const rowRefEl    = document.querySelector(`.modal-row-refno[data-row="${idx}"]`);
         const rowLengthEl = document.querySelector(`.modal-row-length[data-row="${idx}"]`);
-        if (rowLengthEl) {
+        const rowStockEl  = document.querySelector(`.modal-row-stock-override[data-row="${idx}"]`);
+
+        if (customerVal && rowSel && !rowSel.disabled) {
+            rowSel.value = customerVal;
+            if (customerVal === 'OTHER' && rowOtherEl) rowOtherEl.value = otherEl.value.trim();
+
+            if (customerVal === 'STOCK') {
+                if (rowStockEl) rowStockEl.checked = true;
+                if (rowRefEl) rowRefEl.readOnly = true;
+                if (refVal !== '' && rowRefEl) rowRefEl.value = refVal;
+            } else {
+                if (rowStockEl) rowStockEl.checked = false;
+                if (rowRefEl) rowRefEl.readOnly = false;
+                if (refVal !== '' && rowRefEl) rowRefEl.value = refVal;
+            }
+            await modalHandleRowCustomerChange(idx);
+        }
+
+        if (lengthVal !== '' && rowLengthEl) {
             rowLengthEl.value = lengthVal;
         }
     }
@@ -2424,7 +2505,6 @@ function modalCollectSelections() {
         const copiesEl  = document.querySelector(`.modal-row-copies[data-row="${idx}"]`);
         const lengthEl  = document.querySelector(`.modal-row-length[data-row="${idx}"]`);
         const stockEl   = document.querySelector(`.modal-row-stock-override[data-row="${idx}"]`);
-        const stCodeEl  = document.querySelector(`.modal-row-stock-code[data-row="${idx}"]`);
 
         let customer = sel.value;
         if (customer === 'OTHER') customer = otherEl.value.trim();
@@ -2437,7 +2517,6 @@ function modalCollectSelections() {
         const parsedCopies = parseInt(copiesEl.value, 10);
         const copies = isNaN(parsedCopies) ? 2 : parsedCopies;
         const length = parseFloat(lengthEl.value);
-        const stock_code = stCodeEl ? stCodeEl.value.trim() : '';
 
         if (!customer) { modalSetRowStatus(idx, 'Select customer', true); hasError = true; return; }
         if (!ref_no)   { modalSetRowStatus(idx, 'Ref No required', true);   hasError = true; return; }
@@ -2455,7 +2534,6 @@ function modalCollectSelections() {
             ref_no:                ref_no,
             copies:                copies,
             length:                length,
-            stock_code:            stock_code,
             nci_resolved_customer: refEl.dataset.nciResolvedCustomer || '',
         });
     });

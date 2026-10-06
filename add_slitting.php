@@ -236,12 +236,48 @@ foreach ($alphabet as $letter) {
 <body>
 
     <div class="container py-4">
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <h3><i class="bi bi-scissors me-2"></i>Production Slitting</h3>
-        <a href="<?= $from_stock ? 'raw_material.php' : 'index.php' ?>" class="btn btn-outline-secondary btn-sm">
-            <i class="bi bi-arrow-left"></i> Back
-        </a>
-    </div>
+    <form method="post" action="save_slitting.php" id="mainSlittingForm">
+        <input type="hidden" name="source_type" value="<?= $source_type ?>">
+        <input type="hidden" name="mother_id" value="<?= $mother_id ?>">
+        <?php if($from_stock && $stock_id): ?>
+            <input type="hidden" name="stock_id" value="<?= $stock_id ?>">
+        <?php endif; ?>
+        
+        <!-- Get product from mother_coil table -->
+        <input type="hidden" name="product" value="<?= htmlspecialchars($mother_data['product'] ?? '') ?>">
+        <input type="hidden" name="lot_no" value="<?= htmlspecialchars($source_data['lot_no'] ?? '') ?>">
+        <input type="hidden" name="coil_no" value="<?= htmlspecialchars($source_data['coil_no'] ?? '') ?>">
+        <input type="hidden" name="source_width" value="<?= floatval($source_data['width'] ?? $mother_data['width'] ?? 0) ?>">
+
+        <!-- Top Header: Page Title + Production Month Control (Centered) + Back Button -->
+        <div class="row align-items-center mb-4 g-3">
+            <div class="col-md-4">
+                <h3 class="mb-0 text-nowrap"><i class="bi bi-scissors me-2"></i>Production Slitting</h3>
+            </div>
+            <div class="col-md-4 text-center">
+                <div class="d-inline-flex align-items-center justify-content-center gap-2">
+                    <label for="production_month" class="form-label mb-0 fw-bold small text-nowrap">
+                        <i class="bi bi-calendar-check me-1 text-primary"></i>Production Month:
+                    </label>
+                    <select name="production_month" id="production_month" class="form-select form-select-sm w-auto fw-semibold" onchange="updateStockCodePreview()">
+                        <?php $prodOptions = getProductionMonthOptions(); ?>
+                        <?php foreach ($prodOptions as $optKey => $opt): ?>
+                            <option value="<?= $opt['value'] ?>" data-yymm="<?= $opt['yymm'] ?>" <?= $optKey === 'current' ? 'selected' : '' ?>>
+                                <?= htmlspecialchars($opt['label']) ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <span id="stockCodePrefixBadge" class="badge bg-primary fs-6 font-monospace" title="Generated Stock Code YYMM Prefix">
+                        <?= date('ym') ?>-XXXX
+                    </span>
+                </div>
+            </div>
+            <div class="col-md-4 text-end">
+                <a href="<?= $from_stock ? 'raw_material.php' : 'index.php' ?>" class="btn btn-outline-secondary btn-sm">
+                    <i class="bi bi-arrow-left"></i> Back
+                </a>
+            </div>
+        </div>
 
     <div class="card shadow-sm mb-4 <?= ($source_data['source_type'] ?? '') === 'slitting_cut_into_2' ? 'source-info-leftover' : 'source-info' ?>">
         <div class="card-body">
@@ -278,19 +314,6 @@ foreach ($alphabet as $letter) {
             <?php endif; ?>
         </div>
     </div>
-
-    <form method="post" action="save_slitting.php">
-        <input type="hidden" name="source_type" value="<?= $source_type ?>">
-        <input type="hidden" name="mother_id" value="<?= $mother_id ?>">
-        <?php if($from_stock && $stock_id): ?>
-            <input type="hidden" name="stock_id" value="<?= $stock_id ?>">
-        <?php endif; ?>
-        
-        <!-- Get product from mother_coil table -->
-        <input type="hidden" name="product" value="<?= htmlspecialchars($mother_data['product'] ?? '') ?>">
-        <input type="hidden" name="lot_no" value="<?= htmlspecialchars($source_data['lot_no'] ?? '') ?>">
-        <input type="hidden" name="coil_no" value="<?= htmlspecialchars($source_data['coil_no'] ?? '') ?>">
-        <input type="hidden" name="source_width" value="<?= floatval($source_data['width'] ?? $mother_data['width'] ?? 0) ?>">
 
         <div class="card shadow-sm mb-4">
             <div class="card-body">
@@ -439,7 +462,19 @@ document.addEventListener('DOMContentLoaded', function () {
             }
         });
     }
+
+    updateStockCodePreview();
 });
+
+function updateStockCodePreview() {
+    const sel = document.getElementById('production_month');
+    const badge = document.getElementById('stockCodePrefixBadge');
+    if (sel && badge) {
+        const opt = sel.options[sel.selectedIndex];
+        const yymm = opt.getAttribute('data-yymm') || '<?= date('ym') ?>';
+        badge.textContent = yymm + '-XXXX';
+    }
+}
 
 function calculateStock() {
     const slitQtyInput = document.getElementById('slitQuantity');

@@ -285,7 +285,11 @@ try {
         }
         $chk_key->close();
 
-        $stock_code = generateStockCode($conn);
+        $prod_month_opt = trim($_POST['production_month'] ?? 'current');
+        $prod_date      = resolveProductionMonthDate($prod_month_opt);
+
+        $date_in_val    = ($prod_month_opt === 'current') ? date('Y-m-d H:i:s') : $prod_date . ' ' . date('H:i:s');
+        $stock_code     = generateStockCode($conn, $prod_date);
         $stmt_ins = $conn->prepare("
             INSERT INTO slitting_product
                 (mother_id, parent_slit_id,
@@ -293,10 +297,10 @@ try {
                  width, length, actual_length,
                  status, is_completed, stock_counted,
                  date_in, source, original_source, stock_code)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, NOW(), 'reslit', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, ?, 'reslit', ?, ?)
         ");
         $stmt_ins->bind_param(
-            "iisssssdddss",
+            "iisssssdddsss",
             $mother_id_val,
             $parent_slit_id,
             $parent['product'],
@@ -307,6 +311,7 @@ try {
             $width,
             $nom_len,
             $act_len,
+            $date_in_val,
             $originalSource,
             $stock_code
         );
@@ -401,7 +406,7 @@ try {
             }
             $chk_key->close();
 
-            $leftover_stock_code = generateStockCode($conn);
+            $leftover_stock_code = generateStockCode($conn, $prod_date);
             $stmt_leftover = $conn->prepare("
                 INSERT INTO slitting_product
                     (mother_id, parent_slit_id,
@@ -409,10 +414,10 @@ try {
                      width, length, actual_length,
                      status, is_completed, stock_counted,
                      date_in, source, original_source, stock_code)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, NOW(), 'reslit', ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, ?, 'reslit', ?, ?)
             ");
             $stmt_leftover->bind_param(
-                "iisssssdddss",
+                "iisssssdddsss",
                 $mother_id_val,
                 $parent_slit_id,
                 $parent['product'],
@@ -423,6 +428,7 @@ try {
                 $leftover_width,
                 $leftover_length,
                 $leftover_length,
+                $date_in_val,
                 $originalSource,
                 $leftover_stock_code
             );

@@ -38,6 +38,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $before = $beforeStmt->get_result()->fetch_assoc();
         $beforeStmt->close();
 
+        // Prevent duplicate stock codes
+        if ($stock_code !== '') {
+            $chkDup = $conn->prepare("SELECT id FROM slitting_product WHERE stock_code = ? AND id != ? LIMIT 1");
+            $chkDup->bind_param("si", $stock_code, $id);
+            $chkDup->execute();
+            if ($chkDup->get_result()->num_rows > 0) {
+                $chkDup->close();
+                header("Location: slitting_product.php?error=duplicate_stock_code&msg=" . urlencode("Stock Code '{$stock_code}' is already assigned to another roll."));
+                exit;
+            }
+            $chkDup->close();
+        }
+
         $stmt = $conn->prepare("UPDATE slitting_product
             SET coil_no=?, product=?, lot_no=?, roll_no=?, width=?, length=?, actual_length=?, stock_code=?
             WHERE id=?");
@@ -407,9 +420,26 @@ include 'header.php';
                     </div>
                     <div class="col-md-6 mb-3">
                         <label class="form-label fw-bold">Stock Code</label>
-                        <input type="text" name="stock_code" class="form-control"
-                               value="<?= htmlspecialchars($editData['stock_code'] ?? '') ?>"
-                               placeholder="e.g. 2610-0001">
+                        <?php
+                            $rawStockCode = trim($editData['stock_code'] ?? '');
+                            $codeParts = explode('-', $rawStockCode);
+                            $prefixVal = $codeParts[0] ?? '';
+                            $seqVal    = count($codeParts) > 1 ? implode('-', array_slice($codeParts, 1)) : '';
+                        ?>
+                        <div class="input-group shadow-sm">
+                            <input type="text" id="edit_stock_code_prefix" class="form-control font-monospace text-center fw-bold bg-light"
+                                   style="max-width: 95px;" maxlength="4" placeholder="YYMM"
+                                   value="<?= htmlspecialchars($prefixVal) ?>"
+                                   oninput="handleStockCodeSplitInput(this)">
+                            <span class="input-group-text fw-bold text-muted px-2">-</span>
+                            <input type="text" id="edit_stock_code_seq" class="form-control font-monospace"
+                                   placeholder="0001"
+                                   value="<?= htmlspecialchars($seqVal) ?>"
+                                   oninput="updateFullStockCodeHidden()">
+                            <input type="hidden" name="stock_code" id="edit_stock_code_full"
+                                   value="<?= htmlspecialchars($rawStockCode) ?>">
+                        </div>
+                        <div class="form-text text-muted small mt-1"><i class="bi bi-lightning-charge text-warning me-1"></i><strong>1.</strong> Enter YYMM prefix (e.g. 2609) &nbsp;<strong>2.</strong> Count sequence auto-fills.</div>
                     </div>
                 </div>
             </div>

@@ -521,7 +521,7 @@ CREATE TABLE `slitting_product` (
   KEY `idx_slitting_product_source` (`source`),
   KEY `idx_is_printed` (`is_printed`),
   KEY `idx_nod_recorded_at` (`nod_recorded_at`),
-  KEY `idx_stock_code` (`stock_code`),
+  UNIQUE KEY `idx_stock_code` (`stock_code`),
   CONSTRAINT `fk_slit_parent` FOREIGN KEY (`parent_slit_id`) REFERENCES `slitting_product` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
   CONSTRAINT `fk_slitting_log` FOREIGN KEY (`from_log_id`) REFERENCES `raw_material_log` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_slitting_mother` FOREIGN KEY (`mother_id`) REFERENCES `mother_coil` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,

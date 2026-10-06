@@ -209,16 +209,45 @@ usort($rolls, function ($a, $b) {
     </div>
 <?php else: ?>
 
+    <?php
+        $allCustomerUnassigned = true;
+        $allRefNoUnassigned = true;
+        $lotNos = [];
+        foreach ($rolls as $r) {
+            $c = trim($r['customer_name'] ?? '');
+            $rf = trim($r['ref_no'] ?? '');
+            if ($c !== '') {
+                $allCustomerUnassigned = false;
+            }
+            if ($rf !== '' && $rf !== 'SO-' && $rf !== 'STOCK') {
+                $allRefNoUnassigned = false;
+            }
+            if (!empty($r['lot_no'])) {
+                $lotNos[] = trim($r['lot_no']);
+            }
+        }
+        $canCopyAllCustRef = ($allCustomerUnassigned && $allRefNoUnassigned);
+        $distinctLotNos = array_values(array_unique($lotNos));
+        $hasMultipleLots = (count($distinctLotNos) > 1);
+    ?>
     <!-- Apply to All Rows ──────────────────────────────────────── -->
     <div class="card copy-all-card mb-3">
         <div class="card-body py-2">
             <div class="row g-2 align-items-end">
-                <div class="col-6 col-md-3">
-                    <label class="small fw-bold mb-1">Actual Length (meters)</label>
-                    <input type="number" step="0.01" min="0" class="form-control form-control-sm" id="copyAllActualLength" placeholder="e.g. 500">
+                <div class="<?= $canCopyAllCustRef ? 'col-6 col-md-3' : 'col-12 col-md-6' ?>">
+                    <label class="small fw-bold mb-1">
+                        Actual Length (meters)
+                        <?php if ($hasMultipleLots): ?>
+                            <span class="badge bg-warning text-dark ms-1" style="font-size:10px;" title="Selected rolls have different Lot Numbers"><i class="bi bi-slash-circle me-1"></i>Off (Diff Lot Nos)</span>
+                        <?php endif; ?>
+                    </label>
+                    <input type="number" step="0.01" min="0" class="form-control form-control-sm" id="copyAllActualLength"
+                           placeholder="<?= $hasMultipleLots ? 'Disabled (Different Lot Nos)' : 'e.g. 500' ?>"
+                           <?= $hasMultipleLots ? 'disabled' : '' ?>>
                 </div>
-                <div class="col-12 col-md-3">
-                    <label class="small fw-bold mb-1">Apply to All Rows — Customer</label>
+                <?php if ($canCopyAllCustRef): ?>
+                <div class="col-12 col-md-4">
+                    <label class="small fw-bold mb-1">Customer</label>
                     <select class="form-select form-select-sm" id="copyAllCustomer">
                         <option value="">-- Select Customer --</option>
                         <option value="NAE">NICHIAS AUTOPARTS EUROPE (NAE)</option>
@@ -250,22 +279,22 @@ usort($rolls, function ($a, $b) {
                     <label class="small fw-bold mb-1">Ref No</label>
                     <input type="text" class="form-control form-control-sm" id="copyAllRefNo" value="SO-" placeholder="SO-00-0000">
                 </div>
-                <div class="col-4 col-md-1">
-                    <label class="small fw-bold mb-1">Copies</label>
-                    <select class="form-select form-select-sm" id="copyAllCopies">
-                        <option value="">—</option>
-                        <option value="1">1</option>
-                        <option value="2" selected>2</option>
-                        <option value="3">3</option>
-                    </select>
-                </div>
                 <div class="col-12 col-md-2">
-                    <button type="button" class="btn btn-outline-danger btn-sm w-100 fw-bold" onclick="applyToAllRows()">
+                <?php else: ?>
+                <div class="col-12 col-md-6">
+                <?php endif; ?>
+                    <button type="button" class="btn btn-outline-danger btn-sm w-100 fw-bold" onclick="applyToAllRows()" <?= ($hasMultipleLots && !$canCopyAllCustRef) ? 'disabled' : '' ?>>
                         <i class="bi bi-arrow-down-square me-1"></i> Apply to All
                     </button>
                 </div>
             </div>
-            <div class="form-text mb-0">Fills every row below with Customer, Ref No, Actual Length, and Copies — then adjust any row that differs. NCI MFG / NCI 2 rows still resolve their own Ref No individually.</div>
+            <div class="form-text mb-0">
+                <?php if ($hasMultipleLots): ?>
+                    <span class="text-warning-emphasis fw-semibold"><i class="bi bi-exclamation-triangle-fill me-1"></i>Multiple Lot Numbers detected (<?= htmlspecialchars(implode(', ', $distinctLotNos)) ?>). Copy to All for Actual Length is automatically turned off — batch print only.</span>
+                <?php else: ?>
+                    <?= $canCopyAllCustRef ? 'Fills every row below with Customer, Ref No, and Actual Length — then adjust any row that differs.' : 'Fills every row below with Actual Length — then adjust any row that differs.' ?>
+                <?php endif; ?>
+            </div>
         </div>
     </div>
 
@@ -330,9 +359,12 @@ usort($rolls, function ($a, $b) {
                             $rawRefNo = trim($r['ref_no'] ?? '');
                             $isStock = ($saved === 'STOCK' || $rawRefNo === 'STOCK');
                             $displayRefNo = $isStock ? 'STOCK' : ($rawRefNo !== '' ? $rawRefNo : 'SO-');
+
+                            $hasCustomer = ($saved !== '');
+                            $hasRefNo = ($rawRefNo !== '' && $rawRefNo !== 'SO-');
                         ?>
                         <select class="form-select form-select-sm row-customer" data-row="<?= $idx ?>"
-                                onchange="handleRowCustomerChange(<?= $idx ?>)">
+                                onchange="handleRowCustomerChange(<?= $idx ?>)" <?= $hasCustomer ? 'disabled' : '' ?>>
                             <option value=""         <?= $saved===''         ?'selected':'' ?>>-- Select Customer --</option>
                             <option value="NAE"      <?= $saved==='NAE'      ?'selected':'' ?>>NICHIAS AUTOPARTS EUROPE (NAE)</option>
                             <option value="NAX"      <?= $saved==='NAX'      ?'selected':'' ?>>NAX MFG, SA.DE C.V</option>
@@ -358,17 +390,17 @@ usort($rolls, function ($a, $b) {
                         </select>
                         <input type="text" class="form-control form-control-sm row-custom-customer mt-1" data-row="<?= $idx ?>"
                                placeholder="Enter customer name" style="display:<?= $isOther?'block':'none' ?>;"
-                               value="<?= $isOther ? htmlspecialchars($saved) : '' ?>">
+                               value="<?= $isOther ? htmlspecialchars($saved) : '' ?>" <?= $hasCustomer ? 'disabled' : '' ?>>
                         <div class="text-muted nci-note mt-1" data-row="<?= $idx ?>" style="display:none;"></div>
                     </td>
                     <td>
                         <div class="form-check mb-1">
                             <input class="form-check-input row-stock-override" type="checkbox"
-                                   id="rowStock<?= $idx ?>" data-row="<?= $idx ?>" <?= $isStock ? 'checked' : '' ?>>
+                                   id="rowStock<?= $idx ?>" data-row="<?= $idx ?>" <?= $isStock ? 'checked' : '' ?> <?= ($hasCustomer || $hasRefNo) ? 'disabled' : '' ?>>
                             <label class="form-check-label small" for="rowStock<?= $idx ?>">Set to STOCK</label>
                         </div>
                         <input type="text" class="form-control form-control-sm row-refno" data-row="<?= $idx ?>"
-                               value="<?= htmlspecialchars($displayRefNo) ?>" placeholder="SO-00-0000" <?= $isStock ? 'readonly' : '' ?>>
+                               value="<?= htmlspecialchars($displayRefNo) ?>" placeholder="SO-00-0000" <?= ($hasRefNo || $isStock) ? 'readonly disabled' : '' ?>>
                     </td>
                     <td>
                         <select class="form-select form-select-sm row-copies" data-row="<?= $idx ?>">
@@ -575,21 +607,31 @@ document.getElementById('copyAllCustomer')?.addEventListener('change', function 
     updateCopyAllRefMask(val);
 });
 
+const HAS_MULTIPLE_LOTS = <?= $hasMultipleLots ? 'true' : 'false' ?>;
+
 // ── Apply to All Rows (convenience only — every row stays editable) ──
 async function applyToAllRows() {
     const sel       = document.getElementById('copyAllCustomer');
     const otherEl   = document.getElementById('copyAllCustomOther');
     const refEl     = document.getElementById('copyAllRefNo');
     const lengthEl  = document.getElementById('copyAllActualLength');
-    const copiesEl  = document.getElementById('copyAllCopies');
 
     const customerVal = sel ? sel.value : '';
-    const refVal      = refEl ? refEl.value.trim() : '';
-    const lengthVal   = lengthEl ? lengthEl.value.trim() : '';
-    const copiesVal   = copiesEl ? copiesEl.value : '';
+    const refVal      = refEl ? refEl.value.trim().replace(/\s+/g, '') : '';
+    const lengthVal   = (!HAS_MULTIPLE_LOTS && lengthEl && !lengthEl.disabled) ? lengthEl.value.trim() : '';
 
-    if (!customerVal && !lengthVal) { alert('Set Customer or Actual Length to apply to all rows.'); return; }
-    if (customerVal === 'OTHER' && !otherEl.value.trim()) { alert('Enter the customer name.'); return; }
+    if (!customerVal && !lengthVal) {
+        if (HAS_MULTIPLE_LOTS) {
+            alert('Copying Actual Length to all is disabled because the selected rolls have different Lot Numbers. Select a Customer to apply to all, or adjust rows individually.');
+        } else {
+            alert('Set Customer or Actual Length to apply to all rows.');
+        }
+        return;
+    }
+    if (customerVal === 'OTHER' && otherEl && !otherEl.value.trim()) {
+        alert('Enter the customer name.');
+        return;
+    }
 
     const rowCount = getRowCount();
     for (let idx = 0; idx < rowCount; idx++) {
@@ -597,27 +639,26 @@ async function applyToAllRows() {
         const rowOtherEl  = document.querySelector(`.row-custom-customer[data-row="${idx}"]`);
         const rowRefEl    = document.querySelector(`.row-refno[data-row="${idx}"]`);
         const rowLengthEl = document.querySelector(`.row-length[data-row="${idx}"]`);
-        const rowCopiesEl = document.querySelector(`.row-copies[data-row="${idx}"]`);
+        const rowStockEl  = document.querySelector(`.row-stock-override[data-row="${idx}"]`);
 
-        if (customerVal) {
+        if (customerVal && rowSel && !rowSel.disabled) {
             rowSel.value = customerVal;
-            rowOtherEl.style.display = (customerVal === 'OTHER') ? 'block' : 'none';
-            if (customerVal === 'OTHER') rowOtherEl.value = otherEl.value.trim();
-            if (refVal !== '') rowRefEl.value = refVal;
+            if (customerVal === 'OTHER' && rowOtherEl) rowOtherEl.value = otherEl.value.trim();
+
+            if (customerVal === 'STOCK') {
+                if (rowStockEl) rowStockEl.checked = true;
+                if (rowRefEl) rowRefEl.readOnly = true;
+                if (refVal !== '' && rowRefEl) rowRefEl.value = refVal;
+            } else {
+                if (rowStockEl) rowStockEl.checked = false;
+                if (rowRefEl) rowRefEl.readOnly = false;
+                if (refVal !== '' && rowRefEl) rowRefEl.value = refVal;
+            }
+            await handleRowCustomerChange(idx);
         }
 
         if (lengthVal !== '' && rowLengthEl) {
             rowLengthEl.value = lengthVal;
-        }
-
-        if (copiesVal && rowCopiesEl) {
-            rowCopiesEl.value = copiesVal;
-        }
-
-        // NCI rows still resolve their own Ref No per product/width —
-        // a shared Ref No wouldn't be valid across a mixed batch.
-        if (customerVal && NCI_CUSTOMERS.includes(customerVal)) {
-            await handleRowCustomerChange(idx);
         }
     }
 }

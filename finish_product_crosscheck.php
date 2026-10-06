@@ -48,7 +48,9 @@ $monthNames = [
 ];
 
 // ── Build Main Query joining slitting_product with mother_coil & slitting_plans ──
-$sql = "
+    $yymmPrefix = sprintf('%02d%02d', $year % 100, $month);
+    $prodCond   = getProductionMonthSqlCondition('sp');
+    $sql = "
     SELECT 
         sp.id AS product_id,
         sp.product,
@@ -77,12 +79,11 @@ $sql = "
         AND LOWER(TRIM(spl.roll_seq)) = LOWER(TRIM(sp.roll_no))
     )
     WHERE sp.is_voided = 0
-      AND MONTH(sp.date_in) = ? 
-      AND YEAR(sp.date_in) = ?
+      AND {$prodCond}
 ";
 
-$types = 'ii';
-$params = [$month, $year];
+$types = 'sii';
+$params = [$yymmPrefix, $month, $year];
 
 if ($search !== '') {
     $sql .= " AND (

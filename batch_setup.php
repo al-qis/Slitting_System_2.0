@@ -151,15 +151,31 @@ $stmt->close();
     </div>
 <?php else: ?>
 
+    <?php
+        $allCustomerUnassigned = true;
+        $allRefNoUnassigned = true;
+        foreach ($rolls as $r) {
+            $c = trim($r['customer_name'] ?? '');
+            $rf = trim($r['ref_no'] ?? '');
+            if ($c !== '') {
+                $allCustomerUnassigned = false;
+            }
+            if ($rf !== '' && $rf !== 'SO-' && $rf !== 'STOCK') {
+                $allRefNoUnassigned = false;
+            }
+        }
+        $canCopyAllCustRef = ($allCustomerUnassigned && $allRefNoUnassigned);
+    ?>
     <!-- Copy to All Rows ────────────────────────────────────────── -->
     <div class="card copy-all-card mb-3">
         <div class="card-body py-2">
             <div class="row g-2 align-items-end">
-                <div class="col-6 col-md-3">
+                <div class="<?= $canCopyAllCustRef ? 'col-6 col-md-3' : 'col-12 col-md-6' ?>">
                     <label class="small fw-bold mb-1">Actual Length (meters)</label>
                     <input type="number" step="0.01" min="0" class="form-control form-control-sm" id="copyAllActualLength" placeholder="e.g. 500">
                 </div>
-                <div class="col-12 col-md-3">
+                <?php if ($canCopyAllCustRef): ?>
+                <div class="col-12 col-md-4">
                     <label class="small fw-bold mb-1">Customer</label>
                     <select class="form-select form-select-sm" id="copyAllCustomer">
                         <option value="">-- Select Customer --</option>
@@ -192,24 +208,16 @@ $stmt->close();
                     <label class="small fw-bold mb-1">Ref No</label>
                     <input type="text" class="form-control form-control-sm" id="copyAllRefNo" value="SO-" placeholder="SO-00-0000">
                 </div>
-                <div class="col-4 col-md-1">
-                    <label class="small fw-bold mb-1">Copies</label>
-                    <select class="form-select form-select-sm" id="copyAllCopies">
-                        <option value="">—</option>
-                        <option value="0">0 (skip)</option>
-                        <option value="1">1</option>
-                        <option value="2">2</option>
-                        <option value="3">3</option>
-                        <option value="4">4</option>
-                    </select>
-                </div>
                 <div class="col-12 col-md-2">
+                <?php else: ?>
+                <div class="col-12 col-md-6">
+                <?php endif; ?>
                     <button type="button" class="btn btn-outline-danger btn-sm w-100 fw-bold" onclick="copyToAllRows()">
                         <i class="bi bi-arrow-down-square me-1"></i> Copy to All
                     </button>
                 </div>
             </div>
-            <div class="form-text mb-0">Fills every row below with Customer, Ref No, Actual Length, and Print Copies — then adjust any row if needed.</div>
+            <div class="form-text mb-0"><?= $canCopyAllCustRef ? 'Fills every row below with Customer, Ref No, and Actual Length — then adjust any row if needed.' : 'Fills every row below with Actual Length — then adjust any row if needed.' ?></div>
         </div>
     </div>
 
@@ -227,13 +235,12 @@ $stmt->close();
         <table class="table table-bordered table-sm grid-table bg-white" id="batchGridTable">
             <thead class="table-dark">
                 <tr>
-                    <th style="width:9%;">Roll No.</th>
-                    <th style="width:11%;">Size / Actual</th>
-                    <th style="width:14%;">Stock Code</th>
-                    <th style="width:23%;">Customer</th>
-                    <th style="width:20%;">Ref No.</th>
-                    <th style="width:9%;">Copies</th>
-                    <th style="width:14%;">Status</th>
+                    <th style="width:11%;">Roll No.</th>
+                    <th style="width:14%;">Size / Actual</th>
+                    <th style="width:25%;">Customer</th>
+                    <th style="width:23%;">Ref No.</th>
+                    <th style="width:11%;">Copies</th>
+                    <th style="width:16%;">Status</th>
                 </tr>
             </thead>
             <tbody>
@@ -264,10 +271,6 @@ $stmt->close();
                         </div>
                     </td>
                     <td>
-                        <input type="text" class="form-control form-control-sm row-stock-code font-monospace" data-row="<?= $idx ?>"
-                               value="<?= htmlspecialchars($r['stock_code'] ?? '') ?>" placeholder="YYMM-XXXX" style="font-size:11px;">
-                    </td>
-                    <td>
                         <?php
                             $saved = trim($r['customer_name'] ?? '');
                             $knownCustomers = ['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA','NIPPON','NTC','SGC','STAMPING','YANTAI','NIPP','NVC','NSJ','NIP','YTEC','NSA','NCI 2','STOCK','TRIAL'];
@@ -276,9 +279,12 @@ $stmt->close();
                             $rawRefNo = trim($r['ref_no'] ?? '');
                             $isStock = ($saved === 'STOCK' || $rawRefNo === 'STOCK');
                             $displayRefNo = $isStock ? 'STOCK' : ($rawRefNo !== '' ? $rawRefNo : 'SO-');
+
+                            $hasCustomer = ($saved !== '');
+                            $hasRefNo = ($rawRefNo !== '' && $rawRefNo !== 'SO-');
                         ?>
                         <select class="form-select form-select-sm row-customer" data-row="<?= $idx ?>"
-                                onchange="handleRowCustomerChange(<?= $idx ?>)">
+                                onchange="handleRowCustomerChange(<?= $idx ?>)" <?= $hasCustomer ? 'disabled' : '' ?>>
                             <option value=""         <?= $saved===''         ?'selected':'' ?>>-- Select Customer --</option>
                             <option value="NAE"      <?= $saved==='NAE'      ?'selected':'' ?>>NICHIAS AUTOPARTS EUROPE (NAE)</option>
                             <option value="NAX"      <?= $saved==='NAX'      ?'selected':'' ?>>NAX MFG, SA.DE C.V</option>
@@ -304,17 +310,17 @@ $stmt->close();
                         </select>
                         <input type="text" class="form-control form-control-sm row-custom-customer mt-1" data-row="<?= $idx ?>"
                                placeholder="Enter customer name" style="display:<?= $isOther?'block':'none' ?>;"
-                               value="<?= $isOther ? htmlspecialchars($saved) : '' ?>">
+                               value="<?= $isOther ? htmlspecialchars($saved) : '' ?>" <?= $hasCustomer ? 'disabled' : '' ?>>
                         <div class="text-muted nci-note mt-1" data-row="<?= $idx ?>" style="display:none;"></div>
                     </td>
                     <td>
                         <div class="form-check mb-1">
                             <input class="form-check-input row-stock-override" type="checkbox"
-                                   id="rowStock<?= $idx ?>" data-row="<?= $idx ?>" <?= $isStock ? 'checked' : '' ?>>
+                                   id="rowStock<?= $idx ?>" data-row="<?= $idx ?>" <?= $isStock ? 'checked' : '' ?> <?= ($hasCustomer || $hasRefNo) ? 'disabled' : '' ?>>
                             <label class="form-check-label small" for="rowStock<?= $idx ?>">Set to STOCK</label>
                         </div>
                         <input type="text" class="form-control form-control-sm row-refno" data-row="<?= $idx ?>"
-                               value="<?= htmlspecialchars($displayRefNo) ?>" placeholder="SO-00-0000" <?= $isStock ? 'readonly' : '' ?>>
+                               value="<?= htmlspecialchars($displayRefNo) ?>" placeholder="SO-00-0000" <?= ($hasRefNo || $isStock) ? 'readonly disabled' : '' ?>>
                     </td>
                     <td>
                         <select class="form-select form-select-sm row-copies" data-row="<?= $idx ?>">
@@ -574,15 +580,19 @@ async function copyToAllRows() {
     const otherEl   = document.getElementById('copyAllCustomOther');
     const refEl     = document.getElementById('copyAllRefNo');
     const lengthEl  = document.getElementById('copyAllActualLength');
-    const copiesEl  = document.getElementById('copyAllCopies');
 
     const customerVal = sel ? sel.value : '';
     const refVal      = refEl ? refEl.value.trim().replace(/\s+/g, '') : '';
     const lengthVal   = lengthEl ? lengthEl.value.trim() : '';
-    const copiesVal   = copiesEl ? copiesEl.value : '';
 
-    if (!customerVal && !lengthVal) { alert('Set Customer or Actual Length to copy to all rows.'); return; }
-    if (customerVal === 'OTHER' && !otherEl.value.trim()) { alert('Enter the customer name.'); return; }
+    if (!customerVal && !lengthVal) {
+        alert('Set Customer or Actual Length to copy to all rows.');
+        return;
+    }
+    if (customerVal === 'OTHER' && otherEl && !otherEl.value.trim()) {
+        alert('Enter the customer name.');
+        return;
+    }
 
     const rowCount = getRowCount();
     for (let idx = 0; idx < rowCount; idx++) {
@@ -590,31 +600,26 @@ async function copyToAllRows() {
         const rowOtherEl  = document.querySelector(`.row-custom-customer[data-row="${idx}"]`);
         const rowRefEl    = document.querySelector(`.row-refno[data-row="${idx}"]`);
         const rowLengthEl = document.querySelector(`.row-length[data-row="${idx}"]`);
-        const rowCopiesEl = document.querySelector(`.row-copies[data-row="${idx}"]`);
         const rowStockEl  = document.querySelector(`.row-stock-override[data-row="${idx}"]`);
 
-        if (customerVal) {
+        if (customerVal && rowSel && !rowSel.disabled) {
             rowSel.value = customerVal;
-            if (customerVal === 'OTHER') rowOtherEl.value = otherEl.value.trim();
+            if (customerVal === 'OTHER' && rowOtherEl) rowOtherEl.value = otherEl.value.trim();
 
             if (customerVal === 'STOCK') {
                 if (rowStockEl) rowStockEl.checked = true;
-                rowRefEl.readOnly = true;
-                if (refVal !== '') rowRefEl.value = refVal;
+                if (rowRefEl) rowRefEl.readOnly = true;
+                if (refVal !== '' && rowRefEl) rowRefEl.value = refVal;
             } else {
                 if (rowStockEl) rowStockEl.checked = false;
-                rowRefEl.readOnly = false;
-                if (refVal !== '') rowRefEl.value = refVal;
+                if (rowRefEl) rowRefEl.readOnly = false;
+                if (refVal !== '' && rowRefEl) rowRefEl.value = refVal;
             }
             await handleRowCustomerChange(idx);
         }
 
         if (lengthVal !== '' && rowLengthEl) {
             rowLengthEl.value = lengthVal;
-        }
-
-        if (copiesVal && rowCopiesEl) {
-            rowCopiesEl.value = copiesVal;
         }
     }
 }
@@ -639,7 +644,6 @@ function collectSelections() {
         const copiesEl = document.querySelector(`.row-copies[data-row="${idx}"]`);
         const lengthEl = document.querySelector(`.row-length[data-row="${idx}"]`);
         const stockEl  = document.querySelector(`.row-stock-override[data-row="${idx}"]`);
-        const stCodeEl = document.querySelector(`.row-stock-code[data-row="${idx}"]`);
 
         let customer = sel.value;
         if (customer === 'OTHER') customer = otherEl.value.trim();
@@ -652,7 +656,6 @@ function collectSelections() {
         const parsedCopies = parseInt(copiesEl.value, 10);
         const copies = isNaN(parsedCopies) ? 2 : parsedCopies;
         const length = parseFloat(lengthEl.value);
-        const stock_code = stCodeEl ? stCodeEl.value.trim() : '';
 
         if (!customer) { setRowStatus(idx, 'Select a customer', true); hasError = true; return; }
         if (!ref_no)   { setRowStatus(idx, 'Ref No required', true);   hasError = true; return; }
@@ -670,7 +673,6 @@ function collectSelections() {
             ref_no:                ref_no,
             copies:                copies,
             length:                length,
-            stock_code:            stock_code,
             nci_resolved_customer: refEl.dataset.nciResolvedCustomer || '',
         });
     });
