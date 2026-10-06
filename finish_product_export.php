@@ -83,6 +83,8 @@ $baseTypes  = '';
 $baseParams = [];
 
 if ($filter_card === 'produced_month') {
+    $yymmPrefix = sprintf('%02d%02d', $year % 100, $month);
+    $prodCond   = getProductionMonthSqlCondition('sp');
     $baseSql = "
         SELECT sp.*,
                pi.pallet_id,
@@ -93,16 +95,18 @@ if ($filter_card === 'produced_month') {
         LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
         LEFT JOIN pallets p       ON p.id = pi.pallet_id
         WHERE sp.is_voided = 0
-          AND MONTH(sp.date_in) = ? AND YEAR(sp.date_in) = ?"
+          AND {$prodCond}"
           . ($day > 0 ? " AND DAY(sp.date_in) = ?" : "");
     $sortColumn = 'sp.date_in';
-    $baseTypes  = $day > 0 ? 'iii' : 'ii';
-    $baseParams = $day > 0 ? [$month, $year, $day] : [$month, $year];
+    $baseTypes  = $day > 0 ? 'siii' : 'sii';
+    $baseParams = $day > 0 ? [$yymmPrefix, $month, $year, $day] : [$yymmPrefix, $month, $year];
 
 } elseif ($filter_card === 'stock_month_end') {
     $eom = ($day > 0)
         ? sprintf('%04d-%02d-%02d 23:59:59', $year, $month, $day)
         : date('Y-m-t 23:59:59', strtotime("$year-$month-01"));
+    $yymmPrefix = sprintf('%02d%02d', $year % 100, $month);
+    $smeCond    = getStockMonthEndSqlCondition('sp');
     $baseSql = "
         SELECT sp.*,
                pi.pallet_id,
@@ -125,14 +129,14 @@ if ($filter_card === 'produced_month') {
             GROUP BY entity_id
         ) rs ON rs.entity_id = sp.id
         WHERE sp.is_voided = 0
-          AND sp.date_in <= ?
+          AND {$smeCond}
           AND (sp.date_out     IS NULL OR sp.date_out     > ?)
           AND (sp.delivered_at IS NULL OR sp.delivered_at > ?)
           AND (rc.recoil_date  IS NULL OR rc.recoil_date  > ?)
           AND (rs.reslit_date  IS NULL OR rs.reslit_date  > ?)";
     $sortColumn = 'sp.date_in';
-    $baseTypes  = 'sssss';
-    $baseParams = [$eom, $eom, $eom, $eom, $eom];
+    $baseTypes  = 'ssssss';
+    $baseParams = [$yymmPrefix, $eom, $eom, $eom, $eom, $eom];
 
 } else {
     $dayCondOut       = $day > 0 ? " AND DAY(sp.date_out) = ?"     : "";

@@ -272,16 +272,74 @@ if (!function_exists('getWeeklyProductionLength')) {
     }
 }
 
+if (!function_exists('getProductionMonthOptions')) {
+    /**
+     * Helper to get dropdown options for coil production month (Current, Month Before, Month Forward).
+     */
+    function getProductionMonthOptions(?string $baseDate = null): array {
+        $ts = (!empty($baseDate) && strtotime($baseDate) !== false) ? strtotime($baseDate) : time();
+        $year = (int)date('Y', $ts);
+        $month = (int)date('m', $ts);
+
+        $currentTs = mktime(0, 0, 0, $month, 1, $year);
+        $beforeTs  = mktime(0, 0, 0, $month - 1, 1, $year);
+        $forwardTs = mktime(0, 0, 0, $month + 1, 1, $year);
+
+        return [
+            'current' => [
+                'value' => 'current',
+                'date' => date('Y-m-d', $currentTs),
+                'yymm' => date('ym', $currentTs),
+                'label' => 'Current Month (' . date('M Y', $currentTs) . ' - ' . date('ym', $currentTs) . ')',
+            ],
+            'before' => [
+                'value' => 'before',
+                'date' => date('Y-m-d', $beforeTs),
+                'yymm' => date('ym', $beforeTs),
+                'label' => 'Month Before (' . date('M Y', $beforeTs) . ' - ' . date('ym', $beforeTs) . ')',
+            ],
+            'forward' => [
+                'value' => 'forward',
+                'date' => date('Y-m-d', $forwardTs),
+                'yymm' => date('ym', $forwardTs),
+                'label' => 'Month Forward (' . date('M Y', $forwardTs) . ' - ' . date('ym', $forwardTs) . ')',
+            ],
+        ];
+    }
+}
+
+if (!function_exists('resolveProductionMonthDate')) {
+    /**
+     * Resolves selected production month option ('current', 'before', 'forward' or date) into a Y-m-d date string.
+     */
+    function resolveProductionMonthDate(?string $selectedOption, ?string $baseDate = null): string {
+        $ts = (!empty($baseDate) && strtotime($baseDate) !== false) ? strtotime($baseDate) : time();
+        $year = (int)date('Y', $ts);
+        $month = (int)date('m', $ts);
+
+        if ($selectedOption === 'before') {
+            return date('Y-m-d', mktime(0, 0, 0, $month - 1, 1, $year));
+        } elseif ($selectedOption === 'forward') {
+            return date('Y-m-d', mktime(0, 0, 0, $month + 1, 1, $year));
+        } elseif (!empty($selectedOption) && strtotime($selectedOption) !== false) {
+            return date('Y-m-d', strtotime($selectedOption));
+        }
+        return date('Y-m-d', mktime(0, 0, 0, $month, 1, $year));
+    }
+}
+
 if (!function_exists('generateStockCode')) {
     /**
      * Generates a unique stock in code for a produced roll coil.
      * Format: YYMM-XXXX (e.g. 2610-0001)
      * Starts at 0001 for each month (YYMM) and increments with each coil produced.
+     * Guaranteed strictly unique across all rolls.
      */
     function generateStockCode(mysqli $conn, ?string $dateStr = null): string {
         $ts = (!empty($dateStr) && strtotime($dateStr) !== false) ? strtotime($dateStr) : time();
         $prefix = date('ym', $ts); // YYMM e.g. 2610
 
+        $maxSeq = 0;
         $stmt = $conn->prepare("
             SELECT MAX(CAST(SUBSTRING(stock_code, 6) AS UNSIGNED)) AS max_seq
             FROM slitting_product
@@ -293,12 +351,75 @@ if (!function_exists('generateStockCode')) {
             $res = $stmt->get_result()->fetch_assoc();
             $stmt->close();
             $maxSeq = (isset($res['max_seq']) && $res['max_seq'] !== null) ? (int)$res['max_seq'] : 0;
-        } else {
-            $maxSeq = 0;
         }
 
-        $nextSeq = $maxSeq + 1;
-        return sprintf("%s-%04d", $prefix, $nextSeq);
+        $candidateSeq = $maxSeq + 1;
+        while (true) {
+            $candidateCode = sprintf("%s-%04d", $prefix, $candidateSeq);
+
+            $chkStmt = $conn->prepare("SELECT id FROM slitting_product WHERE stock_code = ? LIMIT 1");
+            if ($chkStmt) {
+                $chkStmt->bind_param("s", $candidateCode);
+                $chkStmt->execute();
+                $chkRes = $chkStmt->get_result();
+                $exists = ($chkRes && $chkRes->num_rows > 0);
+                $chkStmt->close();
+
+                if (!$exists) {
+                    return $candidateCode;
+                }
+            } else {
+                return $candidateCode;
+            }
+
+            $candidateSeq++;
+        }
+    }
+}
+
+if (!function_exists('getRollProductionMonthYear')) {
+    /**
+     * Determines the effective production year and month [year, month] for a roll.
+     * If stock_code starts with YYMM- (4 digits), extracts year (2000+YY) and month (MM).
+     * Otherwise, falls back to date_in.
+     */
+    function getRollProductionMonthYear(?string $stockCode, ?string $dateIn): array {
+        if (!empty($stockCode) && preg_match('/^(\d{2})(\d{2})-/', $stockCode, $m)) {
+            $yy = (int)$m[1];
+            $mm = (int)$m[2];
+            if ($mm >= 1 && $mm <= 12) {
+                return [2000 + $yy, $mm];
+            }
+        }
+        $ts = (!empty($dateIn) && strtotime($dateIn) !== false) ? strtotime($dateIn) : time();
+        return [(int)date('Y', $ts), (int)date('m', $ts)];
+    }
+}
+
+if (!function_exists('getProductionMonthSqlCondition')) {
+    /**
+     * Returns the SQL WHERE condition snippet for filtering produced rolls by month and year.
+     * Follows stock_code YYMM prefix if valid (e.g. 2611-xxxx -> Nov 2026),
+     * otherwise falls back to date_in month/year.
+     * Expects parameters: [$yymmPrefix, $month, $year] (types: 'sii')
+     */
+    function getProductionMonthSqlCondition(string $tableAlias = 'sp'): string {
+        $prefix = $tableAlias !== '' ? $tableAlias . '.' : '';
+        return "(CASE WHEN {$prefix}stock_code REGEXP '^[0-9]{4}-' THEN {$prefix}stock_code LIKE CONCAT(?, '-%') ELSE (MONTH({$prefix}date_in) = ? AND YEAR({$prefix}date_in) = ?) END)";
+    }
+}
+
+if (!function_exists('getStockMonthEndSqlCondition')) {
+    /**
+     * Returns the SQL WHERE condition snippet for verifying if a roll was produced
+     * on or before the target month-end.
+     * Follows stock_code YYMM prefix if valid (e.g. 2611 is NOT included in Oct 2026 / 2610 end stock),
+     * otherwise falls back to date_in <= eom.
+     * Expects parameters: [$yymmPrefix, $eom] (types: 'ss')
+     */
+    function getStockMonthEndSqlCondition(string $tableAlias = 'sp'): string {
+        $prefix = $tableAlias !== '' ? $tableAlias . '.' : '';
+        return "(CASE WHEN {$prefix}stock_code REGEXP '^[0-9]{4}-' THEN SUBSTRING({$prefix}stock_code, 1, 4) <= ? ELSE {$prefix}date_in <= ? END)";
     }
 }
 
