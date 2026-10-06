@@ -228,11 +228,12 @@ $stmt->close();
             <thead class="table-dark">
                 <tr>
                     <th style="width:9%;">Roll No.</th>
-                    <th style="width:12%;">Size / Actual</th>
-                    <th style="width:26%;">Customer</th>
-                    <th style="width:26%;">Ref No.</th>
-                    <th style="width:10%;">Copies</th>
-                    <th style="width:17%;">Status</th>
+                    <th style="width:11%;">Size / Actual</th>
+                    <th style="width:14%;">Stock Code</th>
+                    <th style="width:23%;">Customer</th>
+                    <th style="width:20%;">Ref No.</th>
+                    <th style="width:9%;">Copies</th>
+                    <th style="width:14%;">Status</th>
                 </tr>
             </thead>
             <tbody>
@@ -261,6 +262,10 @@ $stmt->close();
                                    value="<?= htmlspecialchars($curLength ?? '') ?>">
                             <span class="input-group-text" style="font-size:11px;">Mtr</span>
                         </div>
+                    </td>
+                    <td>
+                        <input type="text" class="form-control form-control-sm row-stock-code font-monospace" data-row="<?= $idx ?>"
+                               value="<?= htmlspecialchars($r['stock_code'] ?? '') ?>" placeholder="YYMM-XXXX" style="font-size:11px;">
                     </td>
                     <td>
                         <?php
@@ -634,6 +639,7 @@ function collectSelections() {
         const copiesEl = document.querySelector(`.row-copies[data-row="${idx}"]`);
         const lengthEl = document.querySelector(`.row-length[data-row="${idx}"]`);
         const stockEl  = document.querySelector(`.row-stock-override[data-row="${idx}"]`);
+        const stCodeEl = document.querySelector(`.row-stock-code[data-row="${idx}"]`);
 
         let customer = sel.value;
         if (customer === 'OTHER') customer = otherEl.value.trim();
@@ -646,6 +652,7 @@ function collectSelections() {
         const parsedCopies = parseInt(copiesEl.value, 10);
         const copies = isNaN(parsedCopies) ? 2 : parsedCopies;
         const length = parseFloat(lengthEl.value);
+        const stock_code = stCodeEl ? stCodeEl.value.trim() : '';
 
         if (!customer) { setRowStatus(idx, 'Select a customer', true); hasError = true; return; }
         if (!ref_no)   { setRowStatus(idx, 'Ref No required', true);   hasError = true; return; }
@@ -663,6 +670,7 @@ function collectSelections() {
             ref_no:                ref_no,
             copies:                copies,
             length:                length,
+            stock_code:            stock_code,
             nci_resolved_customer: refEl.dataset.nciResolvedCustomer || '',
         });
     });

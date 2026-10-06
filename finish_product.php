@@ -332,16 +332,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     && isset($_POST['action'])
     && $_POST['action'] === 'batch_update_actual_length') {
 
-    $actual_length = trim($_POST['actual_length']);
-    $product       = trim($_POST['product']);
-    $lot_no        = trim($_POST['lot_no']);
-    $id            = intval($_POST['id']);
-    $new_coil_no   = trim($_POST['coil_no'] ?? '');
-    $new_lot_no    = trim($_POST['new_lot_no'] ?? '');
+    $actual_length  = trim($_POST['actual_length']);
+    $product        = trim($_POST['product']);
+    $lot_no         = trim($_POST['lot_no']);
+    $id             = intval($_POST['id']);
+    $new_coil_no    = trim($_POST['coil_no'] ?? '');
+    $new_lot_no     = trim($_POST['new_lot_no'] ?? '');
+    $new_stock_code = trim($_POST['stock_code'] ?? '');
 
     // Fetch the specific row being edited — used for the coil-no/lot-no fixes
     // below, its mother_id for logging, and as the fallback group member.
     $selfRow = $conn->query("SELECT * FROM slitting_product WHERE id=$id")->fetch_assoc();
+
+    // ── Stock Code correction ──
+    if ($selfRow && $new_stock_code !== '' && $new_stock_code !== trim($selfRow['stock_code'] ?? '')) {
+        $oldStockCode = trim($selfRow['stock_code'] ?? '');
+        $stmtFixStock = $conn->prepare("UPDATE slitting_product SET stock_code=? WHERE id=?");
+        $stmtFixStock->bind_param("si", $new_stock_code, $id);
+        $stmtFixStock->execute();
+        $stmtFixStock->close();
+        $selfRow['stock_code'] = $new_stock_code;
+
+        log_process($conn, 'slitting', $id, intval($selfRow['mother_id'] ?? 0) ?: null,
+            'IN', 'IN', 'stock_code_corrected',
+            "Stock Code corrected: '{$oldStockCode}' -> '{$new_stock_code}'");
+    }
 
     // ── Lot No correction ──
     // Fixes a typo on THIS roll only. Note this is independent of $lot_no
@@ -931,7 +946,7 @@ if (!empty($searchTokens)) {
     $tokenClauses = array_fill(
         0,
         count($searchTokens),
-        "(sp.product LIKE ? OR sp.lot_no LIKE ? OR sp.coil_no LIKE ? OR sp.roll_no LIKE ? OR sp.id LIKE ? OR p.pallet_no LIKE ? OR sp.width LIKE ?)"
+        "(sp.product LIKE ? OR sp.lot_no LIKE ? OR sp.coil_no LIKE ? OR sp.roll_no LIKE ? OR sp.id LIKE ? OR p.pallet_no LIKE ? OR sp.width LIKE ? OR sp.stock_code LIKE ?)"
     );
     $baseSql .= " AND (" . implode(" AND ", $tokenClauses) . ")";
 }
@@ -962,14 +977,14 @@ $stmt = $conn->prepare($baseSql);
 if (!$stmt) { die("Query prepare failed: " . htmlspecialchars($conn->error)); }
 
 // Build bind_param args dynamically: the mode-specific base params above,
-// then 7 string placeholders per search token (all sharing that token's
-// LIKE value) — product/lot/coil/roll/id/pallet/width.
+// then 8 string placeholders per search token (all sharing that token's
+// LIKE value) — product/lot/coil/roll/id/pallet/width/stock_code.
 $types  = $baseTypes;
 $params = $baseParams;
 
 foreach ($searchTokens as $token) {
     $like = '%' . $token . '%';
-    for ($i = 0; $i < 7; $i++) {
+    for ($i = 0; $i < 8; $i++) {
         $types    .= "s";
         $params[] = $like;
     }
@@ -1713,6 +1728,10 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                 default     => '<span class="badge bg-secondary">' . $row['status'] . '</span>'
             };
 
+            if (!empty($row['stock_code'])) {
+                $statusBadge .= '<br><span class="badge bg-light text-dark border font-monospace mt-1" style="font-size:8.5px; font-weight:500; padding:2px 4px; letter-spacing:0.3px;">' . htmlspecialchars($row['stock_code']) . '</span>';
+            }
+
             $originalSource = $row['original_source'] ?? $row['source'] ?? 'raw_material';
             $originDisplay  = match(trim(strtolower($originalSource))) {
                 'sfc'           => ['label' => 'SFC', 'class' => 'bg-primary'],
@@ -2046,12 +2065,13 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                             <table class="table table-bordered table-hover table-sm mb-0 align-middle" id="modalBatchGridTable">
                                 <thead class="table-dark sticky-top" style="z-index: 5;">
                                     <tr>
-                                        <th style="width:14%;">Roll No &amp; Product</th>
-                                        <th style="width:14%;">Width / Actual Length</th>
-                                        <th style="width:28%;">Customer</th>
-                                        <th style="width:26%;">Ref No.</th>
-                                        <th style="width:9%;">Copies</th>
-                                        <th style="width:9%;">Status</th>
+                                        <th style="width:13%;">Roll No &amp; Product</th>
+                                        <th style="width:13%;">Width / Actual Length</th>
+                                        <th style="width:14%;">Stock Code</th>
+                                        <th style="width:24%;">Customer</th>
+                                        <th style="width:20%;">Ref No.</th>
+                                        <th style="width:8%;">Copies</th>
+                                        <th style="width:8%;">Status</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -2084,6 +2104,10 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                                                        value="<?= htmlspecialchars($curLength ?? '') ?>">
                                                 <span class="input-group-text px-1" style="font-size:10px;">m</span>
                                             </div>
+                                        </td>
+                                        <td>
+                                            <input type="text" class="form-control form-control-sm modal-row-stock-code font-monospace" data-row="<?= $idx ?>"
+                                                   value="<?= htmlspecialchars($r['stock_code'] ?? '') ?>" placeholder="YYMM-XXXX" style="font-size:11px;">
                                         </td>
                                         <td>
                                             <?php
@@ -2451,9 +2475,10 @@ function modalCollectSelections() {
         const sel      = document.querySelector(`.modal-row-customer[data-row="${idx}"]`);
         const otherEl  = document.querySelector(`.modal-row-custom-customer[data-row="${idx}"]`);
         const refEl    = document.querySelector(`.modal-row-refno[data-row="${idx}"]`);
-        const copiesEl = document.querySelector(`.modal-row-copies[data-row="${idx}"]`);
-        const lengthEl = document.querySelector(`.modal-row-length[data-row="${idx}"]`);
-        const stockEl  = document.querySelector(`.modal-row-stock-override[data-row="${idx}"]`);
+        const copiesEl  = document.querySelector(`.modal-row-copies[data-row="${idx}"]`);
+        const lengthEl  = document.querySelector(`.modal-row-length[data-row="${idx}"]`);
+        const stockEl   = document.querySelector(`.modal-row-stock-override[data-row="${idx}"]`);
+        const stCodeEl  = document.querySelector(`.modal-row-stock-code[data-row="${idx}"]`);
 
         let customer = sel.value;
         if (customer === 'OTHER') customer = otherEl.value.trim();
@@ -2466,6 +2491,7 @@ function modalCollectSelections() {
         const parsedCopies = parseInt(copiesEl.value, 10);
         const copies = isNaN(parsedCopies) ? 2 : parsedCopies;
         const length = parseFloat(lengthEl.value);
+        const stock_code = stCodeEl ? stCodeEl.value.trim() : '';
 
         if (!customer) { modalSetRowStatus(idx, 'Select customer', true); hasError = true; return; }
         if (!ref_no)   { modalSetRowStatus(idx, 'Ref No required', true);   hasError = true; return; }
@@ -2483,6 +2509,7 @@ function modalCollectSelections() {
             ref_no:                ref_no,
             copies:                copies,
             length:                length,
+            stock_code:            stock_code,
             nci_resolved_customer: refEl.dataset.nciResolvedCustomer || '',
         });
     });

@@ -22,11 +22,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $width       = trim($_POST['width']);
     $length      = trim($_POST['length']);
     $length_type = $_POST['length_type'];
+    $stock_code  = trim($_POST['stock_code'] ?? '');
 
     $stmt = $conn->prepare("UPDATE slitting_product
-        SET roll_no=?, width=?, length=?, length_type=?
+        SET roll_no=?, width=?, length=?, length_type=?, stock_code=?
         WHERE id=?");
-    $stmt->bind_param("ssssi", $roll_no, $width, $length, $length_type, $id);
+    $stmt->bind_param("sssssi", $roll_no, $width, $length, $length_type, $stock_code, $id);
     $stmt->execute();
     $stmt->close();
 
@@ -85,6 +86,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <input type="number" step="0.01" name="length" class="form-control"
                    value="<?= htmlspecialchars($product['length'] ?? '') ?>">
             <small class="text-muted">Optional - can be filled later</small>
+        </div>
+
+        <div class="mb-3">
+            <label class="form-label"><strong>Stock Code</strong></label>
+            <input type="text" name="stock_code" class="form-control"
+                   value="<?= htmlspecialchars($product['stock_code'] ?? '') ?>"
+                   placeholder="e.g. 2610-0001">
         </div>
 
         <div class="mb-3">

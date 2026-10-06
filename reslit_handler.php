@@ -285,17 +285,18 @@ try {
         }
         $chk_key->close();
 
+        $stock_code = generateStockCode($conn);
         $stmt_ins = $conn->prepare("
             INSERT INTO slitting_product
                 (mother_id, parent_slit_id,
                  product, lot_no, coil_no, roll_no, roll_key,
                  width, length, actual_length,
                  status, is_completed, stock_counted,
-                 date_in, source, original_source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, NOW(), 'reslit', ?)
+                 date_in, source, original_source, stock_code)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, NOW(), 'reslit', ?, ?)
         ");
         $stmt_ins->bind_param(
-            "iisssssddds",
+            "iisssssdddss",
             $mother_id_val,
             $parent_slit_id,
             $parent['product'],
@@ -306,7 +307,8 @@ try {
             $width,
             $nom_len,
             $act_len,
-            $originalSource
+            $originalSource,
+            $stock_code
         );
         $stmt_ins->execute();
         $new_slit_id = $conn->insert_id;
@@ -399,17 +401,18 @@ try {
             }
             $chk_key->close();
 
+            $leftover_stock_code = generateStockCode($conn);
             $stmt_leftover = $conn->prepare("
                 INSERT INTO slitting_product
                     (mother_id, parent_slit_id,
                      product, lot_no, coil_no, roll_no, roll_key,
                      width, length, actual_length,
                      status, is_completed, stock_counted,
-                     date_in, source, original_source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, NOW(), 'reslit', ?)
+                     date_in, source, original_source, stock_code)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, NOW(), 'reslit', ?, ?)
             ");
             $stmt_leftover->bind_param(
-                "iisssssddds",
+                "iisssssdddss",
                 $mother_id_val,
                 $parent_slit_id,
                 $parent['product'],
@@ -420,7 +423,8 @@ try {
                 $leftover_width,
                 $leftover_length,
                 $leftover_length,
-                $originalSource
+                $originalSource,
+                $leftover_stock_code
             );
             if (!$stmt_leftover->execute()) {
                 throw new Exception("Failed to insert leftover into Finished Product: " . $stmt_leftover->error);

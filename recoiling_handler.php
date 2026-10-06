@@ -288,18 +288,19 @@ try {
         }
         $chk_key->close();
 
+        $stock_code = generateStockCode($conn);
         $insert_stmt = $conn->prepare("
             INSERT INTO slitting_product
                 (recoiling_id, mother_id, parent_slit_id,
                  product, lot_no, coil_no, roll_no, roll_key,
                  width, length, actual_length,
                  status, is_completed, stock_counted,
-                 original_source, source, date_in)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, ?, 'recoiling', NOW())
+                 original_source, source, date_in, stock_code)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, ?, 'recoiling', NOW(), ?)
         ");
 
         $insert_stmt->bind_param(
-            "iiisssssddds",
+            "iiisssssdddss",
             $id,
             $mother_id_val,
             $parent_slit_id,
@@ -311,7 +312,8 @@ try {
             $new_width,
             $length,
             $actual_length,
-            $original['original_source']
+            $original['original_source'],
+            $stock_code
         );
 
         if (!$insert_stmt->execute()) {

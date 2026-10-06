@@ -259,9 +259,9 @@ try {
     $stmt = $conn->prepare("
         INSERT INTO slitting_product
             (mother_id, source, original_source, product, lot_no, coil_no, roll_no, roll_key,
-             width, length, actual_length, status, is_completed, stock_counted, date_in)
+             width, length, actual_length, status, is_completed, stock_counted, date_in, stock_code)
         VALUES
-            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?)
+            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
     ");
 
     foreach ($toInsert as $row) {
@@ -277,6 +277,7 @@ try {
         $width           = (float)$row['width'];
         $length          = (float)$row['length'];
         $actual_length   = (float)$row['actual_length'];
+        $stock_code      = generateStockCode($conn, $date_in);
 
         // Generate unique DB roll_key incorporating width
         $base_roll_key   = $lot_no . '_' . $coil_no . '_' . $roll_no . '_' . round($width, 2);
@@ -303,7 +304,7 @@ try {
         $chk_key->close();
 
         $stmt->bind_param(
-            "issssssssddss",
+            "issssssssddsss",
             $mother_id,
             $source,
             $original_source,
@@ -316,7 +317,8 @@ try {
             $length,
             $actual_length,
             $status,
-            $date_in
+            $date_in,
+            $stock_code
         );
 
         if (!$stmt->execute()) {

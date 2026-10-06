@@ -244,16 +244,17 @@ try {
     //   => placeholders needed = 13.
     //   types: "issssssssddss"
     // -------------------------------------------------------------
+    $stock_code = generateStockCode($conn, $date_in);
     $stmt = $conn->prepare("
         INSERT INTO slitting_product
             (mother_id, source, original_source, product, lot_no, coil_no, roll_no, roll_key,
-             width, length, actual_length, status, is_completed, stock_counted, date_in)
+             width, length, actual_length, status, is_completed, stock_counted, date_in, stock_code)
         VALUES
-            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?)
+            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
     ");
 
     $stmt->bind_param(
-        "issssssssddss",
+        "issssssssddsss",
         $mother_id,
         $source,
         $original_source,
@@ -266,7 +267,8 @@ try {
         $length,
         $actual_length,
         $status,
-        $date_in
+        $date_in,
+        $stock_code
     );
 
     if (!$stmt->execute()) {

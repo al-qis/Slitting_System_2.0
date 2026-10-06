@@ -170,14 +170,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
 
             } elseif ($action === 'SELL') {
                 $actLen = (float)($sfc['length'] ?? 0);
+                $stock_code = generateStockCode($conn);
                 $stmt = $conn->prepare("INSERT INTO slitting_product
                     (mother_id, product, lot_no, coil_no, roll_no, width, length, actual_length,
-                     status, is_completed, stock_counted, date_in, date_out, cut_type, source, original_source)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, NOW(), NULL, 'sfc_sell', 'sfc', ?)");
-                $stmt->bind_param("issssddds",
+                     status, is_completed, stock_counted, date_in, date_out, cut_type, source, original_source, stock_code)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, NOW(), NULL, 'sfc_sell', 'sfc', ?, ?)");
+                $stmt->bind_param("issssdddss",
                     $sfc['mother_id'],
                     $sfc['product'], $sfc['lot_no'], $sfc['coil_no'],
-                    $sfc['roll_no'], $sfc['width'],  $sfc['length'], $actLen, $original_source);
+                    $sfc['roll_no'], $sfc['width'],  $sfc['length'], $actLen, $original_source, $stock_code);
                 $stmt->execute();
                 $stmt->close();
                 log_source_tracking($conn, 0, 'slitting_product', $original_source, 'sfc', 'SELL_FROM_SFC');

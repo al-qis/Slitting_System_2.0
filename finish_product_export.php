@@ -179,7 +179,7 @@ if (!empty($searchTokens)) {
     $tokenClauses = array_fill(
         0,
         count($searchTokens),
-        "(sp.product LIKE ? OR sp.lot_no LIKE ? OR sp.coil_no LIKE ? OR sp.roll_no LIKE ? OR sp.id LIKE ? OR p.pallet_no LIKE ?)"
+        "(sp.product LIKE ? OR sp.lot_no LIKE ? OR sp.coil_no LIKE ? OR sp.roll_no LIKE ? OR sp.id LIKE ? OR p.pallet_no LIKE ? OR sp.width LIKE ? OR sp.stock_code LIKE ?)"
     );
     $baseSql .= " AND (" . implode(" AND ", $tokenClauses) . ")";
 }
@@ -202,7 +202,7 @@ $params = $baseParams;
 
 foreach ($searchTokens as $token) {
     $like = '%' . $token . '%';
-    for ($i = 0; $i < 6; $i++) {
+    for ($i = 0; $i < 8; $i++) {
         $types    .= "s";
         $params[] = $like;
     }
@@ -309,8 +309,13 @@ if ($result && $result->num_rows > 0) {
             ? $palletRef
             : ($rollRef !== '' ? $rollRef : ($palletRef !== '' ? $palletRef : '-'));
 
+        $statusText = strtoupper($row['status'] ?? '-');
+        if (!empty($row['stock_code'])) {
+            $statusText .= ' (' . $row['stock_code'] . ')';
+        }
+
         echo '<tr>';
-        echo '<td ' . $td  . '>' . htmlspecialchars(strtoupper($row['status'] ?? '-')) . '</td>';
+        echo '<td ' . $td  . '>' . htmlspecialchars($statusText) . '</td>';
         echo '<td ' . $td  . '>' . htmlspecialchars($originLabelTxt) . '</td>';
         echo '<td ' . $td  . '>' . htmlspecialchars($row['product'] ?? '-') . '</td>';
         echo '<td ' . $td  . '>' . htmlspecialchars($lotCoil) . '</td>';

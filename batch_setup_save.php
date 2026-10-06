@@ -71,6 +71,11 @@ foreach ($selections as $sel) {
     if ($stmt->execute()) {
         $saved++;
 
+        if (isset($sel['stock_code']) && trim($sel['stock_code']) !== '') {
+            $stSc = trim($sel['stock_code']);
+            $conn->query("UPDATE slitting_product SET stock_code = '" . $conn->real_escape_string($stSc) . "' WHERE id = {$id}");
+        }
+
         // If transitioning from pending to completed, handle leftover for cut_into_2
         if ($wasPending && $existing) {
             if ($existing['cut_type'] === 'cut_into_2'

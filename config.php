@@ -272,4 +272,34 @@ if (!function_exists('getWeeklyProductionLength')) {
     }
 }
 
+if (!function_exists('generateStockCode')) {
+    /**
+     * Generates a unique stock in code for a produced roll coil.
+     * Format: YYMM-XXXX (e.g. 2610-0001)
+     * Starts at 0001 for each month (YYMM) and increments with each coil produced.
+     */
+    function generateStockCode(mysqli $conn, ?string $dateStr = null): string {
+        $ts = (!empty($dateStr) && strtotime($dateStr) !== false) ? strtotime($dateStr) : time();
+        $prefix = date('ym', $ts); // YYMM e.g. 2610
+
+        $stmt = $conn->prepare("
+            SELECT MAX(CAST(SUBSTRING(stock_code, 6) AS UNSIGNED)) AS max_seq
+            FROM slitting_product
+            WHERE stock_code LIKE CONCAT(?, '-%')
+        ");
+        if ($stmt) {
+            $stmt->bind_param("s", $prefix);
+            $stmt->execute();
+            $res = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            $maxSeq = (isset($res['max_seq']) && $res['max_seq'] !== null) ? (int)$res['max_seq'] : 0;
+        } else {
+            $maxSeq = 0;
+        }
+
+        $nextSeq = $maxSeq + 1;
+        return sprintf("%s-%04d", $prefix, $nextSeq);
+    }
+}
+
 ?>
