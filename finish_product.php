@@ -332,16 +332,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     && isset($_POST['action'])
     && $_POST['action'] === 'batch_update_actual_length') {
 
-    $actual_length = trim($_POST['actual_length']);
-    $product       = trim($_POST['product']);
-    $lot_no        = trim($_POST['lot_no']);
-    $id            = intval($_POST['id']);
-    $new_coil_no   = trim($_POST['coil_no'] ?? '');
-    $new_lot_no    = trim($_POST['new_lot_no'] ?? '');
+    $actual_length  = trim($_POST['actual_length']);
+    $product        = trim($_POST['product']);
+    $lot_no         = trim($_POST['lot_no']);
+    $id             = intval($_POST['id']);
+    $new_coil_no    = trim($_POST['coil_no'] ?? '');
+    $new_lot_no     = trim($_POST['new_lot_no'] ?? '');
+    $new_stock_code = trim($_POST['stock_code'] ?? '');
 
     // Fetch the specific row being edited — used for the coil-no/lot-no fixes
     // below, its mother_id for logging, and as the fallback group member.
     $selfRow = $conn->query("SELECT * FROM slitting_product WHERE id=$id")->fetch_assoc();
+
+    // ── Stock Code correction ──
+    if ($selfRow && $new_stock_code !== '' && $new_stock_code !== trim($selfRow['stock_code'] ?? '')) {
+        // Prevent duplicate stock codes across rolls
+        $chkDup = $conn->prepare("SELECT id FROM slitting_product WHERE stock_code = ? AND id != ? LIMIT 1");
+        $chkDup->bind_param("si", $new_stock_code, $id);
+        $chkDup->execute();
+        $dupRes = $chkDup->get_result();
+        $isDup = ($dupRes && $dupRes->num_rows > 0);
+        $chkDup->close();
+
+        if ($isDup) {
+            $redirectFilter = $_POST['filter'] ?? $filter_card;
+            $redirectSearch = $_POST['search'] ?? $search;
+            $redirectParams = ['month' => $month, 'year' => $year, 'error' => 'duplicate_stock_code', 'msg' => "Stock Code '{$new_stock_code}' is already assigned to another roll."];
+            if ($day > 0) $redirectParams['day'] = $day;
+            if ($redirectSearch !== '') $redirectParams['search'] = $redirectSearch;
+            if ($redirectFilter !== '') $redirectParams['filter'] = $redirectFilter;
+            header("Location: finish_product.php?" . http_build_query($redirectParams));
+            exit;
+        }
+
+        $oldStockCode = trim($selfRow['stock_code'] ?? '');
+        $stmtFixStock = $conn->prepare("UPDATE slitting_product SET stock_code=? WHERE id=?");
+        $stmtFixStock->bind_param("si", $new_stock_code, $id);
+        $stmtFixStock->execute();
+        $stmtFixStock->close();
+        $selfRow['stock_code'] = $new_stock_code;
+
+        log_process($conn, 'slitting', $id, intval($selfRow['mother_id'] ?? 0) ?: null,
+            'IN', 'IN', 'stock_code_corrected',
+            "Stock Code corrected: '{$oldStockCode}' -> '{$new_stock_code}'");
+    }
 
     // ── Lot No correction ──
     // Fixes a typo on THIS roll only. Note this is independent of $lot_no
@@ -802,10 +836,11 @@ $baseParams = [];
 
 if ($filter_card === 'produced_month') {
     // ── Monthly Production Report ──
-    // Every roll whose date_in falls inside the selected month, no matter
-    // what happened to it since (delivered, recoiled, reslitted, still in
-    // stock...). Answers "what did we produce in month X", not "what's
-    // currently in stock".
+    // Every roll produced in the selected month, following stock_code YYMM prefix if valid
+    // (e.g. 2611 -> Nov 2026), or date_in month/year if stock_code is missing/non-conforming.
+    // Answers "what did we produce in month X", not "what's currently in stock".
+    $yymmPrefix = sprintf('%02d%02d', $year % 100, $month);
+    $prodCond   = getProductionMonthSqlCondition('sp');
     $baseSql = "
         SELECT sp.*,
                pi.pallet_id,
@@ -815,11 +850,11 @@ if ($filter_card === 'produced_month') {
         LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
         LEFT JOIN pallets p       ON p.id = pi.pallet_id
         WHERE sp.is_voided = 0
-          AND MONTH(sp.date_in) = ? AND YEAR(sp.date_in) = ?"
+          AND {$prodCond}"
           . ($day > 0 ? " AND DAY(sp.date_in) = ?" : "");
     $sortColumn = 'sp.date_in';
-    $baseTypes  = $day > 0 ? 'iii' : 'ii';
-    $baseParams = $day > 0 ? [$month, $year, $day] : [$month, $year];
+    $baseTypes  = $day > 0 ? 'siii' : 'sii';
+    $baseParams = $day > 0 ? [$yymmPrefix, $month, $year, $day] : [$yymmPrefix, $month, $year];
 
 } elseif ($filter_card === 'stock_month_end') {
     // ── Month-End Stock Balance (reconstructed snapshot) ──
@@ -840,6 +875,8 @@ if ($filter_card === 'produced_month') {
     $eom = ($day > 0)
         ? sprintf('%04d-%02d-%02d 23:59:59', $year, $month, $day)
         : date('Y-m-t 23:59:59', strtotime("$year-$month-01"));
+    $yymmPrefix = sprintf('%02d%02d', $year % 100, $month);
+    $smeCond    = getStockMonthEndSqlCondition('sp');
     $baseSql = "
         SELECT sp.*,
                pi.pallet_id,
@@ -861,14 +898,14 @@ if ($filter_card === 'produced_month') {
             GROUP BY entity_id
         ) rs ON rs.entity_id = sp.id
         WHERE sp.is_voided = 0
-          AND sp.date_in <= ?
+          AND {$smeCond}
           AND (sp.date_out     IS NULL OR sp.date_out     > ?)
           AND (sp.delivered_at IS NULL OR sp.delivered_at > ?)
           AND (rc.recoil_date  IS NULL OR rc.recoil_date  > ?)
           AND (rs.reslit_date  IS NULL OR rs.reslit_date  > ?)";
     $sortColumn = 'sp.date_in';
-    $baseTypes  = 'sssss';
-    $baseParams = [$eom, $eom, $eom, $eom, $eom];
+    $baseTypes  = 'ssssss';
+    $baseParams = [$yymmPrefix, $eom, $eom, $eom, $eom, $eom];
 
 } else {
     // ── Live warehouse tabs (IN / STOCK / PALLETISED / WAITING / DELIVER) ──
@@ -931,7 +968,7 @@ if (!empty($searchTokens)) {
     $tokenClauses = array_fill(
         0,
         count($searchTokens),
-        "(sp.product LIKE ? OR sp.lot_no LIKE ? OR sp.coil_no LIKE ? OR sp.roll_no LIKE ? OR sp.id LIKE ? OR p.pallet_no LIKE ? OR sp.width LIKE ?)"
+        "(sp.product LIKE ? OR sp.lot_no LIKE ? OR sp.coil_no LIKE ? OR sp.roll_no LIKE ? OR sp.id LIKE ? OR p.pallet_no LIKE ? OR sp.width LIKE ? OR sp.stock_code LIKE ?)"
     );
     $baseSql .= " AND (" . implode(" AND ", $tokenClauses) . ")";
 }
@@ -962,14 +999,14 @@ $stmt = $conn->prepare($baseSql);
 if (!$stmt) { die("Query prepare failed: " . htmlspecialchars($conn->error)); }
 
 // Build bind_param args dynamically: the mode-specific base params above,
-// then 7 string placeholders per search token (all sharing that token's
-// LIKE value) — product/lot/coil/roll/id/pallet/width.
+// then 8 string placeholders per search token (all sharing that token's
+// LIKE value) — product/lot/coil/roll/id/pallet/width/stock_code.
 $types  = $baseTypes;
 $params = $baseParams;
 
 foreach ($searchTokens as $token) {
     $like = '%' . $token . '%';
-    for ($i = 0; $i < 7; $i++) {
+    for ($i = 0; $i < 8; $i++) {
         $types    .= "s";
         $params[] = $like;
     }
@@ -1028,14 +1065,17 @@ $approved_pallets_count = $conn->query("
 
 // ── Report card counts (Produced This Month / Stock as of Month-End) ──
 $producedMonthCount = 0;
-$stmtPM = $conn->prepare("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND MONTH(date_in)=? AND YEAR(date_in)=?");
-$stmtPM->bind_param("ii", $month, $year);
+$yymmPrefix = sprintf('%02d%02d', $year % 100, $month);
+$prodCond = getProductionMonthSqlCondition('');
+$stmtPM = $conn->prepare("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND {$prodCond}");
+$stmtPM->bind_param("sii", $yymmPrefix, $month, $year);
 $stmtPM->execute();
 $producedMonthCount = (int)$stmtPM->get_result()->fetch_assoc()['total'];
 $stmtPM->close();
 
 $stockMonthEndCount = 0;
 $eomForCount = date('Y-m-t 23:59:59', strtotime("$year-$month-01"));
+$smeCondCount = getStockMonthEndSqlCondition('sp');
 $stmtSME = $conn->prepare("
     SELECT IFNULL(COUNT(*),0) AS total
     FROM slitting_product sp
@@ -1052,13 +1092,13 @@ $stmtSME = $conn->prepare("
         GROUP BY entity_id
     ) rs ON rs.entity_id = sp.id
     WHERE sp.is_voided = 0
-      AND sp.date_in <= ?
+      AND {$smeCondCount}
       AND (sp.date_out     IS NULL OR sp.date_out     > ?)
       AND (sp.delivered_at IS NULL OR sp.delivered_at > ?)
       AND (rc.recoil_date  IS NULL OR rc.recoil_date  > ?)
       AND (rs.reslit_date  IS NULL OR rs.reslit_date  > ?)
 ");
-$stmtSME->bind_param("sssss", $eomForCount, $eomForCount, $eomForCount, $eomForCount, $eomForCount);
+$stmtSME->bind_param("ssssss", $yymmPrefix, $eomForCount, $eomForCount, $eomForCount, $eomForCount, $eomForCount);
 $stmtSME->execute();
 $stockMonthEndCount = (int)$stmtSME->get_result()->fetch_assoc()['total'];
 $stmtSME->close();
@@ -1713,6 +1753,10 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                 default     => '<span class="badge bg-secondary">' . $row['status'] . '</span>'
             };
 
+            if (!empty($row['stock_code'])) {
+                $statusBadge .= '<br><span class="badge bg-light text-dark border font-monospace mt-1" style="font-size:8.5px; font-weight:500; padding:2px 4px; letter-spacing:0.3px;">' . htmlspecialchars($row['stock_code']) . '</span>';
+            }
+
             $originalSource = $row['original_source'] ?? $row['source'] ?? 'raw_material';
             $originDisplay  = match(trim(strtolower($originalSource))) {
                 'sfc'           => ['label' => 'SFC', 'class' => 'bg-primary'],
@@ -1968,20 +2012,36 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
 
             <!-- Modal Body -->
             <div class="modal-body p-3 bg-light">
+                <?php
+                    $allCustomerUnassigned = true;
+                    $allRefNoUnassigned = true;
+                    foreach ($batchRolls as $r) {
+                        $c = trim($r['customer_name'] ?? '');
+                        $rf = trim($r['ref_no'] ?? '');
+                        if ($c !== '') {
+                            $allCustomerUnassigned = false;
+                        }
+                        if ($rf !== '' && $rf !== 'SO-' && $rf !== 'STOCK') {
+                            $allRefNoUnassigned = false;
+                        }
+                    }
+                    $canCopyAllCustRef = ($allCustomerUnassigned && $allRefNoUnassigned);
+                ?>
                 <!-- Consolidated Batch Assignment Panel Toolbar (Copy to All Rows) -->
                 <div class="card mb-3 shadow-sm border-danger-subtle" style="background: #fff8f8;">
                     <div class="card-header bg-danger-subtle fw-bold py-2 text-danger-emphasis d-flex justify-content-between align-items-center">
-                        <span><i class="bi bi-sliders me-1"></i> Batch Assignment Toolbar — Copy to All Rows</span>
+                        <span><i class="bi bi-sliders me-1"></i> Batch Assignment Toolbar — Copy <?= $canCopyAllCustRef ? 'Customer, Ref No &amp; Actual Length' : 'Actual Length' ?> to All Rows</span>
                         <span class="badge bg-danger text-white"><?= htmlspecialchars($editData['product'] ?? '') ?></span>
                     </div>
                     <div class="card-body py-2">
                         <div class="row g-2 align-items-end">
-                            <div class="col-6 col-md-3">
+                            <div class="<?= $canCopyAllCustRef ? 'col-6 col-md-3' : 'col-12 col-md-6' ?>">
                                 <label class="small fw-bold mb-1">Actual Length (meters)</label>
                                 <input type="number" step="0.01" min="0" class="form-control form-control-sm" id="modalCopyAllActualLength"
                                        placeholder="e.g. 500" value="<?= htmlspecialchars((string)($editData['actual_length'] ?? '')) ?>">
                             </div>
-                            <div class="col-12 col-md-3">
+                            <?php if ($canCopyAllCustRef): ?>
+                            <div class="col-12 col-md-4">
                                 <label class="small fw-bold mb-1">Customer</label>
                                 <select class="form-select form-select-sm" id="modalCopyAllCustomer">
                                     <option value="">-- Select Customer --</option>
@@ -2014,24 +2074,16 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                                 <label class="small fw-bold mb-1">Ref No</label>
                                 <input type="text" class="form-control form-control-sm" id="modalCopyAllRefNo" value="SO-" placeholder="SO-00-0000">
                             </div>
-                            <div class="col-4 col-md-1">
-                                <label class="small fw-bold mb-1">Copies</label>
-                                <select class="form-select form-select-sm" id="modalCopyAllCopies">
-                                    <option value="">—</option>
-                                    <option value="0">0 (skip)</option>
-                                    <option value="1">1</option>
-                                    <option value="2">2</option>
-                                    <option value="3">3</option>
-                                    <option value="4">4</option>
-                                </select>
-                            </div>
                             <div class="col-12 col-md-2">
+                            <?php else: ?>
+                            <div class="col-12 col-md-6">
+                            <?php endif; ?>
                                 <button type="button" class="btn btn-outline-danger btn-sm w-100 fw-bold" onclick="modalCopyToAllRows()">
                                     <i class="bi bi-arrow-down-square me-1"></i> Copy to All
                                 </button>
                             </div>
                         </div>
-                        <div class="form-text mb-0">Fills every row below with Customer, Ref No, Actual Length, and Print Copies — then adjust any row if needed.</div>
+                        <div class="form-text mb-0"><?= $canCopyAllCustRef ? 'Fills every row below with Customer, Ref No, and Actual Length — then adjust any row if needed.' : 'Fills every row below with Actual Length — then adjust any row if needed.' ?></div>
                     </div>
                 </div>
 
@@ -2046,12 +2098,12 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                             <table class="table table-bordered table-hover table-sm mb-0 align-middle" id="modalBatchGridTable">
                                 <thead class="table-dark sticky-top" style="z-index: 5;">
                                     <tr>
-                                        <th style="width:14%;">Roll No &amp; Product</th>
-                                        <th style="width:14%;">Width / Actual Length</th>
-                                        <th style="width:28%;">Customer</th>
-                                        <th style="width:26%;">Ref No.</th>
-                                        <th style="width:9%;">Copies</th>
-                                        <th style="width:9%;">Status</th>
+                                        <th style="width:16%;">Roll No &amp; Product</th>
+                                        <th style="width:16%;">Width / Actual Length</th>
+                                        <th style="width:26%;">Customer</th>
+                                        <th style="width:22%;">Ref No.</th>
+                                        <th style="width:10%;">Copies</th>
+                                        <th style="width:10%;">Status</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -2094,9 +2146,12 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                                                 $rawRefNo = trim($r['ref_no'] ?? '');
                                                 $isStock = ($saved === 'STOCK' || $rawRefNo === 'STOCK');
                                                 $displayRefNo = $isStock ? 'STOCK' : ($rawRefNo !== '' ? $rawRefNo : 'SO-');
+
+                                                $hasCustomer = ($saved !== '');
+                                                $hasRefNo = ($rawRefNo !== '' && $rawRefNo !== 'SO-');
                                             ?>
                                             <select class="form-select form-select-sm modal-row-customer" data-row="<?= $idx ?>"
-                                                    onchange="modalHandleRowCustomerChange(<?= $idx ?>)">
+                                                    onchange="modalHandleRowCustomerChange(<?= $idx ?>)" <?= $hasCustomer ? 'disabled' : '' ?>>
                                                 <option value=""         <?= $saved===''         ?'selected':'' ?>>-- Select Customer --</option>
                                                 <option value="NAE"      <?= $saved==='NAE'      ?'selected':'' ?>>NICHIAS AUTOPARTS EUROPE (NAE)</option>
                                                 <option value="NAX"      <?= $saved==='NAX'      ?'selected':'' ?>>NAX MFG, SA.DE C.V</option>
@@ -2122,17 +2177,17 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                                             </select>
                                             <input type="text" class="form-control form-control-sm modal-row-custom-customer mt-1" data-row="<?= $idx ?>"
                                                    placeholder="Enter customer name" style="display:<?= $isOther?'block':'none' ?>;"
-                                                   value="<?= $isOther ? htmlspecialchars($saved) : '' ?>">
+                                                   value="<?= $isOther ? htmlspecialchars($saved) : '' ?>" <?= $hasCustomer ? 'disabled' : '' ?>>
                                             <div class="text-muted modal-nci-note mt-1" data-row="<?= $idx ?>" style="display:none; font-size:11px;"></div>
                                         </td>
                                         <td>
                                             <div class="form-check mb-1">
                                                 <input class="form-check-input modal-row-stock-override" type="checkbox"
-                                                       id="modalRowStock<?= $idx ?>" data-row="<?= $idx ?>" <?= $isStock ? 'checked' : '' ?>>
+                                                       id="modalRowStock<?= $idx ?>" data-row="<?= $idx ?>" <?= $isStock ? 'checked' : '' ?> <?= ($hasCustomer || $hasRefNo) ? 'disabled' : '' ?>>
                                                 <label class="form-check-label small" for="modalRowStock<?= $idx ?>">Set to STOCK</label>
                                             </div>
                                             <input type="text" class="form-control form-control-sm modal-row-refno" data-row="<?= $idx ?>"
-                                                   value="<?= htmlspecialchars($displayRefNo) ?>" placeholder="SO-00-0000" <?= $isStock ? 'readonly' : '' ?>>
+                                                   value="<?= htmlspecialchars($displayRefNo) ?>" placeholder="SO-00-0000" <?= ($hasRefNo || $isStock) ? 'readonly disabled' : '' ?>>
                                         </td>
                                         <td>
                                             <select class="form-select form-select-sm modal-row-copies" data-row="<?= $idx ?>">
@@ -2387,18 +2442,19 @@ async function modalCopyToAllRows() {
     const otherEl   = document.getElementById('modalCopyAllCustomOther');
     const refEl     = document.getElementById('modalCopyAllRefNo');
     const lengthEl  = document.getElementById('modalCopyAllActualLength');
-    const copiesEl  = document.getElementById('modalCopyAllCopies');
 
     const customerVal = sel ? sel.value : '';
     const refVal      = refEl ? refEl.value.trim().replace(/\s+/g, '') : '';
     const lengthVal   = lengthEl ? lengthEl.value.trim() : '';
-    const copiesVal   = copiesEl ? copiesEl.value : '';
 
     if (!customerVal && !lengthVal) {
         alert('Set Customer or Actual Length to copy to all rows.');
         return;
     }
-    if (customerVal === 'OTHER' && !otherEl.value.trim()) { alert('Enter the customer name.'); return; }
+    if (customerVal === 'OTHER' && otherEl && !otherEl.value.trim()) {
+        alert('Enter the customer name.');
+        return;
+    }
 
     const rowCount = modalGetRowCount();
     for (let idx = 0; idx < rowCount; idx++) {
@@ -2406,31 +2462,26 @@ async function modalCopyToAllRows() {
         const rowOtherEl  = document.querySelector(`.modal-row-custom-customer[data-row="${idx}"]`);
         const rowRefEl    = document.querySelector(`.modal-row-refno[data-row="${idx}"]`);
         const rowLengthEl = document.querySelector(`.modal-row-length[data-row="${idx}"]`);
-        const rowCopiesEl = document.querySelector(`.modal-row-copies[data-row="${idx}"]`);
         const rowStockEl  = document.querySelector(`.modal-row-stock-override[data-row="${idx}"]`);
 
-        if (customerVal) {
+        if (customerVal && rowSel && !rowSel.disabled) {
             rowSel.value = customerVal;
-            if (customerVal === 'OTHER') rowOtherEl.value = otherEl.value.trim();
+            if (customerVal === 'OTHER' && rowOtherEl) rowOtherEl.value = otherEl.value.trim();
 
             if (customerVal === 'STOCK') {
                 if (rowStockEl) rowStockEl.checked = true;
-                rowRefEl.readOnly = true;
-                if (refVal !== '') rowRefEl.value = refVal;
+                if (rowRefEl) rowRefEl.readOnly = true;
+                if (refVal !== '' && rowRefEl) rowRefEl.value = refVal;
             } else {
                 if (rowStockEl) rowStockEl.checked = false;
-                rowRefEl.readOnly = false;
-                if (refVal !== '') rowRefEl.value = refVal;
+                if (rowRefEl) rowRefEl.readOnly = false;
+                if (refVal !== '' && rowRefEl) rowRefEl.value = refVal;
             }
             await modalHandleRowCustomerChange(idx);
         }
 
         if (lengthVal !== '' && rowLengthEl) {
             rowLengthEl.value = lengthVal;
-        }
-
-        if (copiesVal && rowCopiesEl) {
-            rowCopiesEl.value = copiesVal;
         }
     }
 }
@@ -2451,9 +2502,9 @@ function modalCollectSelections() {
         const sel      = document.querySelector(`.modal-row-customer[data-row="${idx}"]`);
         const otherEl  = document.querySelector(`.modal-row-custom-customer[data-row="${idx}"]`);
         const refEl    = document.querySelector(`.modal-row-refno[data-row="${idx}"]`);
-        const copiesEl = document.querySelector(`.modal-row-copies[data-row="${idx}"]`);
-        const lengthEl = document.querySelector(`.modal-row-length[data-row="${idx}"]`);
-        const stockEl  = document.querySelector(`.modal-row-stock-override[data-row="${idx}"]`);
+        const copiesEl  = document.querySelector(`.modal-row-copies[data-row="${idx}"]`);
+        const lengthEl  = document.querySelector(`.modal-row-length[data-row="${idx}"]`);
+        const stockEl   = document.querySelector(`.modal-row-stock-override[data-row="${idx}"]`);
 
         let customer = sel.value;
         if (customer === 'OTHER') customer = otherEl.value.trim();

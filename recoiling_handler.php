@@ -288,18 +288,22 @@ try {
         }
         $chk_key->close();
 
+        $prod_month_opt = trim($_POST['production_month'] ?? 'current');
+        $prod_date      = resolveProductionMonthDate($prod_month_opt);
+        $date_in_val    = ($prod_month_opt === 'current') ? date('Y-m-d H:i:s') : $prod_date . ' ' . date('H:i:s');
+        $stock_code     = generateStockCode($conn, $prod_date);
         $insert_stmt = $conn->prepare("
             INSERT INTO slitting_product
                 (recoiling_id, mother_id, parent_slit_id,
                  product, lot_no, coil_no, roll_no, roll_key,
                  width, length, actual_length,
                  status, is_completed, stock_counted,
-                 original_source, source, date_in)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, ?, 'recoiling', NOW())
+                 original_source, source, date_in, stock_code)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, ?, 'recoiling', ?, ?)
         ");
 
         $insert_stmt->bind_param(
-            "iiisssssddds",
+            "iiisssssdddsss",
             $id,
             $mother_id_val,
             $parent_slit_id,
@@ -311,7 +315,9 @@ try {
             $new_width,
             $length,
             $actual_length,
-            $original['original_source']
+            $original['original_source'],
+            $date_in_val,
+            $stock_code
         );
 
         if (!$insert_stmt->execute()) {

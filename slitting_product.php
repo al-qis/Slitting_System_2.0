@@ -18,7 +18,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     $actual_length = $_POST['actual_length'] ?? '';
 
     if ($_POST['action'] === 'update') {
-        $id = intval($_POST['id']);
+        $id         = intval($_POST['id']);
+        $stock_code = trim($_POST['stock_code'] ?? '');
 
         // Fetch the BEFORE values for the fields that affect the QR code's
         // embedded data — the QR is generated live from the DB on every
@@ -37,10 +38,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $before = $beforeStmt->get_result()->fetch_assoc();
         $beforeStmt->close();
 
+        // Prevent duplicate stock codes
+        if ($stock_code !== '') {
+            $chkDup = $conn->prepare("SELECT id FROM slitting_product WHERE stock_code = ? AND id != ? LIMIT 1");
+            $chkDup->bind_param("si", $stock_code, $id);
+            $chkDup->execute();
+            if ($chkDup->get_result()->num_rows > 0) {
+                $chkDup->close();
+                header("Location: slitting_product.php?error=duplicate_stock_code&msg=" . urlencode("Stock Code '{$stock_code}' is already assigned to another roll."));
+                exit;
+            }
+            $chkDup->close();
+        }
+
         $stmt = $conn->prepare("UPDATE slitting_product
-            SET coil_no=?, product=?, lot_no=?, roll_no=?, width=?, length=?, actual_length=?
+            SET coil_no=?, product=?, lot_no=?, roll_no=?, width=?, length=?, actual_length=?, stock_code=?
             WHERE id=?");
-        $stmt->bind_param("sssssssi", $coil_no, $product, $lot_no, $roll_no, $width, $length, $actual_length, $id);
+        $stmt->bind_param("ssssssssi", $coil_no, $product, $lot_no, $roll_no, $width, $length, $actual_length, $stock_code, $id);
         $stmt->execute();
         $stmt->close();
 
@@ -115,14 +129,14 @@ if (count($tokens) === 1) {
     $stmt = $conn->prepare("
         SELECT * FROM slitting_product
         WHERE ($base_where)
-          AND (coil_no LIKE ? OR product LIKE ? OR lot_no LIKE ? OR roll_no LIKE ?)
+          AND (coil_no LIKE ? OR product LIKE ? OR lot_no LIKE ? OR roll_no LIKE ? OR stock_code LIKE ?)
           $print_where
         ORDER BY id DESC
     ");
     if (!$stmt) { die("Query preparation failed: " . htmlspecialchars($conn->error)); }
 
     $like = '%' . $tokens[0] . '%';
-    $stmt->bind_param("ssss", $like, $like, $like, $like);
+    $stmt->bind_param("sssss", $like, $like, $like, $like, $like);
     $stmt->execute();
     $slitting = $stmt->get_result();
     $stmt->close();
@@ -272,6 +286,7 @@ include 'header.php';
                     <th>Product</th>
                     <th>Coil No</th>
                     <th>Roll No</th>
+                    <th>Stock Code</th>
                     <th>Width (mm)</th>
                     <th>Length (m)</th>
                     <th>Print Status</th>
@@ -296,6 +311,15 @@ include 'header.php';
                     <td><span class="badge bg-secondary"><?= htmlspecialchars($row['product'] ?? '') ?></span></td>
                     <td><span class="fw-bold"><?= $lotCoil ?></span></td>
                     <td><span class="badge bg-light text-dark border"><?= htmlspecialchars($formattedRoll) ?></span></td>
+                    <td>
+                        <?php if (!empty($row['stock_code'])): ?>
+                            <span class="badge bg-light text-dark border font-monospace" style="font-size:11px; font-weight:600; letter-spacing:0.5px;">
+                                <?= htmlspecialchars($row['stock_code']) ?>
+                            </span>
+                        <?php else: ?>
+                            <span class="text-muted">&mdash;</span>
+                        <?php endif; ?>
+                    </td>
                     <td><?= htmlspecialchars($row['width'] ?? '') ?></td>
                     <td>
                         <span class="<?= $isActual ? 'text-primary fw-bold' : '' ?>">
@@ -332,7 +356,7 @@ include 'header.php';
                 </tr>
             <?php endwhile; else: ?>
                 <tr>
-                    <td colspan="9" class="py-5 text-muted">
+                    <td colspan="10" class="py-5 text-muted">
                         No products found<?= $search !== '' ? ' matching "' . htmlspecialchars($search) . '"' : '' ?>.
                     </td>
                 </tr>
@@ -393,6 +417,29 @@ include 'header.php';
                                value="<?= htmlspecialchars($editData['actual_length'] ?? '') ?>"
                                placeholder="Leave blank if not yet measured">
                         <div class="form-text">Editing this (or Lot/Coil/Roll/Width/Length) flags the roll as needing a reprint.</div>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label fw-bold">Stock Code</label>
+                        <?php
+                            $rawStockCode = trim($editData['stock_code'] ?? '');
+                            $codeParts = explode('-', $rawStockCode);
+                            $prefixVal = $codeParts[0] ?? '';
+                            $seqVal    = count($codeParts) > 1 ? implode('-', array_slice($codeParts, 1)) : '';
+                        ?>
+                        <div class="input-group shadow-sm">
+                            <input type="text" id="edit_stock_code_prefix" class="form-control font-monospace text-center fw-bold bg-light"
+                                   style="max-width: 95px;" maxlength="4" placeholder="YYMM"
+                                   value="<?= htmlspecialchars($prefixVal) ?>"
+                                   oninput="handleStockCodeSplitInput(this)">
+                            <span class="input-group-text fw-bold text-muted px-2">-</span>
+                            <input type="text" id="edit_stock_code_seq" class="form-control font-monospace"
+                                   placeholder="0001"
+                                   value="<?= htmlspecialchars($seqVal) ?>"
+                                   oninput="updateFullStockCodeHidden()">
+                            <input type="hidden" name="stock_code" id="edit_stock_code_full"
+                                   value="<?= htmlspecialchars($rawStockCode) ?>">
+                        </div>
+                        <div class="form-text text-muted small mt-1"><i class="bi bi-lightning-charge text-warning me-1"></i><strong>1.</strong> Enter YYMM prefix (e.g. 2609) &nbsp;<strong>2.</strong> Count sequence auto-fills.</div>
                     </div>
                 </div>
             </div>
