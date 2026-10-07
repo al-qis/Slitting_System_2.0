@@ -404,8 +404,17 @@ if (!function_exists('getProductionMonthSqlCondition')) {
      * Expects parameters: [$yymmPrefix, $month, $year] (types: 'sii')
      */
     function getProductionMonthSqlCondition(string $tableAlias = 'sp'): string {
+        global $conn;
+        static $hasStockCode = null;
+        if ($hasStockCode === null && isset($conn) && $conn instanceof mysqli) {
+            $check = $conn->query("SHOW COLUMNS FROM slitting_product LIKE 'stock_code'");
+            $hasStockCode = ($check && $check->num_rows > 0);
+        }
         $prefix = $tableAlias !== '' ? $tableAlias . '.' : '';
-        return "(CASE WHEN {$prefix}stock_code REGEXP '^[0-9]{4}-' THEN {$prefix}stock_code LIKE CONCAT(?, '-%') ELSE (MONTH({$prefix}date_in) = ? AND YEAR({$prefix}date_in) = ?) END)";
+        if ($hasStockCode) {
+            return "(CASE WHEN {$prefix}stock_code REGEXP '^[0-9]{4}-' THEN {$prefix}stock_code LIKE CONCAT(?, '-%') ELSE (MONTH({$prefix}date_in) = ? AND YEAR({$prefix}date_in) = ?) END)";
+        }
+        return "(MONTH({$prefix}date_in) = ? AND YEAR({$prefix}date_in) = ?)";
     }
 }
 
@@ -418,8 +427,17 @@ if (!function_exists('getStockMonthEndSqlCondition')) {
      * Expects parameters: [$yymmPrefix, $eom] (types: 'ss')
      */
     function getStockMonthEndSqlCondition(string $tableAlias = 'sp'): string {
+        global $conn;
+        static $hasStockCode = null;
+        if ($hasStockCode === null && isset($conn) && $conn instanceof mysqli) {
+            $check = $conn->query("SHOW COLUMNS FROM slitting_product LIKE 'stock_code'");
+            $hasStockCode = ($check && $check->num_rows > 0);
+        }
         $prefix = $tableAlias !== '' ? $tableAlias . '.' : '';
-        return "(CASE WHEN {$prefix}stock_code REGEXP '^[0-9]{4}-' THEN SUBSTRING({$prefix}stock_code, 1, 4) <= ? ELSE {$prefix}date_in <= ? END)";
+        if ($hasStockCode) {
+            return "(CASE WHEN {$prefix}stock_code REGEXP '^[0-9]{4}-' THEN SUBSTRING({$prefix}stock_code, 1, 4) <= ? ELSE {$prefix}date_in <= ? END)";
+        }
+        return "({$prefix}date_in <= ?)";
     }
 }
 
