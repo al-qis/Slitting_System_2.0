@@ -25,14 +25,14 @@ if (!$colCheck || $colCheck->num_rows === 0) {
 
 // Find all records where stock_code is NULL or empty
 $query = "
-    SELECT id, date_in, created_at
+    SELECT id, date_in
     FROM slitting_product
     WHERE stock_code IS NULL OR TRIM(stock_code) = ''
-    ORDER BY COALESCE(date_in, created_at) ASC, id ASC
+    ORDER BY date_in ASC, id ASC
 ";
 
 $res = $conn->query($query);
-$totalToUpdate = $res->num_rows;
+$totalToUpdate = $res ? $res->num_rows : 0;
 
 if ($totalToUpdate === 0) {
     echo "<p style='color:green; font-weight:bold;'>Semua rekod slitting_product sudah mempunyai stock_code!</p>";
@@ -46,7 +46,7 @@ $updateStmt = $conn->prepare("UPDATE slitting_product SET stock_code = ? WHERE i
 
 while ($row = $res->fetch_assoc()) {
     $id = (int)$row['id'];
-    $dateStr = !empty($row['date_in']) ? $row['date_in'] : $row['created_at'];
+    $dateStr = !empty($row['date_in']) ? $row['date_in'] : date('Y-m-d H:i:s');
 
     // Generate unique stock code based on production date
     $newStockCode = generateStockCode($conn, $dateStr);
