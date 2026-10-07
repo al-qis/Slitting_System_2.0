@@ -183,18 +183,18 @@ include 'header.php';
                 <p class="text-muted small m-0 mt-1">Real-time active production status & mother coil queue display</p>
             </div>
 
-            <!-- Slitting Running Coil Counter (Jumlah Coil Sedang Dipotong) -->
+            <!-- Slitting Running Roll Counter (Jumlah Roll Sedang Dipotong untuk Lot Number Tersebut) -->
             <div class="card border-0 shadow-sm px-3 py-2 rounded-3 bg-white d-flex flex-row align-items-center gap-3 border-start border-4 border-primary">
                 <div class="p-2 rounded-2 bg-primary bg-opacity-20 text-primary">
                     <i class="bi bi-scissors fs-4 text-primary"></i>
                 </div>
                 <div>
                     <div class="text-uppercase text-muted fw-bold" style="font-size: 0.72rem; letter-spacing: 0.5px;">
-                        Coil Sedang Dipotong
+                        Roll Sedang Dipotong
                     </div>
                     <div class="d-flex align-items-baseline gap-1">
                         <span class="fs-4 fw-bold text-dark" id="slittingRunningCoilCount">0</span>
-                        <span class="text-muted small fw-semibold">Coil (<span id="slittingRunningCoilLen">0 m</span>)</span>
+                        <span class="text-muted small fw-semibold">Roll (<span id="slittingRunningCoilLen">0 m</span>)</span>
                     </div>
                 </div>
             </div>
@@ -279,7 +279,6 @@ include 'header.php';
                     <div>
                         <div class="d-flex flex-wrap align-items-center gap-2">
                             <h5 class="fw-bold m-0 text-dark">Real Production Performance (Actual)</h5>
-                            <span class="badge bg-primary bg-opacity-10 text-primary border border-primary fs-7 d-none" id="runningCoilInfoBadge"></span>
                             <span class="badge bg-secondary bg-opacity-10 text-secondary border fs-7 d-none" id="completedCoilInfoBadge"></span>
                             <span class="badge bg-light text-dark border fs-7 d-none" id="productionVarianceBadge"></span>
                         </div>
@@ -505,23 +504,12 @@ function renderLengthTracking(tracking) {
     
     if (badge) badge.innerText = pct.toFixed(1) + '%';
 
-    // Badges for Completed vs Sedang Dipotong
+    // Badges for Completed
     const elCompletedBadge = document.getElementById('completedCoilInfoBadge');
-    const elRunningBadge   = document.getElementById('runningCoilInfoBadge');
 
     if (elCompletedBadge) {
         elCompletedBadge.classList.remove('d-none');
         elCompletedBadge.innerText = 'Siap: ' + Math.round(tracking.length_completed_24h || 0).toLocaleString() + ' m';
-    }
-    if (elRunningBadge) {
-        const rCount = parseInt(tracking.running_coil_count, 10) || 0;
-        const rLen   = parseFloat(tracking.running_coil_length) || 0;
-        if (rCount > 0 && rLen > 0) {
-            elRunningBadge.classList.remove('d-none');
-            elRunningBadge.innerHTML = `<i class="bi bi-scissors me-1"></i>Sedang dipotong: ${rCount} Coil (${Math.round(rLen).toLocaleString()} m)`;
-        } else {
-            elRunningBadge.classList.add('d-none');
-        }
     }
 
     // Variance badge (Ahead / Behind target pacing)
