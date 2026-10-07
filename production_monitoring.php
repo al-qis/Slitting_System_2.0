@@ -627,6 +627,44 @@ function renderSectionA(running) {
         `;
         return;
     }
+    let rollBadgesHtml = '';
+    if (running.roll_list && running.roll_list.length > 0) {
+        const rolls = running.roll_list;
+        const rollsPerCol = 3;
+        const totalCols = Math.ceil(rolls.length / rollsPerCol);
+        
+        let trHtml = '';
+        for (let r = 0; r < rollsPerCol; r++) {
+            let rowCells = '';
+            let hasAnyDataInRow = false;
+            for (let c = 0; c < totalCols; c++) {
+                const idx = c * rollsPerCol + r;
+                if (idx < rolls.length) {
+                    hasAnyDataInRow = true;
+                    const roll = rolls[idx];
+                    rowCells += `
+                        <td class="ps-2 pe-1 py-1 fw-bold text-warning text-nowrap align-middle border-0">${roll.roll_no || ('R' + (idx + 1))}:</td>
+                        <td class="pe-4 py-1 fw-bold text-info text-nowrap align-middle border-0">${roll.width_fmt}</td>
+                    `;
+                } else {
+                    rowCells += `<td class="border-0"></td><td class="border-0"></td>`;
+                }
+            }
+            if (hasAnyDataInRow) {
+                trHtml += `<tr>${rowCells}</tr>`;
+            }
+        }
+
+        rollBadgesHtml = `
+            <div class="table-responsive d-flex align-items-center" style="max-height: 100px; overflow-y: auto;">
+                <table class="table table-sm table-dark table-borderless m-0 align-middle bg-transparent" style="font-size: 1.15rem;">
+                    <tbody>
+                        ${trHtml}
+                    </tbody>
+                </table>
+            </div>
+        `;
+    }
 
     if (running.is_packing) {
         // PACKING STATE (Temporary 5-minute completion state)
@@ -660,30 +698,34 @@ function renderSectionA(running) {
                 </div>
 
                 <div class="row g-3 mb-4">
-                    <div class="col-4 col-md-4">
+                    <div class="col-6 col-md-3">
                         <div class="text-uppercase small text-light fw-semibold">Product Type</div>
                         <div class="display-product-type">${running.product_type}</div>
                     </div>
-                    <div class="col-4 col-md-4">
+                    <div class="col-6 col-md-3">
+                        <div class="text-uppercase small text-light fw-semibold">Mother Coil Width</div>
+                        <div class="display-product-type text-info fw-bold">${running.mother_width_formatted || '-'}</div>
+                    </div>
+                    <div class="col-6 col-md-3">
                         <div class="text-uppercase small text-light fw-semibold">Mother Coil Length</div>
                         <div class="display-product-type text-warning fw-bold">${running.mother_length_formatted || '-'}</div>
                     </div>
-                    <div class="col-4 col-md-4">
+                    <div class="col-6 col-md-3">
                         <div class="text-uppercase small text-light fw-semibold">Customer Name</div>
                         <div class="display-customer">${running.customer_name}</div>
                     </div>
                 </div>
             </div>
 
-            <div class="d-flex justify-content-between align-items-end mt-3 pt-3 border-top border-secondary">
-                <div class="elapsed-timer-box">
-                    <div class="text-uppercase small text-warning fw-bold mb-1">Packing Countdown</div>
-                    <div class="packing-countdown-digits" id="packingCountdownDisplay">${formatPackingTime(currentPackingRemaining)}</div>
-                </div>
-                <div>
-                    <span class="badge bg-success fs-6 py-2 px-3">
-                        <i class="bi bi-check-all me-1"></i> Saved to Stock
-                    </span>
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mt-3 pt-3 border-top border-secondary">
+                <div class="d-flex flex-wrap align-items-center gap-3">
+                    <div class="elapsed-timer-box">
+                        <div class="text-uppercase small text-warning fw-bold mb-1">Packing Countdown</div>
+                        <div class="packing-countdown-digits" id="packingCountdownDisplay">${formatPackingTime(currentPackingRemaining)}</div>
+                    </div>
+                    <div class="d-flex flex-wrap align-items-center gap-2">
+                        ${rollBadgesHtml}
+                    </div>
                 </div>
             </div>
         `;
@@ -736,12 +778,12 @@ function renderSectionA(running) {
 
                 <div class="row g-3 mb-4">
                     <div class="col-6 col-md-3">
-                        <div class="text-uppercase small text-light fw-semibold">Process</div>
-                        <div class="display-product-type"><span class="badge ${processBadgeClass} fs-6"><i class="bi ${processIcon} me-1"></i>${processType}</span></div>
-                    </div>
-                    <div class="col-6 col-md-3">
                         <div class="text-uppercase small text-light fw-semibold">Product Type</div>
                         <div class="display-product-type">${running.product_type}</div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="text-uppercase small text-light fw-semibold">Mother Coil Width</div>
+                        <div class="display-product-type text-info fw-bold">${running.mother_width_formatted || '-'}</div>
                     </div>
                     <div class="col-6 col-md-3">
                         <div class="text-uppercase small text-light fw-semibold">Mother Coil Length</div>
@@ -754,15 +796,15 @@ function renderSectionA(running) {
                 </div>
             </div>
 
-            <div class="d-flex justify-content-between align-items-end mt-3 pt-3 border-top border-secondary">
-                <div class="elapsed-timer-box">
-                    <div class="text-uppercase small text-info fw-bold mb-1">Elapsed Time</div>
-                    <div class="timer-digits" id="liveElapsedDisplay">${running.elapsed_formatted}</div>
-                </div>
-                <div>
-                    <span class="badge bg-info text-dark fs-6 py-2 px-3 fw-bold">
-                        <i class="bi bi-activity me-1"></i> Active Production
-                    </span>
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mt-3 pt-3 border-top border-secondary">
+                <div class="d-flex flex-wrap align-items-center gap-3">
+                    <div class="elapsed-timer-box">
+                        <div class="text-uppercase small text-info fw-bold mb-1">Elapsed Time</div>
+                        <div class="timer-digits" id="liveElapsedDisplay">${running.elapsed_formatted}</div>
+                    </div>
+                    <div class="d-flex flex-wrap align-items-center gap-2">
+                        ${rollBadgesHtml}
+                    </div>
                 </div>
             </div>
         `;

@@ -140,6 +140,120 @@ function resolveCustomerName($conn, $mother_id, $lot_no, $coil_no, $width = null
     return '-';
 }
 
+// Helper: Get list of active rolls with width and roll_no/customer info for running/packing mother coil
+function getActiveRollList($conn, $mother_id, $lot_no, $coil_no) {
+    $rolls = [];
+
+    // 1. Check slitting_product first
+    if ($mother_id > 0) {
+        $stmt = $conn->prepare("
+            SELECT roll_no, width, customer_name, is_completed
+            FROM slitting_product
+            WHERE mother_id = ? AND (is_voided = 0 OR is_voided IS NULL)
+            ORDER BY id ASC
+        ");
+        if ($stmt) {
+            $stmt->bind_param("i", $mother_id);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $counter = 1;
+            while ($row = $res->fetch_assoc()) {
+                $rNo = trim((string)$row['roll_no']);
+                $w   = (float)$row['width'];
+                $c   = trim((string)$row['customer_name']);
+                
+                $label = 'R' . $counter;
+                if ($rNo !== '' && $rNo !== '-') {
+                    preg_match('/\d+/', $rNo, $m);
+                    if (!empty($m[0])) {
+                        $label = 'R' . (int)$m[0];
+                    } else {
+                        $label = $rNo;
+                    }
+                }
+                $counter++;
+
+                $rolls[] = [
+                    'roll_no'       => $label,
+                    'width'         => $w,
+                    'width_fmt'     => ($w > 0) ? (number_format($w, 0) . ' mm') : '-',
+                    'customer_name' => ($c !== '' && $c !== '-') ? $c : ''
+                ];
+            }
+            $stmt->close();
+        }
+    } elseif (!empty($lot_no) && !empty($coil_no)) {
+        $stmt = $conn->prepare("
+            SELECT roll_no, width, customer_name, is_completed
+            FROM slitting_product
+            WHERE lot_no = ? AND coil_no = ? AND (is_voided = 0 OR is_voided IS NULL)
+            ORDER BY id ASC
+        ");
+        if ($stmt) {
+            $stmt->bind_param("ss", $lot_no, $coil_no);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $counter = 1;
+            while ($row = $res->fetch_assoc()) {
+                $rNo = trim((string)$row['roll_no']);
+                $w   = (float)$row['width'];
+                $c   = trim((string)$row['customer_name']);
+
+                $label = 'R' . $counter;
+                if ($rNo !== '' && $rNo !== '-') {
+                    preg_match('/\d+/', $rNo, $m);
+                    if (!empty($m[0])) {
+                        $label = 'R' . (int)$m[0];
+                    } else {
+                        $label = $rNo;
+                    }
+                }
+                $counter++;
+
+                $rolls[] = [
+                    'roll_no'       => $label,
+                    'width'         => $w,
+                    'width_fmt'     => ($w > 0) ? (number_format($w, 0) . ' mm') : '-',
+                    'customer_name' => ($c !== '' && $c !== '-') ? $c : ''
+                ];
+            }
+            $stmt->close();
+        }
+    }
+
+    // 2. If empty, fallback to slitting_plans
+    if (empty($rolls) && $mother_id > 0) {
+        $stmt = $conn->prepare("
+            SELECT width, customer_name, quantity
+            FROM slitting_plans
+            WHERE mother_coil_id = ?
+            ORDER BY sort_order ASC, id ASC
+        ");
+        if ($stmt) {
+            $stmt->bind_param("i", $mother_id);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $counter = 1;
+            while ($row = $res->fetch_assoc()) {
+                $w = (float)$row['width'];
+                $c = trim((string)$row['customer_name']);
+                $qty = max(1, (int)($row['quantity'] ?? 1));
+                for ($q = 0; $q < $qty; $q++) {
+                    $rolls[] = [
+                        'roll_no'       => 'R' . $counter++,
+                        'width'         => $w,
+                        'width_fmt'     => ($w > 0) ? (number_format($w, 0) . ' mm') : '-',
+                        'customer_name' => ($c !== '' && $c !== '-') ? $c : ''
+                    ];
+                }
+            }
+            $stmt->close();
+        }
+    }
+
+    return $rolls;
+}
+
 // Helper: Resolve Process Details (Slitting vs Recoiling vs Reslit)
 function resolveProcessDetails($is_recoiled, $is_reslitted, $original_source) {
     $src = strtolower((string)$original_source);
@@ -402,7 +516,8 @@ if ($action === 'get_data') {
             MAX(sp.is_recoiled) AS is_recoiled,
             MAX(sp.is_reslitted) AS is_reslitted,
             MAX(sp.original_source) AS original_source,
-            MAX(mc.length) AS length
+            MAX(mc.length) AS length,
+            MAX(mc.width) AS mother_width
         FROM slitting_product sp
         LEFT JOIN mother_coil mc ON sp.mother_id = mc.id
         WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
@@ -528,7 +643,8 @@ if ($action === 'get_data') {
             MIN(sp.date_in) AS start_time,
             MAX(sp.updated_at) AS last_updated,
             COUNT(sp.id) AS total_rolls,
-            MAX(mc.length) AS length
+            MAX(mc.length) AS length,
+            MAX(mc.width) AS mother_width
         FROM slitting_product sp
         LEFT JOIN mother_coil mc ON sp.mother_id = mc.id
         WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
@@ -599,6 +715,20 @@ if ($action === 'get_data') {
             }
         }
 
+        $pack_width = (float)($last_completed_item['mother_width'] ?? 0);
+        if ($pack_width <= 0 && $mother_id > 0) {
+            $stmt_pw = $conn->prepare("SELECT width FROM mother_coil WHERE id = ? LIMIT 1");
+            if ($stmt_pw) {
+                $stmt_pw->bind_param("i", $mother_id);
+                $stmt_pw->execute();
+                $r_pw = $stmt_pw->get_result()->fetch_assoc();
+                $stmt_pw->close();
+                if ($r_pw) {
+                    $pack_width = (float)$r_pw['width'];
+                }
+            }
+        }
+
         $running_data = [
             'has_running'       => true,
             'mother_id'         => $mother_id,
@@ -608,6 +738,8 @@ if ($action === 'get_data') {
             'product_type'      => $last_completed_item['product'] ?: 'N/A',
             'mother_length'     => $pack_len,
             'mother_length_formatted' => ($pack_len > 0) ? number_format($pack_len, 0) . ' m' : '-',
+            'mother_width'      => $pack_width,
+            'mother_width_formatted'  => ($pack_width > 0) ? number_format($pack_width, 0) . ' mm' : '-',
             'customer_name'     => $cust_name,
             'process_type'      => 'Slitting',
             'process_badge_class'=> 'bg-info text-dark',
@@ -623,7 +755,8 @@ if ($action === 'get_data') {
             'is_packing'        => true,
             'packing_remaining_seconds' => $remaining_packing_sec,
             'total_rolls'       => (int)$last_completed_item['total_rolls'],
-            'completed_rolls'   => (int)$last_completed_item['total_rolls']
+            'completed_rolls'   => (int)$last_completed_item['total_rolls'],
+            'roll_list'         => getActiveRollList($conn, $mother_id, $lot_no, $coil_no)
         ];
 
         // All pending jobs wait in the Waiting List during packing
@@ -730,6 +863,20 @@ if ($action === 'get_data') {
             }
         }
 
+        $active_width = (float)($active_item['mother_width'] ?? 0);
+        if ($active_width <= 0 && $mother_id > 0) {
+            $stmt_mw = $conn->prepare("SELECT width FROM mother_coil WHERE id = ? LIMIT 1");
+            if ($stmt_mw) {
+                $stmt_mw->bind_param("i", $mother_id);
+                $stmt_mw->execute();
+                $r_mw = $stmt_mw->get_result()->fetch_assoc();
+                $stmt_mw->close();
+                if ($r_mw) {
+                    $active_width = (float)$r_mw['width'];
+                }
+            }
+        }
+
         $running_data = [
             'has_running'          => true,
             'mother_id'            => $mother_id,
@@ -739,6 +886,8 @@ if ($action === 'get_data') {
             'product_type'         => $active_item['product'] ?: 'N/A',
             'mother_length'        => $active_len,
             'mother_length_formatted' => ($active_len > 0) ? number_format($active_len, 0) . ' m' : '-',
+            'mother_width'         => $active_width,
+            'mother_width_formatted'     => ($active_width > 0) ? number_format($active_width, 0) . ' mm' : '-',
             'customer_name'        => $cust_name,
             'process_type'         => $proc['process_type'],
             'process_badge_class'  => $proc['process_badge_class'],
@@ -754,7 +903,8 @@ if ($action === 'get_data') {
             'is_packing'           => false,
             'packing_remaining_seconds' => 0,
             'total_rolls'          => (int)$active_item['total_rolls'],
-            'completed_rolls'      => (int)$active_item['completed_rolls']
+            'completed_rolls'      => (int)$active_item['completed_rolls'],
+            'roll_list'            => getActiveRollList($conn, $mother_id, $lot_no, $coil_no)
         ];
 
         // Remaining IN (pending) coils wait in the Queue
