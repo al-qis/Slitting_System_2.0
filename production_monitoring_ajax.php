@@ -158,23 +158,11 @@ function getActiveRollList($conn, $mother_id, $lot_no, $coil_no) {
             $res = $stmt->get_result();
             $counter = 1;
             while ($row = $res->fetch_assoc()) {
-                $rNo = trim((string)$row['roll_no']);
                 $w   = (float)$row['width'];
                 $c   = trim((string)$row['customer_name']);
-                
-                $label = 'R' . $counter;
-                if ($rNo !== '' && $rNo !== '-') {
-                    preg_match('/\d+/', $rNo, $m);
-                    if (!empty($m[0])) {
-                        $label = 'R' . (int)$m[0];
-                    } else {
-                        $label = $rNo;
-                    }
-                }
-                $counter++;
 
                 $rolls[] = [
-                    'roll_no'       => $label,
+                    'roll_no'       => 'R' . $counter++,
                     'width'         => $w,
                     'width_fmt'     => ($w > 0) ? (number_format($w, 0) . ' mm') : '-',
                     'customer_name' => ($c !== '' && $c !== '-') ? $c : ''
@@ -195,23 +183,11 @@ function getActiveRollList($conn, $mother_id, $lot_no, $coil_no) {
             $res = $stmt->get_result();
             $counter = 1;
             while ($row = $res->fetch_assoc()) {
-                $rNo = trim((string)$row['roll_no']);
                 $w   = (float)$row['width'];
                 $c   = trim((string)$row['customer_name']);
 
-                $label = 'R' . $counter;
-                if ($rNo !== '' && $rNo !== '-') {
-                    preg_match('/\d+/', $rNo, $m);
-                    if (!empty($m[0])) {
-                        $label = 'R' . (int)$m[0];
-                    } else {
-                        $label = $rNo;
-                    }
-                }
-                $counter++;
-
                 $rolls[] = [
-                    'roll_no'       => $label,
+                    'roll_no'       => 'R' . $counter++,
                     'width'         => $w,
                     'width_fmt'     => ($w > 0) ? (number_format($w, 0) . ' mm') : '-',
                     'customer_name' => ($c !== '' && $c !== '-') ? $c : ''
