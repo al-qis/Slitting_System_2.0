@@ -1066,8 +1066,8 @@ $approved_pallets_count = $conn->query("
 // ── Report card counts (Produced This Month / Stock as of Month-End) ──
 $producedMonthCount = 0;
 $yymmPrefix = sprintf('%02d%02d', $year % 100, $month);
-$prodCond = getProductionMonthSqlCondition('');
-$stmtPM = $conn->prepare("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND {$prodCond}");
+$prodCond = getProductionMonthSqlCondition('sp');
+$stmtPM = $conn->prepare("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product sp WHERE sp.is_voided=0 AND {$prodCond}");
 $stmtPM->bind_param("sii", $yymmPrefix, $month, $year);
 $stmtPM->execute();
 $producedMonthCount = (int)$stmtPM->get_result()->fetch_assoc()['total'];

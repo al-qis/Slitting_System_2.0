@@ -937,7 +937,7 @@ if ($action === 'get_data') {
     $runningCoilLen   = 0.0;
     $runningCoilId    = '';
     if (!empty($running_data) && !empty($running_data['has_running'])) {
-        $runningCoilCount = 1;
+        $runningCoilCount = (int)($running_data['total_rolls'] ?? 0);
         $runningCoilLen   = (float)($running_data['mother_length'] ?? 0.0);
         $runningCoilId    = (string)($running_data['coil_id_display'] ?? '');
     }
