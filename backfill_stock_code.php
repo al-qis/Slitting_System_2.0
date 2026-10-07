@@ -23,33 +23,46 @@ if (!$colCheck || $colCheck->num_rows === 0) {
     die("<p style='color:red;'>Ralat: Kolum 'stock_code' tiada dalam jadual slitting_product. Sila jalankan ALTER TABLE terlebih dahulu.</p>");
 }
 
-// Find all records where stock_code is NULL or empty
-$query = "
-    SELECT id, date_in
-    FROM slitting_product
-    WHERE stock_code IS NULL OR TRIM(stock_code) = ''
-    ORDER BY date_in ASC, id ASC
-";
+// Mode check: ?force=1 to re-sequence ALL records in strict FIFO order
+$forceResequence = (isset($_GET['force']) && $_GET['force'] === '1');
+
+if ($forceResequence) {
+    echo "<p style='color:orange; font-weight:bold;'>MOD RESET ACTIVE: Menyusun semula SEMUA stock_code mengikut urutan asal (FIFO: date_in ASC, id ASC)...</p>";
+    $query = "SELECT id, date_in FROM slitting_product WHERE is_voided = 0 ORDER BY COALESCE(date_in, '1970-01-01') ASC, id ASC";
+} else {
+    $query = "SELECT id, date_in FROM slitting_product WHERE (stock_code IS NULL OR TRIM(stock_code) = '') AND is_voided = 0 ORDER BY COALESCE(date_in, '1970-01-01') ASC, id ASC";
+}
 
 $res = $conn->query($query);
 $totalToUpdate = $res ? $res->num_rows : 0;
 
 if ($totalToUpdate === 0) {
-    echo "<p style='color:green; font-weight:bold;'>Semua rekod slitting_product sudah mempunyai stock_code!</p>";
+    echo "<p style='color:green; font-weight:bold;'>Tiada rekod untuk dikemaskini!</p>";
+    echo "<p><a href='?force=1' class='btn btn-warning'>Klik di sini jika mahu Susun Semula (Re-sequence) SEMUA Stock Code mengikut urutan FIFO</a></p>";
     exit;
 }
 
-echo "<p>Menjumpai <strong>{$totalToUpdate}</strong> rekod tanpa stock_code. Memulakan proses penjanaan...</p>";
+echo "<p>Memproses <strong>{$totalToUpdate}</strong> rekod mengikut urutan pengeluaran (FIFO)...</p>";
 
+// Reset tracking monthly sequences
+$monthlyCounters = [];
 $updatedCount = 0;
 $updateStmt = $conn->prepare("UPDATE slitting_product SET stock_code = ? WHERE id = ?");
 
 while ($row = $res->fetch_assoc()) {
     $id = (int)$row['id'];
     $dateStr = !empty($row['date_in']) ? $row['date_in'] : date('Y-m-d H:i:s');
+    $ts = strtotime($dateStr) ?: time();
+    $prefix = date('ym', $ts); // YYMM e.g. 2610
 
-    // Generate unique stock code based on production date
-    $newStockCode = generateStockCode($conn, $dateStr);
+    if (!isset($monthlyCounters[$prefix])) {
+        $monthlyCounters[$prefix] = 1;
+    } else {
+        $monthlyCounters[$prefix]++;
+    }
+
+    $seq = $monthlyCounters[$prefix];
+    $newStockCode = sprintf("%s-%04d", $prefix, $seq);
 
     $updateStmt->bind_param("si", $newStockCode, $id);
     if ($updateStmt->execute()) {
@@ -61,5 +74,6 @@ $updateStmt->close();
 
 echo "<hr>";
 echo "<h3 style='color:green;'>Selesai!</h3>";
-echo "<p>Sebanyak <strong>{$updatedCount} / {$totalToUpdate}</strong> rekod telah berjaya dikemaskini dengan stock_code baharu.</p>";
+echo "<p>Sebanyak <strong>{$updatedCount}</strong> rekod telah berjaya disusun mengikut urutan tarikh pengeluaran (FIFO).</p>";
+echo "<p><a href='finish_product.php'>Kembali ke Finished Product</a></p>";
 ?>
