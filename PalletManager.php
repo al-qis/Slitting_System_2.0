@@ -138,25 +138,30 @@ class PalletManager
     // 2. CREATE PALLET  (pallet_no only — constraints seeded
     //    from first scanned roll via addRollToPallet)
     // =========================================================
-    public function createPallet(string $palletNo): array
+    // 2. CREATE PALLET  (pallet_no, customer_name, ref_no)
+    // =========================================================
+    public function createPallet(string $palletNo, string $customerName = '', string $refNo = ''): array
     {
         $v = $this->validatePalletNo($palletNo);
         if (!$v['ok']) return $v;
+
+        $customerName = trim($customerName);
+        $refNo        = trim($refNo);
 
         $stmt = $this->conn->prepare("
             INSERT INTO pallets
                 (pallet_no, customer_name, ref_no, product_type, width,
                  status, created_by)
-            VALUES (?, '', '', '', 0, 'building', ?)
+            VALUES (?, ?, ?, '', 0, 'building', ?)
         ");
-        $stmt->bind_param("ss", $palletNo, $this->actor);
+        $stmt->bind_param("ssss", $palletNo, $customerName, $refNo, $this->actor);
         $stmt->execute();
         $palletId = (int)$this->conn->insert_id;
         $stmt->close();
 
         return [
             'ok'        => true,
-            'msg'       => "Pallet {$palletNo} created. Scan the first roll to lock its constraints.",
+            'msg'       => "Pallet {$palletNo} created successfully.",
             'pallet_id' => $palletId,
             'pallet_no' => $palletNo,
         ];
@@ -708,8 +713,34 @@ class PalletManager
 
             // ── First roll: seed constraints ─────────────────
             if ($currentCount === 0) {
-                $cn = trim($product['customer_name'] ?? '');
-                $rn = trim($product['ref_no']        ?? '');
+                // If customer_name or ref_no was already specified at pallet creation,
+                // validate them against incoming roll; otherwise take from roll.
+                $hasPreCustomer = trim($pallet['customer_name'] ?? '') !== '';
+                $hasPreRefNo    = trim($pallet['ref_no'] ?? '') !== '';
+
+                if ($hasPreCustomer || $hasPreRefNo) {
+                    $mismatches = [];
+                    if ($hasPreCustomer && strtolower(trim($product['customer_name'] ?? '')) !== strtolower(trim($pallet['customer_name']))) {
+                        $mismatches[] = sprintf('Customer (pallet: "%s", roll: "%s")', $pallet['customer_name'], $product['customer_name'] ?? '—');
+                    }
+                    if ($hasPreRefNo) {
+                        $productRef = trim($product['ref_no'] ?? '');
+                        $palletRef  = trim($pallet['ref_no']);
+                        if (!self::isStockRefNo($productRef) && !self::isStockRefNo($palletRef) && $productRef !== $palletRef) {
+                            $mismatches[] = sprintf('Ref No (pallet: "%s", roll: "%s")', $pallet['ref_no'], $product['ref_no'] ?? '—');
+                        }
+                    }
+                    if (!empty($mismatches)) {
+                        throw new RuntimeException(
+                            "Product does not match pallet constraints. "
+                            . "Mismatched: " . implode(', ', $mismatches) . ". "
+                            . "Pallet is designated for Customer: \"{$pallet['customer_name']}\", Ref No: \"{$pallet['ref_no']}\"."
+                        );
+                    }
+                }
+
+                $cn = $hasPreCustomer ? trim($pallet['customer_name']) : trim($product['customer_name'] ?? '');
+                $rn = $hasPreRefNo    ? trim($pallet['ref_no'])        : trim($product['ref_no']        ?? '');
                 $pt = trim($product['product']       ?? '');
                 $wd = (float)($product['width']       ?? 0);
                 $upd = $this->conn->prepare("
@@ -798,7 +829,32 @@ class PalletManager
             ];
         } catch (Throwable $e) {
             $this->conn->rollback();
-            return ['ok' => false, 'msg' => $e->getMessage()];
+            $res = ['ok' => false, 'msg' => $e->getMessage()];
+            if (isset($mismatches) && !empty($mismatches)) {
+                $res['is_mismatch'] = true;
+                $res['mismatches']  = $mismatches;
+                if (isset($product)) {
+                    $res['roll'] = [
+                        'lot_no'        => $product['lot_no'] ?? '',
+                        'coil_no'       => $product['coil_no'] ?? '',
+                        'roll_no'       => $product['roll_no'] ?? '',
+                        'customer_name' => $product['customer_name'] ?? '',
+                        'ref_no'        => $product['ref_no'] ?? '',
+                        'product_type'  => $product['product'] ?? '',
+                        'width'         => $product['width'] ?? 0,
+                    ];
+                }
+                if (isset($pallet)) {
+                    $res['pallet'] = [
+                        'pallet_no'     => $pallet['pallet_no'] ?? '',
+                        'customer_name' => $pallet['customer_name'] ?? '',
+                        'ref_no'        => $pallet['ref_no'] ?? '',
+                        'product_type'  => $pallet['product_type'] ?? '',
+                        'width'         => $pallet['width'] ?? 0,
+                    ];
+                }
+            }
+            return $res;
         }
     }
 
@@ -883,19 +939,13 @@ class PalletManager
 
             $newCount = count($remaining);
 
-            // ── If pallet is now empty, clear constraint seed ──
-            // This lets the next roll re-seed the constraints,
-            // avoiding a situation where an empty pallet locks out
-            // all products that don't match the removed roll.
+            // ── If pallet is now empty, reset product_type and width ──
+            // Customer and Ref No are permanent (set at creation).
+            // Product Type and Width are re-seeded by the next roll scan.
             if ($newCount === 0) {
-                $clearStmt = $this->conn->prepare("
-                    UPDATE pallets
-                    SET customer_name = '',
-                        ref_no        = '',
-                        product_type  = '',
-                        width         = 0
-                    WHERE id = ?
-                ");
+                $clearStmt = $this->conn->prepare(
+                    "UPDATE pallets SET product_type = '', width = 0 WHERE id = ?"
+                );
                 $clearStmt->bind_param("i", $palletId);
                 $clearStmt->execute();
                 $clearStmt->close();
@@ -912,9 +962,11 @@ class PalletManager
 
             $this->conn->commit();
             return [
-                'ok'        => true,
-                'msg'       => "Roll #{$productId} removed. {$newCount} roll(s) remaining.",
-                'new_count' => $newCount,
+                'ok'           => true,
+                'msg'          => "Roll #{$productId} removed. {$newCount} roll(s) remaining.",
+                'new_count'    => $newCount,
+                'product_type' => $newCount === 0 ? '' : ($pallet['product_type'] ?? ''),
+                'width'        => $newCount === 0 ? 0  : ($pallet['width'] ?? 0),
             ];
         } catch (Throwable $e) {
             $this->conn->rollback();
