@@ -779,9 +779,11 @@ if (isset($_GET['export']) && $_GET['export'] === 'summary_pallet') {
 // ── POST: Create pallet ───────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'create_pallet') {
     header('Content-Type: application/json');
-    $palletNo = trim($_POST['pallet_no'] ?? '');
+    $palletNo     = trim($_POST['pallet_no'] ?? '');
+    $customerName = trim($_POST['customer_name'] ?? '');
+    $refNo        = trim($_POST['ref_no'] ?? '');
     if (!$palletNo) { echo json_encode(['ok' => false, 'msg' => 'Pallet No is required.']); exit; }
-    echo json_encode($pm->createPallet($palletNo));
+    echo json_encode($pm->createPallet($palletNo, $customerName, $refNo));
     exit;
 }
 
@@ -1543,9 +1545,9 @@ if (isset($_GET['success'])): ?>
                             </tr>
                             <tr>
                                 <td class="bg-light fw-bold text-muted">Product Type :</td>
-                                <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['product_type']) ?></td>
+                                <td class="fw-bold text-dark" id="constraintProductTypeText"><?= !empty($activeItems) ? htmlspecialchars($activePallet['product_type'] ?: '') : '' ?></td>
                                 <td class="bg-light fw-bold text-muted">Width (mm)</td>
-                                <td class="fw-bold text-dark"><?= formatWidthDisplay($activePallet['width']) ?> mm</td>
+                                <td class="fw-bold text-dark" id="constraintWidthText"><?= (!empty($activeItems) && (float)($activePallet['width'] ?? 0) > 0) ? formatWidthDisplay($activePallet['width']) . ' mm' : '' ?></td>
                             </tr>
                             <tr>
                                 <td class="bg-light fw-bold text-muted">Active Operator</td>
@@ -2877,6 +2879,59 @@ if (isset($_GET['success'])): ?>
   </div>
 </div>
 
+<!-- ── MISMATCH CONSTRAINT ALERT MODAL ───────────────────────── -->
+<div class="modal fade" id="mismatchAlertModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content shadow border-danger" style="border-width: 2px;">
+      <div class="modal-header bg-danger text-white py-2">
+        <h5 class="modal-title fs-6 fw-bold text-white d-flex align-items-center gap-2">
+          <i class="bi bi-x-octagon-fill fs-5"></i> Roll Does Not Match Pallet!
+        </h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body py-3">
+        <div class="alert alert-danger mb-3 py-2 px-3 fw-semibold d-flex align-items-center gap-2" style="background:#fef2f2; color:#991b1b; border-color:#fca5a5; font-size:13px;">
+          <i class="bi bi-exclamation-triangle-fill fs-4 flex-shrink-0"></i>
+          <div id="mismatchModalSummary">
+            The scanned coil details do not match this pallet's constraints.
+          </div>
+        </div>
+
+        <div class="card border mb-3">
+          <div class="card-header bg-light py-1 px-3 fw-bold text-secondary" style="font-size:12px;">
+            <i class="bi bi-arrow-left-right me-1"></i>Comparison &amp; Differences
+          </div>
+          <div class="card-body p-0">
+            <div class="table-responsive">
+              <table class="table table-sm table-bordered mb-0 align-middle text-center" style="font-size:12px;">
+                <thead class="table-light">
+                  <tr>
+                    <th style="width:25%;">Field</th>
+                    <th style="width:37.5%;" class="text-primary"><i class="bi bi-box-seam me-1"></i>Pallet Requirement</th>
+                    <th style="width:37.5%;" class="text-danger"><i class="bi bi-disc me-1"></i>Scanned Roll</th>
+                  </tr>
+                </thead>
+                <tbody id="mismatchModalTableBody">
+                  <!-- Injected via showMismatchModal -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div id="mismatchModalDetailsList" class="small text-danger fw-semibold">
+          <!-- Text bullets of mismatches -->
+        </div>
+      </div>
+      <div class="modal-footer py-2 px-3 bg-light">
+        <button type="button" class="btn btn-danger btn-sm fw-bold w-100" data-bs-dismiss="modal">
+          <i class="bi bi-check2 me-1"></i> Understand &amp; Close
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ── ADD OPERATOR MODAL ────────────────────────────────────── -->
 <div class="modal fade" id="addOperatorModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-sm modal-dialog-centered">
@@ -3018,9 +3073,93 @@ if (isset($_GET['success'])): ?>
           <div class="form-text">Format: <code>SFS-YYMM-XXX</code> or <code>SFS-YYMM-XXX (B)</code></div>
           <div id="palletNoFeedback" class="mt-1" style="font-size:12px;min-height:18px;"></div>
         </div>
+        <!-- ── STEP 2: SELECT CUSTOMER (RADIO BUTTON LIST) ── -->
+        <div class="card bg-light border mb-3">
+          <div class="card-header bg-white py-1 px-3 fw-bold text-primary" style="font-size:12px;">
+            <i class="bi bi-person-badge me-1"></i>Step 2: Select Customer <span class="text-danger">*</span>
+          </div>
+          <div class="card-body p-2" style="font-size:12px;">
+            <div class="row g-1" id="newPalletCustomerRadioGroup" style="max-height: 190px; overflow-y: auto;">
+              <?php
+                $modalCustomers = [
+                  'NAE'      => 'NICHIAS AUTOPARTS EUROPE (NAE)',
+                  'NAX'      => 'NAX MFG, SA.DE C.V',
+                  'NCI MFG'  => 'NCI MFG., INC.',
+                  'TAIHO'    => 'TAIHO MFG OF TN. INC',
+                  'NRI'      => 'PT NICHIAS ROCKWOOL IND.',
+                  'ASHUKA'   => 'ASHUKA TECHNOLOGIES SDN. BHD.',
+                  'NIPPON'   => 'NTC(NIPPON GASKET)',
+                  'NTC'      => 'NICHIAS THAILAND',
+                  'SGC'      => 'SHANGHAI XINGSHENG',
+                  'STAMPING' => 'MK STAMPING',
+                  'YANTAI'   => 'NICHIAS (SHANGHAI) AUTOPARTS TRADING',
+                  'NIPP'     => 'NICHIAS IND.PRODUCTS PVT. LTD.',
+                  'NVC'      => 'NICHIAS VIETNAM CO., LTD',
+                  'NSJ'      => 'NC-PT NICHIAS SUNIJAYA',
+                  'NIP'      => 'SUZHOU NICHIAS IND. PRODUCTS',
+                  'YTEC'     => 'YTEC CO., LTD.',
+                  'NSA'      => 'NICHIAS SOUTH EAST ASIA (UP PACKING)',
+                  'NCI 2'    => 'NCI 2',
+                  'STOCK'    => 'STOCK',
+                  'TRIAL'    => 'TRIAL',
+                ];
+                foreach ($modalCustomers as $code => $fullName):
+                  $escCode = htmlspecialchars($code);
+                  $escName = htmlspecialchars($fullName);
+                  $radioId = 'newCust_' . preg_replace('/[^A-Za-z0-9_]/', '_', $code);
+              ?>
+                <div class="col-4 col-sm-3">
+                  <div class="form-check form-check-inline m-0 p-0 w-100">
+                    <input class="btn-check" type="radio" name="newPalletCustomer" id="<?= $radioId ?>" value="<?= $escCode ?>" autocomplete="off" onchange="onNewPalletCustomerChange(this.value)">
+                    <label class="btn btn-outline-secondary btn-sm w-100 text-truncate text-start px-2 py-1 mb-1 fw-semibold" for="<?= $radioId ?>" title="<?= $escName ?>" style="font-size:11px;">
+                      <?= $escCode ?>
+                    </label>
+                  </div>
+                </div>
+              <?php endforeach; ?>
+                <div class="col-4 col-sm-3">
+                  <div class="form-check form-check-inline m-0 p-0 w-100">
+                    <input class="btn-check" type="radio" name="newPalletCustomer" id="newCust_OTHER" value="OTHER" autocomplete="off" onchange="onNewPalletCustomerChange(this.value)">
+                    <label class="btn btn-outline-secondary btn-sm w-100 text-truncate text-start px-2 py-1 mb-1 fw-semibold" for="newCust_OTHER" title="Other Customer" style="font-size:11px;">
+                      OTHER
+                    </label>
+                  </div>
+                </div>
+            </div>
+
+            <!-- OTHER custom input if OTHER selected -->
+            <div id="newPalletOtherCustomerContainer" class="mt-2" style="display:none;">
+              <input type="text" id="newPalletCustomCustomerInput" class="form-control form-control-sm"
+                     placeholder="Enter custom customer name..." maxlength="100">
+            </div>
+            <div id="newPalletCustomerFeedback" class="mt-1" style="font-size:11px;"></div>
+          </div>
+        </div>
+
+        <!-- ── STEP 3: REF NO ── -->
+        <div class="card bg-light border mb-3">
+          <div class="card-header bg-white py-1 px-3 fw-bold text-primary" style="font-size:12px;">
+            <i class="bi bi-hash me-1"></i>Step 3: Ref No <span class="text-danger">*</span>
+          </div>
+          <div class="card-body p-2" style="font-size:12px;">
+            <div class="input-group input-group-sm">
+              <input type="text" id="newPalletRefNoInput" class="form-control font-monospace"
+                     placeholder="e.g. SO-26-0123 or MS-0000000 A"
+                     autocomplete="off" spellcheck="false" maxlength="80">
+              <button class="btn btn-outline-secondary" type="button" id="newPalletStockBtn" onclick="setNewPalletRefToStock()" title="Quick fill STOCK">
+                STOCK
+              </button>
+            </div>
+            <div class="form-text mt-1 text-muted" id="newPalletRefNoHint" style="font-size:11px;">
+              Format: <code>SO-XX-XXXX</code> (e.g. <code>SO-26-0123</code>) or <code>MS-XXXXXXX X</code> (e.g. <code>MS-0000000 A</code> for STAMPING)
+            </div>
+            <div id="newPalletRefNoFeedback" class="mt-1" style="font-size:11px;min-height:16px;"></div>
+          </div>
+        </div>
+
         <div class="alert alert-info py-2 mb-0" style="font-size:12px;">
           <i class="bi bi-info-circle me-1"></i>
-          The <strong>first roll</strong> scanned will set the Customer, Ref No, Product Type and Width constraints.
+          Customer &amp; Ref No are locked upon creation. Scanned rolls must match these details; the first roll will set Product Type and Width.
         </div>
       </div>
       <div class="modal-footer">
@@ -3597,7 +3736,13 @@ async function lookupAndAdd(lot, coil, roll, width = '', id = '') {
             showFeedback('Network error while adding roll.', false);
             return;
         }
-        if (!ad.ok) { showFeedback(ad.msg, false); return; }
+        if (!ad.ok) {
+            if (ad.is_mismatch || (ad.msg && ad.msg.includes('does not match pallet constraints'))) {
+                showMismatchModal(ad, p);
+            }
+            showFeedback(ad.msg, false);
+            return;
+        }
 
         rollCount = ad.roll_count;
         fillSlot(ad.seq, p);
@@ -3863,17 +4008,24 @@ async function removeRoll(palletId, productId, seq, btnEl) {
         recalcTotalWeight();
         rollCount = res.new_count;
         updateProgress(rollCount);
+        updateSendToQcState();
+        showFeedback(res.msg, true);
 
+        // When pallet is now empty: clear Product Type and Width from the header.
+        // Customer and Ref No are permanent and stay as-is.
         if (res.new_count === 0) {
-            window.location.reload();
-        } else {
-            showFeedback(res.msg, true);
+            const ptEl = document.getElementById('constraintProductTypeText');
+            const wEl  = document.getElementById('constraintWidthText');
+            if (ptEl) ptEl.textContent = '';
+            if (wEl)  wEl.textContent  = '';
         }
+
     } catch (e) {
         showFeedback('Network error while removing roll.', false);
         if (btnEl) btnEl.disabled = false;
     }
 }
+
 
 // ─────────────────────────────────────────────────────────────
 // UI HELPERS
@@ -4048,6 +4200,75 @@ function showFeedback(msg, ok) {
     setTimeout(() => { el.innerHTML = ''; }, 5000);
 }
 
+function showMismatchModal(ad, product) {
+    const modalEl = document.getElementById('mismatchAlertModal');
+    if (!modalEl) return;
+
+    const summaryEl = document.getElementById('mismatchModalSummary');
+    const tbody     = document.getElementById('mismatchModalTableBody');
+    const listEl    = document.getElementById('mismatchModalDetailsList');
+
+    const rollLotCoil = ((product?.lot_no || '') + ' ' + (product?.coil_no || '') + ' ' + (product?.roll_no ? 'R-' + product.roll_no.replace(/^R/, '') : '')).trim();
+    if (summaryEl) {
+        summaryEl.innerHTML = `Roll <strong>${escHtml(rollLotCoil || 'scanned')}</strong> does not match this pallet's constraints.`;
+    }
+
+    const palletData = ad.pallet || {};
+    const rollData   = ad.roll || product || {};
+
+    const palletCust = (palletData.customer_name || document.getElementById('constraintCustomerText')?.innerText || '').trim();
+    const rollCust   = (rollData.customer_name || '').trim();
+
+    const palletRef  = (palletData.ref_no || document.getElementById('constraintRefNoText')?.innerText || '').trim();
+    const rollRef    = (rollData.ref_no || '').trim();
+
+    const palletProd = (palletData.product_type || '').trim();
+    const rollProd   = (rollData.product_type || rollData.product || '').trim();
+
+    const palletWidth = parseFloat(palletData.width || 0);
+    const rollWidth   = parseFloat(rollData.width || 0);
+
+    const isCustDiff = (palletCust !== '' && rollCust !== '' && palletCust.toLowerCase() !== rollCust.toLowerCase());
+    const isRefDiff  = (!isStockRef(palletRef) && !isStockRef(rollRef) && palletRef !== '' && rollRef !== '' && palletRef !== rollRef);
+    const isProdDiff = (palletProd !== '' && rollProd !== '' && palletProd.toLowerCase() !== rollProd.toLowerCase());
+    const isWidthDiff = (palletWidth > 0 && rollWidth > 0 && Math.abs(palletWidth - rollWidth) > 0.01);
+
+    const makeRow = (label, palVal, rollVal, isDiff) => `
+        <tr class="${isDiff ? 'table-danger' : ''}">
+            <td class="fw-bold ${isDiff ? 'text-danger' : 'text-secondary'}">
+                ${isDiff ? '<i class="bi bi-x-circle-fill text-danger me-1"></i>' : '<i class="bi bi-check-circle-fill text-success me-1"></i>'}${label}
+            </td>
+            <td class="fw-semibold font-monospace ${isDiff ? 'text-dark' : 'text-muted'}">${escHtml(palVal || '—')}</td>
+            <td class="fw-bold font-monospace ${isDiff ? 'text-danger' : 'text-dark'}">${escHtml(rollVal || '—')}</td>
+        </tr>
+    `;
+
+    let rowsHtml = '';
+    rowsHtml += makeRow('Customer', palletCust, rollCust, isCustDiff);
+    rowsHtml += makeRow('Ref No', palletRef, rollRef, isRefDiff);
+    if (palletProd || rollProd) {
+        rowsHtml += makeRow('Product Type', palletProd, rollProd, isProdDiff);
+    }
+    if (palletWidth > 0 || rollWidth > 0) {
+        rowsHtml += makeRow('Width (mm)', palletWidth > 0 ? palletWidth + ' mm' : '—', rollWidth > 0 ? rollWidth + ' mm' : '—', isWidthDiff);
+    }
+
+    if (tbody) tbody.innerHTML = rowsHtml;
+
+    if (listEl) {
+        if (ad.mismatches && ad.mismatches.length > 0) {
+            listEl.innerHTML = '<div class="fw-bold mb-1"><i class="bi bi-info-circle me-1"></i>Reason for rejection:</div><ul class="mb-0 ps-3">'
+                + ad.mismatches.map(m => `<li>${escHtml(m)}</li>`).join('')
+                + '</ul>';
+        } else {
+            listEl.innerHTML = '';
+        }
+    }
+
+    const bsModal = new bootstrap.Modal(modalEl);
+    bsModal.show();
+}
+
 // ─────────────────────────────────────────────────────────────
 // Enter key on the combined box → Add
 // ─────────────────────────────────────────────────────────────
@@ -4158,6 +4379,24 @@ document.getElementById('createPalletModal')?.addEventListener('show.bs.modal', 
     const dispEl = document.getElementById('nextAutoPalletDisplay');
     if (dispEl) dispEl.innerHTML = '<span class="text-muted fst-italic" style="font-size:12px;">Select Pallet Type above</span>';
 
+    // Reset Step 2 (Customer) & Step 3 (Ref No)
+    document.querySelectorAll('input[name="newPalletCustomer"]').forEach(r => r.checked = false);
+    const otherContainer = document.getElementById('newPalletOtherCustomerContainer');
+    if (otherContainer) otherContainer.style.display = 'none';
+    const otherInp = document.getElementById('newPalletCustomCustomerInput');
+    if (otherInp) otherInp.value = '';
+    const custFb = document.getElementById('newPalletCustomerFeedback');
+    if (custFb) custFb.innerHTML = '';
+
+    const refInp = document.getElementById('newPalletRefNoInput');
+    if (refInp) {
+        refInp.value = '';
+        refInp.classList.remove('is-valid', 'is-invalid');
+    }
+    const refFb = document.getElementById('newPalletRefNoFeedback');
+    if (refFb) refFb.innerHTML = '';
+    updateNewPalletRefHint();
+
     const sp = '<span class="spinner-border spinner-border-sm text-secondary" style="width:.75rem;height:.75rem;"></span>';
     const elNone = document.getElementById('latestPalletNone');
     const elB    = document.getElementById('latestPalletB');
@@ -4187,6 +4426,157 @@ document.getElementById('createPalletModal')?.addEventListener('show.bs.modal', 
 
     setTimeout(() => inp.focus(), 300);
 });
+
+// ── Step 2 & 3: Customer and Ref No Helpers ────────────────────
+function getSelectedNewPalletCustomer() {
+    const checked = document.querySelector('input[name="newPalletCustomer"]:checked');
+    if (!checked) return '';
+    if (checked.value === 'OTHER') {
+        const custom = document.getElementById('newPalletCustomCustomerInput');
+        return custom ? custom.value.trim() : '';
+    }
+    return checked.value;
+}
+
+function onNewPalletCustomerChange(custCode) {
+    const otherCont = document.getElementById('newPalletOtherCustomerContainer');
+    const otherInp  = document.getElementById('newPalletCustomCustomerInput');
+    if (otherCont) otherCont.style.display = (custCode === 'OTHER') ? 'block' : 'none';
+    if (custCode === 'OTHER' && otherInp) {
+        setTimeout(() => otherInp.focus(), 100);
+    }
+
+    const refInp = document.getElementById('newPalletRefNoInput');
+    if (refInp) {
+        if (custCode === 'STOCK') {
+            refInp.value = 'STOCK';
+        } else if (custCode === 'STAMPING') {
+            if (!refInp.value || refInp.value === 'STOCK' || refInp.value.startsWith('SO-')) {
+                refInp.value = 'MS-';
+            }
+        } else {
+            if (!refInp.value || refInp.value === 'STOCK' || refInp.value.startsWith('MS-')) {
+                refInp.value = 'SO-';
+            }
+        }
+    }
+    updateNewPalletRefHint();
+    validateNewPalletForm();
+}
+
+document.getElementById('newPalletCustomCustomerInput')?.addEventListener('input', () => {
+    validateNewPalletForm();
+});
+
+function setNewPalletRefToStock() {
+    const refInp = document.getElementById('newPalletRefNoInput');
+    if (refInp) {
+        refInp.value = 'STOCK';
+        refInp.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    const stockRadio = document.getElementById('newCust_STOCK');
+    if (stockRadio && !stockRadio.checked) {
+        stockRadio.checked = true;
+        onNewPalletCustomerChange('STOCK');
+    }
+    validateNewPalletForm();
+}
+
+function updateNewPalletRefHint() {
+    const checked = document.querySelector('input[name="newPalletCustomer"]:checked');
+    const code = checked ? checked.value : '';
+    const hintEl = document.getElementById('newPalletRefNoHint');
+    if (!hintEl) return;
+    if (code === 'STAMPING') {
+        hintEl.innerHTML = 'Format: <code>MS-XXXXXXX X</code> (e.g. <code>MS-0000000 A</code>)';
+    } else if (code === 'STOCK') {
+        hintEl.innerHTML = 'Format: <code>STOCK</code>';
+    } else {
+        hintEl.innerHTML = 'Format: <code>SO-XX-XXXX</code> (e.g. <code>SO-26-0123</code>)';
+    }
+}
+
+function formatNewPalletRefNo(val, cust) {
+    if (!val) return '';
+    const trimmed = val.trim();
+    if (trimmed.toUpperCase() === 'STOCK') return 'STOCK';
+    if (cust === 'STOCK') return 'STOCK';
+
+    if (cust === 'STAMPING' || /^MS-/i.test(trimmed)) {
+        // MS-0000000 A pattern
+        let clean = trimmed.replace(/^MS-?/i, '');
+        let digits = clean.replace(/[^0-9]/g, '').slice(0, 7);
+        let letters = clean.replace(/[^A-Za-z]/g, '').toUpperCase().slice(0, 1);
+        let out = 'MS-';
+        if (digits) out += digits;
+        if (letters && digits.length >= 7) out += ' ' + letters;
+        return out;
+    } else {
+        // SO-XX-XXXX pattern (e.g. SO-26-0123)
+        let clean = trimmed.replace(/^SO-?/i, '');
+        let digits = clean.replace(/[^0-9]/g, '').slice(0, 6);
+        let out = 'SO-';
+        if (digits.length <= 2) {
+            out += digits;
+        } else {
+            out += digits.slice(0, 2) + '-' + digits.slice(2);
+        }
+        return out;
+    }
+}
+
+document.getElementById('newPalletRefNoInput')?.addEventListener('input', function() {
+    const cust = document.querySelector('input[name="newPalletCustomer"]:checked')?.value || '';
+    if (cust !== 'NCI MFG' && cust !== 'NCI 2') {
+        const formatted = formatNewPalletRefNo(this.value, cust);
+        if (formatted && formatted !== this.value) {
+            this.value = formatted;
+        }
+    }
+    validateNewPalletForm();
+});
+
+function isRefNoValid(refVal, cust) {
+    const val = (refVal || '').trim();
+    if (!val) return false;
+    if (val.toUpperCase() === 'STOCK') return true;
+    if (cust === 'NCI MFG' || cust === 'NCI 2') return true;
+    if (cust === 'STAMPING') {
+        return /^MS-\d{7}( [A-Z])?$/i.test(val);
+    }
+    return /^SO-\d{2}-\d{4}$/i.test(val);
+}
+
+function validateNewPalletForm() {
+    const cust = getSelectedNewPalletCustomer();
+    const refInp = document.getElementById('newPalletRefNoInput');
+    const refVal = refInp ? refInp.value.trim() : '';
+    const refFb  = document.getElementById('newPalletRefNoFeedback');
+
+    let isRefOk = false;
+    if (refVal) {
+        isRefOk = isRefNoValid(refVal, cust);
+        if (refInp) {
+            refInp.classList.remove('is-valid', 'is-invalid');
+            if (isRefOk) {
+                refInp.classList.add('is-valid');
+                if (refFb) refFb.innerHTML = '<span class="text-success"><i class="bi bi-check-circle me-1"></i>Valid Ref No</span>';
+            } else {
+                refInp.classList.add('is-invalid');
+                if (refFb) refFb.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle me-1"></i>Format: SO-XX-XXXX or MS-XXXXXXX X</span>';
+            }
+        }
+    } else {
+        if (refInp) refInp.classList.remove('is-valid', 'is-invalid');
+        if (refFb) refFb.innerHTML = '';
+    }
+
+    const btn = document.getElementById('createPalletBtn');
+    if (btn) {
+        btn.disabled = !(palletNoValid && cust !== '' && isRefOk);
+    }
+    return (palletNoValid && cust !== '' && isRefOk);
+}
 
 // ── Pallet No auto-formatting ───────────────────────────────────
 // User only types digits (and optionally letters for a suffix like
@@ -4222,12 +4612,6 @@ document.getElementById('palletNoInput')?.addEventListener('input', function () 
     const raw      = this.value;
     const selStart = this.selectionStart;
 
-    // Preserve cursor position across reformatting: count how many real
-    // "content" characters (digits/letters typed by the user, not the
-    // literal SFS-/-/space/() the mask inserts) sit before the cursor,
-    // ignoring the fixed "SFS-" prefix — this is what makes backspace
-    // and mid-string edits land in the right place instead of always
-    // jumping to the end of the field.
     const prefixMatch     = raw.match(/^\s*SFS-?\s*/i);
     const prefixLen       = prefixMatch ? prefixMatch[0].length : 0;
     const afterPrefixCur  = Math.max(0, selStart - prefixLen);
@@ -4239,6 +4623,7 @@ document.getElementById('palletNoInput')?.addEventListener('input', function () 
     if (!formatted) {
         document.getElementById('palletNoFeedback').innerHTML = '';
         this.classList.remove('is-valid', 'is-invalid');
+        validateNewPalletForm();
         return;
     }
 
@@ -4262,30 +4647,51 @@ document.getElementById('palletNoInput')?.addEventListener('input', function () 
                 fb.innerHTML = `<span class="text-success"><i class="bi bi-check-circle me-1"></i>Valid &amp; available</span>`;
                 this.classList.add('is-valid');
                 palletNoValid = true;
-                document.getElementById('createPalletBtn').disabled = false;
             } else {
                 fb.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>${escHtml(r.msg)}</span>`;
                 this.classList.add('is-invalid');
+                palletNoValid = false;
             }
+            validateNewPalletForm();
         } catch (_) {}
     }, 500);
 });
 
 document.getElementById('palletNoInput')?.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter' && palletNoValid) submitCreatePallet();
+    if (e.key === 'Enter' && validateNewPalletForm()) submitCreatePallet();
+});
+
+document.getElementById('newPalletRefNoInput')?.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && validateNewPalletForm()) submitCreatePallet();
 });
 
 async function submitCreatePallet() {
     const palletNo = document.getElementById('palletNoInput').value.trim();
-    if (!palletNo || !palletNoValid) return;
+    const customer = getSelectedNewPalletCustomer();
+    const refNo    = document.getElementById('newPalletRefNoInput')?.value.trim() || '';
+
+    if (!palletNo || !palletNoValid) {
+        alert('Please provide a valid Pallet Serial No.');
+        return;
+    }
+    if (!customer) {
+        alert('Please select a Customer.');
+        return;
+    }
+    if (!refNo || !isRefNoValid(refNo, customer)) {
+        alert('Please provide a valid Ref No.');
+        return;
+    }
 
     const btn = document.getElementById('createPalletBtn');
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Creating…';
 
     const fd = new FormData();
-    fd.append('action',    'create_pallet');
-    fd.append('pallet_no', palletNo);
+    fd.append('action',        'create_pallet');
+    fd.append('pallet_no',     palletNo);
+    fd.append('customer_name', customer);
+    fd.append('ref_no',        refNo);
 
     let r;
     try {
@@ -4840,6 +5246,19 @@ let constraintEditSaving = false;
 let currentConstraintCustomer = <?= json_encode($activePallet['customer_name'] ?? '') ?>;
 let currentConstraintRefNo    = <?= json_encode($activePallet['ref_no'] ?? '') ?>;
 if (typeof updateSendToQcState === 'function') updateSendToQcState();
+
+// ── Auto-blank Product Type & Width on load if pallet is empty ──
+// If the pallet has no coils at all (on first load or after refresh),
+// Product Type and Width must show blank. Customer and Ref No stay.
+(function syncHeaderToRollCount() {
+    if (rollCount === 0) {
+        const ptEl = document.getElementById('constraintProductTypeText');
+        const wEl  = document.getElementById('constraintWidthText');
+        if (ptEl) ptEl.textContent = '';
+        if (wEl)  wEl.textContent  = '';
+    }
+})();
+
 
 function handleConstraintCustomerChange() {
     const sel = document.getElementById('constraintCustomerInput');
