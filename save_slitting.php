@@ -128,7 +128,13 @@ try {
         if ($leftover_length > 0) {
             $base_lot_src = !empty($mother['lot_no']) ? $mother['lot_no'] : $lot_no;
             // Clean away any letter suffix so leftover mother coil stays clean base lot (e.g. 222225)
-            $new_lot_no = preg_replace('/[a-z]$/i', '', $base_lot_src);
+            // But if mother coil originally had a letter suffix (e.g. 826928a), preserve it!
+            $mother_orig_lot = trim($mother['lot_no'] ?? '');
+            if ($mother_orig_lot !== '' && preg_match('/[a-z]$/i', $mother_orig_lot)) {
+                $new_lot_no = $mother_orig_lot;
+            } else {
+                $new_lot_no = preg_replace('/[a-z]$/i', '', $base_lot_src);
+            }
             $grade_val  = $mother['grade'] ?? '';
             $width_val  = floatval($mother['width']);
 
@@ -190,25 +196,41 @@ try {
         }
     }
 
+    if (!function_exists('formatRollLotNo')) {
+        function formatRollLotNo($base_lot, $cut_letter) {
+            $base_lot   = trim($base_lot);
+            $cut_letter = trim($cut_letter);
+            if ($cut_letter === '') {
+                return $base_lot;
+            }
+            if (strcasecmp(substr($base_lot, -strlen($cut_letter)), $cut_letter) === 0) {
+                return $base_lot;
+            }
+            if (preg_match('/[a-z]$/i', $base_lot)) {
+                return preg_replace('/[a-z]$/i', $cut_letter, $base_lot);
+            }
+            return $base_lot . $cut_letter;
+        }
+    }
+
     // ── Pre-calculate fallback default cut letter for cut_into_2 ──
     $fallback_cut_letter = '';
     $is_leftover_source  = ($stock_id > 0);
     // Only auto-assign 'a' if it's Cut Into 2 on a fresh mother coil (leftover mother coils stay NO suffix)
-    if ($cut_type === 'cut_into_2' && !$is_leftover_source) {
+    // AND mother coil does not already end with a letter
+    if ($cut_type === 'cut_into_2' && !$is_leftover_source && !preg_match('/[a-z]$/i', $lot_no)) {
         $fallback_cut_letter = 'a';
     }
-
-    $clean_base_lot_no = preg_replace('/[a-z]$/i', '', $lot_no);
 
     // ── Process each roll ───────────────────────────────────────
     foreach ($roll_nos as $index => $roll_no) {
         $length       = floatval($lengths[$index]  ?? 0);
         $width        = floatval($widths[$index]   ?? 0);
         $cut_letter   = trim($cut_letters[$index]  ?? '');
-        if ($cut_letter === '' && $cut_type === 'cut_into_2' && !$is_leftover_source) {
+        if ($cut_letter === '' && $fallback_cut_letter !== '') {
             $cut_letter = $fallback_cut_letter;
         }
-        $roll_lot_no  = $clean_base_lot_no . $cut_letter;
+        $roll_lot_no  = formatRollLotNo($lot_no, $cut_letter);
         $roll_no_safe = $roll_no;
 
         $plannedCustomer = null;

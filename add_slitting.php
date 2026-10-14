@@ -397,7 +397,7 @@ foreach ($alphabet as $letter) {
 
 <script>
 const sourceData = {
-    lotNo: '<?= htmlspecialchars($clean_base_lot !== '' ? $clean_base_lot : ($source_data['lot_no'] ?? '')) ?>',
+    lotNo: '<?= htmlspecialchars($source_data['lot_no'] ?? '') ?>',
     coilNo: '<?= htmlspecialchars($source_data['coil_no'] ?? '') ?>',
     originalLength: <?= floatval($source_data['length'] ?? 0) ?>,
     originalWidth: <?= floatval($source_data['width'] ?? $mother_data['width'] ?? 0) ?>,
@@ -406,6 +406,19 @@ const sourceData = {
     nextCutLetter: '<?= $next_cut_letter ?>',
     product: '<?= htmlspecialchars($mother_data['product'] ?? '') ?>'
 };
+
+function formatRollLot(baseLot, letter) {
+    baseLot = (baseLot || '').trim();
+    letter  = (letter  || '').trim();
+    if (!letter) return baseLot;
+    if (baseLot.toLowerCase().endsWith(letter.toLowerCase())) {
+        return baseLot;
+    }
+    if (/[a-z]$/i.test(baseLot)) {
+        return baseLot.slice(0, -1) + letter;
+    }
+    return baseLot + letter;
+}
 
 /* ════════════════════════════════════════════════════════════
    OPTIONAL SLITTING PLAN — the officer only plans roll widths, not
@@ -573,9 +586,10 @@ function generateForm(){
 
     // Determine default cut letter:
     // Only fresh mother coil on "Cut Into 2" defaults to 'a' (the first cut roll-out).
-    // Leftover mother coil when slitted stays NO suffix (Standard).
-    // Fresh mother coil on Normal cut also stays NO suffix (Standard).
-    const defaultCutLetter = (!sourceData.isLeftover && cutType === 'cut_into_2')
+    // If mother coil lot already ends with a letter (e.g. 826928a), it already has its letter suffix.
+    // Leftover mother coil and Normal cut stay NO suffix (Standard).
+    const lotAlreadyHasLetter = /[a-z]$/i.test(sourceData.lotNo);
+    const defaultCutLetter = (!sourceData.isLeftover && cutType === 'cut_into_2' && !lotAlreadyHasLetter)
         ? 'a'
         : '';
 
@@ -633,10 +647,10 @@ function generateForm(){
             // Leftover mother coil stays NO suffix unless user explicitly selected something
             valLetter = (valLetter !== undefined && valLetter !== null) ? valLetter : '';
         } else if (cutType === 'cut_into_2') {
-            valLetter = (valLetter !== undefined && valLetter !== null && valLetter !== '') ? valLetter : 'a';
+            valLetter = (valLetter !== undefined && valLetter !== null && valLetter !== '') ? valLetter : defaultCutLetter;
         } else {
-            // Fresh coil normal cut -> no suffix
-            valLetter = (valLetter === 'a') ? '' : (valLetter || '');
+            // Fresh coil normal cut -> no suffix unless user explicitly selected
+            valLetter = (valLetter !== undefined && valLetter !== null && valLetter !== '') ? valLetter : '';
         }
 
         const isSfc = prevSfcs[i - 1] ? 'checked' : '';
@@ -677,7 +691,7 @@ function generateForm(){
                     </td>
                     <td>
                         <small class="text-primary fw-semibold" id="infoBadge${i-1}">
-                            <i class="bi bi-tag me-1"></i>${sourceData.lotNo}${valLetter} ${sourceData.coilNo}-R${i}
+                            <i class="bi bi-tag me-1"></i>${formatRollLot(sourceData.lotNo, valLetter)} ${sourceData.coilNo}-R${i}
                         </small>
                     </td>
                 </tr>
@@ -723,9 +737,11 @@ function toggleSfcRowHighlight(checkbox) {
 
 function updateLotLabel(idx) {
     const selectElem = document.querySelectorAll('select[name="cut_letter[]"]')[idx];
-    const letter = selectElem.value;
+    const letter = selectElem ? selectElem.value : '';
     const badge = document.getElementById(`infoBadge${idx}`);
-    badge.innerHTML = `<i class="bi bi-tag me-1"></i>${sourceData.lotNo}${letter} ${sourceData.coilNo}-R${idx+1}`;
+    if (badge) {
+        badge.innerHTML = `<i class="bi bi-tag me-1"></i>${formatRollLot(sourceData.lotNo, letter)} ${sourceData.coilNo}-R${idx+1}`;
+    }
 }
 
 // ── SFC Balance Warning Interceptor (≥ 80mm) ────────────────
