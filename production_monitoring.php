@@ -199,18 +199,18 @@ include 'header.php';
                 </div>
             </div>
 
-            <!-- Recoiling Coil Counter (By Coil, Follow by Day) -->
+            <!-- Recoiling Counter (Rolls & Parent Coils, Follow by Day) -->
             <div class="card border-0 shadow-sm px-3 py-2 rounded-3 bg-white d-flex flex-row align-items-center gap-3 border-start border-4 border-warning">
                 <div class="p-2 rounded-2 bg-warning bg-opacity-20 text-warning">
                     <i class="bi bi-arrow-repeat fs-4 text-warning"></i>
                 </div>
                 <div>
                     <div class="text-uppercase text-muted fw-bold" style="font-size: 0.72rem; letter-spacing: 0.5px;">
-                        Recoiling Coils (Today)
+                        Recoiling (Today)
                     </div>
                     <div class="d-flex align-items-baseline gap-1">
                         <span class="fs-4 fw-bold text-dark" id="recoilDayCoilCount">0</span>
-                        <span class="text-muted small fw-semibold">Coils</span>
+                        <span class="text-muted small fw-semibold" id="recoilDayUnitLabel">Rolls</span>
                     </div>
                 </div>
             </div>
@@ -417,8 +417,23 @@ function fetchMonitoringData() {
                 }
                 if (data.recoil_summary) {
                     const elCoil = document.getElementById('recoilDayCoilCount');
+                    const elUnit = document.getElementById('recoilDayUnitLabel');
                     if (elCoil) {
-                        elCoil.innerText = data.recoil_summary.total_coils ?? 0;
+                        const totalRolls = data.recoil_summary.total_rolls ?? 0;
+                        const totalCoils = data.recoil_summary.total_coils ?? 0;
+                        const rewinding  = data.recoil_summary.rewinding_count ?? 0;
+                        const cutDefect  = data.recoil_summary.cut_defect_count ?? 0;
+
+                        elCoil.innerText = totalRolls;
+                        if (elUnit) {
+                            if (totalCoils > 0 && totalCoils !== totalRolls) {
+                                elUnit.innerText = `Rolls (${totalCoils} Coils)`;
+                            } else {
+                                elUnit.innerText = 'Rolls';
+                            }
+                        }
+                        // Tooltip or title for breakdown if hovered
+                        elCoil.parentElement.setAttribute('title', `Rewinding: ${rewinding}, Cut Defect: ${cutDefect} (${totalCoils} parent coils)`);
                     }
                     const elDate = document.getElementById('prodDayLabel');
                     if (elDate && data.recoil_summary.prod_date_formatted) {

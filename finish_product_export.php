@@ -324,9 +324,9 @@ if ($result && $result->num_rows > 0) {
         echo '<td ' . $td  . '>' . htmlspecialchars($row['product'] ?? '-') . '</td>';
         echo '<td ' . $td  . '>' . htmlspecialchars($lotCoil) . '</td>';
         echo '<td ' . $td  . '>' . htmlspecialchars($row['roll_no'] ?? '-') . '</td>';
-        echo '<td ' . $tdN . '>' . number_format((float)($row['width']         ?? 0)) . '</td>';
-        echo '<td ' . $tdN . '>' . number_format((float)($row['length']        ?? 0)) . '</td>';
-        echo '<td ' . $tdN . '>' . number_format((float)($row['actual_length'] ?? 0)) . '</td>';
+        echo '<td ' . $tdN . '>' . number_format((float)($row['width']         ?? 0), 2) . '</td>';
+        echo '<td ' . $tdN . '>' . number_format((float)($row['length']        ?? 0), 2) . '</td>';
+        echo '<td ' . $tdN . '>' . number_format((float)($row['actual_length'] ?? 0), 2) . '</td>';
         echo '<td ' . $tdN . '>' . $nodDisplay . '</td>';
         echo '<td ' . $tdN . '>' . $invoiceLength . '</td>';
         echo '<td ' . $td  . '>' . htmlspecialchars($row['customer_name'] ?: '-') . '</td>';

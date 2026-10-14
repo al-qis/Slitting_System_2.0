@@ -427,7 +427,10 @@ function getRecoilingDailyCoilCount(mysqli $conn): array {
             COUNT(DISTINCT rp.lot_no, rp.coil_no) AS total_coils,
             COUNT(DISTINCT CASE WHEN rp.status = 'completed' THEN CONCAT(rp.lot_no, '___', rp.coil_no) END) AS completed_coils,
             COUNT(DISTINCT CASE WHEN rp.status = 'in_progress' THEN CONCAT(rp.lot_no, '___', rp.coil_no) END) AS in_progress_coils,
-            COUNT(rp.id) AS total_rolls
+            COUNT(DISTINCT rp.lot_no, rp.coil_no, rp.roll_no) AS distinct_rolls,
+            COUNT(rp.id) AS total_rolls,
+            SUM(CASE WHEN rp.cut_type = 'rewinding' THEN 1 ELSE 0 END) AS rewinding_count,
+            SUM(CASE WHEN rp.cut_type IN ('normal', 'cut_into_2') OR (rp.cut_type IS NULL) THEN 1 ELSE 0 END) AS cut_defect_count
         FROM recoiling_product rp
         WHERE (
             (rp.status = 'completed' AND rp.completed_at >= ? AND rp.completed_at <= ?)
@@ -447,7 +450,10 @@ function getRecoilingDailyCoilCount(mysqli $conn): array {
                 'total_coils'         => (int)($row['total_coils'] ?? 0),
                 'completed_coils'     => (int)($row['completed_coils'] ?? 0),
                 'in_progress_coils'   => (int)($row['in_progress_coils'] ?? 0),
+                'distinct_rolls'      => (int)($row['distinct_rolls'] ?? 0),
                 'total_rolls'         => (int)($row['total_rolls'] ?? 0),
+                'rewinding_count'     => (int)($row['rewinding_count'] ?? 0),
+                'cut_defect_count'    => (int)($row['cut_defect_count'] ?? 0),
             ];
         }
         $stmt->close();
@@ -459,7 +465,10 @@ function getRecoilingDailyCoilCount(mysqli $conn): array {
         'total_coils'         => 0,
         'completed_coils'     => 0,
         'in_progress_coils'   => 0,
+        'distinct_rolls'      => 0,
         'total_rolls'         => 0,
+        'rewinding_count'     => 0,
+        'cut_defect_count'    => 0,
     ];
 }
 
