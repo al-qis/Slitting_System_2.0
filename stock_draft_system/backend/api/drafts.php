@@ -37,6 +37,12 @@ try {
             $result = $draftOrderModel->cancelDraft($draftOrderId, $reason, $officerId);
             echo json_encode($result);
             exit;
+        } elseif ($action === 'delete') {
+            $draftOrderId = intval($input['draft_order_id'] ?? 0);
+            $officerId = trim($input['officer_id'] ?? 'Production Officer');
+            $result = $draftOrderModel->deleteDraft($draftOrderId, $officerId);
+            echo json_encode($result);
+            exit;
         } else {
             echo json_encode(['ok' => false, 'error' => 'Unknown POST action.']);
             exit;

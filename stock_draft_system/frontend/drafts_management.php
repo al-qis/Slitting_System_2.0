@@ -292,6 +292,22 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('btnRefreshDrafts').addEventListener('click', loadDrafts);
 });
 
+function showAlert(type, msg) {
+    const alertEl = document.getElementById('draftAlert');
+    const msgEl = document.getElementById('draftAlertMsg');
+    if (!alertEl || !msgEl) {
+        if (typeof showCopyToast === 'function') showCopyToast(msg);
+        return;
+    }
+    alertEl.className = `alert alert-${type} alert-dismissible fade show mb-3`;
+    msgEl.innerText = msg;
+    alertEl.classList.remove('d-none');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    setTimeout(() => {
+        alertEl.classList.add('d-none');
+    }, 4500);
+}
+
 function loadDrafts() {
     const search = document.getElementById('filterDraftSearch').value;
     const status = document.getElementById('filterDraftStatus').value;
@@ -355,6 +371,12 @@ function renderDraftsTable(drafts) {
                     <i class="fa-solid fa-xmark"></i> Cancel
                 </button>
             `;
+        } else if (d.status === 'CANCELLED') {
+            actionBtns += `
+                <button class="btn btn-sm btn-outline-danger" onclick="deleteDraftOrder(${d.id}, '${d.draft_no}')" title="Delete Cancelled Draft">
+                    <i class="fa-solid fa-trash"></i> Delete
+                </button>
+            `;
         }
 
         html += `
@@ -390,13 +412,20 @@ function viewDraftDetails(draftId) {
     modalBadge.className = `badge-status ${draftBadgeClass}`;
     modalBadge.innerText = draft.status;
 
-    // Show Edit Draft button inside modal if not confirmed
+    // Show Edit Draft button inside modal if not confirmed, or Delete if cancelled
     const modalFooter = document.querySelector('#detailModal .modal-footer');
     if (draft.status === 'RESERVED' || draft.status === 'DRAFT') {
         modalFooter.innerHTML = `
             <a href="create_draft.php?edit_draft_id=${draft.id}" class="btn btn-warning fw-semibold">
                 <i class="fa-solid fa-pen me-1"></i> Edit Draft Coils
             </a>
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+        `;
+    } else if (draft.status === 'CANCELLED') {
+        modalFooter.innerHTML = `
+            <button type="button" class="btn btn-danger fw-semibold" onclick="deleteDraftOrder(${draft.id}, '${draft.draft_no}')">
+                <i class="fa-solid fa-trash me-1"></i> Delete Draft
+            </button>
             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
         `;
     } else {
@@ -498,6 +527,33 @@ function cancelDraftOrder(draftId, draftNo) {
     .then(data => {
         showAlert(data.ok ? 'success' : 'danger', data.msg || data.error);
         if (data.ok) loadDrafts();
+    });
+}
+
+function deleteDraftOrder(draftId, draftNo) {
+    if (!confirm(`Adakah anda pasti mahu memadam draf ${draftNo}?`)) return;
+
+    fetch('../backend/api/drafts.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            action: 'delete',
+            draft_order_id: draftId
+        })
+    })
+    .then(res => res.json())
+    .then(data => {
+        showAlert(data.ok ? 'success' : 'danger', data.msg || data.error);
+        if (data.ok) {
+            // If the detail modal is open, close it
+            if (typeof detailModalObj !== 'undefined' && detailModalObj) {
+                detailModalObj.hide();
+            }
+            loadDrafts();
+        }
+    })
+    .catch(err => {
+        showAlert('danger', 'Failed to delete draft: ' + err.message);
     });
 }
 
