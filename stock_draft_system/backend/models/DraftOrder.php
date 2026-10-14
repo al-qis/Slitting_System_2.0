@@ -477,4 +477,40 @@ class DraftOrder {
             return ['ok' => false, 'error' => $e->getMessage()];
         }
     }
+
+    /**
+     * Permanently delete a cancelled draft order and its items
+     */
+    public function deleteDraft(int $draftOrderId, string $officerId = 'Production Officer'): array {
+        $this->pdo->beginTransaction();
+        try {
+            $stmt = $this->pdo->prepare("SELECT * FROM draft_orders WHERE id = :id FOR UPDATE");
+            $stmt->execute([':id' => $draftOrderId]);
+            $order = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$order) {
+                throw new Exception("Draft order not found.");
+            }
+
+            if ($order['status'] !== 'CANCELLED') {
+                throw new Exception("Only cancelled drafts can be deleted. Current status: {$order['status']}");
+            }
+
+            // Delete draft order items first
+            $delItems = $this->pdo->prepare("DELETE FROM draft_order_items WHERE draft_order_id = :id");
+            $delItems->execute([':id' => $draftOrderId]);
+
+            // Delete draft order
+            $delOrder = $this->pdo->prepare("DELETE FROM draft_orders WHERE id = :id");
+            $delOrder->execute([':id' => $draftOrderId]);
+
+            $this->pdo->commit();
+            return ['ok' => true, 'msg' => "Cancelled draft {$order['draft_no']} deleted permanently."];
+
+        } catch (Exception $e) {
+            $this->pdo->rollBack();
+            return ['ok' => false, 'error' => $e->getMessage()];
+        }
+    }
 }
+
