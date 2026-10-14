@@ -88,9 +88,15 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
             LIMIT 1
         ");
 
-        // Recoiling coil count query per day slot (distinct lot_no, coil_no)
+        // Recoiling count query per day slot:
+        // Returns parent coils (distinct lot_no, coil_no), total rolls, and breakdown by process type
         $stmtRecoil = $conn->prepare("
-            SELECT COUNT(DISTINCT rp.lot_no, rp.coil_no) AS recoil_coils
+            SELECT 
+                COUNT(DISTINCT rp.lot_no, rp.coil_no) AS recoil_coils,
+                COUNT(DISTINCT rp.lot_no, rp.coil_no, rp.roll_no) AS distinct_rolls,
+                COUNT(rp.id) AS recoil_rolls,
+                SUM(CASE WHEN rp.cut_type = 'rewinding' THEN 1 ELSE 0 END) AS rewinding_count,
+                SUM(CASE WHEN rp.cut_type IN ('normal', 'cut_into_2') OR (rp.cut_type IS NULL) THEN 1 ELSE 0 END) AS cut_defect_count
             FROM recoiling_product rp
             WHERE (
                 (rp.status = 'completed' AND rp.completed_at >= ? AND rp.completed_at <= ?)
@@ -100,6 +106,9 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
 
         $activeDailyTarget = $shiftTarget * 2; // Default for current active cycle
         $weeklyRecoilCoilsTotal = 0;
+        $weeklyRecoilRollsTotal = 0;
+        $weeklyRewindingTotal = 0;
+        $weeklyCutDefectTotal = 0;
 
         for ($i = 0; $i < 7; $i++) {
             $startTs = strtotime("+{$i} days", $mondayTimestamp);
@@ -149,17 +158,26 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
                 }
             }
 
-            // 3. Calculate recoiling coil count for this slot (distinct lot_no, coil_no)
+            // 3. Calculate recoiling roll and coil counts for this slot
             $recoilCoils = 0;
+            $recoilRolls = 0;
+            $rewindingCount = 0;
+            $cutDefectCount = 0;
             if ($stmtRecoil) {
                 $stmtRecoil->bind_param("ssss", $startStr, $endStr, $startStr, $endStr);
                 $stmtRecoil->execute();
                 $resRecoil = $stmtRecoil->get_result();
                 if ($rowR = $resRecoil->fetch_assoc()) {
-                    $recoilCoils = (int)($rowR['recoil_coils'] ?? 0);
+                    $recoilCoils    = (int)($rowR['recoil_coils'] ?? 0);
+                    $recoilRolls    = (int)($rowR['recoil_rolls'] ?? 0);
+                    $rewindingCount = (int)($rowR['rewinding_count'] ?? 0);
+                    $cutDefectCount = (int)($rowR['cut_defect_count'] ?? 0);
                 }
             }
             $weeklyRecoilCoilsTotal += $recoilCoils;
+            $weeklyRecoilRollsTotal += $recoilRolls;
+            $weeklyRewindingTotal   += $rewindingCount;
+            $weeklyCutDefectTotal   += $cutDefectCount;
 
             // Slot Target: Default 10,400 m (2 shifts), becomes 15,600 m if production after threshold (3 shifts)
             $slotShifts = $hasPost12am ? 3 : 2;
@@ -192,6 +210,9 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
                 'variance_meters'           => $variance,
                 'percentage'                => $percentage,
                 'recoil_coils'              => $recoilCoils,
+                'recoil_rolls'              => $recoilRolls,
+                'rewinding_count'           => $rewindingCount,
+                'cut_defect_count'          => $cutDefectCount,
                 'is_today'                  => $isToday
             ];
         }
@@ -219,6 +240,9 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
             'weekly_target_meters'      => $weeklyTargetTotal,
             'weekly_produced_total'     => $weeklyProducedTotal,
             'weekly_recoil_coils_total' => $weeklyRecoilCoilsTotal,
+            'weekly_recoil_rolls_total' => $weeklyRecoilRollsTotal,
+            'weekly_rewinding_total'    => $weeklyRewindingTotal,
+            'weekly_cut_defect_total'   => $weeklyCutDefectTotal,
             'weekly_overall_pct'        => $overallPct,
             'slots'                     => $slots
         ];

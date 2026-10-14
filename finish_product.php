@@ -1030,7 +1030,17 @@ $stmt->close();
 // DELIVER is a completed, dated transaction, so it stays scoped to the
 // selected month.
 $in      = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='IN' AND is_completed=0 AND (is_recoiled=0 OR is_recoiled IS NULL) AND (is_reslitted=0 OR is_reslitted IS NULL)")->fetch_assoc()['total'];
-$stock   = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='IN' AND stock_counted=1 AND (is_recoiled=0 OR is_recoiled IS NULL) AND (is_reslitted=0 OR is_reslitted IS NULL)")->fetch_assoc()['total'];
+$stock   = $conn->query("
+    SELECT IFNULL(COUNT(*),0) AS total 
+    FROM slitting_product sp 
+    LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id 
+    WHERE sp.is_voided=0 
+      AND sp.status='IN' 
+      AND sp.stock_counted=1 
+      AND (sp.is_recoiled=0 OR sp.is_recoiled IS NULL) 
+      AND (sp.is_reslitted=0 OR sp.is_reslitted IS NULL) 
+      AND pi.pallet_id IS NULL
+")->fetch_assoc()['total'];
 $waiting = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='WAITING'")->fetch_assoc()['total'];
 $deliver = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='DELIVERED' AND MONTH(delivered_at)=$month AND YEAR(delivered_at)=$year")->fetch_assoc()['total'];
 

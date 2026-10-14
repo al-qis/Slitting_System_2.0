@@ -398,8 +398,13 @@ function initChart() {
                                 const slots = chart._slotsData || [];
                                 const slot = slots[tooltipItems[0].dataIndex];
                                 if (!slot) return [];
-                                const recoil = parseInt(slot.recoil_coils) || 0;
-                                return ['Recoiling: ' + recoil + ' coil'];
+                                const rolls = parseInt(slot.recoil_rolls) || 0;
+                                const rewind = parseInt(slot.rewinding_count) || 0;
+                                const defect = parseInt(slot.cut_defect_count) || 0;
+                                if (rolls > 0) {
+                                    return ['Recoiling: ' + rolls + ' rolls (Rewinding: ' + rewind + ', Cut Defect: ' + defect + ')'];
+                                }
+                                return ['Recoiling: 0 rolls'];
                             }
                         }
                     }
@@ -473,8 +478,13 @@ function initChart() {
                                 const slots = chart._slotsData || [];
                                 const slot = slots[tooltipItems[0].dataIndex];
                                 if (!slot) return [];
-                                const recoil = parseInt(slot.recoil_coils) || 0;
-                                return ['Recoiling: ' + recoil + ' coil'];
+                                const rolls = parseInt(slot.recoil_rolls) || 0;
+                                const rewind = parseInt(slot.rewinding_count) || 0;
+                                const defect = parseInt(slot.cut_defect_count) || 0;
+                                if (rolls > 0) {
+                                    return ['Recoiling: ' + rolls + ' rolls (Rewinding: ' + rewind + ', Cut Defect: ' + defect + ')'];
+                                }
+                                return ['Recoiling: 0 rolls'];
                             }
                         }
                     }
@@ -562,10 +572,19 @@ function loadOfficerData() {
                     const sStr   = ('0' + startD.getDate()).slice(-2) + '/' + ('0' + (startD.getMonth() + 1)).slice(-2);
                     const eStr   = ('0' + endD.getDate()).slice(-2) + '/' + ('0' + (endD.getMonth() + 1)).slice(-2);
                     const lastTotal = Math.round(lastWeekPerf.weekly_produced_total || 0).toLocaleString();
-                    const lastRecoilTotal = parseInt(lastWeekPerf.weekly_recoil_coils_total) || 0;
+                    const lastRecoilRolls = parseInt(lastWeekPerf.weekly_recoil_rolls_total) || 0;
+                    const lastRecoilCoils = parseInt(lastWeekPerf.weekly_recoil_coils_total) || 0;
+                    const lastRewind = parseInt(lastWeekPerf.weekly_rewinding_total) || 0;
+                    const lastDefect = parseInt(lastWeekPerf.weekly_cut_defect_total) || 0;
                     const rangeEl = document.getElementById('lastWeekRangeBadge');
                     if (rangeEl) {
-                        const recoilSummary = lastRecoilTotal > 0 ? ` | ${lastRecoilTotal} coil recoiling` : '';
+                        let recoilSummary = '';
+                        if (lastRecoilRolls > 0) {
+                            recoilSummary = ` | ${lastRecoilRolls} rolls recoiling`;
+                            if (lastRecoilCoils > 0 && lastRecoilCoils !== lastRecoilRolls) {
+                                recoilSummary += ` (${lastRecoilCoils} coils)`;
+                            }
+                        }
                         rangeEl.innerText = `${sStr} - ${eStr} (${lastTotal} m${recoilSummary})`;
                     }
                 }
@@ -604,10 +623,17 @@ function renderSlotsTable(slots) {
         const pct = slot.percentage;
         const pctBadgeClass = pct >= 100 ? 'bg-success' : (pct >= 50 ? 'bg-warning text-dark' : 'bg-secondary');
 
+        const recoilRolls = parseInt(slot.recoil_rolls) || 0;
         const recoilCoils = parseInt(slot.recoil_coils) || 0;
-        const recoilBadge = recoilCoils > 0 
-            ? `<span class="badge bg-warning text-dark fw-bold px-2 py-1 fs-7"><i class="bi bi-arrow-repeat me-1"></i>${recoilCoils} coil</span>`
-            : `<span class="text-muted small">0</span>`;
+        const rewindingCount = parseInt(slot.rewinding_count) || 0;
+        const cutDefectCount = parseInt(slot.cut_defect_count) || 0;
+
+        let recoilBadge = `<span class="text-muted small">0</span>`;
+        if (recoilRolls > 0) {
+            const breakdownTooltip = `Rewinding: ${rewindingCount}, Cut Defect: ${cutDefectCount}` + (recoilCoils > 0 ? ` (${recoilCoils} parent coils)` : '');
+            const coilSub = (recoilCoils > 0 && recoilCoils !== recoilRolls) ? ` <small class="fw-normal opacity-75">(${recoilCoils}c)</small>` : '';
+            recoilBadge = `<span class="badge bg-warning text-dark fw-bold px-2 py-1 fs-7" title="${breakdownTooltip}" data-bs-toggle="tooltip"><i class="bi bi-arrow-repeat me-1"></i>${recoilRolls} roll${coilSub}</span>`;
+        }
 
         html += `
             <tr class="${trClass}">
