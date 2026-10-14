@@ -573,18 +573,9 @@ function loadOfficerData() {
                     const eStr   = ('0' + endD.getDate()).slice(-2) + '/' + ('0' + (endD.getMonth() + 1)).slice(-2);
                     const lastTotal = Math.round(lastWeekPerf.weekly_produced_total || 0).toLocaleString();
                     const lastRecoilRolls = parseInt(lastWeekPerf.weekly_recoil_rolls_total) || 0;
-                    const lastRecoilCoils = parseInt(lastWeekPerf.weekly_recoil_coils_total) || 0;
-                    const lastRewind = parseInt(lastWeekPerf.weekly_rewinding_total) || 0;
-                    const lastDefect = parseInt(lastWeekPerf.weekly_cut_defect_total) || 0;
                     const rangeEl = document.getElementById('lastWeekRangeBadge');
                     if (rangeEl) {
-                        let recoilSummary = '';
-                        if (lastRecoilRolls > 0) {
-                            recoilSummary = ` | ${lastRecoilRolls} rolls recoiling`;
-                            if (lastRecoilCoils > 0 && lastRecoilCoils !== lastRecoilRolls) {
-                                recoilSummary += ` (${lastRecoilCoils} coils)`;
-                            }
-                        }
+                        const recoilSummary = lastRecoilRolls > 0 ? ` | ${lastRecoilRolls} rolls recoiling` : '';
                         rangeEl.innerText = `${sStr} - ${eStr} (${lastTotal} m${recoilSummary})`;
                     }
                 }

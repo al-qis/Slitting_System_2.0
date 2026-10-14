@@ -199,7 +199,7 @@ include 'header.php';
                 </div>
             </div>
 
-            <!-- Recoiling Counter (Rolls & Parent Coils, Follow by Day) -->
+            <!-- Recoiling Counter (Rolls Only, Follow by Day) -->
             <div class="card border-0 shadow-sm px-3 py-2 rounded-3 bg-white d-flex flex-row align-items-center gap-3 border-start border-4 border-warning">
                 <div class="p-2 rounded-2 bg-warning bg-opacity-20 text-warning">
                     <i class="bi bi-arrow-repeat fs-4 text-warning"></i>
@@ -426,14 +426,10 @@ function fetchMonitoringData() {
 
                         elCoil.innerText = totalRolls;
                         if (elUnit) {
-                            if (totalCoils > 0 && totalCoils !== totalRolls) {
-                                elUnit.innerText = `Rolls (${totalCoils} Coils)`;
-                            } else {
-                                elUnit.innerText = 'Rolls';
-                            }
+                            elUnit.innerText = 'Rolls';
                         }
-                        // Tooltip or title for breakdown if hovered
-                        elCoil.parentElement.setAttribute('title', `Rewinding: ${rewinding}, Cut Defect: ${cutDefect} (${totalCoils} parent coils)`);
+                        // Tooltip for breakdown details on hover
+                        elCoil.parentElement.setAttribute('title', `Rewinding: ${rewinding}, Cut Defect: ${cutDefect}`);
                     }
                     const elDate = document.getElementById('prodDayLabel');
                     if (elDate && data.recoil_summary.prod_date_formatted) {
