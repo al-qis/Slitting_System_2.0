@@ -1,19 +1,25 @@
 <?php
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
-header('Content-Type: application/json; charset=utf-8');
+/**
+ * OfficerProductionModel.php
+ * Model for Officer Production Monitor (Weekly Performance & Target Management)
+ * Location: /monitor_screen/models/OfficerProductionModel.php
+ */
 
-if (!isset($_SESSION['role'])) {
-    echo json_encode(['success' => false, 'message' => 'Unauthorized access']);
-    exit;
-}
+class OfficerProductionModel
+{
+    private mysqli $conn;
 
-require_once __DIR__ . '/../config.php';
+    public function __construct(mysqli $conn)
+    {
+        $this->conn = $conn;
+    }
 
-// Helper Function: Compute 7 daily slots (Isnin 7:01 AM - Selasa 7:00 AM) based on Date In
-if (!function_exists('getWeeklyPerformanceSlots')) {
-    function getWeeklyPerformanceSlots(mysqli $conn, float $shiftTarget = 5200.0, ?int $customMondayTimestamp = null): array {
+    /**
+     * Compute 7 daily slots (Isnin 7:01 AM - Selasa 7:00 AM) based on Date In
+     */
+    public function getWeeklyPerformanceSlots(float $shiftTarget = 5200.0, ?int $customMondayTimestamp = null): array
+    {
+        $conn = $this->conn;
         $now = time();
 
         if ($customMondayTimestamp !== null) {
@@ -88,8 +94,6 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
             LIMIT 1
         ");
 
-        // Recoiling count query per day slot:
-        // Returns parent coils (distinct lot_no, coil_no), total rolls, and breakdown by process type
         $stmtRecoil = $conn->prepare("
             SELECT 
                 COUNT(DISTINCT rp.lot_no, rp.coil_no) AS recoil_coils,
@@ -104,97 +108,96 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
             )
         ");
 
-        $activeDailyTarget = $shiftTarget * 2; // Default for current active cycle
+        $activeDailyTarget = $shiftTarget * 2;
         $weeklyRecoilCoilsTotal = 0;
         $weeklyRecoilRollsTotal = 0;
         $weeklyRewindingTotal = 0;
         $weeklyCutDefectTotal = 0;
 
         for ($i = 0; $i < 7; $i++) {
-            $startTs = strtotime("+{$i} days", $mondayTimestamp);
-            $endTs   = strtotime("+1 day -1 second", $startTs);
+            $slotStartTs = strtotime("+{$i} days", $mondayTimestamp);
+            $slotEndTs   = strtotime("+1 day -1 second", $slotStartTs);
 
-            $startStr = date('Y-m-d H:i:s', $startTs);
-            $endStr   = date('Y-m-d H:i:s', $endTs);
+            $startStr = date('Y-m-d H:i:s', $slotStartTs);
+            $endStr   = date('Y-m-d H:i:s', $slotEndTs);
 
-            // Threshold window for 3rd shift (15,600m target):
-            // For Friday (Jumaat): Shift 2 extends to 01:00 AM, so target becomes 15,600m only if coil produced after 01:00 AM
-            // For other days: target becomes 15,600m if coil produced after 12:00 AM midnight
-            $isFriday        = ($days[$i] === 'Jumaat' || (int)date('N', $startTs) === 5);
-            $thresholdTs     = strtotime(date($isFriday ? 'Y-m-d 01:00:00' : 'Y-m-d 00:00:00', strtotime('+1 day', $startTs)));
-            $thresholdStr    = date('Y-m-d H:i:s', $thresholdTs);
+            $startDisplay = date('d M, h:i A', $slotStartTs);
+            $endDisplay   = date('d M, h:i A', $slotEndTs);
 
-            $startDisplay = date('d/m (D) h:i A', $startTs);
-            $endDisplay   = date('d/m (D) h:i A', $endTs);
-
-            // 1. Calculate produced meters
             $produced = 0.0;
             if ($stmt) {
                 $stmt->bind_param("ss", $startStr, $endStr);
                 $stmt->execute();
                 $res = $stmt->get_result();
                 if ($row = $res->fetch_assoc()) {
-                    $produced = (float)$row['total_len'];
+                    $produced = floatval($row['total_len']);
                 }
             }
 
-            // 2. Check if production occurred after threshold (01:00 AM on Friday, 12:00 AM on other days)
+            $slotDayOfWeek = (int)date('N', $slotStartTs);
+            $isFriday = ($slotDayOfWeek === 5);
+
+            $midnightTs = strtotime('+17 hours -60 seconds', $slotStartTs);
+            $midnightStr = date('Y-m-d H:i:s', $midnightTs);
+
             $hasPost12am = false;
             if ($stmtMidnight) {
-                $stmtMidnight->bind_param("ss", $thresholdStr, $endStr);
+                $stmtMidnight->bind_param("ss", $midnightStr, $endStr);
                 $stmtMidnight->execute();
-                $resM = $stmtMidnight->get_result();
-                if ($resM && $resM->num_rows > 0) {
+                $resMid = $stmtMidnight->get_result();
+                if ($resMid && $resMid->num_rows > 0) {
                     $hasPost12am = true;
                 }
             }
 
             if (!$hasPost12am && $stmtMidnightRunning) {
-                $stmtMidnightRunning->bind_param("ss", $thresholdStr, $endStr);
+                $stmtMidnightRunning->bind_param("ss", $midnightStr, $endStr);
                 $stmtMidnightRunning->execute();
-                $resRun = $stmtMidnightRunning->get_result();
-                if ($resRun && $resRun->num_rows > 0) {
+                $resMidRun = $stmtMidnightRunning->get_result();
+                if ($resMidRun && $resMidRun->num_rows > 0) {
                     $hasPost12am = true;
                 }
             }
 
-            // 3. Calculate recoiling roll and coil counts for this slot
+            $isCurrentSlot = ($now >= $slotStartTs && $now <= $slotEndTs);
+            if (!$hasPost12am && $isCurrentSlot && $now > $midnightTs) {
+                $hasPost12am = true;
+            }
+
+            $slotShifts = $hasPost12am ? 3 : 2;
+            $slotTarget = $shiftTarget * $slotShifts;
+
             $recoilCoils = 0;
             $recoilRolls = 0;
             $rewindingCount = 0;
             $cutDefectCount = 0;
+
             if ($stmtRecoil) {
                 $stmtRecoil->bind_param("ssss", $startStr, $endStr, $startStr, $endStr);
                 $stmtRecoil->execute();
                 $resRecoil = $stmtRecoil->get_result();
                 if ($rowR = $resRecoil->fetch_assoc()) {
-                    $recoilCoils    = (int)($rowR['recoil_coils'] ?? 0);
-                    $recoilRolls    = (int)($rowR['recoil_rolls'] ?? 0);
+                    $recoilCoils = (int)($rowR['recoil_coils'] ?? 0);
+                    $recoilRolls = (int)($rowR['recoil_rolls'] ?? 0);
                     $rewindingCount = (int)($rowR['rewinding_count'] ?? 0);
                     $cutDefectCount = (int)($rowR['cut_defect_count'] ?? 0);
                 }
             }
+
             $weeklyRecoilCoilsTotal += $recoilCoils;
             $weeklyRecoilRollsTotal += $recoilRolls;
             $weeklyRewindingTotal   += $rewindingCount;
             $weeklyCutDefectTotal   += $cutDefectCount;
 
-            // Slot Target: Default 10,400 m (2 shifts), becomes 15,600 m if production after threshold (3 shifts)
-            $slotShifts = $hasPost12am ? 3 : 2;
-            $slotTarget = $shiftTarget * $slotShifts;
-
             $weeklyProducedTotal += $produced;
             $weeklyTargetTotal   += $slotTarget;
 
             $variance = $produced - $slotTarget;
-            $percentage = ($slotTarget > 0) ? round(($produced / $slotTarget) * 100, 1) : 0.0;
-            $isToday = ($now >= $startTs && $now <= $endTs);
-
-            if ($isToday) {
-                $activeDailyTarget = $slotTarget;
-            }
+            $percentage = ($slotTarget > 0) ? min(100.0, round(($produced / $slotTarget) * 100, 1)) : 0.0;
+            $isToday = (date('Y-m-d', $now) === date('Y-m-d', $slotStartTs));
 
             $slots[] = [
+                'day_index'                 => $i + 1,
                 'day_name'                  => $days[$i],
                 'start_time'                => $startStr,
                 'end_time'                  => $endStr,
@@ -217,18 +220,10 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
             ];
         }
 
-        if ($stmt) {
-            $stmt->close();
-        }
-        if ($stmtMidnight) {
-            $stmtMidnight->close();
-        }
-        if ($stmtMidnightRunning) {
-            $stmtMidnightRunning->close();
-        }
-        if ($stmtRecoil) {
-            $stmtRecoil->close();
-        }
+        if ($stmt) $stmt->close();
+        if ($stmtMidnight) $stmtMidnight->close();
+        if ($stmtMidnightRunning) $stmtMidnightRunning->close();
+        if ($stmtRecoil) $stmtRecoil->close();
 
         $overallPct = ($weeklyTargetTotal > 0) ? min(100.0, round(($weeklyProducedTotal / $weeklyTargetTotal) * 100, 1)) : 0.0;
 
@@ -247,59 +242,64 @@ if (!function_exists('getWeeklyPerformanceSlots')) {
             'slots'                     => $slots
         ];
     }
-}
 
-$action = $_REQUEST['action'] ?? 'get_data';
-
-// 1. GET WEEKLY PERFORMANCE & CONFIG DATA
-if ($action === 'get_data') {
-    $shiftTarget = (float)getSystemSetting($conn, 'shift_target_meters', '5200');
-    if ($shiftTarget <= 0) {
-        $shiftTarget = 5200.0;
+    /**
+     * Get system setting helper
+     */
+    public function getSystemSetting(string $key, string $default = ''): string
+    {
+        if (function_exists('getSystemSetting')) {
+            return getSystemSetting($this->conn, $key, $default);
+        }
+        return $default;
     }
 
-    $weeklyData = getWeeklyPerformanceSlots($conn, $shiftTarget);
-    
-    // Calculate Last Week's performance slots
-    $currentMondayTs  = strtotime($weeklyData['monday_cycle_start']);
-    $lastWeekMondayTs = strtotime('-7 days', $currentMondayTs);
-    $lastWeekData     = getWeeklyPerformanceSlots($conn, $shiftTarget, $lastWeekMondayTs);
-
-    $lastReset = getSystemSetting($conn, 'last_weekly_reset_at', '-');
-
-    echo json_encode([
-        'success'               => true,
-        'timestamp'             => date('Y-m-d H:i:s'),
-        'shift_target_meters'   => $shiftTarget,
-        'daily_target_meters'   => $weeklyData['daily_target_meters'],
-        'weekly_target_meters'  => $weeklyData['weekly_target_meters'],
-        'last_weekly_reset_at'  => $lastReset,
-        'weekly_performance'    => $weeklyData,
-        'last_week_performance' => $lastWeekData
-    ]);
-    exit;
-}
-
-// 2. UPDATE SHIFT TARGET CONFIGURATION
-if ($action === 'update_target') {
-    $rawVal = $_POST['target_meters'] ?? $_GET['target_meters'] ?? '';
-    $newTarget = floatval($rawVal);
-
-    if ($newTarget <= 0) {
-        echo json_encode(['success' => false, 'message' => 'Sila masukkan nilai sasaran syif yang sah (lebih daripada 0 meter).']);
-        exit;
+    /**
+     * Set system setting helper
+     */
+    public function setSystemSetting(string $key, string $value): bool
+    {
+        if (function_exists('setSystemSetting')) {
+            return setSystemSetting($this->conn, $key, $value);
+        }
+        return false;
     }
 
-    $ok = setSystemSetting($conn, 'shift_target_meters', (string)$newTarget);
+    /**
+     * Update Shift Target
+     */
+    public function updateTarget(float $newTarget, string $user = 'officer'): bool
+    {
+        $ok = $this->setSystemSetting('shift_target_meters', (string)$newTarget);
+        if ($ok) {
+            $remark = "Kemas kini sasaran syif kepada {$newTarget} m";
+            $stmtLog = $this->conn->prepare("
+                INSERT INTO process_log
+                    (entity_type, entity_id, mother_id, from_status, to_status, performed_by, action_detail, remark)
+                VALUES ('system_setting', 0, NULL, 'CONFIG', 'UPDATE', ?, 'update_shift_target', ?)
+            ");
+            if ($stmtLog) {
+                $stmtLog->bind_param("ss", $user, $remark);
+                $stmtLog->execute();
+                $stmtLog->close();
+            }
+        }
+        return $ok;
+    }
 
-    if ($ok) {
-        // Audit Log
-        $user = $_SESSION['role'] ?? 'officer';
-        $remark = "Kemas kini sasaran syif kepada {$newTarget} m";
-        $stmtLog = $conn->prepare("
+    /**
+     * Manual Reset Weekly Cycle
+     */
+    public function manualReset(string $user = 'officer'): string
+    {
+        $nowStr = date('Y-m-d H:i:s');
+        $this->setSystemSetting('last_weekly_reset_at', $nowStr);
+
+        $remark = "Pembersihan/Reset manual kitaran pengeluaran mingguan dilaksanakan oleh pegawai.";
+        $stmtLog = $this->conn->prepare("
             INSERT INTO process_log
                 (entity_type, entity_id, mother_id, from_status, to_status, performed_by, action_detail, remark)
-            VALUES ('system_setting', 0, NULL, 'CONFIG', 'UPDATE', ?, 'update_shift_target', ?)
+            VALUES ('stock', 0, NULL, 'ACTIVE', 'MANUAL_RESET', ?, 'weekly_manual_reset', ?)
         ");
         if ($stmtLog) {
             $stmtLog->bind_param("ss", $user, $remark);
@@ -307,44 +307,6 @@ if ($action === 'update_target') {
             $stmtLog->close();
         }
 
-        echo json_encode([
-            'success'        => true,
-            'message'        => 'Sasaran purata syif berjaya dikemas kini.',
-            'new_target'     => $newTarget,
-            'daily_target'   => $newTarget * 3,
-            'weekly_target'  => $newTarget * 3 * 7
-        ]);
-    } else {
-        echo json_encode(['success' => false, 'message' => 'Ralat ketika menyimpan sasaran ke pangkalan data.']);
+        return $nowStr;
     }
-    exit;
 }
-
-// 3. MANUAL RESET WEEKLY CYCLE LOGIC
-if ($action === 'manual_reset') {
-    $user = $_SESSION['role'] ?? 'officer';
-    $nowStr = date('Y-m-d H:i:s');
-    setSystemSetting($conn, 'last_weekly_reset_at', $nowStr);
-
-    $remark = "Pembersihan/Reset manual kitaran pengeluaran mingguan dilaksanakan oleh pegawai.";
-    $stmtLog = $conn->prepare("
-        INSERT INTO process_log
-            (entity_type, entity_id, mother_id, from_status, to_status, performed_by, action_detail, remark)
-        VALUES ('stock', 0, NULL, 'ACTIVE', 'MANUAL_RESET', ?, 'weekly_manual_reset', ?)
-    ");
-    if ($stmtLog) {
-        $stmtLog->bind_param("ss", $user, $remark);
-        $stmtLog->execute();
-        $stmtLog->close();
-    }
-
-    echo json_encode([
-        'success'   => true,
-        'message'   => 'Reset kitaran pengeluaran mingguan berjaya dilaksanakan.',
-        'timestamp' => $nowStr
-    ]);
-    exit;
-}
-
-echo json_encode(['success' => false, 'message' => 'Tindakan tidak sah.']);
-exit;
