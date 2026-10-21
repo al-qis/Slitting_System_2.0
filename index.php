@@ -488,10 +488,10 @@ body {
         <span>Metakote Slitting &nbsp;·&nbsp; <?= date('F Y') ?></span>
     </div>
     <div class="db-pills">
-        <a href="officer_production_monitor.php" class="btn btn-sm btn-primary fw-semibold shadow-sm px-3 d-flex align-items-center gap-1 text-white text-decoration-none">
+        <a href="monitor_screen/officer_production_monitor.php" class="btn btn-sm btn-primary fw-semibold shadow-sm px-3 d-flex align-items-center gap-1 text-white text-decoration-none">
             <i class="bi bi-display"></i> Officer Monitor
         </a>
-        <a href="production_monitoring.php" class="btn btn-sm btn-outline-primary fw-semibold shadow-sm px-3 d-flex align-items-center gap-1 text-decoration-none">
+        <a href="monitor_screen/production_monitoring.php" class="btn btn-sm btn-outline-primary fw-semibold shadow-sm px-3 d-flex align-items-center gap-1 text-decoration-none">
             <i class="bi bi-tv"></i> Live Monitor
         </a>
         <div class="pill pill-scanner">
@@ -607,7 +607,7 @@ body {
 <div class="sec-head">Quick Actions</div>
 
 <div class="qa-grid">
-    <a href="officer_production_monitor.php" class="qa-btn" style="--qa-c:#2563EB; --qa-bg:#EFF6FF;">
+    <a href="monitor_screen/officer_production_monitor.php" class="qa-btn" style="--qa-c:#2563EB; --qa-bg:#EFF6FF;">
         <div class="qa-icon"><i class="bi bi-display"></i></div>
         <div>
             Officer Monitor
@@ -616,7 +616,7 @@ body {
         <i class="bi bi-arrow-right qa-arrow"></i>
     </a>
 
-    <a href="production_monitoring.php" class="qa-btn" style="--qa-c:#0891B2; --qa-bg:#ECFEFF;">
+    <a href="monitor_screen/production_monitoring.php" class="qa-btn" style="--qa-c:#0891B2; --qa-bg:#ECFEFF;">
         <div class="qa-icon"><i class="bi bi-tv"></i></div>
         <div>
             Live Monitor

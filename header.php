@@ -76,7 +76,7 @@
                 $current_page = basename($_SERVER['PHP_SELF']);
                 $script_name = str_replace('\\', '/', $_SERVER['SCRIPT_NAME'] ?? '');
                 $is_control_center = (strpos($script_name, 'control_system') !== false);
-                $is_officer_monitor = ($current_page === 'officer_production_monitor.php');
+                $is_officer_monitor = ($current_page === 'officer_production_monitor.php' || strpos($script_name, 'monitor_screen') !== false);
                 $is_officer_page = ($is_officer_monitor || $is_control_center);
                 $role = $_SESSION['role'] ?? '';
                 $prefix = isset($pathPrefix) ? $pathPrefix : '';
@@ -99,7 +99,7 @@
 
                 // Dedicated 2-page navbar menu for Officer Monitor & Control Center pages
                 $officer_menu_items = [
-                    'officer_production_monitor.php' => ['icon' => 'display', 'label' => 'Officer Monitor'],
+                    'monitor_screen/officer_production_monitor.php' => ['icon' => 'display', 'label' => 'Officer Monitor'],
                     'control_system/index.php'       => ['icon' => 'sliders', 'label' => 'Control Center'],
                 ];
 
@@ -120,7 +120,7 @@
                 foreach ($menu_items as $url => $info):
                     if ($url === 'control_system/index.php') {
                         $active = $is_control_center ? 'active-nav' : '';
-                    } elseif ($url === 'officer_production_monitor.php') {
+                    } elseif ($url === 'officer_production_monitor.php' || $url === 'monitor_screen/officer_production_monitor.php') {
                         $active = $is_officer_monitor ? 'active-nav' : '';
                     } elseif ($url === 'index.php') {
                         $active = (!$is_control_center && !$is_officer_monitor && $current_page === 'index.php') ? 'active-nav' : '';
