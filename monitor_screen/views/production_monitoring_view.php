@@ -67,6 +67,16 @@ include __DIR__ . '/../../header.php';
     .roll-details-table tbody tr:hover td {
         background-color: rgba(56, 189, 248, 0.1) !important;
     }
+    .roll-details-table.compact-table thead th {
+        padding: 5px 8px !important;
+        font-size: 0.72rem !important;
+        letter-spacing: 0.5px;
+    }
+    .roll-details-table.compact-table tbody td {
+        padding: 4px 8px !important;
+        font-size: 0.82rem !important;
+        line-height: 1.25;
+    }
     .idle-hero-card {
         background: linear-gradient(135deg, #334155 0%, #1e293b 100%);
         color: #94a3b8;
@@ -676,42 +686,72 @@ function renderSectionA(running) {
     }
 
     // Helper: Build the 4-column Roll Details Table (used across ALL stages)
+    // If rolls > 7 (e.g. 8 - 15+ coils), auto split into 2 side-by-side compact tables
     const buildRollDetailsTableHtml = (rollList) => {
-        let rollRowsHtml = '';
-        if (rollList && rollList.length > 0) {
-            rollRowsHtml = rollList.map((roll, idx) => `
-                <tr>
-                    <td class="fw-bold text-warning text-nowrap">${roll.roll_no || ('R' + (idx + 1))}</td>
-                    <td class="fw-bold text-info text-nowrap">${roll.width_fmt || (roll.width ? roll.width + ' mm' : '-')}</td>
-                    <td class="text-white text-nowrap fw-semibold">${roll.customer_name || '-'}</td>
-                    <td class="text-light font-monospace text-nowrap">${roll.ref_no || '-'}</td>
-                </tr>
-            `).join('');
-        } else {
-            rollRowsHtml = `
-                <tr>
-                    <td colspan="4" class="text-center text-muted py-3">No roll details recorded</td>
-                </tr>
+        const renderRow = (roll, idx, offset = 0) => `
+            <tr>
+                <td class="fw-bold text-warning text-nowrap">${roll.roll_no || ('R' + (offset + idx + 1))}</td>
+                <td class="fw-bold text-info text-nowrap">${roll.width_fmt || (roll.width ? roll.width + ' mm' : '-')}</td>
+                <td class="text-white text-nowrap fw-semibold text-truncate" style="max-width: 120px;" title="${roll.customer_name || '-'}">${roll.customer_name || '-'}</td>
+                <td class="text-light font-monospace text-nowrap text-truncate" style="max-width: 120px;" title="${roll.ref_no || '-'}">${roll.ref_no || '-'}</td>
+            </tr>
+        `;
+
+        const renderTableWrapper = (rowsHtml, isCompact = false) => `
+            <div class="table-responsive rounded-2" style="max-height: 320px; overflow-y: auto;">
+                <table class="table table-dark table-striped table-hover align-middle mb-0 roll-details-table ${isCompact ? 'compact-table' : ''}">
+                    <thead>
+                        <tr>
+                            <th class="text-warning fw-bold text-nowrap" style="width: 16%;">ROLL</th>
+                            <th class="text-info fw-bold text-nowrap" style="width: 22%;">WIDTH</th>
+                            <th class="text-light fw-bold text-nowrap" style="width: 32%;">CUSTOMER NAME</th>
+                            <th class="text-light fw-bold text-nowrap" style="width: 30%;">SO NUM / REF NO</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${rowsHtml}
+                    </tbody>
+                </table>
+            </div>
+        `;
+
+        if (!rollList || rollList.length === 0) {
+            const emptyRows = `<tr><td colspan="4" class="text-center text-muted py-3">No roll details recorded</td></tr>`;
+            return `
+                <div class="roll-details-section mt-3 pt-3 border-top border-secondary border-opacity-50">
+                    ${renderTableWrapper(emptyRows, false)}
+                </div>
             `;
         }
 
+        // If more than 7 rolls (e.g. 8 - 15+ coils), split into 2 side-by-side tables with compact columns
+        if (rollList.length > 7) {
+            const splitIdx = Math.ceil(rollList.length / 2);
+            const leftList = rollList.slice(0, splitIdx);
+            const rightList = rollList.slice(splitIdx);
+
+            const leftRowsHtml = leftList.map((roll, idx) => renderRow(roll, idx, 0)).join('');
+            const rightRowsHtml = rightList.map((roll, idx) => renderRow(roll, idx, splitIdx)).join('');
+
+            return `
+                <div class="roll-details-section mt-3 pt-3 border-top border-secondary border-opacity-50">
+                    <div class="row g-2">
+                        <div class="col-12 col-md-6">
+                            ${renderTableWrapper(leftRowsHtml, true)}
+                        </div>
+                        <div class="col-12 col-md-6">
+                            ${renderTableWrapper(rightRowsHtml, true)}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // 7 or fewer rolls: single regular table
+        const singleRowsHtml = rollList.map((roll, idx) => renderRow(roll, idx, 0)).join('');
         return `
             <div class="roll-details-section mt-3 pt-3 border-top border-secondary border-opacity-50">
-                                <div class="table-responsive rounded-2" style="max-height: 280px; overflow-y: auto;">
-                    <table class="table table-dark table-striped table-hover align-middle mb-0 roll-details-table">
-                        <thead>
-                            <tr>
-                                <th class="text-warning fw-bold text-nowrap" style="width: 15%;">ROLL</th>
-                                <th class="text-info fw-bold text-nowrap" style="width: 20%;">WIDTH</th>
-                                <th class="text-light fw-bold text-nowrap" style="width: 35%;">CUSTOMER NAME</th>
-                                <th class="text-light fw-bold text-nowrap" style="width: 30%;">SO NUM / REF NO</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${rollRowsHtml}
-                        </tbody>
-                    </table>
-                </div>
+                ${renderTableWrapper(singleRowsHtml, false)}
             </div>
         `;
     };
