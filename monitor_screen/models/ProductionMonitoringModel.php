@@ -548,7 +548,7 @@ class ProductionMonitoringModel
     {
         $conn = $this->conn;
 
-        // ── Fetch ALL Active/Pending Coils Across All Operations (Slitting, Recoiling, Reslit) ──
+        // ── Fetch ALL Active/Pending Coils for Slitting ──
         $all_active_jobs = [];
 
         // 1. Pending Slitting Coils
@@ -588,72 +588,6 @@ class ProductionMonitoringModel
 
         if ($slitting_pending_res) {
             while ($row = $slitting_pending_res->fetch_assoc()) {
-                $all_active_jobs[] = $row;
-            }
-        }
-
-        // 2. Pending Recoiling Cuts
-        $recoiling_pending_res = $conn->query("
-            SELECT 
-                'Recoiling' AS proc_name,
-                rp.mother_id,
-                rp.lot_no,
-                rp.coil_no,
-                rp.product,
-                '-' AS customer_name,
-                MIN(rp.date_in) AS start_time,
-                rp.started_at AS active_started_at,
-                rp.status AS job_status,
-                CASE WHEN rp.status = 'in_progress' THEN 'In Progress' ELSE 'Pending Intake' END AS sub_status,
-                COALESCE(rp.new_width, rp.width) AS mother_width,
-                COALESCE(rp.new_length, rp.length) AS mother_length,
-                1 AS is_recoiled,
-                0 AS is_reslitted,
-                rp.original_source,
-                0 AS stock_id,
-                COUNT(rp.id) AS total_rolls,
-                0 AS completed_rolls,
-                MIN(rp.date_in) AS mother_received_at
-            FROM recoiling_product rp
-            WHERE rp.status IN ('pending', 'in_progress')
-            GROUP BY rp.mother_id, rp.lot_no, rp.coil_no, rp.product, rp.status, rp.started_at, rp.new_width, rp.width, rp.new_length, rp.length, rp.original_source
-        ");
-
-        if ($recoiling_pending_res) {
-            while ($row = $recoiling_pending_res->fetch_assoc()) {
-                $all_active_jobs[] = $row;
-            }
-        }
-
-        // 3. Pending Reslit Cuts
-        $reslit_pending_res = $conn->query("
-            SELECT 
-                'Reslit' AS proc_name,
-                rsp.mother_id,
-                rsp.lot_no,
-                rsp.coil_no,
-                rsp.product,
-                '-' AS customer_name,
-                MIN(rsp.date_in) AS start_time,
-                rsp.started_at AS active_started_at,
-                rsp.status AS job_status,
-                CASE WHEN rsp.status = 'in_progress' THEN 'In Progress' ELSE 'Pending Intake' END AS sub_status,
-                COALESCE(rsp.new_width, rsp.width) AS mother_width,
-                rsp.length AS mother_length,
-                0 AS is_recoiled,
-                1 AS is_reslitted,
-                rsp.original_source,
-                0 AS stock_id,
-                COUNT(rsp.id) AS total_rolls,
-                0 AS completed_rolls,
-                MIN(rsp.date_in) AS mother_received_at
-            FROM reslit_product rsp
-            WHERE rsp.status IN ('pending', 'in_progress')
-            GROUP BY rsp.mother_id, rsp.lot_no, rsp.coil_no, rsp.product, rsp.status, rsp.started_at, rsp.new_width, rsp.width, rsp.length, rsp.original_source
-        ");
-
-        if ($reslit_pending_res) {
-            while ($row = $reslit_pending_res->fetch_assoc()) {
                 $all_active_jobs[] = $row;
             }
         }
