@@ -1,23 +1,9 @@
 <?php
-session_start();
-
-if (!isset($_SESSION['role'])) {
-    header("Location: ../login.php");
-    exit;
-}
-
-require_once __DIR__ . '/../config.php';
-
-$page_title = "Papan Pemantauan Pengeluaran Pegawai (Officer Monitor)";
-$pathPrefix = '../';
-include __DIR__ . '/../header.php';
-
-$shiftTarget = (float)getSystemSetting($conn, 'shift_target_meters', '5200');
-if ($shiftTarget <= 0) {
-    $shiftTarget = 5200.0;
-}
-$dailyTargetDefault = $shiftTarget * 2; // Default 2 shifts: 10,400 m
-$weeklyTargetDefault = $dailyTargetDefault * 7; // Estimated minimum 14 shifts
+/**
+ * officer_production_view.php
+ * View template for Officer Production Monitor
+ */
+include __DIR__ . '/../../header.php';
 ?>
 
 <!-- Include Chart.js for Weekly Slot Performance Chart -->
@@ -73,10 +59,10 @@ $weeklyTargetDefault = $dailyTargetDefault * 7; // Estimated minimum 14 shifts
             </p>
         </div>
         <div class="d-flex align-items-center gap-2">
-            <a href="production_monitoring.php" target="_blank" rel="noopener noreferrer" class="btn btn-outline-info fw-semibold px-3 shadow-sm">
+            <a href="../monitor_screen/production_monitoring.php" target="_blank" rel="noopener noreferrer" class="btn btn-outline-info fw-semibold px-3 shadow-sm">
                 <i class="bi bi-tv me-1"></i> Live Production Monitor
             </a>
-            <a href="index.php" class="btn btn-outline-secondary fw-semibold px-3 shadow-sm">
+            <a href="../index.php" class="btn btn-outline-secondary fw-semibold px-3 shadow-sm">
                 <i class="bi bi-arrow-left me-1"></i> Dashboard
             </a>
             <button type="button" class="btn btn-outline-primary fw-semibold px-3 shadow-sm" data-bs-toggle="modal" data-bs-target="#targetConfigModal">
@@ -736,4 +722,4 @@ function confirmManualReset() {
 }
 </script>
 
-<?php include __DIR__ . '/../footer.php'; ?>
+<?php include __DIR__ . '/../../footer.php'; ?>

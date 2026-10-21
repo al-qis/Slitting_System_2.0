@@ -488,7 +488,7 @@ body {
         <span>Metakote Slitting &nbsp;·&nbsp; <?= date('F Y') ?></span>
     </div>
     <div class="db-pills">
-        <a href="monitor_screen/officer_production_monitor.php" class="btn btn-sm btn-primary fw-semibold shadow-sm px-3 d-flex align-items-center gap-1 text-white text-decoration-none">
+        <a href="officer_monitor/index.php" class="btn btn-sm btn-primary fw-semibold shadow-sm px-3 d-flex align-items-center gap-1 text-white text-decoration-none">
             <i class="bi bi-display"></i> Officer Monitor
         </a>
         <a href="monitor_screen/production_monitoring.php" class="btn btn-sm btn-outline-primary fw-semibold shadow-sm px-3 d-flex align-items-center gap-1 text-decoration-none">
@@ -607,7 +607,7 @@ body {
 <div class="sec-head">Quick Actions</div>
 
 <div class="qa-grid">
-    <a href="monitor_screen/officer_production_monitor.php" class="qa-btn" style="--qa-c:#2563EB; --qa-bg:#EFF6FF;">
+    <a href="officer_monitor/index.php" class="qa-btn" style="--qa-c:#2563EB; --qa-bg:#EFF6FF;">
         <div class="qa-icon"><i class="bi bi-display"></i></div>
         <div>
             Officer Monitor

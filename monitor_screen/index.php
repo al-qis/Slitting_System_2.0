@@ -1,4 +1,10 @@
 <?php
-// Default monitor screen entrypoint redirects to the main production monitoring TV display
-header("Location: production_monitoring.php");
-exit;
+/**
+ * index.php - Default Entrypoint for Monitor Screen Module
+ * Location: /monitor_screen/index.php
+ */
+
+require_once __DIR__ . '/controllers/ProductionMonitoringController.php';
+
+$controller = new ProductionMonitoringController();
+$controller->index();
