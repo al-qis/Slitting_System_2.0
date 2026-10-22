@@ -25,6 +25,8 @@ if ($_SESSION['role'] !== 'slitting') { die("Access denied"); }
 
 include 'config.php';
 require_once 'PalletManager.php';
+require_once __DIR__ . '/control_system/config_store.php';
+$isManualDeliverActive = function_exists('isButtonActive') ? isButtonActive('pallet_manual_deliver') : true;
 
 // Auto-create operators table if not exists
 $conn->query("
@@ -330,6 +332,38 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === 'update_pallet_date') {
     exit;
 }
 
+// ── AJAX: Auto Deliver Pallet ──────────────────────────────────
+if (isset($_POST['ajax']) && $_POST['ajax'] === 'auto_deliver_pallet') {
+    header('Content-Type: application/json');
+    $palletId = (int)($_POST['pallet_id'] ?? 0);
+    if ($palletId <= 0) {
+        echo json_encode(['ok' => false, 'msg' => 'Missing or invalid pallet_id.']);
+        exit;
+    }
+    $result = $pm->bundleDeliver($palletId);
+    echo json_encode($result);
+    exit;
+}
+
+// ── AJAX: Poll Auto-Deliver (15 sec after approval) ───────────────
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'poll_auto_deliver') {
+    header('Content-Type: application/json');
+    $delivered = [];
+    if (!$isManualDeliverActive) {
+        $stmt = $conn->query("SELECT id, pallet_no FROM pallets WHERE status = 'approved' AND TIMESTAMPDIFF(SECOND, updated_at, NOW()) >= 15");
+        if ($stmt && $stmt->num_rows > 0) {
+            while ($row = $stmt->fetch_assoc()) {
+                $delRes = $pm->bundleDeliver((int)$row['id']);
+                if ($delRes['ok']) {
+                    $delivered[] = $row['pallet_no'];
+                }
+            }
+        }
+    }
+    echo json_encode(['ok' => true, 'delivered' => $delivered]);
+    exit;
+}
+
 // ═══════════════════════════════════════════════════════════════
 // AJAX: DELIVER BY SCAN  (Method 2 — global scan-to-deliver)
 //
@@ -539,13 +573,24 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === 'deliver_by_scan') {
         }
     }
 
+    // ── Auto-Deliver Scanned Approved Pallet (when manual delivery is blocked) ──
+    $targetDelivered = false;
+    if ($targetStatus === 'approved' && !$isManualDeliverActive) {
+        $delivRes = $pm->bundleDeliver($targetPalletId);
+        if ($delivRes['ok']) {
+            $targetDelivered = true;
+            $targetStatus = 'delivered';
+        }
+    }
+
     echo json_encode([
-        'ok'             => true,
-        'pallet_id'      => $targetPalletId,
-        'pallet_no'      => $targetPalletNo,
-        'status'         => $targetStatus,
-        'prev_delivered' => $prevDelivered,
-        'prev_pallet_no' => $prevPalletNo,
+        'ok'               => true,
+        'pallet_id'        => $targetPalletId,
+        'pallet_no'        => $targetPalletNo,
+        'status'           => $targetStatus,
+        'target_delivered' => $targetDelivered,
+        'prev_delivered'   => $prevDelivered,
+        'prev_pallet_no'   => $prevPalletNo,
     ]);
     exit;
 }
@@ -868,9 +913,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'resub
 // ── POST: Deliver ─────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'deliver_pallet') {
     $palletId = intval($_POST['pallet_id'] ?? 0);
+    if (!$isManualDeliverActive) {
+        header("Location: pallet.php?pallet_id={$palletId}&error=" . urlencode("Manual pallet delivery is currently BLOCKED in Control Center."));
+        exit;
+    }
     $result   = $pm->bundleDeliver($palletId);
-    if ($result['ok']) { header("Location: pallet.php?success=delivered&pallet_no=" . urlencode($result['pallet_no'] ?? '')); }
-    else               { header("Location: pallet.php?error=" . urlencode($result['msg'])); }
+    if ($result['ok']) { header("Location: pallet.php?pallet_id={$palletId}&success=delivered&pallet_no=" . urlencode($result['pallet_no'] ?? '')); }
+    else               { header("Location: pallet.php?pallet_id={$palletId}&error=" . urlencode($result['msg'])); }
     exit;
 }
 
@@ -998,6 +1047,10 @@ $MAX = PalletManager::MAX_ROLLS;
 $isBuilding  = $activePallet && $activePallet['status'] === 'building';
 $isRejected  = $activePallet && $activePallet['status'] === 'rejected';
 $isApproved  = $activePallet && $activePallet['status'] === 'approved';
+$secondsSinceApproved = 0;
+if ($isApproved && !empty($activePallet['updated_at'])) {
+    $secondsSinceApproved = max(0, time() - strtotime($activePallet['updated_at']));
+}
 $isPendingQc = $activePallet && $activePallet['status'] === 'pending_qc';
 $isDelivered = $activePallet && $activePallet['status'] === 'delivered';
 $isReadOnly  = $activePallet && !in_array($activePallet['status'], ['building', 'rejected']);
@@ -1353,6 +1406,7 @@ $successMsgs = [
     'resubmitted'    => 'Pallet re-submitted to QC after editing.',
     'reopened'       => 'Pallet returned to edit mode — make necessary corrections, then re-submit to QC.',
     'delivered'      => 'Pallet ' . htmlspecialchars($_GET['pallet_no'] ?? '') . ' delivered.',
+    'auto_delivered' => 'Pallet ' . htmlspecialchars($_GET['pallet_no'] ?? '') . ' was automatically sent to deliver.',
     'prev_delivered' => 'Previous approved Pallet ' . htmlspecialchars($_GET['prev_no'] ?? '') . ' was automatically delivered as you transitioned to a new pallet.',
     'pallet_deleted' => 'Pallet ' . htmlspecialchars($_GET['pallet_no'] ?? '') . ' deleted. Rolls returned to stock.',
 ];
@@ -2297,6 +2351,35 @@ if (isset($_GET['success'])): ?>
             <?php endif; ?>
 
             <div class="card-body p-4">
+                <?php if (!$isManualDeliverActive): ?>
+                <!-- Auto Send to Deliver Banner (Only shown when manual delivery is blocked in Control Center) -->
+                <div class="alert d-flex align-items-center justify-content-between p-3 mb-3 border-0 shadow-sm" id="autoDeliverAlert" style="background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%); border-left: 5px solid #10b981 !important; border-radius: 8px;">
+                    <div class="d-flex align-items-center gap-3">
+                        <div class="spinner-grow spinner-grow-sm text-success" role="status" id="autoDeliverSpinner" style="width: 1.4rem; height: 1.4rem;"></div>
+                        <div>
+                            <div class="fw-bold text-success d-flex align-items-center gap-2" style="font-size: 14.5px;">
+                                <i class="bi bi-lightning-charge-fill text-warning"></i> Auto Send to Deliver Active
+                                <span class="badge bg-success text-white" id="autoDeliverBadge" style="font-size: 11px;">AUTO-SENDING</span>
+                            </div>
+                            <div class="text-dark small mt-1" id="autoDeliverStatusText">
+                                This pallet is approved and will automatically be sent to deliver in <span class="badge bg-dark fs-6 px-2 py-0" id="autoDeliverCountdown">15</span> seconds...
+                            </div>
+                            <div class="progress mt-2" style="height: 5px; width: 260px; background: rgba(16, 185, 129, 0.2);">
+                                <div class="progress-bar bg-success progress-bar-striped progress-bar-animated" id="autoDeliverProgressBar" style="width: 100%; transition: width 0.1s linear;"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="d-flex align-items-center gap-2 flex-wrap">
+                        <button type="button" class="btn btn-sm btn-success fw-bold px-3 shadow-sm" id="btnDeliverNow" onclick="triggerAutoDeliverImmediate()">
+                            <i class="bi bi-truck me-1"></i> Deliver Now
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary px-3 bg-white" id="btnToggleAutoDeliver" onclick="togglePauseAutoDeliver()">
+                            <i class="bi bi-pause-fill me-1" id="btnToggleAutoDeliverIcon"></i> <span id="btnToggleAutoDeliverText">Pause</span>
+                        </button>
+                    </div>
+                </div>
+                <?php endif; ?>
+
                 <?php
                 $approvedTotalWgt = 0.0;
                 foreach ($activeItems as $item) {
@@ -2390,14 +2473,25 @@ if (isset($_GET['success'])): ?>
                     </button>
                 </div>
 
-                <form method="post"
+                <?php if ($isManualDeliverActive): ?>
+                <form method="post" id="manualDeliverForm"
                       onsubmit="return confirm('Deliver pallet ' + currentPalletNo + '?\n\nAll <?= count($activeItems) ?> roll(s) will be marked DELIVERED.')">
                     <input type="hidden" name="action"    value="deliver_pallet">
                     <input type="hidden" name="pallet_id" value="<?= $activePalletId ?>">
                     <button type="submit" class="btn btn-success fw-bold">
-                        <i class="bi bi-truck me-1"></i> Deliver Pallet
+                        <i class="bi bi-truck me-1"></i> Deliver Pallet (Manual)
                     </button>
                 </form>
+                <?php else: ?>
+                <div class="d-inline-flex align-items-center gap-2">
+                    <button type="button" class="btn btn-secondary fw-bold" disabled title="Manual delivery button is currently BLOCKED in Control Center" style="cursor: not-allowed; opacity: 0.65;">
+                        <i class="bi bi-slash-circle me-1 text-danger"></i> Deliver Pallet (Blocked)
+                    </button>
+                    <span class="badge bg-danger-subtle text-danger border border-danger small py-1 px-2" style="font-size:11px;">
+                        <i class="bi bi-lock-fill me-1"></i>Manual Deliver Blocked in Control Center
+                    </span>
+                </div>
+                <?php endif; ?>
             </div>
         </div>
 
@@ -3293,6 +3387,8 @@ if (isset($_GET['success'])): ?>
 const PALLET_ID   = <?= $activePalletId ?: 'null' ?>;
 const MAX_ROLLS   = <?= $MAX ?>;
 const IS_BUILDING = <?= json_encode($isBuilding) ?>;
+const IS_APPROVED = <?= json_encode($isApproved) ?>;
+const IS_MANUAL_DELIVER_ACTIVE = <?= json_encode($isManualDeliverActive) ?>;
 let currentPalletNo = <?= json_encode($activePallet['pallet_no'] ?? '') ?>;
 let   rollCount = <?= count($activeItems) ?>;
 
@@ -3597,7 +3693,13 @@ async function processDeliveryScan(raw) {
         }
 
         if (res.ok && res.pallet_id) {
-            if (res.prev_delivered && res.prev_pallet_no) {
+            if (res.target_delivered) {
+                showDeliverFeedback(`✓ Pallet ${escHtml(res.pallet_no)} auto-delivered successfully! Opening details...`, true);
+                setTimeout(() => {
+                    window.location.href = `pallet.php?pallet_id=${res.pallet_id}&success=auto_delivered&pallet_no=${encodeURIComponent(res.pallet_no)}`;
+                }, 350);
+                return;
+            } else if (res.prev_delivered && res.prev_pallet_no) {
                 showDeliverFeedback(`✓ Previous approved Pallet ${escHtml(res.prev_pallet_no)} delivered! Opening Pallet ${escHtml(res.pallet_no)}...`, true);
             } else {
                 showDeliverFeedback(`✓ Found Pallet ${escHtml(res.pallet_no || '')}. Opening pallet information...`, true);
@@ -5605,6 +5707,7 @@ function renderPalletList() {
                                 : `<span class="badge ${isActive ? 'bg-white text-dark shadow-sm border' : 'border'}" style="${isActive ? 'border-color:#fde047 !important;' : 'background:#fffbe6; color:#92400e; border-color:#ffe58f !important;'}" title="Re-opened Building Pallet"><i class="bi bi-pencil-fill me-1 text-warning"></i>BUILDING (EDIT #${p.edit_count})</span>`)
                             : `<span class="badge ${badgeClass}">${escHtml(summaryStatusLabel(p.status))}</span>`}
                         ${p.created_date ? `<div class="pallet-card-date"><i class="bi bi-calendar-event me-1"></i>${escHtml(p.created_date)}</div>` : ''}
+                        ${p.status === 'approved' ? (IS_MANUAL_DELIVER_ACTIVE ? `<button type="button" class="btn btn-sm btn-success py-0 px-2 fw-bold mt-1 shadow-sm" style="font-size:11px;" onclick="quickDeliverPallet(event, ${p.id}, '${escHtml(p.pallet_no)}')" title="Deliver Pallet without opening"><i class="bi bi-truck me-1"></i>Deliver</button>` : `<span class="badge bg-warning text-dark border px-2 py-1 shadow-sm mt-1 auto-card-badge" data-pallet-id="${p.id}" style="font-size:11px;"><i class="bi bi-clock-history me-1"></i>Auto in <strong id="cardSec_${p.id}">15</strong>s</span>`) : ''}
                     </div>
                 </div>
                 <div class="pallet-card-customer">${escHtml(p.customer_name || 'No constraint set yet')}</div>
@@ -5617,6 +5720,8 @@ function renderPalletList() {
             </a>
         `;
     }).join('');
+
+    startSidebarCardTimers();
 
     if (PALLET_ID) {
         const activeCard = scroll.querySelector('.pallet-card.active');
@@ -5776,6 +5881,248 @@ async function submitAddOperator() {
             feedback.classList.remove('d-none');
         }
     }
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// AUTO SEND TO DELIVER LOGIC
+// ─────────────────────────────────────────────────────────────
+let autoDeliverTimer = null;
+let autoDeliverSecondsLeft = 15;
+let autoDeliverTotalSeconds = 15;
+let isAutoDeliverPaused = false;
+let isAutoDeliverInProgress = false;
+
+let sidebarCardTimers = {};
+function startSidebarCardTimers() {
+    if (typeof IS_MANUAL_DELIVER_ACTIVE !== 'undefined' && IS_MANUAL_DELIVER_ACTIVE) return;
+    document.querySelectorAll('.auto-card-badge').forEach(badge => {
+        const palletId = badge.dataset.palletId;
+        if (!palletId || sidebarCardTimers[palletId]) return;
+
+        let sec = 15;
+        const countEl = document.getElementById('cardSec_' + palletId);
+
+        sidebarCardTimers[palletId] = setInterval(async () => {
+            sec--;
+            if (countEl) countEl.textContent = sec;
+            if (sec <= 0) {
+                clearInterval(sidebarCardTimers[palletId]);
+                delete sidebarCardTimers[palletId];
+                badge.className = 'badge bg-primary text-white border px-2 py-1 shadow-sm mt-1';
+                badge.innerHTML = '<i class="bi bi-arrow-repeat spin me-1"></i>Delivering...';
+
+                try {
+                    const fd = new FormData();
+                    fd.append('ajax', 'auto_deliver_pallet');
+                    fd.append('pallet_id', palletId);
+                    const resp = await fetch('pallet.php', { method: 'POST', body: fd });
+                    const res = await resp.json();
+                    if (res.ok) {
+                        badge.className = 'badge bg-success text-white border px-2 py-1 shadow-sm mt-1';
+                        badge.innerHTML = '<i class="bi bi-check-circle-fill me-1"></i>Delivered';
+                        setTimeout(() => {
+                            loadPalletList();
+                        }, 400);
+                    }
+                } catch(e) {}
+            }
+        }, 1000);
+    });
+}
+
+async function quickDeliverPallet(event, palletId, palletNo) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+    if (!confirm('Deliver pallet ' + palletNo + ' now?\n\nAll rolls on this pallet will be marked DELIVERED.')) {
+        return;
+    }
+    try {
+        const fd = new FormData();
+        fd.append('ajax', 'auto_deliver_pallet');
+        fd.append('pallet_id', palletId);
+        const resp = await fetch('pallet.php', { method: 'POST', body: fd });
+        const res = await resp.json();
+        if (res.ok) {
+            loadPalletList();
+            if (typeof showDeliverFeedback === 'function') {
+                showDeliverFeedback(`✓ Pallet ${escHtml(palletNo)} delivered successfully!`, true);
+            }
+        } else {
+            alert('Delivery failed: ' + (res.msg || 'Unknown error'));
+        }
+    } catch(err) {
+        alert('Network error delivering pallet.');
+    }
+}
+
+function initAutoDeliver() {
+    if (typeof IS_MANUAL_DELIVER_ACTIVE !== 'undefined' && IS_MANUAL_DELIVER_ACTIVE) {
+        return; // Manual deliver is active in Control Center, skip countdown auto send
+    }
+    const alertEl = document.getElementById('autoDeliverAlert');
+    if (!alertEl) return;
+
+    const palletId = Number(PALLET_ID);
+    if (!palletId) return;
+    const palletNo = currentPalletNo;
+
+    const countdownEl = document.getElementById('autoDeliverCountdown');
+    const progressBar = document.getElementById('autoDeliverProgressBar');
+
+    autoDeliverTotalSeconds = 15;
+    autoDeliverSecondsLeft = 15;
+    if (countdownEl) countdownEl.textContent = 15;
+    let startTime = Date.now();
+    let totalDurationMs = autoDeliverTotalSeconds * 1000;
+
+    autoDeliverTimer = setInterval(() => {
+        if (isAutoDeliverPaused || isAutoDeliverInProgress) return;
+
+        let elapsed = Date.now() - startTime;
+        let remainingMs = Math.max(0, totalDurationMs - elapsed);
+        autoDeliverSecondsLeft = Math.ceil(remainingMs / 1000);
+        let pct = Math.max(0, (remainingMs / totalDurationMs) * 100);
+
+        if (countdownEl) countdownEl.textContent = autoDeliverSecondsLeft;
+        if (progressBar) progressBar.style.width = pct + '%';
+
+        if (remainingMs <= 0) {
+            clearInterval(autoDeliverTimer);
+            executeAutoDeliver(palletId, palletNo);
+        }
+    }, 100);
+}
+
+function togglePauseAutoDeliver() {
+    isAutoDeliverPaused = !isAutoDeliverPaused;
+    const badgeEl   = document.getElementById('autoDeliverBadge');
+    const statusEl  = document.getElementById('autoDeliverStatusText');
+    const iconEl    = document.getElementById('btnToggleAutoDeliverIcon');
+    const btnTextEl = document.getElementById('btnToggleAutoDeliverText');
+    const spinner   = document.getElementById('autoDeliverSpinner');
+
+    if (isAutoDeliverPaused) {
+        if (badgeEl) {
+            badgeEl.className = 'badge bg-warning text-dark';
+            badgeEl.textContent = 'PAUSED';
+        }
+        if (statusEl) {
+            statusEl.innerHTML = '<span class="text-warning-emphasis fw-bold"><i class="bi bi-pause-circle me-1"></i>Auto Send to Deliver is paused.</span> Click Resume to continue or deliver manually.';
+        }
+        if (iconEl) iconEl.className = 'bi bi-play-fill me-1';
+        if (btnTextEl) btnTextEl.textContent = 'Resume';
+        if (spinner) spinner.classList.add('d-none');
+    } else {
+        if (badgeEl) {
+            badgeEl.className = 'badge bg-success text-white';
+            badgeEl.textContent = 'AUTO-SENDING';
+        }
+        if (statusEl) {
+            statusEl.innerHTML = 'This pallet is approved and will automatically be sent to deliver in <span class="badge bg-dark fs-6 px-2 py-0" id="autoDeliverCountdown">' + autoDeliverSecondsLeft + '</span> seconds...';
+        }
+        if (iconEl) iconEl.className = 'bi bi-pause-fill me-1';
+        if (btnTextEl) btnTextEl.textContent = 'Pause';
+        if (spinner) spinner.classList.remove('d-none');
+    }
+}
+
+function triggerAutoDeliverImmediate() {
+    if (isAutoDeliverInProgress) return;
+    if (autoDeliverTimer) clearInterval(autoDeliverTimer);
+    const palletId = Number(PALLET_ID);
+    if (!palletId) return;
+    executeAutoDeliver(palletId, currentPalletNo);
+}
+
+async function executeAutoDeliver(palletId, palletNo) {
+    if (isAutoDeliverInProgress) return;
+    isAutoDeliverInProgress = true;
+
+    const statusEl  = document.getElementById('autoDeliverStatusText');
+    const badgeEl   = document.getElementById('autoDeliverBadge');
+    const btnNow    = document.getElementById('btnDeliverNow');
+    const btnToggle = document.getElementById('btnToggleAutoDeliver');
+    const spinner   = document.getElementById('autoDeliverSpinner');
+
+    if (badgeEl) {
+        badgeEl.className = 'badge bg-primary text-white';
+        badgeEl.textContent = 'DELIVERING...';
+    }
+    if (statusEl) {
+        statusEl.innerHTML = '<i class="bi bi-arrow-repeat spin me-1"></i> <strong>Sending pallet to deliver...</strong> Please wait.';
+    }
+    if (spinner) spinner.classList.remove('d-none');
+    if (btnNow) btnNow.disabled = true;
+    if (btnToggle) btnToggle.disabled = true;
+
+    try {
+        const fd = new FormData();
+        fd.append('ajax', 'auto_deliver_pallet');
+        fd.append('pallet_id', palletId);
+
+        const resp = await fetch('pallet.php', { method: 'POST', body: fd });
+        const res = await resp.json();
+
+        if (res.ok) {
+            if (statusEl) {
+                statusEl.innerHTML = '<span class="text-success fw-bold"><i class="bi bi-check-circle-fill me-1"></i>Delivered successfully! Reloading...</span>';
+            }
+            if (badgeEl) {
+                badgeEl.className = 'badge bg-success text-white';
+                badgeEl.textContent = 'DELIVERED';
+            }
+            setTimeout(() => {
+                window.location.href = `pallet.php?pallet_id=${palletId}&success=auto_delivered&pallet_no=${encodeURIComponent(palletNo)}`;
+            }, 300);
+        } else {
+            isAutoDeliverInProgress = false;
+            if (statusEl) {
+                statusEl.innerHTML = `<span class="text-danger fw-bold"><i class="bi bi-exclamation-triangle-fill me-1"></i>Auto-delivery failed: ${escHtml(res.msg || 'Unknown error')}</span>`;
+            }
+            if (badgeEl) {
+                badgeEl.className = 'badge bg-danger text-white';
+                badgeEl.textContent = 'ERROR';
+            }
+            if (btnNow) btnNow.disabled = false;
+            if (btnToggle) btnToggle.disabled = false;
+        }
+    } catch (err) {
+        isAutoDeliverInProgress = false;
+        if (statusEl) {
+            statusEl.innerHTML = `<span class="text-danger fw-bold"><i class="bi bi-wifi-off me-1"></i>Network error during auto-delivery.</span>`;
+        }
+        if (badgeEl) {
+            badgeEl.className = 'badge bg-danger text-white';
+            badgeEl.textContent = 'ERROR';
+        }
+        if (btnNow) btnNow.disabled = false;
+        if (btnToggle) btnToggle.disabled = false;
+    }
+}
+
+if (typeof IS_APPROVED !== 'undefined' && IS_APPROVED && typeof IS_MANUAL_DELIVER_ACTIVE !== 'undefined' && !IS_MANUAL_DELIVER_ACTIVE) {
+    window.addEventListener('load', function() {
+        initAutoDeliver();
+    });
+}
+
+// Background Auto-Deliver Worker (polls every 1.5s when manual delivery is blocked)
+if (typeof IS_MANUAL_DELIVER_ACTIVE !== 'undefined' && !IS_MANUAL_DELIVER_ACTIVE) {
+    setInterval(async () => {
+        try {
+            const resp = await fetch('pallet.php?ajax=poll_auto_deliver');
+            const data = await resp.json();
+            if (data.ok && Array.isArray(data.delivered) && data.delivered.length > 0) {
+                loadPalletList();
+                if (typeof showDeliverFeedback === 'function') {
+                    showDeliverFeedback(`✓ Pallet ${data.delivered.join(', ')} automatically transferred to Delivered!`, true);
+                }
+            }
+        } catch(e) {}
+    }, 1500);
 }
 </script>
 
