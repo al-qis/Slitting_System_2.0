@@ -2479,7 +2479,7 @@ if (isset($_GET['success'])): ?>
                     <input type="hidden" name="action"    value="deliver_pallet">
                     <input type="hidden" name="pallet_id" value="<?= $activePalletId ?>">
                     <button type="submit" class="btn btn-success fw-bold">
-                        <i class="bi bi-truck me-1"></i> Deliver Pallet (Manual)
+                        <i class="bi bi-truck me-1"></i> Deliver Pallet
                     </button>
                 </form>
                 <?php else: ?>
