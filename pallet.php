@@ -1130,6 +1130,7 @@ if ($activePalletId) {
 .pallet-card.is-edit-building.active .pallet-card-customer,
 .pallet-card.is-edit-building.active .pallet-card-rolls,
 .pallet-card.is-edit-building.active .pallet-card-lot,
+.pallet-card.is-edit-building.active .pallet-card-spec,
 .pallet-card.is-edit-building.active .pallet-card-date { color:#854d0e !important; }
 
 /* .active is declared last so it wins the cascade over the status
@@ -1138,6 +1139,7 @@ if ($activePalletId) {
 .pallet-card.active .pallet-card-customer,
 .pallet-card.active .pallet-card-rolls,
 .pallet-card.active .pallet-card-lot,
+.pallet-card.active .pallet-card-spec,
 .pallet-card.active .pallet-card-date { color:rgba(255,255,255,.75) !important; }
 .pallet-card.active .pallet-progress { background:rgba(255,255,255,.25); }
 
@@ -1151,8 +1153,10 @@ if ($activePalletId) {
     border-radius:8px; padding:1px 6px; margin-left:6px; vertical-align:middle;
 }
 .pallet-card-lot        { font-family:'Courier New', monospace; font-size:10px; color:#adb5bd; margin-top:1px; }
+.pallet-card-spec       { font-size:11px; font-weight:600; color:#64748b; margin-top:2px; }
 .pallet-card-date       { font-size:10px; color:#6c757d; font-weight:500; margin-top:2px; white-space:nowrap; }
 .pallet-card-customer  { font-size:12.5px; font-weight:600; margin-bottom:7px; }
+.pallet-card-ref       { font-weight:500; font-size:11.5px; opacity:.85; }
 .pallet-card-rolls      { font-size:11px; font-weight:600; color:#6c757d; white-space:nowrap; }
 
 .pallet-list-empty, .pallet-list-loading { text-align:center; color:#adb5bd; font-size:13px; padding:36px 16px; }
@@ -5688,6 +5692,18 @@ function renderPalletList() {
         const badgeClass      = SUMMARY_STATUS_BADGE[p.status] || 'badge-building';
         const isActive        = PALLET_ID && Number(p.id) === Number(PALLET_ID);
         const pct             = Math.min(100, Math.round((p.roll_count / p.max_rolls) * 100));
+
+        const wVal = Number(p.width || 0);
+        const wStr = wVal > 0 ? (wVal % 1 === 0 ? wVal : wVal.toFixed(2).replace(/\.?0+$/, '')) + ' mm' : '';
+        const prodStr = (p.product_type || '').trim();
+        const specParts = [];
+        if (prodStr) specParts.push(prodStr);
+        if (wStr) specParts.push(wStr);
+        const specText = specParts.join(', ');
+
+        const custStr = (p.customer_name || '').trim();
+        const refStr  = (p.ref_no || '').trim();
+
         return `
             <a href="pallet.php?pallet_id=${p.id}${tabParam}"
                class="pallet-card border-${escHtml(p.status)} ${isActive ? 'active' : ''} ${isEditBuilding ? 'is-edit-building' : ''}">
@@ -5698,7 +5714,7 @@ function renderPalletList() {
                             ${isActive ? '<span class="pallet-card-open-pill"><i class="bi bi-eye-fill"></i> Open</span>' : ''}
                         </div>
                         ${p.created_by ? `<div class="pallet-card-operator" style="font-size:11px; ${isActive && !isEditBuilding ? 'color:rgba(255,255,255,.9);' : (isEditBuilding ? (isReturnToStock ? 'color:#0369a1;' : 'color:#854d0e;') : 'color:#475569;')} font-weight:600;"><i class="bi bi-person-fill ${isEditBuilding ? (isReturnToStock ? 'text-info' : 'text-warning') : (isActive ? 'text-warning' : 'text-primary')} me-1"></i>${escHtml(p.created_by)}</div>` : ''}
-                        ${p.lot_nos ? `<div class="pallet-card-lot">${escHtml(p.lot_nos)}</div>` : ''}
+                        ${specText ? `<div class="pallet-card-spec">${escHtml(specText)}</div>` : ''}
                     </div>
                     <div class="d-flex flex-column align-items-end">
                         ${isEditBuilding 
@@ -5710,12 +5726,12 @@ function renderPalletList() {
                         ${p.status === 'approved' ? (IS_MANUAL_DELIVER_ACTIVE ? `<button type="button" class="btn btn-sm btn-success py-0 px-2 fw-bold mt-1 shadow-sm" style="font-size:11px;" onclick="quickDeliverPallet(event, ${p.id}, '${escHtml(p.pallet_no)}')" title="Deliver Pallet without opening"><i class="bi bi-truck me-1"></i>Deliver</button>` : `<span class="badge bg-warning text-dark border px-2 py-1 shadow-sm mt-1 auto-card-badge" data-pallet-id="${p.id}" style="font-size:11px;"><i class="bi bi-clock-history me-1"></i>Auto in <strong id="cardSec_${p.id}">15</strong>s</span>`) : ''}
                     </div>
                 </div>
-                <div class="pallet-card-customer">${escHtml(p.customer_name || 'No constraint set yet')}</div>
+                <div class="pallet-card-customer">${escHtml(custStr || (refStr ? '' : 'No constraint set yet'))}${refStr ? ` <span class="pallet-card-ref">(${escHtml(refStr)})</span>` : ''}</div>
                 <div class="d-flex align-items-center gap-2">
                     <div class="pallet-progress flex-grow-1">
                         <div class="pallet-progress-bar" style="width:${pct}%;"></div>
                     </div>
-                    <span class="pallet-card-rolls">${p.roll_count}/${p.max_rolls}</span>
+                    <span class="pallet-card-rolls">${p.roll_count} coil</span>
                 </div>
             </a>
         `;
