@@ -1,405 +1,45 @@
 <?php
 /**
- * customer_track_order.php — Dedicated Customer Order Tracking Portal
- * ─────────────────────────────────────────────────────────────────────────────
- * Provides a dedicated, secure tracking portal for customers and staff to monitor
- * customer orders, production progress, QC status, palletizing, and delivery details.
- *
- * Supported Lookups:
- *   - Sales Order (SO) Number / Ref No (e.g. SO-26-1555)
- *   - Customer Name (e.g. NAE, NAX, TAIHO, NRI, etc.)
- *   - Pallet Number (e.g. SFS-2610-002)
- *   - Coil No / Lot No / Roll No
- * ─────────────────────────────────────────────────────────────────────────────
+ * customer_track_order_view.php
+ * View for Customer Order Tracking Portal
+ * Location: /customer_track_order/views/customer_track_order_view.php
  */
 
-require_once 'config.php';
-
-// Base sanitization helper
-function cleanInput($val) {
-    return trim((string)($val ?? ''));
-}
-
-// Roll number formatter (e.g., R1 -> R-1)
-function formatRollNo($roll) {
-    if (!$roll) return '—';
-    $roll = (string)$roll;
-    if (preg_match('/^R\d+/i', $roll)) {
-        return 'R-' . ltrim(substr($roll, 1), '-');
+// If view is accessed directly without controller, redirect to index.php or invoke controller
+if (!isset($model)) {
+    if (!headers_sent()) {
+        $qs = !empty($_SERVER['QUERY_STRING']) ? '?' . $_SERVER['QUERY_STRING'] : '';
+        header("Location: ../index.php" . $qs);
+        exit;
     }
-    return htmlspecialchars($roll);
+    require_once __DIR__ . '/../controllers/CustomerTrackOrderController.php';
+    $controller = new CustomerTrackOrderController();
+    $controller->index();
+    exit;
 }
 
-// ── Search & Filter Inputs ───────────────────────────────────────────────────
-$searchSo       = cleanInput($_GET['so'] ?? ($_GET['order'] ?? ''));
-$searchQuery    = cleanInput($_GET['search'] ?? '');
-$filterCustomer = cleanInput($_GET['customer'] ?? '');
-$filterStatus   = cleanInput($_GET['status'] ?? '');
-
-// If user entered something in generic search that looks like an SO number, prioritize it
-if ($searchSo === '' && $searchQuery !== '' && preg_match('/^SO-[\d-]+/i', $searchQuery)) {
-    $searchSo = $searchQuery;
-}
-
-// ── Distinct Customers for Dropdown / Pills ──────────────────────────────────
-$customerList = [];
-$custRes = $conn->query("
-    SELECT DISTINCT customer_name 
-    FROM slitting_product 
-    WHERE customer_name IS NOT NULL 
-      AND customer_name != '' 
-      AND customer_name != 'STOCK'
-      AND is_voided = 0
-    ORDER BY customer_name ASC
-");
-if ($custRes) {
-    while ($cRow = $custRes->fetch_assoc()) {
-        $customerList[] = $cRow['customer_name'];
-    }
-}
-
-// ── Check if Single Order Mode is Triggered ──────────────────────────────────
-$singleOrder = null;
-$orderRolls  = [];
-$orderPallets = [];
-
-// Helper condition: valid un-voided, non-consumed rolls
-$baseWhere = "sp.is_voided = 0 AND (sp.is_reslitted = 0 OR sp.is_reslitted IS NULL) AND (sp.is_recoiled = 0 OR sp.is_recoiled IS NULL)";
-
-if ($searchSo !== '') {
-    // 1. Fetch rolls for this specific SO / Ref No
-    $stmtRolls = $conn->prepare("
-        SELECT 
-            sp.id,
-            sp.customer_name,
-            sp.ref_no,
-            sp.product,
-            sp.lot_no,
-            sp.coil_no,
-            sp.roll_no,
-            sp.width,
-            sp.length,
-            sp.actual_length,
-            sp.status,
-            sp.stock_counted,
-            sp.is_completed,
-            sp.date_in,
-            sp.date_out,
-            sp.delivered_at,
-            sp.delivered_by,
-            sp.qc_comment,
-            mc.grade,
-            pi.pallet_id,
-            p.pallet_no,
-            p.status AS pallet_status,
-            p.delivered_at AS pallet_delivered_at
-        FROM slitting_product sp
-        LEFT JOIN mother_coil mc ON mc.id = sp.mother_id
-        LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
-        LEFT JOIN pallets p ON p.id = pi.pallet_id
-        WHERE {$baseWhere}
-          AND sp.ref_no = ?
-        ORDER BY 
-            CASE sp.status WHEN 'DELIVERED' THEN 1 ELSE 0 END ASC,
-            sp.roll_no ASC,
-            sp.id ASC
-    ");
-    $stmtRolls->bind_param("s", $searchSo);
-    $stmtRolls->execute();
-    $rollsResult = $stmtRolls->get_result();
-    while ($r = $rollsResult->fetch_assoc()) {
-        $orderRolls[] = $r;
-    }
-    $stmtRolls->close();
-
-    // If exact match didn't yield anything, try LIKE search for partial SO
-    if (empty($orderRolls)) {
-        $likeSo = '%' . $searchSo . '%';
-        $stmtRollsLike = $conn->prepare("
-            SELECT 
-                sp.id,
-                sp.customer_name,
-                sp.ref_no,
-                sp.product,
-                sp.lot_no,
-                sp.coil_no,
-                sp.roll_no,
-                sp.width,
-                sp.length,
-                sp.actual_length,
-                sp.status,
-                sp.stock_counted,
-                sp.is_completed,
-                sp.date_in,
-                sp.date_out,
-                sp.delivered_at,
-                sp.delivered_by,
-                sp.qc_comment,
-                mc.grade,
-                pi.pallet_id,
-                p.pallet_no,
-                p.status AS pallet_status,
-                p.delivered_at AS pallet_delivered_at
-            FROM slitting_product sp
-            LEFT JOIN mother_coil mc ON mc.id = sp.mother_id
-            LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
-            LEFT JOIN pallets p ON p.id = pi.pallet_id
-            WHERE {$baseWhere}
-              AND sp.ref_no LIKE ?
-            ORDER BY 
-                CASE sp.status WHEN 'DELIVERED' THEN 1 ELSE 0 END ASC,
-                sp.roll_no ASC,
-                sp.id ASC
-        ");
-        $stmtRollsLike->bind_param("s", $likeSo);
-        $stmtRollsLike->execute();
-        $likeRes = $stmtRollsLike->get_result();
-        while ($r = $likeRes->fetch_assoc()) {
-            $orderRolls[] = $r;
-        }
-        $stmtRollsLike->close();
-    }
-
-    // Compute Single Order Summary
-    if (!empty($orderRolls)) {
-        $totalRolls     = count($orderRolls);
-        $deliveredRolls = 0;
-        $approvedRolls  = 0;
-        $waitingRolls   = 0;
-        $inProdRolls    = 0;
-        $totalMeters    = 0;
-        $customerNames  = [];
-        $uniqueProducts = [];
-        $uniquePallets  = [];
-        $earliestDate   = null;
-        $latestDelivered= null;
-        $actualRefNo    = $orderRolls[0]['ref_no'];
-
-        foreach ($orderRolls as $roll) {
-            $status = strtoupper($roll['status'] ?? 'IN');
-            $stockCounted = (int)($roll['stock_counted'] ?? 0);
-            $meters = (float)($roll['actual_length'] ?: $roll['length'] ?: 0);
-            $totalMeters += $meters;
-
-            if ($roll['customer_name']) {
-                $customerNames[$roll['customer_name']] = true;
-            }
-            if ($roll['product']) {
-                $uniqueProducts[$roll['product']] = true;
-            }
-            if (!empty($roll['pallet_no'])) {
-                $pNo = $roll['pallet_no'];
-                if (!isset($uniquePallets[$pNo])) {
-                    $uniquePallets[$pNo] = [
-                        'pallet_no'     => $pNo,
-                        'status'        => $roll['pallet_status'],
-                        'delivered_at'  => $roll['pallet_delivered_at'],
-                        'roll_count'    => 0,
-                    ];
-                }
-                $uniquePallets[$pNo]['roll_count']++;
-            }
-
-            if ($status === 'DELIVERED') {
-                $deliveredRolls++;
-                if (!empty($roll['delivered_at'])) {
-                    if (!$latestDelivered || strtotime($roll['delivered_at']) > strtotime($latestDelivered)) {
-                        $latestDelivered = $roll['delivered_at'];
-                    }
-                }
-            } elseif ($status === 'APPROVED') {
-                $approvedRolls++;
-            } elseif ($status === 'WAITING') {
-                $waitingRolls++;
-            } else {
-                $inProdRolls++;
-            }
-
-            if (!empty($roll['date_in'])) {
-                if (!$earliestDate || strtotime($roll['date_in']) < strtotime($earliestDate)) {
-                    $earliestDate = $roll['date_in'];
-                }
-            }
-        }
-
-        // Determine Overall Progress State
-        $overallStatus = 'IN_PRODUCTION';
-        $progressPct   = 25;
-        $stageIndex    = 1; // 1: Order/Planned, 2: Slitting, 3: QC, 4: Palletizing, 5: Delivered
-
-        if ($deliveredRolls === $totalRolls) {
-            $overallStatus = 'DELIVERED';
-            $progressPct   = 100;
-            $stageIndex    = 5;
-        } elseif ($deliveredRolls > 0) {
-            $overallStatus = 'PARTIALLY_DELIVERED';
-            $progressPct   = (int)round(($deliveredRolls / $totalRolls) * 100);
-            if ($progressPct < 50) $progressPct = 50;
-            $stageIndex    = 4;
-        } elseif (!empty($uniquePallets) || $approvedRolls === $totalRolls) {
-            $overallStatus = 'READY_FOR_DELIVERY';
-            $progressPct   = 85;
-            $stageIndex    = 4;
-        } elseif ($waitingRolls > 0 || $approvedRolls > 0) {
-            $overallStatus = 'WAITING_QC';
-            $progressPct   = 55;
-            $stageIndex    = 3;
-        } else {
-            $overallStatus = 'IN_PRODUCTION';
-            $progressPct   = 30;
-            $stageIndex    = 2;
-        }
-
-        $singleOrder = [
-            'ref_no'          => $actualRefNo,
-            'customer_name'   => implode(', ', array_keys($customerNames)) ?: 'N/A',
-            'products'        => implode(', ', array_keys($uniqueProducts)) ?: 'N/A',
-            'total_rolls'     => $totalRolls,
-            'delivered_rolls' => $deliveredRolls,
-            'approved_rolls'  => $approvedRolls,
-            'waiting_rolls'   => $waitingRolls,
-            'in_prod_rolls'   => $inProdRolls,
-            'total_meters'    => $totalMeters,
-            'overall_status'  => $overallStatus,
-            'progress_pct'    => $progressPct,
-            'stage_index'     => $stageIndex,
-            'earliest_date'   => $earliestDate,
-            'latest_delivered'=> $latestDelivered,
-            'pallets'         => array_values($uniquePallets),
-        ];
-    }
-}
-
-// ── Multi-Order List Query (Search & Browse Mode) ─────────────────────────────
-$orderList = [];
-$totalOrdersCount = 0;
-$deliveredOrdersCount = 0;
-$inProdOrdersCount = 0;
-$readyOrdersCount = 0;
-
-$listSql = "
-    SELECT 
-        sp.customer_name, 
-        sp.ref_no, 
-        COUNT(*) as total_rolls, 
-        SUM(CASE WHEN sp.status = 'DELIVERED' THEN 1 ELSE 0 END) as delivered_rolls, 
-        SUM(CASE WHEN sp.status = 'APPROVED' THEN 1 ELSE 0 END) as approved_rolls, 
-        SUM(CASE WHEN sp.status = 'WAITING' THEN 1 ELSE 0 END) as waiting_rolls, 
-        SUM(CASE WHEN sp.status = 'IN' THEN 1 ELSE 0 END) as in_prod_rolls, 
-        SUM(COALESCE(sp.actual_length, sp.length, 0)) as total_meters,
-        MAX(sp.delivered_at) as latest_delivered, 
-        MIN(sp.date_in) as first_date,
-        COUNT(DISTINCT p.pallet_no) as pallet_count,
-        GROUP_CONCAT(DISTINCT p.pallet_no SEPARATOR ', ') as pallet_numbers,
-        GROUP_CONCAT(DISTINCT sp.product SEPARATOR ', ') as products
-    FROM slitting_product sp 
-    LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id 
-    LEFT JOIN pallets p ON p.id = pi.pallet_id 
-    WHERE {$baseWhere}
-      AND sp.customer_name IS NOT NULL AND sp.customer_name != '' 
-      AND sp.ref_no IS NOT NULL AND sp.ref_no != '' 
-      AND sp.ref_no != 'STOCK'
-";
-
-$listParams = [];
-$listTypes  = '';
-
-if ($filterCustomer !== '') {
-    $listSql .= " AND sp.customer_name = ?";
-    $listParams[] = $filterCustomer;
-    $listTypes .= 's';
-}
-
-if ($searchQuery !== '') {
-    $listSql .= " AND (
-        sp.ref_no LIKE ? OR 
-        sp.customer_name LIKE ? OR 
-        sp.product LIKE ? OR 
-        sp.lot_no LIKE ? OR 
-        sp.coil_no LIKE ? OR
-        p.pallet_no LIKE ?
-    )";
-    $likeQ = '%' . $searchQuery . '%';
-    $listParams = array_merge($listParams, [$likeQ, $likeQ, $likeQ, $likeQ, $likeQ, $likeQ]);
-    $listTypes .= 'ssssss';
-}
-
-$listSql .= " GROUP BY sp.customer_name, sp.ref_no ";
-
-// Status filter for aggregated grouping
-if ($filterStatus === 'delivered') {
-    $listSql .= " HAVING delivered_rolls = total_rolls ";
-} elseif ($filterStatus === 'in_production') {
-    $listSql .= " HAVING delivered_rolls < total_rolls AND in_prod_rolls > 0 ";
-} elseif ($filterStatus === 'waiting_qc') {
-    $listSql .= " HAVING delivered_rolls < total_rolls AND waiting_rolls > 0 ";
-} elseif ($filterStatus === 'approved') {
-    $listSql .= " HAVING delivered_rolls < total_rolls AND approved_rolls > 0 ";
-}
-
-$listSql .= " ORDER BY COALESCE(latest_delivered, first_date) DESC LIMIT 100";
-
-$stmtList = $conn->prepare($listSql);
-if (!empty($listParams)) {
-    $stmtList->bind_param($listTypes, ...$listParams);
-}
-$stmtList->execute();
-$listResult = $stmtList->get_result();
-while ($row = $listResult->fetch_assoc()) {
-    $tot = (int)$row['total_rolls'];
-    $del = (int)$row['delivered_rolls'];
-    $app = (int)$row['approved_rolls'];
-    $wai = (int)$row['waiting_rolls'];
-    $palletsCount = (int)$row['pallet_count'];
-
-    if ($del === $tot) {
-        $st = 'DELIVERED';
-        $pct = 100;
-        $badgeClass = 'bg-success text-white';
-        $statusText = 'Delivered';
-        $deliveredOrdersCount++;
-    } elseif ($del > 0) {
-        $st = 'PARTIALLY_DELIVERED';
-        $pct = (int)round(($del / $tot) * 100);
-        $badgeClass = 'bg-primary text-white';
-        $statusText = "Partial ({$del}/{$tot} Delivered)";
-        $inProdOrdersCount++;
-    } elseif ($palletsCount > 0 || $app === $tot) {
-        $st = 'READY';
-        $pct = 85;
-        $badgeClass = 'bg-info text-dark';
-        $statusText = 'Ready for Delivery';
-        $readyOrdersCount++;
-    } elseif ($wai > 0) {
-        $st = 'WAITING_QC';
-        $pct = 50;
-        $badgeClass = 'bg-warning text-dark';
-        $statusText = 'QC Inspection';
-        $inProdOrdersCount++;
-    } else {
-        $st = 'IN_PRODUCTION';
-        $pct = 25;
-        $badgeClass = 'bg-secondary text-white';
-        $statusText = 'In Production';
-        $inProdOrdersCount++;
-    }
-
-    $row['order_status']   = $st;
-    $row['progress_pct']   = $pct;
-    $row['badge_class']    = $badgeClass;
-    $row['status_text']    = $statusText;
-
-    $orderList[] = $row;
-    $totalOrdersCount++;
-}
-$stmtList->close();
+// Defensive fallback initialization
+$searchSo             = $searchSo ?? '';
+$searchQuery          = $searchQuery ?? '';
+$filterCustomer       = $filterCustomer ?? '';
+$filterStatus         = $filterStatus ?? '';
+$customerList         = is_array($customerList ?? null) ? $customerList : [];
+$orderList            = is_array($orderList ?? null) ? $orderList : [];
+$orderRolls           = is_array($orderRolls ?? null) ? $orderRolls : [];
+$singleOrder          = $singleOrder ?? null;
+$totalOrdersCount     = $totalOrdersCount ?? 0;
+$deliveredOrdersCount = $deliveredOrdersCount ?? 0;
+$inProdOrdersCount    = $inProdOrdersCount ?? 0;
+$readyOrdersCount     = $readyOrdersCount ?? 0;
+$pageUrl              = $pageUrl ?? 'index.php';
+$pathPrefix           = $pathPrefix ?? '../';
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Customer Order Tracking - MK Slitting</title>
+    <title><?= htmlspecialchars($page_title ?? 'Customer Order Tracking - MK Slitting') ?></title>
 
     <!-- Bootstrap 5 & Icons -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -664,7 +304,7 @@ $stmtList->close();
     <header class="portal-header py-3 px-3 px-md-4 mb-4">
         <div class="container-xl d-flex flex-wrap align-items-center justify-content-between gap-3">
             <div class="d-flex align-items-center gap-3">
-                <img src="assets/nichiaslogo.jpg" alt="Nichias Logo" class="portal-logo shadow-sm">
+                <img src="<?= $pathPrefix ?>assets/nichiaslogo.jpg" alt="Nichias Logo" class="portal-logo shadow-sm">
                 <div>
                     <h4 class="m-0 fw-bold tracking-tight text-white d-flex align-items-center gap-2">
                         <i class="bi bi-box-seam-fill"></i> Customer Order Tracking
@@ -690,7 +330,7 @@ $stmtList->close();
         <!-- SEARCH & FILTER TOOLBAR                                             -->
         <!-- ═══════════════════════════════════════════════════════════════════ -->
         <section class="card glass-card p-3 p-md-4 mb-4 no-print">
-            <form method="GET" action="customer_track_order.php" class="row g-3 align-items-center">
+            <form method="GET" action="<?= $pageUrl ?>" class="row g-3 align-items-center">
                 <!-- Search Input -->
                 <div class="col-12 col-md-6 col-lg-7">
                     <div class="search-hero d-flex align-items-center">
@@ -705,7 +345,7 @@ $stmtList->close();
                             autofocus
                         >
                         <?php if ($searchSo !== '' || $searchQuery !== '' || $filterCustomer !== '' || $filterStatus !== ''): ?>
-                            <a href="customer_track_order.php" class="btn btn-link text-muted p-0 ms-2" title="Clear Search">
+                            <a href="<?= $pageUrl ?>" class="btn btn-link text-muted p-0 ms-2" title="Clear Search">
                                 <i class="bi bi-x-circle-fill fs-5"></i>
                             </a>
                         <?php endif; ?>
@@ -735,7 +375,7 @@ $stmtList->close();
                 <div class="col-12 pt-2 border-top">
                     <div class="d-flex flex-wrap align-items-center gap-2">
                         <small class="text-muted fw-bold me-1 text-uppercase">Quick Filter:</small>
-                        <a href="customer_track_order.php" class="cust-pill <?= ($filterCustomer === '' && $searchSo === '' && $searchQuery === '') ? 'active' : '' ?>">
+                        <a href="<?= $pageUrl ?>" class="cust-pill <?= ($filterCustomer === '' && $searchSo === '' && $searchQuery === '') ? 'active' : '' ?>">
                             All Orders
                         </a>
                         <?php 
@@ -743,7 +383,7 @@ $stmtList->close();
                         $topPills = array_slice($customerList, 0, 8);
                         foreach ($topPills as $pill): 
                         ?>
-                            <a href="customer_track_order.php?customer=<?= urlencode($pill) ?>" class="cust-pill <?= ($filterCustomer === $pill) ? 'active' : '' ?>">
+                            <a href="<?= $pageUrl ?>?customer=<?= urlencode($pill) ?>" class="cust-pill <?= ($filterCustomer === $pill) ? 'active' : '' ?>">
                                 <?= htmlspecialchars($pill) ?>
                             </a>
                         <?php endforeach; ?>
@@ -757,7 +397,7 @@ $stmtList->close();
             <!-- SINGLE ORDER DEEP-DIVE VIEW                                      -->
             <!-- ════════════════════════════════════════════════════════════════ -->
             <div class="mb-4 d-flex flex-wrap align-items-center justify-content-between gap-2 no-print">
-                <a href="customer_track_order.php<?= $filterCustomer ? '?customer='.urlencode($filterCustomer) : '' ?>" class="btn btn-outline-secondary btn-sm fw-semibold">
+                <a href="<?= $pageUrl ?><?= $filterCustomer ? '?customer='.urlencode($filterCustomer) : '' ?>" class="btn btn-outline-secondary btn-sm fw-semibold">
                     <i class="bi bi-arrow-left me-1"></i> Back to All Orders
                 </a>
                 <div class="d-flex align-items-center gap-2">
@@ -972,7 +612,7 @@ $stmtList->close();
                                 <tr>
                                     <td class="text-muted"><?= $idx + 1 ?></td>
                                     <td class="fw-bold text-dark">
-                                        <?= formatRollNo($roll['roll_no']) ?>
+                                        <?= $model->formatRollNo($roll['roll_no']) ?>
                                     </td>
                                     <td>
                                         <span class="fw-semibold text-secondary"><?= htmlspecialchars($roll['lot_no'] ?: '—') ?></span>
@@ -1075,19 +715,19 @@ $stmtList->close();
                         </p>
                     </div>
 
-                    <!-- Status Filter Dropdown -->
+                    <!-- Status Filter Dropdown / Buttons -->
                     <div class="no-print">
                         <div class="btn-group btn-group-sm" role="group">
-                            <a href="customer_track_order.php?customer=<?= urlencode($filterCustomer) ?>&search=<?= urlencode($searchQuery) ?>" class="btn <?= ($filterStatus === '') ? 'btn-dark' : 'btn-outline-secondary' ?>">
+                            <a href="<?= $pageUrl ?>?customer=<?= urlencode($filterCustomer) ?>&search=<?= urlencode($searchQuery) ?>" class="btn <?= ($filterStatus === '') ? 'btn-dark' : 'btn-outline-secondary' ?>">
                                 All
                             </a>
-                            <a href="customer_track_order.php?customer=<?= urlencode($filterCustomer) ?>&search=<?= urlencode($searchQuery) ?>&status=in_production" class="btn <?= ($filterStatus === 'in_production') ? 'btn-dark' : 'btn-outline-secondary' ?>">
+                            <a href="<?= $pageUrl ?>?customer=<?= urlencode($filterCustomer) ?>&search=<?= urlencode($searchQuery) ?>&status=in_production" class="btn <?= ($filterStatus === 'in_production') ? 'btn-dark' : 'btn-outline-secondary' ?>">
                                 In Prod
                             </a>
-                            <a href="customer_track_order.php?customer=<?= urlencode($filterCustomer) ?>&search=<?= urlencode($searchQuery) ?>&status=approved" class="btn <?= ($filterStatus === 'approved') ? 'btn-dark' : 'btn-outline-secondary' ?>">
+                            <a href="<?= $pageUrl ?>?customer=<?= urlencode($filterCustomer) ?>&search=<?= urlencode($searchQuery) ?>&status=approved" class="btn <?= ($filterStatus === 'approved') ? 'btn-dark' : 'btn-outline-secondary' ?>">
                                 Ready
                             </a>
-                            <a href="customer_track_order.php?customer=<?= urlencode($filterCustomer) ?>&search=<?= urlencode($searchQuery) ?>&status=delivered" class="btn <?= ($filterStatus === 'delivered') ? 'btn-dark' : 'btn-outline-secondary' ?>">
+                            <a href="<?= $pageUrl ?>?customer=<?= urlencode($filterCustomer) ?>&search=<?= urlencode($searchQuery) ?>&status=delivered" class="btn <?= ($filterStatus === 'delivered') ? 'btn-dark' : 'btn-outline-secondary' ?>">
                                 Delivered
                             </a>
                         </div>
@@ -1101,7 +741,7 @@ $stmtList->close();
                         <p class="text-muted small">
                             We couldn't find any orders matching "<strong><?= htmlspecialchars($searchSo ?: $searchQuery ?: $filterCustomer) ?></strong>".
                         </p>
-                        <a href="customer_track_order.php" class="btn btn-outline-primary btn-sm fw-semibold">
+                        <a href="<?= $pageUrl ?>" class="btn btn-outline-primary btn-sm fw-semibold">
                             <i class="bi bi-arrow-repeat me-1"></i> Reset Filters
                         </a>
                     </div>
@@ -1117,7 +757,6 @@ $stmtList->close();
                                     <th>Total Meters</th>
                                     <th>Fulfillment Progress</th>
                                     <th>Status</th>
-                                    <th>Pallet Details</th>
                                     <th class="text-end no-print">Action</th>
                                 </tr>
                             </thead>
@@ -1125,7 +764,7 @@ $stmtList->close();
                                 <?php foreach ($orderList as $order): ?>
                                     <tr>
                                         <td>
-                                            <a href="customer_track_order.php?so=<?= urlencode($order['ref_no']) ?>" class="fw-bold text-decoration-none text-primary fs-6">
+                                            <a href="<?= $pageUrl ?>?so=<?= urlencode($order['ref_no']) ?>" class="fw-bold text-decoration-none text-primary fs-6">
                                                 <i class="bi bi-receipt me-1"></i> <?= htmlspecialchars($order['ref_no']) ?>
                                             </a>
                                             <small class="text-muted d-block">
@@ -1170,17 +809,8 @@ $stmtList->close();
                                                 <?= $order['status_text'] ?>
                                             </span>
                                         </td>
-                                        <td>
-                                            <?php if (!empty($order['pallet_numbers'])): ?>
-                                                <span class="small text-dark fw-semibold">
-                                                    <i class="bi bi-archive me-1"></i> <?= htmlspecialchars($order['pallet_numbers']) ?>
-                                                </span>
-                                            <?php else: ?>
-                                                <span class="text-muted small">—</span>
-                                            <?php endif; ?>
-                                        </td>
                                         <td class="text-end no-print">
-                                            <a href="customer_track_order.php?so=<?= urlencode($order['ref_no']) ?>" class="btn btn-outline-primary btn-sm fw-semibold">
+                                            <a href="<?= $pageUrl ?>?so=<?= urlencode($order['ref_no']) ?>" class="btn btn-outline-primary btn-sm fw-semibold">
                                                 Track <i class="bi bi-arrow-right ms-1"></i>
                                             </a>
                                         </td>
