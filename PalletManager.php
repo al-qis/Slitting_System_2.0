@@ -1663,15 +1663,18 @@ class PalletManager
                 $sfsFormatted = 'SFS-' . $search;
             }
 
-            $where[]  = "(pallet_no LIKE ? OR pallet_no LIKE ? OR REPLACE(pallet_no, '-', '') LIKE ? OR customer_name LIKE ? OR lot_nos LIKE ?)";
+            $where[]  = "(pallet_no LIKE ? OR pallet_no LIKE ? OR REPLACE(pallet_no, '-', '') LIKE ? OR customer_name LIKE ? OR lot_nos LIKE ? OR product_type LIKE ? OR width LIKE ? OR ref_no LIKE ?)";
             $like     = '%' . $search . '%';
             $sfsLike  = $sfsFormatted !== '' ? '%' . $sfsFormatted . '%' : $like;
             $digLike  = '%' . ($cleanDigits !== '' ? $cleanDigits : $search) . '%';
 
-            $types   .= 'sssss';
+            $types   .= 'ssssssss';
             $params[] = $like;
             $params[] = $sfsLike;
             $params[] = $digLike;
+            $params[] = $like;
+            $params[] = $like;
+            $params[] = $like;
             $params[] = $like;
             $params[] = $like;
         }
@@ -1694,11 +1697,11 @@ class PalletManager
                 SELECT
                     p.id,
                     p.pallet_no,
-                    p.customer_name,
+                    COALESCE(NULLIF(p.customer_name, ''), MAX(sp.customer_name), '') AS customer_name,
                     p.status,
-                    p.ref_no,
-                    p.product_type,
-                    p.width,
+                    COALESCE(NULLIF(p.ref_no, ''), MAX(sp.ref_no), '') AS ref_no,
+                    COALESCE(NULLIF(p.product_type, ''), MAX(sp.product), '') AS product_type,
+                    COALESCE(NULLIF(p.width, 0), MAX(sp.width), 0) AS width,
                     p.created_by,
                     p.created_at,
                     p.edit_count,
@@ -1733,6 +1736,7 @@ class PalletManager
             $row['max_rolls']    = self::MAX_ROLLS;
             $row['status_group'] = $this->statusGroupOf($row['status']);
             $row['created_date'] = !empty($row['created_at']) ? date('d/m/Y', strtotime($row['created_at'])) : '';
+            $row['width']        = (float)($row['width'] ?? 0);
         }
         unset($row);
 
