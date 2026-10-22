@@ -134,6 +134,11 @@ $buttonMeta = [
         'title'       => 'Finish Product (Produced) - Edit Button',
         'description' => 'Controls the Edit button function under Produced section in finish_product.php.',
         'icon'        => 'pencil'
+    ],
+    'pallet_manual_deliver' => [
+        'title'       => 'Pallet - Manual Deliver Button',
+        'description' => 'Controls the manual "Deliver Pallet" button function in pallet.php.',
+        'icon'        => 'truck'
     ]
 ];
 
