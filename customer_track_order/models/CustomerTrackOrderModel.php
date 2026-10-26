@@ -8,6 +8,7 @@
 class CustomerTrackOrderModel
 {
     private mysqli $conn;
+    private static bool $hasSynced = false;
 
     /**
      * Base SQL condition for valid, non-voided, non-consumed rolls
@@ -22,6 +23,40 @@ class CustomerTrackOrderModel
     /**
      * Sanitize string input helper
      */
+    /**
+     * Automatically synchronizes missing manual rolls from slitting_product into slitting_plans
+     */
+    public function autoSyncMissingPlans(): int
+    {
+        $sql = "
+            INSERT INTO slitting_plans (mother_coil_id, roll_seq, planned_width, customer_name, ref_no, sort_order)
+            SELECT 
+                sp.mother_id,
+                sp.roll_no,
+                MAX(sp.width),
+                MAX(sp.customer_name),
+                sp.ref_no,
+                0
+            FROM slitting_product sp
+            LEFT JOIN slitting_plans p 
+                ON p.mother_coil_id = sp.mother_id 
+               AND p.roll_seq = sp.roll_no 
+               AND p.ref_no = sp.ref_no
+            WHERE p.id IS NULL
+              AND sp.mother_id IS NOT NULL 
+              AND sp.mother_id > 0
+              AND sp.roll_no IS NOT NULL 
+              AND sp.roll_no != ''
+              AND sp.ref_no IS NOT NULL 
+              AND sp.ref_no != ''
+              AND sp.ref_no != 'STOCK'
+              AND (sp.is_voided = 0 OR sp.is_voided IS NULL)
+            GROUP BY sp.mother_id, sp.roll_no, sp.ref_no
+        ";
+        $this->conn->query($sql);
+        return $this->conn->affected_rows;
+    }
+
     public function cleanInput(?string $val): string
     {
         return trim((string)($val ?? ''));
@@ -76,6 +111,10 @@ class CustomerTrackOrderModel
         $searchSo = trim($searchSo);
         if ($searchSo === '') {
             return null;
+        }
+        if (!self::$hasSynced) {
+            $this->autoSyncMissingPlans();
+            self::$hasSynced = true;
         }
 
         $baseWhere = self::BASE_WHERE;
@@ -323,6 +362,10 @@ class CustomerTrackOrderModel
         string $searchQuery = '',
         int $limit = 100
     ): array {
+        if (!self::$hasSynced) {
+            $this->autoSyncMissingPlans();
+            self::$hasSynced = true;
+        }
         $baseWhere = self::BASE_WHERE;
 
         $listSql = "
