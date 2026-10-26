@@ -517,7 +517,7 @@ $pathPrefix           = $pathPrefix ?? '../';
                     <div class="col-6 col-md-3">
                         <div class="p-3 rounded bg-light border text-center">
                             <small class="text-muted fw-bold text-uppercase d-block mb-1">Total Quantity</small>
-                            <span class="fs-4 fw-bold text-dark"><?= $singleOrder['total_rolls'] ?></span>
+                            <span class="fs-4 fw-bold text-dark"><?= $singleOrder['total_rolls'] ?> / <?= $singleOrder['planned_rolls'] ?></span>
                             <span class="text-muted small">Rolls</span>
                         </div>
                     </div>
@@ -753,7 +753,7 @@ $pathPrefix           = $pathPrefix ?? '../';
                                     <th>Sales Order (SO)</th>
                                     <th>Customer</th>
                                     <th>Product Model</th>
-                                    <th>Total Quantity</th>
+                                    <th>Total Quantity <small class="text-muted fw-normal d-block" style="font-size: 11px;">(Dipotong / Dirancang)</small></th>
                                     <th>Total Meters</th>
                                     <th>Fulfillment Progress</th>
                                     <th>Status</th>
@@ -780,7 +780,7 @@ $pathPrefix           = $pathPrefix ?? '../';
                                             <span class="fw-semibold text-dark"><?= htmlspecialchars($order['products'] ?: '—') ?></span>
                                         </td>
                                         <td>
-                                            <strong><?= $order['total_rolls'] ?></strong> <span class="text-muted small">Rolls</span>
+                                            <strong><?= $order['total_rolls'] ?> / <?= $order['planned_rolls'] ?></strong> <span class="text-muted small">Rolls</span>
                                             <div class="small text-muted">
                                                 Delivered: <span class="text-success fw-bold"><?= $order['delivered_rolls'] ?></span>
                                             </div>

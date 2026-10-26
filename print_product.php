@@ -77,6 +77,9 @@ if (
     $stmt->bind_param("ssi", $customer, $ref_no, $id);
     $ok = $stmt->execute();
     $stmt->close();
+    if ($ok && function_exists('syncSlittingPlanCustomer')) {
+        syncSlittingPlanCustomer($conn, $id, $customer, $ref_no);
+    }
 
     echo json_encode([
         'ok'  => $ok,
@@ -351,6 +354,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $id > 0 && !in_array($customer, $sk
             $stmt->bind_param("ssi", $customer, $ref_no, $id);
             $stmt->execute();
             $stmt->close();
+            if (function_exists('syncSlittingPlanCustomer')) {
+                syncSlittingPlanCustomer($conn, $id, $customer, $ref_no);
+            }
         }
     }
 }

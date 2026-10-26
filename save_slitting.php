@@ -247,6 +247,41 @@ try {
             $plannedRefNo = $planRefMap['idx_' . $index];
         }
 
+        // ── Auto-Insert into slitting_plans if this roll was not planned ──
+        $existsInPlan = false;
+        if ($stock_id > 0) {
+            $chkP = $conn->prepare("SELECT id FROM slitting_plans WHERE stock_id = ? AND roll_seq = ? LIMIT 1");
+            if ($chkP) {
+                $chkP->bind_param("is", $stock_id, $roll_no_safe);
+                $chkP->execute();
+                if ($chkP->get_result()->num_rows > 0) $existsInPlan = true;
+                $chkP->close();
+            }
+        } elseif ($mother_id > 0) {
+            $chkP = $conn->prepare("SELECT id FROM slitting_plans WHERE mother_coil_id = ? AND (stock_id IS NULL OR stock_id = 0) AND roll_seq = ? LIMIT 1");
+            if ($chkP) {
+                $chkP->bind_param("is", $mother_id, $roll_no_safe);
+                $chkP->execute();
+                if ($chkP->get_result()->num_rows > 0) $existsInPlan = true;
+                $chkP->close();
+            }
+        }
+
+        if (!$existsInPlan) {
+            $insPlan = $conn->prepare("
+                INSERT INTO slitting_plans 
+                    (mother_coil_id, stock_id, roll_seq, planned_width, customer_name, ref_no, sort_order)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ");
+            if ($insPlan) {
+                $sIdVal = ($stock_id > 0) ? $stock_id : null;
+                $sortVal = $index + 1;
+                $insPlan->bind_param("iisdssi", $mother_id, $sIdVal, $roll_no_safe, $width, $plannedCustomer, $plannedRefNo, $sortVal);
+                $insPlan->execute();
+                $insPlan->close();
+            }
+        }
+
         // ── Resolve this roll's product code (TS/RS dynamic naming) ──
         $resolved     = resolveSlitProductCode($product, $isVCoil, $width);
         $roll_product = $resolved['code'];

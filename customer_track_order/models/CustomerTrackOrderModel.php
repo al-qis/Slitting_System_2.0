@@ -275,11 +275,26 @@ class CustomerTrackOrderModel
             $stageIndex    = 2;
         }
 
+        $plannedRolls = $totalRolls;
+        if (!empty($actualRefNo)) {
+            $stmtPlan = $this->conn->prepare("SELECT COUNT(*) AS planned_rolls FROM slitting_plans WHERE ref_no = ?");
+            if ($stmtPlan) {
+                $stmtPlan->bind_param("s", $actualRefNo);
+                $stmtPlan->execute();
+                $planRow = $stmtPlan->get_result()->fetch_assoc();
+                if ($planRow && (int)$planRow['planned_rolls'] > 0) {
+                    $plannedRolls = (int)$planRow['planned_rolls'];
+                }
+                $stmtPlan->close();
+            }
+        }
+
         $singleOrder = [
             'ref_no'           => $actualRefNo,
             'customer_name'    => implode(', ', array_keys($customerNames)) ?: 'N/A',
             'products'         => implode(', ', array_keys($uniqueProducts)) ?: 'N/A',
             'total_rolls'      => $totalRolls,
+            'planned_rolls'    => $plannedRolls,
             'delivered_rolls'  => $deliveredRolls,
             'approved_rolls'   => $approvedRolls,
             'waiting_rolls'    => $waitingRolls,
@@ -324,10 +339,17 @@ class CustomerTrackOrderModel
                 MIN(sp.date_in) as first_date,
                 COUNT(DISTINCT p.pallet_no) as pallet_count,
                 GROUP_CONCAT(DISTINCT p.pallet_no SEPARATOR ', ') as pallet_numbers,
-                GROUP_CONCAT(DISTINCT sp.product SEPARATOR ', ') as products
+                GROUP_CONCAT(DISTINCT sp.product SEPARATOR ', ') as products,
+                COALESCE(MAX(plan_summary.planned_rolls), COUNT(*)) as planned_rolls
             FROM slitting_product sp 
             LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id 
             LEFT JOIN pallets p ON p.id = pi.pallet_id 
+            LEFT JOIN (
+                SELECT ref_no, COUNT(*) as planned_rolls 
+                FROM slitting_plans 
+                WHERE ref_no IS NOT NULL AND ref_no != '' 
+                GROUP BY ref_no
+            ) plan_summary ON plan_summary.ref_no = sp.ref_no 
             WHERE {$baseWhere}
               AND sp.customer_name IS NOT NULL AND sp.customer_name != '' 
               AND sp.ref_no IS NOT NULL AND sp.ref_no != '' 
@@ -427,6 +449,9 @@ class CustomerTrackOrderModel
                     $inProdOrdersCount++;
                 }
 
+                $planned = (int)($row['planned_rolls'] ?? $tot);
+                if ($planned <= 0) { $planned = $tot; }
+                $row['planned_rolls'] = $planned;
                 $row['order_status'] = $st;
                 $row['progress_pct'] = $pct;
                 $row['badge_class']  = $badgeClass;

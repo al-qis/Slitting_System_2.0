@@ -441,4 +441,56 @@ if (!function_exists('getStockMonthEndSqlCondition')) {
     }
 }
 
+
+if (!function_exists('syncSlittingPlanCustomer')) {
+    /**
+     * Synchronizes customer_name and ref_no to slitting_plans for a given slitting_product ID.
+     */
+    function syncSlittingPlanCustomer(mysqli $conn, int $productId, string $customer, string $refNo): bool {
+        if ($productId <= 0) return false;
+        $customer = trim($customer);
+        $refNo    = trim($refNo);
+        if ($customer === '' && $refNo === '') return false;
+
+        $stmt = $conn->prepare("SELECT mother_id, roll_no, width FROM slitting_product WHERE id = ? LIMIT 1");
+        if (!$stmt) return false;
+        $stmt->bind_param("i", $productId);
+        $stmt->execute();
+        $prod = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        if (!$prod || empty($prod['mother_id']) || empty($prod['roll_no'])) {
+            return false;
+        }
+
+        $motherId = (int)$prod['mother_id'];
+        $rollSeq  = trim($prod['roll_no']);
+        $width    = (float)($prod['width'] ?? 0);
+
+        // Check if row exists in slitting_plans for this mother_id and roll_seq
+        $chk = $conn->prepare("SELECT id FROM slitting_plans WHERE mother_coil_id = ? AND roll_seq = ? LIMIT 1");
+        if (!$chk) return false;
+        $chk->bind_param("is", $motherId, $rollSeq);
+        $chk->execute();
+        $hasRow = ($chk->get_result()->num_rows > 0);
+        $chk->close();
+
+        if ($hasRow) {
+            $upd = $conn->prepare("UPDATE slitting_plans SET customer_name = ?, ref_no = ? WHERE mother_coil_id = ? AND roll_seq = ?");
+            if ($upd) {
+                $upd->bind_param("ssis", $customer, $refNo, $motherId, $rollSeq);
+                $upd->execute();
+                $upd->close();
+            }
+        } else {
+            $ins = $conn->prepare("INSERT INTO slitting_plans (mother_coil_id, roll_seq, planned_width, customer_name, ref_no) VALUES (?, ?, ?, ?, ?)");
+            if ($ins) {
+                $ins->bind_param("isdss", $motherId, $rollSeq, $width, $customer, $refNo);
+                $ins->execute();
+                $ins->close();
+            }
+        }
+        return true;
+    }
+}
 ?>
