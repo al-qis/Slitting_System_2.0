@@ -96,29 +96,33 @@ $coil_width_val = floatval($source_data['width'] ?? $mother_data['width'] ?? 0);
 $isLeftoverCut = $from_stock && (($source_data['source_type'] ?? '') === 'slitting_cut_into_2');
 
 $slittingPlan = [];
-if ($isLeftoverCut && $stock_id) {
-    // ── Look up an officer-authored slitting plan specifically for this leftover coil ──
+if ($stock_id) {
     $planStmt = $conn->prepare("
         SELECT roll_seq, planned_width, customer_name, ref_no
         FROM slitting_plans
         WHERE stock_id = ?
         ORDER BY sort_order ASC, id ASC
     ");
-    $planStmt->bind_param("i", $stock_id);
-    $planStmt->execute();
-    $slittingPlan = $planStmt->get_result()->fetch_all(MYSQLI_ASSOC);
-    $planStmt->close();
-} elseif (!$isLeftoverCut && $mother_id) {
+    if ($planStmt) {
+        $planStmt->bind_param("i", $stock_id);
+        $planStmt->execute();
+        $slittingPlan = $planStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $planStmt->close();
+    }
+}
+if (empty($slittingPlan) && $mother_id) {
     $planStmt = $conn->prepare("
         SELECT roll_seq, planned_width, customer_name, ref_no
         FROM slitting_plans
-        WHERE mother_coil_id = ? AND (stock_id IS NULL OR stock_id = 0)
+        WHERE mother_coil_id = ?
         ORDER BY sort_order ASC, id ASC
     ");
-    $planStmt->bind_param("i", $mother_id);
-    $planStmt->execute();
-    $slittingPlan = $planStmt->get_result()->fetch_all(MYSQLI_ASSOC);
-    $planStmt->close();
+    if ($planStmt) {
+        $planStmt->bind_param("i", $mother_id);
+        $planStmt->execute();
+        $slittingPlan = $planStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $planStmt->close();
+    }
 }
 
 // ── Determine next cut letter for this mother coil / leftover ──

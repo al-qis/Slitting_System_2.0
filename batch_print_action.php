@@ -140,6 +140,9 @@ foreach ($clean as &$row) {
         $stmtUpdNormal->bind_param("ssi", $row['customer_to_save'], $row['ref_no'], $row['id']);
         $stmtUpdNormal->execute();
     }
+    if (function_exists('syncSlittingPlanCustomer')) {
+        syncSlittingPlanCustomer($conn, $row['id'], $row['customer_to_save'], $row['ref_no']);
+    }
 
     // If roll was pending and now completed, process cut_into_2 leftover transfer
     if ($wasPending && $info && $row['length'] > 0) {

@@ -150,6 +150,10 @@ if (
     $ok = $stmt->execute();
     $stmt->close();
 
+    if ($ok && function_exists('syncSlittingPlanCustomer')) {
+        syncSlittingPlanCustomer($conn, $pid, $customer, $ref_no);
+    }
+
     echo json_encode([
         'ok'  => $ok,
         'msg' => $ok ? "Saved — Customer: {$customer} · Ref: {$ref_no}" : 'Save failed: '.$conn->error,

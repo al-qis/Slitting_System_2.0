@@ -70,6 +70,9 @@ foreach ($selections as $sel) {
     $stmt->bind_param("ssdi", $customerToSave, $ref_no, $length, $id);
     if ($stmt->execute()) {
         $saved++;
+        if (function_exists('syncSlittingPlanCustomer')) {
+            syncSlittingPlanCustomer($conn, $id, $customerToSave, $ref_no);
+        }
 
         if (isset($sel['stock_code']) && trim($sel['stock_code']) !== '') {
             $stSc = trim($sel['stock_code']);
