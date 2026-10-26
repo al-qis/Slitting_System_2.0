@@ -3165,10 +3165,10 @@ if (isset($_GET['success'])): ?>
             Pallet Serial No <span class="text-danger">*</span>
           </label>
           <input type="text" id="palletNoInput" class="form-control"
-                 placeholder="e.g. 2608108 or 2608287(B)"
+                 placeholder="e.g. 2610194, 2610194a, or 2610194a(B)"
                  autocomplete="off" spellcheck="false"
                  style="font-family:monospace;letter-spacing:.4px;">
-          <div class="form-text">Format: <code>SFS-YYMM-XXX</code> or <code>SFS-YYMM-XXX (B)</code></div>
+          <div class="form-text">Format: <code>SFS-YYMM-XXX</code>, <code>SFS-YYMM-XXXa</code>, or with suffix: <code>SFS-YYMM-XXX (B)</code>, <code>SFS-YYMM-XXXa (B)</code></div>
           <div id="palletNoFeedback" class="mt-1" style="font-size:12px;min-height:18px;"></div>
         </div>
         <!-- ── STEP 2: SELECT CUSTOMER (RADIO BUTTON LIST) ── -->
@@ -4695,16 +4695,45 @@ const PALLET_NO_PREFIX = 'SFS-';
 function formatPalletNo(raw) {
     if (!raw) return '';
     const hasTrailingSpace = raw.endsWith(' ') || raw.endsWith(' (');
-    const cleaned = raw.replace(/^\s*SFS-?\s*/i, '');
-    const digits  = cleaned.replace(/[^0-9]/g, '').slice(0, 7);   // XXXX + XXX
-    const letters = cleaned.replace(/[^A-Za-z]/g, '').toUpperCase().slice(0, 3); // optional (B)/(BN)/(A)
 
-    if (!digits && !letters) return raw;
+    // 1. Extract suffix in parentheses if present, e.g. (B), (BN)
+    let suffix = '';
+    let mainPart = raw;
+    const parenMatch = raw.match(/\(([A-Za-z]{1,3})\)/);
+    if (parenMatch) {
+        suffix = parenMatch[1].toUpperCase();
+        mainPart = raw.replace(/\([^)]*\)/, '');
+    } else {
+        const spaceMatch = raw.match(/\s+([A-Za-z]{1,3})\s*$/);
+        if (spaceMatch) {
+            suffix = spaceMatch[1].toUpperCase();
+            mainPart = raw.replace(/\s+[A-Za-z]{1,3}\s*$/, '');
+        }
+    }
+
+    // 2. Clean mainPart (remove leading SFS-)
+    const cleaned = mainPart.replace(/^\s*SFS-?\s*/i, '');
+    const cleanNoDash = cleaned.replace(/-/g, '');
+    const digits = cleanNoDash.replace(/[^0-9]/g, '').slice(0, 7);
+
+    // Check if there is an extra letter attached to the sequence (e.g. 194a)
+    let extraLetter = '';
+    if (digits.length >= 5) {
+        const letterMatch = cleanNoDash.match(/\d{5,7}\s*([A-Za-z])/i);
+        if (letterMatch) {
+            extraLetter = letterMatch[1];
+        }
+    }
+
+    if (!digits && !extraLetter && !suffix) return raw;
 
     let out = PALLET_NO_PREFIX + (digits.length <= 4 ? digits : digits.slice(0, 4) + '-' + digits.slice(4));
-    if (letters) {
-        out += ` (${letters})`;
-    } else if (hasTrailingSpace && digits.length === 7) {
+    if (extraLetter) {
+        out += extraLetter;
+    }
+    if (suffix) {
+        out += ` (${suffix})`;
+    } else if (hasTrailingSpace && digits.length >= 7) {
         out += ' ';
     }
     return out;
