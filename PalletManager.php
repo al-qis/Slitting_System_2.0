@@ -38,9 +38,9 @@ class PalletManager
     ];
 
     /**
-     * SFS-XXXX-XXX  or  SFS-XXXX-XXX (A)  … (ABC)
+     * SFS-XXXX-XXX, SFS-XXXX-XXXa, or with suffix SFS-XXXX-XXX (A), SFS-XXXX-XXXa (A)
      */
-    public const PALLET_NO_REGEX = '/^SFS-\d{4}-\d{3}(?: \([A-Z]{1,3}\))?$/';
+    public const PALLET_NO_REGEX = '/^SFS-\d{4}-\d{3}[a-zA-Z]?(?: \([A-Z]{1,3}\))?$/';
 
     /**
      * Special Ref No value meaning "not tied to a specific SO" — a
@@ -118,7 +118,7 @@ class PalletManager
         if (!preg_match(self::PALLET_NO_REGEX, $palletNo)) {
             return [
                 'ok'  => false,
-                'msg' => "Invalid format. Expected SFS-XXXX-XXX or SFS-XXXX-XXX (A). Got: \"{$palletNo}\".",
+                'msg' => "Invalid format. Expected SFS-XXXX-XXX, SFS-XXXX-XXXa, or with suffix (e.g. SFS-XXXX-XXX (B), SFS-XXXX-XXXa (B)). Got: \"{$palletNo}\".",
             ];
         }
         $stmt = $this->conn->prepare(
@@ -188,7 +188,7 @@ class PalletManager
         if (!preg_match(self::PALLET_NO_REGEX, $newPalletNo)) {
             return [
                 'ok'  => false,
-                'msg' => "Invalid format. Expected SFS-XXXX-XXX or SFS-XXXX-XXX (A). Got: \"{$newPalletNo}\".",
+                'msg' => "Invalid format. Expected SFS-XXXX-XXX, SFS-XXXX-XXXa, or with suffix (e.g. SFS-XXXX-XXX (B), SFS-XXXX-XXXa (B)). Got: \"{$newPalletNo}\".",
             ];
         }
 
@@ -1985,17 +1985,43 @@ class PalletManager
         $raw = trim($raw);
         if ($raw === '') return '';
 
-        $cleaned      = preg_replace('/^\s*SFS-?\s*/i', '', $raw);
-        $cleanDigits  = substr(preg_replace('/[^0-9]/', '', $cleaned), 0, 7);
-        $cleanLetters = strtoupper(substr(preg_replace('/[^A-Za-z]/', '', preg_replace('/^\s*SFS-?\s*/i', '', $raw)), 0, 3));
-
-        if ($cleanDigits === '' && $cleanLetters === '') return $raw;
-
-        $formatted = 'SFS-' . (strlen($cleanDigits) <= 4 ? $cleanDigits : substr($cleanDigits, 0, 4) . '-' . substr($cleanDigits, 4));
-        if ($cleanLetters !== '') {
-            $formatted .= " ({$cleanLetters})";
+        // 1. Extract suffix in parentheses if present, e.g. (B), (BN)
+        $suffix = '';
+        if (preg_match('/\(([A-Za-z]{1,3})\)/', $raw, $m)) {
+            $suffix = strtoupper($m[1]);
+            $mainPart = preg_replace('/\([^)]*\)/', '', $raw);
+        } elseif (preg_match('/\s+([A-Za-z]{1,3})\s*$/', $raw, $m)) {
+            $suffix = strtoupper($m[1]);
+            $mainPart = preg_replace('/\s+[A-Za-z]{1,3}\s*$/', '', $raw);
+        } else {
+            $mainPart = $raw;
         }
-        return $formatted;
+
+        // 2. Clean mainPart (remove leading SFS-)
+        $cleaned = preg_replace('/^\s*SFS-?\s*/i', '', $mainPart);
+        $cleanNoDash = str_replace('-', '', $cleaned);
+        $digits  = substr(preg_replace('/[^0-9]/', '', $cleanNoDash), 0, 7);
+
+        // Check if there is an extra letter attached to the sequence (e.g. 194a)
+        $extraLetter = '';
+        if (strlen($digits) >= 5) {
+            if (preg_match('/\d{5,7}\s*([A-Za-z])/i', $cleanNoDash, $lm)) {
+                $extraLetter = $lm[1];
+            }
+        }
+
+        if ($digits === '' && $extraLetter === '' && $suffix === '') {
+            return $raw;
+        }
+
+        $out = 'SFS-' . (strlen($digits) <= 4 ? $digits : substr($digits, 0, 4) . '-' . substr($digits, 4));
+        if ($extraLetter !== '') {
+            $out .= $extraLetter;
+        }
+        if ($suffix !== '') {
+            $out .= " ({$suffix})";
+        }
+        return $out;
     }
 
     /**
