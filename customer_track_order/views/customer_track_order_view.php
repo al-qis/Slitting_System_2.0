@@ -515,10 +515,19 @@ $pathPrefix           = $pathPrefix ?? '../';
                 <!-- KPI Metric Chips -->
                 <div class="row g-3 mt-2">
                     <div class="col-6 col-md-3">
-                        <div class="p-3 rounded bg-light border text-center">
+                        <div class="p-3 rounded bg-light border text-center h-100 d-flex flex-column justify-content-center">
                             <small class="text-muted fw-bold text-uppercase d-block mb-1">Total Quantity</small>
-                            <span class="fs-4 fw-bold text-dark"><?= $singleOrder['total_rolls'] ?> / <?= $singleOrder['planned_rolls'] ?></span>
-                            <span class="text-muted small">Rolls</span>
+                            <div>
+                                <span class="fs-4 fw-bold text-dark"><?= $singleOrder['total_rolls'] ?> / <?= $singleOrder['planned_rolls'] ?></span>
+                                <span class="text-muted small">Rolls</span>
+                            </div>
+                            <?php if (!empty($singleOrder['excess_breakdown'])): ?>
+                                <div class="mt-2 pt-1 border-top" style="font-size: 11px;">
+                                    <span class="badge bg-warning text-dark border border-warning-subtle" title="Extra produce beyond planned cut">
+                                        <i class="bi bi-plus-circle me-1"></i>+<?= $singleOrder['excess_rolls'] ?> Extra: <?= htmlspecialchars($singleOrder['excess_breakdown']) ?>
+                                    </span>
+                                </div>
+                            <?php endif; ?>
                         </div>
                     </div>
                     <div class="col-6 col-md-3">
@@ -582,11 +591,28 @@ $pathPrefix           = $pathPrefix ?? '../';
 
             <!-- Roll Breakdown Table -->
             <div class="card glass-card p-3 p-md-4 mb-4">
-                <div class="d-flex align-items-center justify-content-between mb-3">
+                <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
                     <h5 class="fw-bold m-0 d-flex align-items-center gap-2">
                         <i class="bi bi-list-check text-primary"></i> Order Itemized Rolls Breakdown
                     </h5>
-                    <span class="text-muted small">Total: <?= count($orderRolls) ?> Rolls</span>
+                    <div class="d-flex flex-wrap align-items-center gap-2">
+                        <?php if (!empty($singleOrder['initial_stock_cnt'])): ?>
+                            <span class="badge bg-secondary-subtle text-secondary border px-2 py-1" title="Rolls from initial ready stock">
+                                <i class="bi bi-box-seam me-1"></i>Initial Stock: <strong><?= $singleOrder['initial_stock_cnt'] ?></strong>
+                            </span>
+                        <?php endif; ?>
+                        <?php if (!empty($singleOrder['recoil_cnt'])): ?>
+                            <span class="badge bg-info-subtle text-info-emphasis border px-2 py-1" title="Rolls from recoiling">
+                                <i class="bi bi-arrow-repeat me-1"></i>Recoil: <strong><?= $singleOrder['recoil_cnt'] ?></strong>
+                            </span>
+                        <?php endif; ?>
+                        <?php if (!empty($singleOrder['reslit_cnt'])): ?>
+                            <span class="badge bg-warning-subtle text-warning-emphasis border px-2 py-1" title="Rolls from reslitting">
+                                <i class="bi bi-scissors me-1"></i>Reslit: <strong><?= $singleOrder['reslit_cnt'] ?></strong>
+                            </span>
+                        <?php endif; ?>
+                        <span class="text-muted small fw-semibold">Total: <?= count($orderRolls) ?> Rolls</span>
+                    </div>
                 </div>
 
                 <div class="table-responsive">
@@ -608,15 +634,51 @@ $pathPrefix           = $pathPrefix ?? '../';
                             <?php foreach ($orderRolls as $idx => $roll): 
                                 $st = strtoupper($roll['status'] ?? 'IN');
                                 $sc = (int)($roll['stock_counted'] ?? 0);
+                                $isInit = (empty($roll['mother_id']) || ($roll['original_source'] ?? '') === 'initial_stock');
+                                $isRec  = (($roll['source'] ?? '') === 'recoiling' || !empty($roll['recoiling_id']) || ($roll['cut_type'] ?? '') === 'cut_into_2');
+                                $isRes  = (($roll['source'] ?? '') === 'reslit' || !empty($roll['is_reslitted']));
+
+                                $rowStyle = '';
+                                if ($isInit) {
+                                    $rowStyle = 'border-left: 4px solid #6c757d; background-color: rgba(108, 117, 125, 0.05);';
+                                } elseif ($isRec) {
+                                    $rowStyle = 'border-left: 4px solid #0284c7; background-color: rgba(2, 132, 199, 0.06);';
+                                } elseif ($isRes) {
+                                    $rowStyle = 'border-left: 4px solid #f59e0b; background-color: rgba(245, 158, 11, 0.06);';
+                                }
                             ?>
-                                <tr>
+                                <tr style="<?= $rowStyle ?>">
                                     <td class="text-muted"><?= $idx + 1 ?></td>
                                     <td class="fw-bold text-dark">
                                         <?= $model->formatRollNo($roll['roll_no']) ?>
                                     </td>
                                     <td>
                                         <span class="fw-semibold text-secondary"><?= htmlspecialchars($roll['lot_no'] ?: '—') ?></span>
-                                        <small class="text-muted d-block">Coil: <?= htmlspecialchars($roll['coil_no'] ?: '—') ?></small>
+                                        <small class="text-muted d-block">
+                                            Coil: 
+                                            <?php if ($isInit): ?>
+                                                <strong class="text-secondary"><?= htmlspecialchars($roll['coil_no'] ?: '—') ?></strong>
+                                            <?php elseif ($isRec): ?>
+                                                <strong class="text-info-emphasis"><?= htmlspecialchars($roll['coil_no'] ?: '—') ?></strong>
+                                            <?php elseif ($isRes): ?>
+                                                <strong class="text-warning-emphasis"><?= htmlspecialchars($roll['coil_no'] ?: '—') ?></strong>
+                                            <?php else: ?>
+                                                <strong><?= htmlspecialchars($roll['coil_no'] ?: '—') ?></strong>
+                                            <?php endif; ?>
+                                        </small>
+                                        <?php if ($isInit): ?>
+                                            <span class="badge bg-secondary text-white mt-1 shadow-sm px-2 py-1" style="font-size: 10px;">
+                                                <i class="bi bi-box-seam me-1"></i>Initial Stock
+                                            </span>
+                                        <?php elseif ($isRec): ?>
+                                            <span class="badge bg-info text-dark mt-1 shadow-sm px-2 py-1" style="font-size: 10px;">
+                                                <i class="bi bi-arrow-repeat me-1"></i>Recoil
+                                            </span>
+                                        <?php elseif ($isRes): ?>
+                                            <span class="badge bg-warning text-dark mt-1 shadow-sm px-2 py-1" style="font-size: 10px;">
+                                                <i class="bi bi-scissors me-1"></i>Reslit
+                                            </span>
+                                        <?php endif; ?>
                                     </td>
                                     <td>
                                         <span class="fw-bold text-dark"><?= htmlspecialchars($roll['product'] ?: '—') ?></span>
@@ -781,7 +843,14 @@ $pathPrefix           = $pathPrefix ?? '../';
                                         </td>
                                         <td>
                                             <strong><?= $order['total_rolls'] ?> / <?= $order['planned_rolls'] ?></strong> <span class="text-muted small">Rolls</span>
-                                            <div class="small text-muted">
+                                            <?php if (!empty($order['excess_breakdown'])): ?>
+                                                <div class="mt-1" style="font-size: 11px;">
+                                                    <span class="badge bg-warning text-dark border border-warning-subtle py-1" title="Extra produce beyond planned cut">
+                                                        <i class="bi bi-plus-circle me-1"></i>+<?= $order['excess_rolls'] ?>: <?= htmlspecialchars($order['excess_breakdown']) ?>
+                                                    </span>
+                                                </div>
+                                            <?php endif; ?>
+                                            <div class="small text-muted mt-1">
                                                 Delivered: <span class="text-success fw-bold"><?= $order['delivered_rolls'] ?></span>
                                             </div>
                                         </td>

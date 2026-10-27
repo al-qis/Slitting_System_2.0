@@ -141,6 +141,12 @@ class CustomerTrackOrderModel
                 sp.delivered_at,
                 sp.delivered_by,
                 sp.qc_comment,
+                sp.mother_id,
+                sp.source,
+                sp.original_source,
+                sp.recoiling_id,
+                sp.is_reslitted,
+                sp.cut_type,
                 mc.grade,
                 pi.pallet_id,
                 p.pallet_no,
@@ -191,6 +197,12 @@ class CustomerTrackOrderModel
                     sp.delivered_at,
                     sp.delivered_by,
                     sp.qc_comment,
+                    sp.mother_id,
+                    sp.source,
+                    sp.original_source,
+                    sp.recoiling_id,
+                    sp.is_reslitted,
+                    sp.cut_type,
                     mc.grade,
                     pi.pallet_id,
                     p.pallet_no,
@@ -229,6 +241,9 @@ class CustomerTrackOrderModel
         $approvedRolls   = 0;
         $waitingRolls    = 0;
         $inProdRolls     = 0;
+        $initialStockCount = 0;
+        $recoilCount       = 0;
+        $reslitCount       = 0;
         $totalMeters     = 0.0;
         $customerNames   = [];
         $uniqueProducts  = [];
@@ -242,6 +257,18 @@ class CustomerTrackOrderModel
             $stockCounted = (int)($roll['stock_counted'] ?? 0);
             $meters = (float)($roll['actual_length'] ?: $roll['length'] ?: 0);
             $totalMeters += $meters;
+
+            $isInitialStock = (empty($roll['mother_id']) || ($roll['original_source'] ?? '') === 'initial_stock');
+            $isRecoil = (($roll['source'] ?? '') === 'recoiling' || !empty($roll['recoiling_id']) || ($roll['cut_type'] ?? '') === 'cut_into_2');
+            $isReslit = (($roll['source'] ?? '') === 'reslit' || !empty($roll['is_reslitted']));
+
+            if ($isInitialStock) {
+                $initialStockCount++;
+            } elseif ($isRecoil) {
+                $recoilCount++;
+            } elseif ($isReslit) {
+                $reslitCount++;
+            }
 
             if (!empty($roll['customer_name'])) {
                 $customerNames[$roll['customer_name']] = true;
@@ -328,12 +355,34 @@ class CustomerTrackOrderModel
             }
         }
 
+        $excessRolls = max(0, $totalRolls - $plannedRolls);
+        $excessBreakdown = [];
+        if ($excessRolls > 0) {
+            if ($initialStockCount > 0) {
+                $excessBreakdown[] = "{$initialStockCount} Initial Stock";
+            }
+            if ($recoilCount > 0) {
+                $excessBreakdown[] = "{$recoilCount} Recoil";
+            }
+            if ($reslitCount > 0) {
+                $excessBreakdown[] = "{$reslitCount} Reslit";
+            }
+            if (empty($excessBreakdown)) {
+                $excessBreakdown[] = "{$excessRolls} Extra Cut";
+            }
+        }
+
         $singleOrder = [
             'ref_no'           => $actualRefNo,
             'customer_name'    => implode(', ', array_keys($customerNames)) ?: 'N/A',
             'products'         => implode(', ', array_keys($uniqueProducts)) ?: 'N/A',
             'total_rolls'      => $totalRolls,
             'planned_rolls'    => $plannedRolls,
+            'excess_rolls'     => $excessRolls,
+            'excess_breakdown' => implode(', ', $excessBreakdown),
+            'initial_stock_cnt'=> $initialStockCount,
+            'recoil_cnt'       => $recoilCount,
+            'reslit_cnt'       => $reslitCount,
             'delivered_rolls'  => $deliveredRolls,
             'approved_rolls'   => $approvedRolls,
             'waiting_rolls'    => $waitingRolls,
@@ -383,6 +432,9 @@ class CustomerTrackOrderModel
                 COUNT(DISTINCT p.pallet_no) as pallet_count,
                 GROUP_CONCAT(DISTINCT p.pallet_no SEPARATOR ', ') as pallet_numbers,
                 GROUP_CONCAT(DISTINCT sp.product SEPARATOR ', ') as products,
+                SUM(CASE WHEN (sp.mother_id IS NULL OR sp.mother_id = 0 OR sp.original_source = 'initial_stock') THEN 1 ELSE 0 END) AS initial_stock_rolls,
+                SUM(CASE WHEN (sp.source = 'recoiling' OR sp.recoiling_id > 0 OR sp.cut_type = 'cut_into_2') THEN 1 ELSE 0 END) AS recoil_rolls,
+                SUM(CASE WHEN (sp.source = 'reslit' OR sp.is_reslitted = 1) THEN 1 ELSE 0 END) AS reslit_rolls,
                 COALESCE(MAX(plan_summary.planned_rolls), COUNT(*)) as planned_rolls
             FROM slitting_product sp 
             LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id 
@@ -495,6 +547,21 @@ class CustomerTrackOrderModel
                 $planned = (int)($row['planned_rolls'] ?? $tot);
                 if ($planned <= 0) { $planned = $tot; }
                 $row['planned_rolls'] = $planned;
+
+                $excess = max(0, $tot - $planned);
+                $row['excess_rolls'] = $excess;
+                $breakdownParts = [];
+                if ($excess > 0) {
+                    $initStk = (int)($row['initial_stock_rolls'] ?? 0);
+                    $recoil  = (int)($row['recoil_rolls'] ?? 0);
+                    $reslit  = (int)($row['reslit_rolls'] ?? 0);
+                    if ($initStk > 0) $breakdownParts[] = "{$initStk} Initial Stock";
+                    if ($recoil > 0)  $breakdownParts[] = "{$recoil} Recoil";
+                    if ($reslit > 0)  $breakdownParts[] = "{$reslit} Reslit";
+                    if (empty($breakdownParts)) $breakdownParts[] = "{$excess} Extra Cut";
+                }
+                $row['excess_breakdown'] = implode(', ', $breakdownParts);
+
                 $row['order_status'] = $st;
                 $row['progress_pct'] = $pct;
                 $row['badge_class']  = $badgeClass;
