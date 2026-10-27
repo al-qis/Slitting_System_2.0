@@ -231,28 +231,50 @@ class CustomerTrackOrderModel
             }
         }
 
-        if (empty($orderRolls)) {
-            return null;
+        $actualRefNo = '';
+        if (!empty($orderRolls)) {
+            $actualRefNo = $orderRolls[0]['ref_no'];
+        } else {
+            // Check if order exists in slitting_plans
+            $stmtCheckPlan = $this->conn->prepare("SELECT ref_no, customer_name FROM slitting_plans WHERE ref_no = ? LIMIT 1");
+            if ($stmtCheckPlan) {
+                $stmtCheckPlan->bind_param("s", $searchSo);
+                $stmtCheckPlan->execute();
+                $cRow = $stmtCheckPlan->get_result()->fetch_assoc();
+                if ($cRow) {
+                    $actualRefNo = $cRow['ref_no'];
+                }
+                $stmtCheckPlan->close();
+            }
+            if (empty($actualRefNo)) {
+                return null;
+            }
         }
 
         // 3. Compute Single Order Aggregation & Journey Stage
-        $totalRolls      = count($orderRolls);
-        $deliveredRolls  = 0;
-        $approvedRolls   = 0;
-        $waitingRolls    = 0;
-        $inProdRolls     = 0;
-        $initialStockCount = 0;
-        $recoilCount       = 0;
-        $reslitCount       = 0;
-        $totalMeters     = 0.0;
-        $customerNames   = [];
-        $uniqueProducts  = [];
-        $uniquePallets   = [];
-        $earliestDate    = null;
-        $latestDelivered = null;
-        $actualRefNo     = $orderRolls[0]['ref_no'];
+        $producedRollsCount = count($orderRolls);
+        $totalRolls         = $producedRollsCount;
+        $deliveredRolls     = 0;
+        $approvedRolls      = 0;
+        $waitingRolls       = 0;
+        $inProdRolls        = 0;
+        $initialStockCount  = 0;
+        $recoilCount        = 0;
+        $reslitCount        = 0;
+        $totalMeters        = 0.0;
+        $customerNames      = [];
+        $uniqueProducts     = [];
+        $uniquePallets      = [];
+        $earliestDate       = null;
+        $latestDelivered    = null;
 
-        foreach ($orderRolls as $roll) {
+        $producedMap = [];
+        foreach ($orderRolls as &$roll) {
+            $roll['is_planned_only'] = false;
+            $roll['is_produced']     = true;
+            $pKey = ($roll['mother_id'] ?? '') . '_' . ($roll['roll_no'] ?? '');
+            $producedMap[$pKey] = true;
+
             $status = strtoupper($roll['status'] ?? 'IN');
             $stockCounted = (int)($roll['stock_counted'] ?? 0);
             $meters = (float)($roll['actual_length'] ?: $roll['length'] ?: 0);
@@ -310,24 +332,126 @@ class CustomerTrackOrderModel
                 }
             }
         }
+        unset($roll);
 
-        // Determine Overall Progress State
+        // Fetch planned coils from slitting_plans (deduplicated by mother_coil_id & roll_seq)
+        $planningRollsCount = 0;
+        $distinctPlanCount = 0;
+        $sqlPlans = "
+            SELECT 
+                MIN(p.id) AS plan_id,
+                p.mother_coil_id,
+                MIN(p.stock_id) AS stock_id,
+                p.roll_seq,
+                MAX(p.planned_width) AS planned_width,
+                MAX(p.customer_name) AS customer_name,
+                p.ref_no,
+                MIN(p.sort_order) AS sort_order,
+                COALESCE(MAX(mc.coil_no), MAX(srm.coil_no), '—') AS coil_no,
+                COALESCE(MAX(mc.lot_no), MAX(srm.lot_no), '—') AS lot_no,
+                COALESCE(MAX(mc.product), '—') AS product,
+                COALESCE(MAX(mc.grade), MAX(srm.grade), '') AS grade,
+                COALESCE(MAX(mc.length), MAX(srm.length), 0) AS planned_length,
+                COALESCE(MAX(mc.width), MAX(srm.width), 0) AS mother_width,
+                MAX(mc.status) AS mother_status
+            FROM slitting_plans p
+            LEFT JOIN mother_coil mc ON mc.id = p.mother_coil_id
+            LEFT JOIN stock_raw_material srm ON srm.id = p.stock_id
+            WHERE p.ref_no = ?
+            GROUP BY p.mother_coil_id, p.roll_seq, p.ref_no
+            ORDER BY p.mother_coil_id ASC, MIN(p.sort_order) ASC, p.roll_seq ASC
+        ";
+        $stmtP = $this->conn->prepare($sqlPlans);
+        if ($stmtP) {
+            $stmtP->bind_param("s", $actualRefNo);
+            $stmtP->execute();
+            $plansRes = $stmtP->get_result();
+            while ($plan = $plansRes->fetch_assoc()) {
+                $distinctPlanCount++;
+                $planKey = ($plan['mother_coil_id'] ?? '') . '_' . ($plan['roll_seq'] ?? '');
+                
+                // If not produced yet, add to order item rolls as a planning coil
+                if (!isset($producedMap[$planKey])) {
+                    $orderRolls[] = [
+                        'id'                  => 'plan_' . $plan['plan_id'],
+                        'plan_id'             => $plan['plan_id'],
+                        'customer_name'       => $plan['customer_name'] ?: (implode(', ', array_keys($customerNames)) ?: 'N/A'),
+                        'ref_no'              => $plan['ref_no'],
+                        'product'             => $plan['product'],
+                        'lot_no'              => $plan['lot_no'],
+                        'coil_no'             => $plan['coil_no'],
+                        'roll_no'             => $plan['roll_seq'],
+                        'width'               => (float)$plan['planned_width'],
+                        'length'              => (float)$plan['planned_length'],
+                        'actual_length'       => 0,
+                        'status'              => 'PLANNED',
+                        'stock_counted'       => 0,
+                        'is_completed'        => 0,
+                        'date_in'             => null,
+                        'date_out'            => null,
+                        'delivered_at'        => null,
+                        'delivered_by'        => null,
+                        'qc_comment'          => null,
+                        'mother_id'           => $plan['mother_coil_id'],
+                        'source'              => 'plan',
+                        'original_source'     => 'plan',
+                        'recoiling_id'        => null,
+                        'is_reslitted'        => 0,
+                        'cut_type'            => 'normal',
+                        'grade'               => $plan['grade'],
+                        'pallet_id'           => null,
+                        'pallet_no'           => null,
+                        'pallet_status'       => null,
+                        'pallet_delivered_at' => null,
+                        'is_planned_only'     => true,
+                        'is_produced'         => false,
+                    ];
+                    $planningRollsCount++;
+
+                    if (!empty($plan['product']) && $plan['product'] !== '—') {
+                        $uniqueProducts[$plan['product']] = true;
+                    }
+                    if (!empty($plan['customer_name'])) {
+                        $customerNames[$plan['customer_name']] = true;
+                    }
+                }
+            }
+            $stmtP->close();
+        }
+
+        // Raw count in slitting_plans for display
+        $rawPlanCount = 0;
+        $stmtRawPlan = $this->conn->prepare("SELECT COUNT(*) AS cnt FROM slitting_plans WHERE ref_no = ?");
+        if ($stmtRawPlan) {
+            $stmtRawPlan->bind_param("s", $actualRefNo);
+            $stmtRawPlan->execute();
+            $rawRow = $stmtRawPlan->get_result()->fetch_assoc();
+            if ($rawRow) {
+                $rawPlanCount = (int)$rawRow['cnt'];
+            }
+            $stmtRawPlan->close();
+        }
+
+        $plannedRolls = max($totalRolls, $distinctPlanCount, $rawPlanCount);
+        $targetRolls  = max($totalRolls, $plannedRolls);
+
+        // Determine Overall Progress State taking planned rolls into account
         $overallStatus = 'IN_PRODUCTION';
         $progressPct   = 25;
         $stageIndex    = 1; // 1: Order Planned, 2: Slitting, 3: QC, 4: Palletizing/Ready, 5: Delivered
 
-        if ($deliveredRolls === $totalRolls) {
+        if ($deliveredRolls >= $targetRolls && $totalRolls >= $plannedRolls && $targetRolls > 0) {
             $overallStatus = 'DELIVERED';
             $progressPct   = 100;
             $stageIndex    = 5;
         } elseif ($deliveredRolls > 0) {
             $overallStatus = 'PARTIALLY_DELIVERED';
-            $progressPct   = (int)round(($deliveredRolls / $totalRolls) * 100);
-            if ($progressPct < 50) {
-                $progressPct = 50;
+            $progressPct   = (int)round(($deliveredRolls / $targetRolls) * 100);
+            if ($progressPct < 15) {
+                $progressPct = 15;
             }
             $stageIndex    = 4;
-        } elseif (!empty($uniquePallets) || $approvedRolls === $totalRolls) {
+        } elseif (!empty($uniquePallets) || ($approvedRolls === $totalRolls && $totalRolls >= $plannedRolls)) {
             $overallStatus = 'READY_FOR_DELIVERY';
             $progressPct   = 85;
             $stageIndex    = 4;
@@ -339,20 +463,6 @@ class CustomerTrackOrderModel
             $overallStatus = 'IN_PRODUCTION';
             $progressPct   = 30;
             $stageIndex    = 2;
-        }
-
-        $plannedRolls = $totalRolls;
-        if (!empty($actualRefNo)) {
-            $stmtPlan = $this->conn->prepare("SELECT COUNT(*) AS planned_rolls FROM slitting_plans WHERE ref_no = ?");
-            if ($stmtPlan) {
-                $stmtPlan->bind_param("s", $actualRefNo);
-                $stmtPlan->execute();
-                $planRow = $stmtPlan->get_result()->fetch_assoc();
-                if ($planRow && (int)$planRow['planned_rolls'] > 0) {
-                    $plannedRolls = (int)$planRow['planned_rolls'];
-                }
-                $stmtPlan->close();
-            }
         }
 
         $excessRolls = max(0, $totalRolls - $plannedRolls);
@@ -373,27 +483,30 @@ class CustomerTrackOrderModel
         }
 
         $singleOrder = [
-            'ref_no'           => $actualRefNo,
-            'customer_name'    => implode(', ', array_keys($customerNames)) ?: 'N/A',
-            'products'         => implode(', ', array_keys($uniqueProducts)) ?: 'N/A',
-            'total_rolls'      => $totalRolls,
-            'planned_rolls'    => $plannedRolls,
-            'excess_rolls'     => $excessRolls,
-            'excess_breakdown' => implode(', ', $excessBreakdown),
-            'initial_stock_cnt'=> $initialStockCount,
-            'recoil_cnt'       => $recoilCount,
-            'reslit_cnt'       => $reslitCount,
-            'delivered_rolls'  => $deliveredRolls,
-            'approved_rolls'   => $approvedRolls,
-            'waiting_rolls'    => $waitingRolls,
-            'in_prod_rolls'    => $inProdRolls,
-            'total_meters'     => $totalMeters,
-            'overall_status'   => $overallStatus,
-            'progress_pct'     => $progressPct,
-            'stage_index'      => $stageIndex,
-            'earliest_date'    => $earliestDate,
-            'latest_delivered' => $latestDelivered,
-            'pallets'          => array_values($uniquePallets),
+            'ref_no'             => $actualRefNo,
+            'customer_name'      => implode(', ', array_keys($customerNames)) ?: 'N/A',
+            'products'           => implode(', ', array_keys($uniqueProducts)) ?: 'N/A',
+            'total_rolls'        => $totalRolls,
+            'produced_rolls_cnt' => $totalRolls,
+            'planning_rolls_cnt' => $planningRollsCount,
+            'planned_rolls'      => $plannedRolls,
+            'target_rolls'       => $targetRolls,
+            'excess_rolls'       => $excessRolls,
+            'excess_breakdown'   => implode(', ', $excessBreakdown),
+            'initial_stock_cnt'  => $initialStockCount,
+            'recoil_cnt'         => $recoilCount,
+            'reslit_cnt'         => $reslitCount,
+            'delivered_rolls'    => $deliveredRolls,
+            'approved_rolls'     => $approvedRolls,
+            'waiting_rolls'      => $waitingRolls,
+            'in_prod_rolls'      => $inProdRolls,
+            'total_meters'       => $totalMeters,
+            'overall_status'     => $overallStatus,
+            'progress_pct'       => $progressPct,
+            'stage_index'        => $stageIndex,
+            'earliest_date'      => $earliestDate,
+            'latest_delivered'   => $latestDelivered,
+            'pallets'            => array_values($uniquePallets),
         ];
 
         return [
@@ -478,13 +591,13 @@ class CustomerTrackOrderModel
 
         // Filter by order completion stage
         if ($filterStatus === 'delivered') {
-            $listSql .= " HAVING delivered_rolls = total_rolls ";
+            $listSql .= " HAVING delivered_rolls >= planned_rolls AND delivered_rolls = total_rolls ";
         } elseif ($filterStatus === 'in_production') {
-            $listSql .= " HAVING delivered_rolls < total_rolls AND in_prod_rolls > 0 ";
+            $listSql .= " HAVING (delivered_rolls < planned_rolls OR total_rolls < planned_rolls) AND in_prod_rolls > 0 ";
         } elseif ($filterStatus === 'waiting_qc') {
-            $listSql .= " HAVING delivered_rolls < total_rolls AND waiting_rolls > 0 ";
+            $listSql .= " HAVING (delivered_rolls < planned_rolls OR total_rolls < planned_rolls) AND waiting_rolls > 0 ";
         } elseif ($filterStatus === 'approved') {
-            $listSql .= " HAVING delivered_rolls < total_rolls AND approved_rolls > 0 ";
+            $listSql .= " HAVING (delivered_rolls < planned_rolls OR total_rolls < planned_rolls) AND approved_rolls > 0 ";
         }
 
         $listSql .= " ORDER BY COALESCE(latest_delivered, first_date) DESC LIMIT ?";
@@ -512,7 +625,13 @@ class CustomerTrackOrderModel
                 $wai = (int)$row['waiting_rolls'];
                 $palletsCount = (int)$row['pallet_count'];
 
-                if ($del === $tot) {
+                $planned = (int)($row['planned_rolls'] ?? $tot);
+                if ($planned <= 0) { $planned = $tot; }
+                $row['planned_rolls'] = $planned;
+                $target = max($tot, $planned);
+                $row['target_rolls']  = $target;
+
+                if ($del >= $target && $tot >= $planned && $target > 0) {
                     $st = 'DELIVERED';
                     $pct = 100;
                     $badgeClass = 'bg-success text-white';
@@ -520,11 +639,11 @@ class CustomerTrackOrderModel
                     $deliveredOrdersCount++;
                 } elseif ($del > 0) {
                     $st = 'PARTIALLY_DELIVERED';
-                    $pct = (int)round(($del / $tot) * 100);
+                    $pct = (int)round(($del / $target) * 100);
                     $badgeClass = 'bg-primary text-white';
-                    $statusText = "Partial ({$del}/{$tot} Delivered)";
+                    $statusText = "Partial ({$del}/{$target} Delivered)";
                     $inProdOrdersCount++;
-                } elseif ($palletsCount > 0 || $app === $tot) {
+                } elseif ($palletsCount > 0 || ($app === $tot && $tot >= $planned)) {
                     $st = 'READY';
                     $pct = 85;
                     $badgeClass = 'bg-info text-dark';
@@ -543,10 +662,6 @@ class CustomerTrackOrderModel
                     $statusText = 'In Production';
                     $inProdOrdersCount++;
                 }
-
-                $planned = (int)($row['planned_rolls'] ?? $tot);
-                if ($planned <= 0) { $planned = $tot; }
-                $row['planned_rolls'] = $planned;
 
                 $excess = max(0, $tot - $planned);
                 $row['excess_rolls'] = $excess;

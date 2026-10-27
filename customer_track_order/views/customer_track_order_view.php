@@ -440,7 +440,7 @@ $pathPrefix           = $pathPrefix ?? '../';
                             </div>
                         <?php elseif ($singleOrder['overall_status'] === 'PARTIALLY_DELIVERED'): ?>
                             <div class="badge-ready-lg">
-                                <i class="bi bi-truck fs-5"></i> PARTIAL DELIVERY (<?= $singleOrder['delivered_rolls'] ?> / <?= $singleOrder['total_rolls'] ?>)
+                                <i class="bi bi-truck fs-5"></i> PARTIAL DELIVERY (<?= $singleOrder['delivered_rolls'] ?> / <?= $singleOrder['target_rolls'] ?? $singleOrder['planned_rolls'] ?> Rolls)
                             </div>
                         <?php elseif ($singleOrder['overall_status'] === 'READY_FOR_DELIVERY'): ?>
                             <div class="badge-ready-lg">
@@ -502,12 +502,17 @@ $pathPrefix           = $pathPrefix ?? '../';
                         </div>
 
                         <!-- Step 5: Delivered -->
-                        <div class="timeline-step <?= ($singleOrder['stage_index'] === 5) ? 'completed' : '' ?>">
+                        <div class="timeline-step <?= ($singleOrder['stage_index'] === 5) ? 'completed' : (($singleOrder['overall_status'] === 'PARTIALLY_DELIVERED') ? 'active' : '') ?>">
                             <div class="step-icon-bubble">
                                 <i class="bi bi-truck"></i>
                             </div>
-                            <div class="step-label">Delivered</div>
-                            <div class="step-subtext"><?= $singleOrder['latest_delivered'] ? date('d M Y', strtotime($singleOrder['latest_delivered'])) : 'Out for Delivery' ?></div>
+                            <div class="step-label"><?= ($singleOrder['overall_status'] === 'PARTIALLY_DELIVERED') ? 'Partial Delivery' : 'Delivered' ?></div>
+                            <div class="step-subtext">
+                                <?= $singleOrder['latest_delivered'] ? date('d M Y', strtotime($singleOrder['latest_delivered'])) : 'Out for Delivery' ?>
+                                <?php if ($singleOrder['overall_status'] === 'PARTIALLY_DELIVERED'): ?>
+                                    <span class="d-block text-primary fw-semibold"><?= $singleOrder['delivered_rolls'] ?>/<?= $singleOrder['target_rolls'] ?? $singleOrder['planned_rolls'] ?> Dispatched</span>
+                                <?php endif; ?>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -541,7 +546,7 @@ $pathPrefix           = $pathPrefix ?? '../';
                         <div class="p-3 rounded bg-light border text-center">
                             <small class="text-muted fw-bold text-uppercase d-block mb-1">Delivered Rolls</small>
                             <span class="fs-4 fw-bold text-success"><?= $singleOrder['delivered_rolls'] ?></span>
-                            <span class="text-muted small">/ <?= $singleOrder['total_rolls'] ?> Rolls</span>
+                            <span class="text-muted small">/ <?= $singleOrder['target_rolls'] ?? $singleOrder['planned_rolls'] ?> Rolls</span>
                         </div>
                     </div>
                     <div class="col-6 col-md-3">
@@ -596,6 +601,11 @@ $pathPrefix           = $pathPrefix ?? '../';
                         <i class="bi bi-list-check text-primary"></i> Order Itemized Rolls Breakdown
                     </h5>
                     <div class="d-flex flex-wrap align-items-center gap-2">
+                        <?php if (!empty($singleOrder['planning_rolls_cnt'])): ?>
+                            <span class="badge text-white border px-2 py-1 shadow-sm" style="background-color: #7c3aed;" title="Planned coils pending slitting">
+                                <i class="bi bi-clock-history me-1"></i>Planning: <strong><?= $singleOrder['planning_rolls_cnt'] ?></strong>
+                            </span>
+                        <?php endif; ?>
                         <?php if (!empty($singleOrder['initial_stock_cnt'])): ?>
                             <span class="badge bg-secondary-subtle text-secondary border px-2 py-1" title="Rolls from initial ready stock">
                                 <i class="bi bi-box-seam me-1"></i>Initial Stock: <strong><?= $singleOrder['initial_stock_cnt'] ?></strong>
@@ -611,7 +621,7 @@ $pathPrefix           = $pathPrefix ?? '../';
                                 <i class="bi bi-scissors me-1"></i>Reslit: <strong><?= $singleOrder['reslit_cnt'] ?></strong>
                             </span>
                         <?php endif; ?>
-                        <span class="text-muted small fw-semibold">Total: <?= count($orderRolls) ?> Rolls</span>
+                        <span class="text-muted small fw-semibold">Total: <?= count($orderRolls) ?> Rolls (<?= $singleOrder['total_rolls'] ?> Produced<?= !empty($singleOrder['planning_rolls_cnt']) ? ' + ' . $singleOrder['planning_rolls_cnt'] . ' Planned' : '' ?>)</span>
                     </div>
                 </div>
 
@@ -632,6 +642,7 @@ $pathPrefix           = $pathPrefix ?? '../';
                         </thead>
                         <tbody>
                             <?php foreach ($orderRolls as $idx => $roll): 
+                                $isPlanOnly = !empty($roll['is_planned_only']);
                                 $st = strtoupper($roll['status'] ?? 'IN');
                                 $sc = (int)($roll['stock_counted'] ?? 0);
                                 $isInit = (empty($roll['mother_id']) || ($roll['original_source'] ?? '') === 'initial_stock');
@@ -639,7 +650,9 @@ $pathPrefix           = $pathPrefix ?? '../';
                                 $isRes  = (($roll['source'] ?? '') === 'reslit' || !empty($roll['is_reslitted']));
 
                                 $rowStyle = '';
-                                if ($isInit) {
+                                if ($isPlanOnly) {
+                                    $rowStyle = 'border-left: 4px solid #7c3aed; background-color: rgba(124, 58, 237, 0.08);';
+                                } elseif ($isInit) {
                                     $rowStyle = 'border-left: 4px solid #6c757d; background-color: rgba(108, 117, 125, 0.05);';
                                 } elseif ($isRec) {
                                     $rowStyle = 'border-left: 4px solid #0284c7; background-color: rgba(2, 132, 199, 0.06);';
@@ -651,12 +664,17 @@ $pathPrefix           = $pathPrefix ?? '../';
                                     <td class="text-muted"><?= $idx + 1 ?></td>
                                     <td class="fw-bold text-dark">
                                         <?= $model->formatRollNo($roll['roll_no']) ?>
+                                        <?php if ($isPlanOnly): ?>
+                                            <span class="badge text-white ms-1" style="background-color: #7c3aed; font-size: 10px;">Planned</span>
+                                        <?php endif; ?>
                                     </td>
                                     <td>
                                         <span class="fw-semibold text-secondary"><?= htmlspecialchars($roll['lot_no'] ?: '—') ?></span>
                                         <small class="text-muted d-block">
                                             Coil: 
-                                            <?php if ($isInit): ?>
+                                            <?php if ($isPlanOnly): ?>
+                                                <strong style="color: #7c3aed;"><?= htmlspecialchars($roll['coil_no'] ?: '—') ?></strong>
+                                            <?php elseif ($isInit): ?>
                                                 <strong class="text-secondary"><?= htmlspecialchars($roll['coil_no'] ?: '—') ?></strong>
                                             <?php elseif ($isRec): ?>
                                                 <strong class="text-info-emphasis"><?= htmlspecialchars($roll['coil_no'] ?: '—') ?></strong>
@@ -666,7 +684,11 @@ $pathPrefix           = $pathPrefix ?? '../';
                                                 <strong><?= htmlspecialchars($roll['coil_no'] ?: '—') ?></strong>
                                             <?php endif; ?>
                                         </small>
-                                        <?php if ($isInit): ?>
+                                        <?php if ($isPlanOnly): ?>
+                                            <span class="badge text-white mt-1 shadow-sm px-2 py-1" style="background-color: #7c3aed; font-size: 10px;">
+                                                <i class="bi bi-clock-history me-1"></i>Planning Coil (Mother #<?= $roll['mother_id'] ?>)
+                                            </span>
+                                        <?php elseif ($isInit): ?>
                                             <span class="badge bg-secondary text-white mt-1 shadow-sm px-2 py-1" style="font-size: 10px;">
                                                 <i class="bi bi-box-seam me-1"></i>Initial Stock
                                             </span>
@@ -689,7 +711,11 @@ $pathPrefix           = $pathPrefix ?? '../';
                                     <td><?= number_format((float)$roll['width'], 1) ?> mm</td>
                                     <td><?= number_format((float)($roll['actual_length'] ?: $roll['length']), 1) ?> m</td>
                                     <td>
-                                        <?php if ($st === 'DELIVERED'): ?>
+                                        <?php if ($isPlanOnly): ?>
+                                            <span class="badge text-white shadow-sm" style="background-color: #7c3aed;">
+                                                <i class="bi bi-hourglass-split me-1"></i> Planned (Pending Cut)
+                                            </span>
+                                        <?php elseif ($st === 'DELIVERED'): ?>
                                             <span class="badge bg-success"><i class="bi bi-check-circle me-1"></i> Delivered</span>
                                         <?php elseif ($st === 'APPROVED'): ?>
                                             <span class="badge bg-info text-dark"><i class="bi bi-patch-check me-1"></i> Approved</span>
@@ -702,7 +728,9 @@ $pathPrefix           = $pathPrefix ?? '../';
                                         <?php endif; ?>
                                     </td>
                                     <td>
-                                        <?php if (!empty($roll['pallet_no'])): ?>
+                                        <?php if ($isPlanOnly): ?>
+                                            <span class="text-muted small"><i class="bi bi-dash-circle me-1"></i>Not Slit Yet</span>
+                                        <?php elseif (!empty($roll['pallet_no'])): ?>
                                             <span class="badge bg-light text-dark border fw-semibold">
                                                 <i class="bi bi-archive me-1"></i> <?= htmlspecialchars($roll['pallet_no']) ?>
                                             </span>
@@ -711,7 +739,9 @@ $pathPrefix           = $pathPrefix ?? '../';
                                         <?php endif; ?>
                                     </td>
                                     <td>
-                                        <?php if (!empty($roll['delivered_at'])): ?>
+                                        <?php if ($isPlanOnly): ?>
+                                            <span class="text-muted small">—</span>
+                                        <?php elseif (!empty($roll['delivered_at'])): ?>
                                             <span class="text-success fw-semibold small">
                                                 <i class="bi bi-check-lg me-1"></i> <?= date('d M Y', strtotime($roll['delivered_at'])) ?>
                                             </span>
