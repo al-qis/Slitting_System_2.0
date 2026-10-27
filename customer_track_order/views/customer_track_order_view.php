@@ -440,7 +440,7 @@ $pathPrefix           = $pathPrefix ?? '../';
                             </div>
                         <?php elseif ($singleOrder['overall_status'] === 'PARTIALLY_DELIVERED'): ?>
                             <div class="badge-ready-lg">
-                                <i class="bi bi-truck fs-5"></i> PARTIAL DELIVERY (<?= $singleOrder['delivered_rolls'] ?> / <?= $singleOrder['total_rolls'] ?>)
+                                <i class="bi bi-truck fs-5"></i> PARTIAL DELIVERY (<?= $singleOrder['delivered_rolls'] ?> / <?= $singleOrder['target_rolls'] ?? $singleOrder['planned_rolls'] ?> Rolls)
                             </div>
                         <?php elseif ($singleOrder['overall_status'] === 'READY_FOR_DELIVERY'): ?>
                             <div class="badge-ready-lg">
@@ -502,12 +502,17 @@ $pathPrefix           = $pathPrefix ?? '../';
                         </div>
 
                         <!-- Step 5: Delivered -->
-                        <div class="timeline-step <?= ($singleOrder['stage_index'] === 5) ? 'completed' : '' ?>">
+                        <div class="timeline-step <?= ($singleOrder['stage_index'] === 5) ? 'completed' : (($singleOrder['overall_status'] === 'PARTIALLY_DELIVERED') ? 'active' : '') ?>">
                             <div class="step-icon-bubble">
                                 <i class="bi bi-truck"></i>
                             </div>
-                            <div class="step-label">Delivered</div>
-                            <div class="step-subtext"><?= $singleOrder['latest_delivered'] ? date('d M Y', strtotime($singleOrder['latest_delivered'])) : 'Out for Delivery' ?></div>
+                            <div class="step-label"><?= ($singleOrder['overall_status'] === 'PARTIALLY_DELIVERED') ? 'Partial Delivery' : 'Delivered' ?></div>
+                            <div class="step-subtext">
+                                <?= $singleOrder['latest_delivered'] ? date('d M Y', strtotime($singleOrder['latest_delivered'])) : 'Out for Delivery' ?>
+                                <?php if ($singleOrder['overall_status'] === 'PARTIALLY_DELIVERED'): ?>
+                                    <span class="d-block text-primary fw-semibold"><?= $singleOrder['delivered_rolls'] ?>/<?= $singleOrder['target_rolls'] ?? $singleOrder['planned_rolls'] ?> Dispatched</span>
+                                <?php endif; ?>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -541,7 +546,7 @@ $pathPrefix           = $pathPrefix ?? '../';
                         <div class="p-3 rounded bg-light border text-center">
                             <small class="text-muted fw-bold text-uppercase d-block mb-1">Delivered Rolls</small>
                             <span class="fs-4 fw-bold text-success"><?= $singleOrder['delivered_rolls'] ?></span>
-                            <span class="text-muted small">/ <?= $singleOrder['total_rolls'] ?> Rolls</span>
+                            <span class="text-muted small">/ <?= $singleOrder['target_rolls'] ?? $singleOrder['planned_rolls'] ?> Rolls</span>
                         </div>
                     </div>
                     <div class="col-6 col-md-3">

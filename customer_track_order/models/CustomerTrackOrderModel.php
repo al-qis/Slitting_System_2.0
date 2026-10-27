@@ -311,36 +311,7 @@ class CustomerTrackOrderModel
             }
         }
 
-        // Determine Overall Progress State
-        $overallStatus = 'IN_PRODUCTION';
-        $progressPct   = 25;
-        $stageIndex    = 1; // 1: Order Planned, 2: Slitting, 3: QC, 4: Palletizing/Ready, 5: Delivered
-
-        if ($deliveredRolls === $totalRolls) {
-            $overallStatus = 'DELIVERED';
-            $progressPct   = 100;
-            $stageIndex    = 5;
-        } elseif ($deliveredRolls > 0) {
-            $overallStatus = 'PARTIALLY_DELIVERED';
-            $progressPct   = (int)round(($deliveredRolls / $totalRolls) * 100);
-            if ($progressPct < 50) {
-                $progressPct = 50;
-            }
-            $stageIndex    = 4;
-        } elseif (!empty($uniquePallets) || $approvedRolls === $totalRolls) {
-            $overallStatus = 'READY_FOR_DELIVERY';
-            $progressPct   = 85;
-            $stageIndex    = 4;
-        } elseif ($waitingRolls > 0 || $approvedRolls > 0) {
-            $overallStatus = 'WAITING_QC';
-            $progressPct   = 55;
-            $stageIndex    = 3;
-        } else {
-            $overallStatus = 'IN_PRODUCTION';
-            $progressPct   = 30;
-            $stageIndex    = 2;
-        }
-
+        // Query planned rolls from slitting_plans BEFORE calculating overall order status
         $plannedRolls = $totalRolls;
         if (!empty($actualRefNo)) {
             $stmtPlan = $this->conn->prepare("SELECT COUNT(*) AS planned_rolls FROM slitting_plans WHERE ref_no = ?");
@@ -353,6 +324,38 @@ class CustomerTrackOrderModel
                 }
                 $stmtPlan->close();
             }
+        }
+
+        $targetRolls = max($totalRolls, $plannedRolls);
+
+        // Determine Overall Progress State taking planned rolls into account
+        $overallStatus = 'IN_PRODUCTION';
+        $progressPct   = 25;
+        $stageIndex    = 1; // 1: Order Planned, 2: Slitting, 3: QC, 4: Palletizing/Ready, 5: Delivered
+
+        if ($deliveredRolls >= $targetRolls && $totalRolls >= $plannedRolls && $targetRolls > 0) {
+            $overallStatus = 'DELIVERED';
+            $progressPct   = 100;
+            $stageIndex    = 5;
+        } elseif ($deliveredRolls > 0) {
+            $overallStatus = 'PARTIALLY_DELIVERED';
+            $progressPct   = (int)round(($deliveredRolls / $targetRolls) * 100);
+            if ($progressPct < 15) {
+                $progressPct = 15;
+            }
+            $stageIndex    = 4;
+        } elseif (!empty($uniquePallets) || ($approvedRolls === $totalRolls && $totalRolls >= $plannedRolls)) {
+            $overallStatus = 'READY_FOR_DELIVERY';
+            $progressPct   = 85;
+            $stageIndex    = 4;
+        } elseif ($waitingRolls > 0 || $approvedRolls > 0) {
+            $overallStatus = 'WAITING_QC';
+            $progressPct   = 55;
+            $stageIndex    = 3;
+        } else {
+            $overallStatus = 'IN_PRODUCTION';
+            $progressPct   = 30;
+            $stageIndex    = 2;
         }
 
         $excessRolls = max(0, $totalRolls - $plannedRolls);
@@ -378,6 +381,7 @@ class CustomerTrackOrderModel
             'products'         => implode(', ', array_keys($uniqueProducts)) ?: 'N/A',
             'total_rolls'      => $totalRolls,
             'planned_rolls'    => $plannedRolls,
+            'target_rolls'     => $targetRolls,
             'excess_rolls'     => $excessRolls,
             'excess_breakdown' => implode(', ', $excessBreakdown),
             'initial_stock_cnt'=> $initialStockCount,
@@ -478,13 +482,13 @@ class CustomerTrackOrderModel
 
         // Filter by order completion stage
         if ($filterStatus === 'delivered') {
-            $listSql .= " HAVING delivered_rolls = total_rolls ";
+            $listSql .= " HAVING delivered_rolls >= planned_rolls AND delivered_rolls = total_rolls ";
         } elseif ($filterStatus === 'in_production') {
-            $listSql .= " HAVING delivered_rolls < total_rolls AND in_prod_rolls > 0 ";
+            $listSql .= " HAVING (delivered_rolls < planned_rolls OR total_rolls < planned_rolls) AND in_prod_rolls > 0 ";
         } elseif ($filterStatus === 'waiting_qc') {
-            $listSql .= " HAVING delivered_rolls < total_rolls AND waiting_rolls > 0 ";
+            $listSql .= " HAVING (delivered_rolls < planned_rolls OR total_rolls < planned_rolls) AND waiting_rolls > 0 ";
         } elseif ($filterStatus === 'approved') {
-            $listSql .= " HAVING delivered_rolls < total_rolls AND approved_rolls > 0 ";
+            $listSql .= " HAVING (delivered_rolls < planned_rolls OR total_rolls < planned_rolls) AND approved_rolls > 0 ";
         }
 
         $listSql .= " ORDER BY COALESCE(latest_delivered, first_date) DESC LIMIT ?";
@@ -512,7 +516,13 @@ class CustomerTrackOrderModel
                 $wai = (int)$row['waiting_rolls'];
                 $palletsCount = (int)$row['pallet_count'];
 
-                if ($del === $tot) {
+                $planned = (int)($row['planned_rolls'] ?? $tot);
+                if ($planned <= 0) { $planned = $tot; }
+                $row['planned_rolls'] = $planned;
+                $target = max($tot, $planned);
+                $row['target_rolls']  = $target;
+
+                if ($del >= $target && $tot >= $planned && $target > 0) {
                     $st = 'DELIVERED';
                     $pct = 100;
                     $badgeClass = 'bg-success text-white';
@@ -520,11 +530,11 @@ class CustomerTrackOrderModel
                     $deliveredOrdersCount++;
                 } elseif ($del > 0) {
                     $st = 'PARTIALLY_DELIVERED';
-                    $pct = (int)round(($del / $tot) * 100);
+                    $pct = (int)round(($del / $target) * 100);
                     $badgeClass = 'bg-primary text-white';
-                    $statusText = "Partial ({$del}/{$tot} Delivered)";
+                    $statusText = "Partial ({$del}/{$target} Delivered)";
                     $inProdOrdersCount++;
-                } elseif ($palletsCount > 0 || $app === $tot) {
+                } elseif ($palletsCount > 0 || ($app === $tot && $tot >= $planned)) {
                     $st = 'READY';
                     $pct = 85;
                     $badgeClass = 'bg-info text-dark';
@@ -543,10 +553,6 @@ class CustomerTrackOrderModel
                     $statusText = 'In Production';
                     $inProdOrdersCount++;
                 }
-
-                $planned = (int)($row['planned_rolls'] ?? $tot);
-                if ($planned <= 0) { $planned = $tot; }
-                $row['planned_rolls'] = $planned;
 
                 $excess = max(0, $tot - $planned);
                 $row['excess_rolls'] = $excess;
