@@ -472,6 +472,11 @@ $pathPrefix           = $pathPrefix ?? '../';
                             </div>
                             <div class="step-label">Order Planned</div>
                             <div class="step-subtext">SO Confirmed</div>
+                            <div class="mt-2">
+                                <span class="badge bg-secondary-subtle text-secondary border px-2 py-1" style="font-size: 11px;">
+                                    <i class="bi bi-calendar-check me-1"></i><strong><?= $singleOrder['planned_rolls'] ?></strong> Coils Planned
+                                </span>
+                            </div>
                         </div>
 
                         <!-- Step 2: Slitting -->
@@ -481,6 +486,11 @@ $pathPrefix           = $pathPrefix ?? '../';
                             </div>
                             <div class="step-label">Slitting</div>
                             <div class="step-subtext">Rolls Slit & Tagged</div>
+                            <div class="mt-2">
+                                <span class="badge <?= ($singleOrder['slit_rolls_cnt'] > 0) ? 'bg-primary-subtle text-primary border border-primary-subtle' : 'bg-light text-muted border' ?> px-2 py-1" style="font-size: 11px;">
+                                    <i class="bi bi-scissors me-1"></i><strong><?= $singleOrder['slit_rolls_cnt'] ?></strong> / <?= $singleOrder['target_rolls'] ?? $singleOrder['planned_rolls'] ?> Coils Slit
+                                </span>
+                            </div>
                         </div>
 
                         <!-- Step 3: QC Inspection -->
@@ -490,6 +500,11 @@ $pathPrefix           = $pathPrefix ?? '../';
                             </div>
                             <div class="step-label">Quality Check</div>
                             <div class="step-subtext">Verified by QC</div>
+                            <div class="mt-2">
+                                <span class="badge <?= ($singleOrder['qc_passed_cnt'] > 0) ? 'bg-success-subtle text-success border border-success-subtle' : 'bg-light text-muted border' ?> px-2 py-1" style="font-size: 11px;">
+                                    <i class="bi bi-patch-check me-1"></i><strong><?= $singleOrder['qc_passed_cnt'] ?></strong> / <?= $singleOrder['slit_rolls_cnt'] ?> Coils Verified
+                                </span>
+                            </div>
                         </div>
 
                         <!-- Step 4: Palletizing -->
@@ -499,6 +514,11 @@ $pathPrefix           = $pathPrefix ?? '../';
                             </div>
                             <div class="step-label">Palletizing</div>
                             <div class="step-subtext">Packed & Staged</div>
+                            <div class="mt-2">
+                                <span class="badge <?= ($singleOrder['palletized_cnt'] > 0) ? 'bg-info-subtle text-info-emphasis border border-info-subtle' : 'bg-light text-muted border' ?> px-2 py-1" style="font-size: 11px;">
+                                    <i class="bi bi-archive me-1"></i><strong><?= $singleOrder['palletized_cnt'] ?></strong> Coils (<?= count($singleOrder['pallets']) ?> Plt)
+                                </span>
+                            </div>
                         </div>
 
                         <!-- Step 5: Delivered -->
@@ -509,9 +529,11 @@ $pathPrefix           = $pathPrefix ?? '../';
                             <div class="step-label"><?= ($singleOrder['overall_status'] === 'PARTIALLY_DELIVERED') ? 'Partial Delivery' : 'Delivered' ?></div>
                             <div class="step-subtext">
                                 <?= $singleOrder['latest_delivered'] ? date('d M Y', strtotime($singleOrder['latest_delivered'])) : 'Out for Delivery' ?>
-                                <?php if ($singleOrder['overall_status'] === 'PARTIALLY_DELIVERED'): ?>
-                                    <span class="d-block text-primary fw-semibold"><?= $singleOrder['delivered_rolls'] ?>/<?= $singleOrder['target_rolls'] ?? $singleOrder['planned_rolls'] ?> Dispatched</span>
-                                <?php endif; ?>
+                            </div>
+                            <div class="mt-2">
+                                <span class="badge <?= ($singleOrder['delivered_rolls'] > 0) ? 'bg-success text-white shadow-sm' : 'bg-light text-muted border' ?> px-2 py-1" style="font-size: 11px;">
+                                    <i class="bi bi-truck me-1"></i><strong><?= $singleOrder['delivered_rolls'] ?></strong> / <?= $singleOrder['target_rolls'] ?? $singleOrder['planned_rolls'] ?> Coils
+                                </span>
                             </div>
                         </div>
                     </div>
