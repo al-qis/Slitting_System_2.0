@@ -258,6 +258,8 @@ class CustomerTrackOrderModel
         $approvedRolls      = 0;
         $waitingRolls       = 0;
         $inProdRolls        = 0;
+        $qcPassedRolls      = 0;
+        $palletizedRolls    = 0;
         $initialStockCount  = 0;
         $recoilCount        = 0;
         $reslitCount        = 0;
@@ -313,6 +315,8 @@ class CustomerTrackOrderModel
 
             if ($status === 'DELIVERED') {
                 $deliveredRolls++;
+                $qcPassedRolls++;
+                $palletizedRolls++;
                 if (!empty($roll['delivered_at'])) {
                     if (!$latestDelivered || strtotime($roll['delivered_at']) > strtotime($latestDelivered)) {
                         $latestDelivered = $roll['delivered_at'];
@@ -320,10 +324,20 @@ class CustomerTrackOrderModel
                 }
             } elseif ($status === 'APPROVED') {
                 $approvedRolls++;
+                $qcPassedRolls++;
+                if (!empty($roll['pallet_no']) || !empty($roll['pallet_id'])) {
+                    $palletizedRolls++;
+                }
             } elseif ($status === 'WAITING') {
                 $waitingRolls++;
+                if (!empty($roll['pallet_no']) || !empty($roll['pallet_id'])) {
+                    $palletizedRolls++;
+                }
             } else {
                 $inProdRolls++;
+                if (!empty($roll['pallet_no']) || !empty($roll['pallet_id'])) {
+                    $palletizedRolls++;
+                }
             }
 
             if (!empty($roll['date_in'])) {
@@ -488,6 +502,9 @@ class CustomerTrackOrderModel
             'products'           => implode(', ', array_keys($uniqueProducts)) ?: 'N/A',
             'total_rolls'        => $totalRolls,
             'produced_rolls_cnt' => $totalRolls,
+            'slit_rolls_cnt'     => $totalRolls,
+            'qc_passed_cnt'      => $qcPassedRolls,
+            'palletized_cnt'     => $palletizedRolls,
             'planning_rolls_cnt' => $planningRollsCount,
             'planned_rolls'      => $plannedRolls,
             'target_rolls'       => $targetRolls,
