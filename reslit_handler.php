@@ -90,6 +90,7 @@ $new_widths     = $_POST['new_width']     ?? [];
 $lengths        = $_POST['length']        ?? [];
 $actual_lengths = $_POST['actual_length'] ?? [];
 $send_to_sfc    = $_POST['send_to_sfc']   ?? [];
+$sfc_balance_width = floatval($_POST['sfc_balance_width'] ?? 0);
 
 // Cut Into 2 leftover routing (mutually exclusive: SFC XOR Finished Product)
 $slit_quantity    = floatval($_POST['slit_quantity'] ?? 0);
@@ -163,6 +164,29 @@ try {
 
     // ── Validation: check for duplicate active (non-voided) lot+coil+roll ─────────
     $exclude_id = $parent_slit_id ?? 0;
+
+    // ── Fetch Slitting Plan (if any) to map customer & ref_no by roll sequence ──
+    $planCustomerMap = [];
+    $planRefMap      = [];
+    $planRes = $conn->query("SELECT roll_seq, customer_name, ref_no FROM slitting_plans WHERE reslit_id = " . intval($parent_id) . " ORDER BY sort_order ASC, id ASC");
+    if ($planRes && $planRes->num_rows > 0) {
+        $pIdx = 0;
+        while ($pRow = $planRes->fetch_assoc()) {
+            $cName  = trim($pRow['customer_name'] ?? '');
+            $rNo    = trim($pRow['ref_no'] ?? '');
+            $seqKey = strtoupper(trim($pRow['roll_seq']));
+            if ($seqKey !== '') {
+                if ($cName !== '') $planCustomerMap[$seqKey] = $cName;
+                if ($rNo !== '')   $planRefMap[$seqKey]      = $rNo;
+            }
+            if ($cName !== '') $planCustomerMap['idx_' . $pIdx] = $cName;
+            if ($rNo !== '')   $planRefMap['idx_' . $pIdx]      = $rNo;
+            $pIdx++;
+        }
+    }
+
+    $posted_customers = $_POST['customer_name'] ?? [];
+    $posted_refs      = $_POST['ref_no'] ?? [];
 
     foreach ($roll_numbers as $index => $roll_label) {
         $letter      = trim($cut_letters[$index] ?? '');
@@ -290,17 +314,22 @@ try {
 
         $date_in_val    = ($prod_month_opt === 'current') ? date('Y-m-d H:i:s') : $prod_date . ' ' . date('H:i:s');
         $stock_code     = generateStockCode($conn, $prod_date);
+
+        $roll_cust = trim($posted_customers[$index] ?? ($planCustomerMap[strtoupper($roll_label)] ?? ($planCustomerMap['idx_' . $index] ?? '')));
+        $roll_ref  = trim($posted_refs[$index] ?? ($planRefMap[strtoupper($roll_label)] ?? ($planRefMap['idx_' . $index] ?? '')));
+
         $stmt_ins = $conn->prepare("
             INSERT INTO slitting_product
                 (mother_id, parent_slit_id,
                  product, lot_no, coil_no, roll_no, roll_key,
                  width, length, actual_length,
                  status, is_completed, stock_counted,
-                 date_in, source, original_source, stock_code)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, ?, 'reslit', ?, ?)
+                 date_in, source, original_source, stock_code,
+                 customer_name, ref_no)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, ?, 'reslit', ?, ?, ?, ?)
         ");
         $stmt_ins->bind_param(
-            "iisssssdddsss",
+            "iisssssdddsssss",
             $mother_id_val,
             $parent_slit_id,
             $parent['product'],
@@ -313,7 +342,9 @@ try {
             $act_len,
             $date_in_val,
             $originalSource,
-            $stock_code
+            $stock_code,
+            $roll_cust,
+            $roll_ref
         );
         $stmt_ins->execute();
         $new_slit_id = $conn->insert_id;
@@ -443,6 +474,60 @@ try {
                 null, 'IN', 'reslit_leftover_output',
                 "Leftover {$leftover_length}m (roll {$leftover_roll_no}) from reslit_product id={$parent_id} routed to Finished Product (slit_quantity={$slit_quantity}m used)");
         }
+    }
+
+    // ── Optional SFC balance width entry ────────────────────────
+    if ($sfc_balance_width > 0) {
+        $bal_length = ($cut_type === 'cut_into_2' && $slit_quantity > 0)
+            ? $slit_quantity
+            : (floatval($actual_lengths[0] ?? 0) > 0 ? floatval($actual_lengths[0]) : floatval($lengths[0] ?? ($parent['effective_length'] ?? $parent['length'])));
+        $balance_roll_no = "BALANCE";
+        $balance_lot_no  = $parent['lot_no'];
+
+        $sfc_bal = $conn->prepare("
+            INSERT INTO sfc
+                (mother_id, product, lot_no, coil_no, roll_no,
+                 width, length, action, date_created)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'reslit_balance_width', NOW())
+        ");
+        $sfc_bal->bind_param(
+            "issssdd",
+            $mother_id_val,
+            $parent['product'],
+            $balance_lot_no,
+            $coil_no_val,
+            $balance_roll_no,
+            $sfc_balance_width,
+            $bal_length
+        );
+        if (!$sfc_bal->execute()) {
+            throw new Exception("Failed to insert SFC balance width: " . $sfc_bal->error);
+        }
+        $sfc_bal_id = $conn->insert_id;
+        $sfc_bal->close();
+
+        log_process($conn, 'sfc', $sfc_bal_id, $mother_id_val,
+            null, 'IN', 'balance_width_to_sfc_from_reslit',
+            "Balance width {$sfc_balance_width}mm saved to SFC from reslit_product id={$parent_id}");
+
+        // Also record in reslit_rolls for tracking
+        $stmt_bal_roll = $conn->prepare("
+            INSERT INTO reslit_rolls
+                (parent_id, roll_no, cut_letter, new_width,
+                 length, actual_length, original_source)
+            VALUES (?, ?, '', ?, ?, ?, ?)
+        ");
+        $stmt_bal_roll->bind_param(
+            "isddds",
+            $parent_id,
+            $balance_roll_no,
+            $sfc_balance_width,
+            $bal_length,
+            $bal_length,
+            $originalSource
+        );
+        $stmt_bal_roll->execute();
+        $stmt_bal_roll->close();
     }
 
     // Mark parent as completed — do NOT touch actual_length here.

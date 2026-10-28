@@ -116,6 +116,7 @@ try {
         // 2) Delete the reslit_product row outright — a true undo, not a
         //    soft-cancel. Any reslit_rolls children are removed too via
         //    ON DELETE CASCADE (there won't be any yet for a pending row).
+        $conn->query("DELETE FROM slitting_plans WHERE reslit_id = " . (int)$id);
         $stmt = $conn->prepare("DELETE FROM reslit_product WHERE id=?");
         $stmt->bind_param("i", $id);
         $stmt->execute();
@@ -184,6 +185,7 @@ try {
         $stmt->close();
 
         // 2) Delete the reslit_product row outright.
+        $conn->query("DELETE FROM slitting_plans WHERE reslit_id = " . (int)$id);
         $stmt = $conn->prepare("DELETE FROM reslit_product WHERE id=?");
         $stmt->bind_param("i", $id);
         $stmt->execute();
