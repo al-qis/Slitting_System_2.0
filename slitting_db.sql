@@ -436,6 +436,7 @@ CREATE TABLE `slitting_plans` (
   `id` int NOT NULL AUTO_INCREMENT,
   `mother_coil_id` int DEFAULT NULL,
   `stock_id` int DEFAULT NULL,
+  `reslit_id` int DEFAULT NULL,
   `roll_seq` varchar(10) NOT NULL,
   `planned_width` decimal(10,2) NOT NULL,
   `customer_name` varchar(100) DEFAULT NULL,
@@ -445,6 +446,7 @@ CREATE TABLE `slitting_plans` (
   PRIMARY KEY (`id`),
   KEY `idx_slitting_plans_mother` (`mother_coil_id`),
   KEY `idx_slitting_plans_stock` (`stock_id`),
+  KEY `idx_slitting_plans_reslit` (`reslit_id`),
   CONSTRAINT `fk_slitting_plans_mother` FOREIGN KEY (`mother_coil_id`) REFERENCES `mother_coil` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB AUTO_INCREMENT=82 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 !40101 SET character_set_client = @saved_cs_client ;
