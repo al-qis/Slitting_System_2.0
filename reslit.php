@@ -903,20 +903,23 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
                     <div id="slittingForm"></div>
                     <div class="form-text mt-1"><i class="bi bi-box-seam-fill me-1 text-primary"></i>Tick <strong>To SFC</strong> for any roll that should be sent to SFC instead of finished stock.</div>
 
-                    <!-- ── SFC Balance Width Section ── -->
+                    <!-- ── SFC Balance Width Section (Unticked by default: does NOT auto save) ── -->
                     <div id="reslitCutSfcSection" style="display:none;" class="card shadow-sm mt-3 mb-2 border-info">
                         <div class="card-body py-3">
-                            <div class="d-flex align-items-center justify-content-between mb-2">
-                                <h6 class="mb-0 text-info-emphasis fw-bold">
-                                    <i class="bi bi-box-seam me-2"></i>Save Balance Width to SFC
-                                </h6>
-                                <span class="badge bg-info-subtle text-info border border-info-subtle">Optional</span>
+                            <div class="d-flex align-items-center justify-content-between">
+                                <label class="sfc-toggle mb-0" for="enable_sfc_balance_width">
+                                    <input class="form-check-input sfc-checkbox" type="checkbox" id="enable_sfc_balance_width" onchange="toggleSfcBalanceWidth(this)">
+                                    <span class="sfc-toggle-text"><i class="bi bi-box-seam-fill me-1"></i>Save Balance Width to SFC</span>
+                                </label>
+                                <span class="badge bg-secondary-subtle text-muted border">Optional — unticked by default</span>
                             </div>
-                            <p class="text-muted small mb-2">Capture remaining width as an SFC scrap/balance roll (Roll No: <strong>BALANCE</strong>).</p>
-                            <div class="input-group">
-                                <span class="input-group-text">Balance Width</span>
-                                <input type="number" step="0.01" name="sfc_balance_width" id="reslit_sfc_balance_width" class="form-control" placeholder="0.00">
-                                <span class="input-group-text">mm</span>
+                            <div id="sfcBalanceInputGroup" style="display:none;" class="mt-3 pt-2 border-top">
+                                <p class="text-muted small mb-2">Capture remaining width as an SFC scrap/balance roll (Roll No: <strong>BALANCE</strong>).</p>
+                                <div class="input-group">
+                                    <span class="input-group-text">Balance Width</span>
+                                    <input type="number" step="0.01" name="sfc_balance_width" id="reslit_sfc_balance_width" class="form-control" placeholder="0.00" disabled>
+                                    <span class="input-group-text">mm</span>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -1247,9 +1250,19 @@ function showReslitModal(id, product, lot_no, coil_no, roll_no, width, length) {
     document.getElementById('slittingForm').innerHTML = '';
     document.getElementById('submitBtn').style.display = 'none';
 
+    const sfcCheck = document.getElementById('enable_sfc_balance_width');
+    if (sfcCheck) {
+        sfcCheck.checked = false;
+        const pill = sfcCheck.closest('.sfc-toggle');
+        if (pill) pill.classList.remove('sfc-active');
+    }
+    const sfcGroup = document.getElementById('sfcBalanceInputGroup');
+    if (sfcGroup) sfcGroup.style.display = 'none';
+
     const sfcBalInput = document.getElementById('reslit_sfc_balance_width');
     if (sfcBalInput) {
         sfcBalInput.value = '';
+        sfcBalInput.disabled = true;
         sfcBalInput.dataset.userEdited = 'false';
         if (!sfcBalInput.dataset.listenerAttached) {
             sfcBalInput.dataset.listenerAttached = 'true';
@@ -1391,16 +1404,59 @@ function calculateReslitWidths() {
     }
 
     if (sfcSection) {
+        const sfcCheck = document.getElementById('enable_sfc_balance_width');
         if (balance > 0.01) {
             sfcSection.style.display = 'block';
-            if (sfcInput && (!sfcInput.dataset.userEdited || sfcInput.dataset.userEdited === 'false')) {
+            // IMPORTANT: Do NOT auto save to SFC!
+            // Only update input value if operator has explicitly checked the box.
+            if (sfcCheck && sfcCheck.checked && sfcInput && (!sfcInput.dataset.userEdited || sfcInput.dataset.userEdited === 'false')) {
                 sfcInput.value = balance.toFixed(2);
             }
         } else {
             sfcSection.style.display = 'none';
-            if (sfcInput && (!sfcInput.dataset.userEdited || sfcInput.dataset.userEdited === 'false')) {
+            if (sfcCheck) sfcCheck.checked = false;
+            const pill = sfcCheck?.closest('.sfc-toggle');
+            if (pill) pill.classList.remove('sfc-active');
+            const group = document.getElementById('sfcBalanceInputGroup');
+            if (group) group.style.display = 'none';
+            if (sfcInput) {
                 sfcInput.value = '';
+                sfcInput.disabled = true;
+                sfcInput.dataset.userEdited = 'false';
             }
+        }
+    }
+}
+
+function toggleSfcBalanceWidth(checkbox) {
+    const group = document.getElementById('sfcBalanceInputGroup');
+    const input = document.getElementById('reslit_sfc_balance_width');
+    const pill  = checkbox.closest('.sfc-toggle');
+
+    if (pill) pill.classList.toggle('sfc-active', checkbox.checked);
+
+    if (checkbox.checked) {
+        if (group) group.style.display = 'block';
+        if (input) {
+            input.disabled = false;
+            // Pre-fill with remaining balance width if empty
+            if (!input.value || parseFloat(input.value) <= 0) {
+                const origWidth = parseFloat(productData.width) || 0;
+                let totalCut = 0;
+                document.querySelectorAll('#slittingForm .width-input').forEach(inp => {
+                    totalCut += parseFloat(inp.value) || 0;
+                });
+                const rem = origWidth - totalCut;
+                input.value = rem > 0 ? rem.toFixed(2) : '0.00';
+            }
+            input.focus();
+        }
+    } else {
+        if (group) group.style.display = 'none';
+        if (input) {
+            input.value = '';
+            input.disabled = true;
+            input.dataset.userEdited = 'false';
         }
     }
 }
@@ -1415,6 +1471,18 @@ function generateForm() {
         submitBtn.style.display = 'none';
         const sfcSec = document.getElementById('reslitCutSfcSection');
         if (sfcSec) sfcSec.style.display = 'none';
+        const sfcCheck = document.getElementById('enable_sfc_balance_width');
+        if (sfcCheck) sfcCheck.checked = false;
+        const pill = sfcCheck?.closest('.sfc-toggle');
+        if (pill) pill.classList.remove('sfc-active');
+        const sfcGroup = document.getElementById('sfcBalanceInputGroup');
+        if (sfcGroup) sfcGroup.style.display = 'none';
+        const sfcInput = document.getElementById('reslit_sfc_balance_width');
+        if (sfcInput) {
+            sfcInput.value = '';
+            sfcInput.disabled = true;
+            sfcInput.dataset.userEdited = 'false';
+        }
         return;
     }
 
@@ -1634,11 +1702,20 @@ document.getElementById('reslitForm').addEventListener('submit', function(e) {
         return;
     }
 
-    const sfcBalVal = parseFloat(document.getElementById('reslit_sfc_balance_width')?.value) || 0;
-    if (sfcBalVal < 0) {
-        e.preventDefault();
-        alert('SFC balance width cannot be negative.');
-        return;
+    const sfcBalInput = document.getElementById('reslit_sfc_balance_width');
+    const sfcCheck    = document.getElementById('enable_sfc_balance_width');
+    if (!sfcCheck || !sfcCheck.checked) {
+        if (sfcBalInput) {
+            sfcBalInput.disabled = true;
+            sfcBalInput.value = '';
+        }
+    } else {
+        const sfcBalVal = parseFloat(sfcBalInput?.value) || 0;
+        if (sfcBalVal <= 0) {
+            e.preventDefault();
+            alert('Please enter a valid SFC balance width (> 0), or uncheck "Save Balance Width to SFC".');
+            return;
+        }
     }
 
     if (!confirm('Complete reslit process now? Product will be added back to stock.')) {
