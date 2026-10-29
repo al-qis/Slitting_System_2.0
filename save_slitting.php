@@ -48,40 +48,58 @@ function log_process(
 // Applies ONLY to child products generated from a slit (never to the
 // mother_coil record itself, which always keeps its original RS prefix).
 //
-// Rule: if the mother coil's Lot/Coil No contains "V", AND the resulting
-// slit width matches one of the TS trigger widths, the child product gets
-// the TS- prefix (+ White sticker, handled automatically by print_product.php's
-// existing $PRODUCT_COLOR map). Otherwise it gets the standard RS- prefix.
-// Non-V mother coils are left completely unaffected (original code passes through).
-function resolveSlitProductCode(string $motherProductCode, bool $isVCoil, $slitWidth): array
-{
-    // Exact TS-trigger widths (mm), compared with a small float tolerance.
-    $tsWidths = [66.5, 81.0, 109.5, 118.0, 309.0];
+// Rule: if the mother coil is RS-3020 (or TS-3020 or V-coil), AND the resulting
+// slit width matches one of the TS trigger widths (66.5, 81, 109.5, 118, 309),
+// the child product gets the TS- prefix (TS-3020, White sticker).
+// Otherwise it gets the standard RS- prefix (RS-3020, Blue sticker).
+// Other non-3020 mother coils are left completely unaffected.
+if (!function_exists('resolveSlitProductCode')) {
+    function resolveSlitProductCode(string $motherProductCode, bool $isVCoil, $slitWidth): array
+    {
+        // Exact TS-trigger widths (mm), compared with a small float tolerance.
+        $tsWidths = [66.5, 81.0, 109.5, 118.0, 309.0];
 
-    $width = (float)$slitWidth;
-    $matchesTsWidth = false;
-    foreach ($tsWidths as $tsw) {
-        if (abs($width - $tsw) < 0.01) {
-            $matchesTsWidth = true;
-            break;
+        $width = (float)$slitWidth;
+        $matchesTsWidth = false;
+        foreach ($tsWidths as $tsw) {
+            if (abs($width - $tsw) < 0.01) {
+                $matchesTsWidth = true;
+                break;
+            }
         }
+
+        $cleanMother = trim($motherProductCode);
+
+        // Check if this is an RS-3020 mother coil (or TS-3020, or V-coil 3020)
+        $is3020Mother = (strcasecmp($cleanMother, 'RS-3020') === 0)
+            || (strcasecmp($cleanMother, 'TS-3020') === 0)
+            || (stripos($cleanMother, 'RS-3020') === 0)
+            || (stripos($cleanMother, 'TS-3020') === 0)
+            || ($isVCoil && (stripos($cleanMother, '3020') !== false || $cleanMother === ''));
+
+        if ($is3020Mother) {
+            if ($matchesTsWidth) {
+                return ['code' => 'TS-3020', 'is_ts' => true];
+            } else {
+                return ['code' => 'RS-3020', 'is_ts' => false];
+            }
+        }
+
+        // Generic V-Coil prefix replacement fallback for other product suffixes (if any)
+        $parts  = explode('-', $cleanMother, 2);
+        $suffix = $parts[1] ?? $cleanMother;
+
+        if ($isVCoil && $matchesTsWidth) {
+            return ['code' => 'TS-' . $suffix, 'is_ts' => true];
+        }
+
+        if ($isVCoil) {
+            return ['code' => 'RS-' . $suffix, 'is_ts' => false];
+        }
+
+        // Non-V mother coil: leave product code exactly as passed in — untouched
+        return ['code' => $cleanMother, 'is_ts' => false];
     }
-
-    // Split "RS-3020" -> suffix "3020"
-    $parts  = explode('-', $motherProductCode, 2);
-    $suffix = $parts[1] ?? $motherProductCode;
-
-    if ($isVCoil && $matchesTsWidth) {
-        return ['code' => 'TS-' . $suffix, 'is_ts' => true];
-    }
-
-    if ($isVCoil) {
-        // V coil, but width not on the TS list -> standard RS prefix
-        return ['code' => 'RS-' . $suffix, 'is_ts' => false];
-    }
-
-    // Non-V mother coil: leave product code exactly as passed in — untouched
-    return ['code' => $motherProductCode, 'is_ts' => false];
 }
 
 // ── Read form data ──────────────────────────────────────────────
@@ -117,6 +135,11 @@ try {
         throw new Exception("Mother coil not found for ID: $mother_id");
     }
     $mother = $mother_result->fetch_assoc();
+
+    $motherProductCode = !empty($mother['product']) ? trim($mother['product']) : trim($product);
+    $isVCoil = $isVCoil
+        || (!empty($mother['coil_no']) && stripos($mother['coil_no'], 'V') !== false)
+        || (!empty($mother['lot_no']) && stripos($mother['lot_no'], 'V') !== false);
 
     $balance_stock_id = null;
 
@@ -283,7 +306,7 @@ try {
         }
 
         // ── Resolve this roll's product code (TS/RS dynamic naming) ──
-        $resolved     = resolveSlitProductCode($product, $isVCoil, $width);
+        $resolved     = resolveSlitProductCode($motherProductCode, $isVCoil, $width);
         $roll_product = $resolved['code'];
 
         $roll_number_str  = (string)($index + 1);
@@ -438,7 +461,7 @@ try {
         $balance_roll_no = "BALANCE";
 
         // Resolve TS/RS naming for the balance-width entry too
-        $balance_resolved = resolveSlitProductCode($product, $isVCoil, $sfc_balance_width);
+        $balance_resolved = resolveSlitProductCode($motherProductCode, $isVCoil, $sfc_balance_width);
         $balance_product  = $balance_resolved['code'];
 
         $sfc_bal = $conn->prepare(

@@ -388,7 +388,7 @@ include 'header.php';
                     </div>
                     <div class="col-md-6 mb-3">
                         <label class="form-label fw-bold">Product</label>
-                        <input type="text" name="product" class="form-control"
+                        <input type="text" name="product" id="edit_modal_product" class="form-control"
                                value="<?= htmlspecialchars($editData['product'] ?? '') ?>" required>
                     </div>
                     <div class="col-md-6 mb-3">
@@ -403,7 +403,7 @@ include 'header.php';
                     </div>
                     <div class="col-md-6 mb-3">
                         <label class="form-label fw-bold">Width</label>
-                        <input type="text" name="width" class="form-control"
+                        <input type="text" name="width" id="edit_modal_width" class="form-control" oninput="handleModalWidthChange(this.value)"
                                value="<?= htmlspecialchars($editData['width'] ?? '') ?>" required>
                     </div>
                     <div class="col-md-6 mb-3">
@@ -458,6 +458,17 @@ include 'header.php';
 </div>
 
 <script>
+function handleModalWidthChange(val) {
+    const prodInput = document.getElementById('edit_modal_product');
+    if (!prodInput) return;
+    const cur = prodInput.value.trim();
+    if (/^(RS|TS)-3020/i.test(cur)) {
+        const w = parseFloat(val) || 0;
+        const tsWidths = [66.5, 81.0, 109.5, 118.0, 309.0];
+        const isTs = tsWidths.some(tw => Math.abs(w - tw) < 0.01);
+        prodInput.value = isTs ? 'TS-3020' : 'RS-3020';
+    }
+}
 function toggleSelectAllCoils(cb) {
     document.querySelectorAll('.coil-select').forEach(el => el.checked = cb.checked);
     updateBulkPrintButton();
