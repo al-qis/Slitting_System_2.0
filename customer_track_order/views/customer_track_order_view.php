@@ -847,6 +847,7 @@ $pathPrefix           = $pathPrefix ?? '../';
                                 <th>Product Spec</th>
                                 <th>Width</th>
                                 <th>Length</th>
+                                <th>Nod</th>
                                 <th>Stage / Status</th>
                                 <th>Pallet No</th>
                                 <th>Delivery Date</th>
@@ -937,6 +938,15 @@ $pathPrefix           = $pathPrefix ?? '../';
                                     <td><?= number_format((float)$roll['width'], 1) ?> mm</td>
                                     <td><?= number_format((float)($roll['actual_length'] ?: $roll['length']), 1) ?> m</td>
                                     <td>
+                                        <?php if (!empty($roll['nod_length']) && (float)$roll['nod_length'] > 0): ?>
+                                            <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle px-2 py-1 fw-semibold" title="Notice of Defect: <?= number_format((float)$roll['nod_length'], 1) ?> m">
+                                                <i class="bi bi-exclamation-triangle me-1"></i><?= number_format((float)$roll['nod_length'], 1) ?> m
+                                            </span>
+                                        <?php else: ?>
+                                            <span class="text-muted small">—</span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td>
                                         <?php if ($isPlanOnly): ?>
                                             <span class="badge text-white shadow-sm" style="background-color: #7c3aed;">
                                                 <i class="bi bi-hourglass-split me-1"></i> Planned (Pending Cut)
@@ -980,7 +990,7 @@ $pathPrefix           = $pathPrefix ?? '../';
                                 </tr>
                             <?php endforeach; ?>
                             <tr id="noRollsMatchRow" style="display: none;">
-                                <td colspan="9" class="text-center py-4 text-muted">
+                                <td colspan="10" class="text-center py-4 text-muted">
                                     <i class="bi bi-inbox fs-3 d-block mb-1 text-secondary"></i>
                                     <span>No rolls found matching this status filter.</span>
                                 </td>
