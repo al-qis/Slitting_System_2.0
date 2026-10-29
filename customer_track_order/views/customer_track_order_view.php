@@ -274,6 +274,19 @@ $pathPrefix           = $pathPrefix ?? '../';
             background-color: #f1f5f9;
         }
 
+        .pallet-header-btn {
+            background-color: #ffffff;
+            transition: background-color 0.2s ease;
+            cursor: pointer;
+            user-select: none;
+        }
+        .pallet-header-btn:hover {
+            background-color: #f8fafc;
+        }
+        .pallet-header-btn:active {
+            background-color: #f1f5f9;
+        }
+
         /* Table Design */
         .table-custom th {
             background-color: #0f172a;
@@ -291,7 +304,7 @@ $pathPrefix           = $pathPrefix ?? '../';
 
         /* Print Media Stylesheet */
         @media print {
-            .month-collapse {
+            .month-collapse, .pallet-collapse {
                 display: block !important;
                 height: auto !important;
                 visibility: visible !important;
@@ -598,46 +611,118 @@ $pathPrefix           = $pathPrefix ?? '../';
                         </div>
                     </div>
                     <div class="col-6 col-md-3">
-                        <div class="p-3 rounded bg-light border text-center">
+                        <div class="p-3 rounded bg-light border text-center h-100 d-flex flex-column justify-content-center"
+                             <?php if (!empty($singleOrder['pallets'])): ?>
+                                 role="button"
+                                 style="cursor: pointer;"
+                                 onclick="togglePalletCollapse()"
+                                 title="Click to toggle pallets dropdown"
+                             <?php endif; ?>>
                             <small class="text-muted fw-bold text-uppercase d-block mb-1">Pallet Units</small>
                             <span class="fs-4 fw-bold text-primary"><?= count($singleOrder['pallets']) ?></span>
-                            <span class="text-muted small">Pallets Assigned</span>
+                            <span class="text-muted small">
+                                Pallets Assigned
+                                <?php if (!empty($singleOrder['pallets'])): ?>
+                                    <i class="bi bi-chevron-down ms-1 text-primary"></i>
+                                <?php endif; ?>
+                            </span>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- Pallet Summary Box (if pallets exist) -->
-            <?php if (!empty($singleOrder['pallets'])): ?>
-                <div class="card glass-card p-3 p-md-4 mb-4">
-                    <h5 class="fw-bold mb-3 d-flex align-items-center gap-2">
-                        <i class="bi bi-boxes text-primary"></i> Assigned Pallets & Dispatch Units
-                    </h5>
-                    <div class="row g-3">
-                        <?php foreach ($singleOrder['pallets'] as $plt): ?>
-                            <div class="col-12 col-md-6 col-lg-4">
-                                <div class="p-3 border rounded-3 bg-light h-100">
-                                    <div class="d-flex align-items-center justify-content-between mb-2">
-                                        <span class="fw-bold text-dark fs-6"><?= htmlspecialchars($plt['pallet_no']) ?></span>
-                                        <?php if ($plt['status'] === 'delivered'): ?>
-                                            <span class="badge bg-success">Delivered</span>
-                                        <?php elseif ($plt['status'] === 'approved'): ?>
-                                            <span class="badge bg-info text-dark">Approved</span>
-                                        <?php elseif ($plt['status'] === 'pending_qc'): ?>
-                                            <span class="badge bg-warning text-dark">QC Check</span>
-                                        <?php else: ?>
-                                            <span class="badge bg-secondary">Packing</span>
-                                        <?php endif; ?>
-                                    </div>
-                                    <div class="small text-muted">
-                                        <div><i class="bi bi-collection me-1"></i> Rolls Loaded: <strong><?= $plt['roll_count'] ?></strong></div>
-                                        <?php if ($plt['delivered_at']): ?>
-                                            <div><i class="bi bi-clock-history me-1"></i> Delivered: <?= date('d M Y, h:i A', strtotime($plt['delivered_at'])) ?></div>
-                                        <?php endif; ?>
-                                    </div>
+            <!-- Pallet Summary Box (Collapsible Dropdown) -->
+            <?php if (!empty($singleOrder['pallets'])): 
+                $totalPltCount = count($singleOrder['pallets']);
+                $delPltCount = 0;
+                $appPltCount = 0;
+                $packPltCount = 0;
+                $totalPltRolls = 0;
+                foreach ($singleOrder['pallets'] as $pCheck) {
+                    $totalPltRolls += (int)($pCheck['roll_count'] ?? 0);
+                    if (($pCheck['status'] ?? '') === 'delivered') {
+                        $delPltCount++;
+                    } elseif (($pCheck['status'] ?? '') === 'approved') {
+                        $appPltCount++;
+                    } else {
+                        $packPltCount++;
+                    }
+                }
+            ?>
+                <div class="card glass-card mb-4 overflow-hidden border">
+                    <div class="pallet-header-btn py-3 px-3 px-md-4 d-flex flex-wrap align-items-center justify-content-between gap-3"
+                         data-bs-toggle="collapse"
+                         data-bs-target="#assignedPalletsCollapse"
+                         aria-expanded="false"
+                         aria-controls="assignedPalletsCollapse">
+                        
+                        <div class="d-flex align-items-center gap-3">
+                            <div class="bg-primary-subtle text-primary p-2 rounded-3 d-flex align-items-center justify-content-center shadow-sm" style="width: 44px; height: 44px;">
+                                <i class="bi bi-boxes fs-4"></i>
+                            </div>
+                            <div>
+                                <div class="d-flex align-items-center gap-2 flex-wrap">
+                                    <h5 class="fw-bold mb-0 text-dark" style="letter-spacing: -0.3px;">
+                                        Assigned Pallets & Dispatch Units
+                                    </h5>
+                                    <span class="badge bg-primary text-white px-2 py-1" style="font-size: 11px;">
+                                        <?= $totalPltCount ?> Pallet<?= $totalPltCount > 1 ? 's' : '' ?>
+                                    </span>
+                                    <?php if ($delPltCount > 0): ?>
+                                        <span class="badge bg-success text-white px-2 py-1" style="font-size: 11px;">
+                                            <i class="bi bi-check-circle-fill me-1"></i><?= $delPltCount ?> Delivered
+                                        </span>
+                                    <?php endif; ?>
+                                    <?php if ($appPltCount > 0): ?>
+                                        <span class="badge bg-info text-dark px-2 py-1" style="font-size: 11px;">
+                                            <i class="bi bi-box-seam me-1"></i><?= $appPltCount ?> Ready
+                                        </span>
+                                    <?php endif; ?>
+                                </div>
+                                <div class="text-muted small mt-1">
+                                    Total <strong><?= $totalPltRolls ?></strong> rolls loaded across <?= $totalPltCount ?> pallet units &bull; <span class="text-primary fw-semibold">Click dropdown to view details</span>
                                 </div>
                             </div>
-                        <?php endforeach; ?>
+                        </div>
+
+                        <div class="d-flex align-items-center gap-2 no-print ms-auto">
+                            <button type="button" class="btn btn-sm btn-outline-primary fw-semibold px-3 py-1 pallet-toggle-btn" tabindex="-1">
+                                <span class="pallet-toggle-label">View Pallets</span>
+                                <i class="bi bi-chevron-down ms-1 pallet-toggle-icon"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Collapsible Pallet Grid (Dropdown) -->
+                    <div id="assignedPalletsCollapse" class="collapse pallet-collapse">
+                        <div class="card-body p-3 p-md-4 border-top bg-light-subtle">
+                            <div class="row g-3" id="palletCardsGrid">
+                                <?php foreach ($singleOrder['pallets'] as $plt): ?>
+                                    <div class="col-12 col-md-6 col-lg-4 pallet-card-item" data-pallet-no="<?= htmlspecialchars(strtolower($plt['pallet_no'])) ?>" id="pallet-item-<?= htmlspecialchars(preg_replace('/[^a-zA-Z0-9_\-]/', '_', $plt['pallet_no'])) ?>">
+                                        <div class="p-3 border rounded-3 bg-white h-100 shadow-sm">
+                                            <div class="d-flex align-items-center justify-content-between mb-2">
+                                                <span class="fw-bold text-dark fs-6"><?= htmlspecialchars($plt['pallet_no']) ?></span>
+                                                <?php if ($plt['status'] === 'delivered'): ?>
+                                                    <span class="badge bg-success">Delivered</span>
+                                                <?php elseif ($plt['status'] === 'approved'): ?>
+                                                    <span class="badge bg-info text-dark">Approved</span>
+                                                <?php elseif ($plt['status'] === 'pending_qc'): ?>
+                                                    <span class="badge bg-warning text-dark">QC Check</span>
+                                                <?php else: ?>
+                                                    <span class="badge bg-secondary">Packing</span>
+                                                <?php endif; ?>
+                                            </div>
+                                            <div class="small text-muted">
+                                                <div><i class="bi bi-collection me-1"></i> Rolls Loaded: <strong><?= $plt['roll_count'] ?></strong></div>
+                                                <?php if ($plt['delivered_at']): ?>
+                                                    <div><i class="bi bi-clock-history me-1"></i> Delivered: <?= date('d M Y, h:i A', strtotime($plt['delivered_at'])) ?></div>
+                                                <?php endif; ?>
+                                            </div>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
                     </div>
                 </div>
             <?php endif; ?>
@@ -1208,7 +1293,48 @@ $pathPrefix           = $pathPrefix ?? '../';
                     }
                 });
             });
+
+            // Synchronize pallet collapse toggle button
+            const palletCollapseEl = document.getElementById('assignedPalletsCollapse');
+            if (palletCollapseEl) {
+                palletCollapseEl.addEventListener('show.bs.collapse', function() {
+                    const btn = document.querySelector('.pallet-toggle-btn');
+                    const label = document.querySelector('.pallet-toggle-label');
+                    const icon = document.querySelector('.pallet-toggle-icon');
+                    if (btn) {
+                        btn.classList.remove('btn-outline-primary');
+                        btn.classList.add('btn-primary', 'text-white');
+                    }
+                    if (label) label.textContent = 'Hide Pallets';
+                    if (icon) {
+                        icon.classList.remove('bi-chevron-down');
+                        icon.classList.add('bi-chevron-up');
+                    }
+                });
+                palletCollapseEl.addEventListener('hide.bs.collapse', function() {
+                    const btn = document.querySelector('.pallet-toggle-btn');
+                    const label = document.querySelector('.pallet-toggle-label');
+                    const icon = document.querySelector('.pallet-toggle-icon');
+                    if (btn) {
+                        btn.classList.remove('btn-primary', 'text-white');
+                        btn.classList.add('btn-outline-primary');
+                    }
+                    if (label) label.textContent = 'View Pallets';
+                    if (icon) {
+                        icon.classList.remove('bi-chevron-up');
+                        icon.classList.add('bi-chevron-down');
+                    }
+                });
+            }
         });
+
+        function togglePalletCollapse() {
+            const el = document.getElementById('assignedPalletsCollapse');
+            if (el) {
+                bootstrap.Collapse.getOrCreateInstance(el).toggle();
+                el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        }
     </script>
 </body>
 </html>
