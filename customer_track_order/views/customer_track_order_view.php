@@ -727,6 +727,38 @@ $pathPrefix           = $pathPrefix ?? '../';
                 </div>
             <?php endif; ?>
 
+            <?php
+                // Pre-calculate status counts for filter buttons
+                $statusCounts = [
+                    'all'         => count($orderRolls),
+                    'delivered'   => 0,
+                    'approved'    => 0,
+                    'waiting'     => 0,
+                    'finish_good' => 0,
+                    'in_slitting' => 0,
+                    'planned'     => 0,
+                ];
+                foreach ($orderRolls as $r) {
+                    if (!empty($r['is_planned_only'])) {
+                        $statusCounts['planned']++;
+                    } else {
+                        $s = strtoupper($r['status'] ?? 'IN');
+                        $sc = (int)($r['stock_counted'] ?? 0);
+                        if ($s === 'DELIVERED') {
+                            $statusCounts['delivered']++;
+                        } elseif ($s === 'APPROVED') {
+                            $statusCounts['approved']++;
+                        } elseif ($s === 'WAITING') {
+                            $statusCounts['waiting']++;
+                        } elseif ($sc === 1) {
+                            $statusCounts['finish_good']++;
+                        } else {
+                            $statusCounts['in_slitting']++;
+                        }
+                    }
+                }
+            ?>
+
             <!-- Roll Breakdown Table -->
             <div class="card glass-card p-3 p-md-4 mb-4">
                 <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
@@ -758,6 +790,53 @@ $pathPrefix           = $pathPrefix ?? '../';
                     </div>
                 </div>
 
+                <!-- Status Filter Toolbar -->
+                <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 p-2 px-3 mb-3 bg-light bg-opacity-75 rounded-3 border">
+                    <div class="d-flex flex-wrap align-items-center gap-2">
+                        <span class="small fw-bold text-muted text-uppercase me-1 d-flex align-items-center gap-1">
+                            <i class="bi bi-funnel"></i> Status Filter:
+                        </span>
+                        <div class="d-flex flex-wrap align-items-center gap-1" id="rollStatusFilterGroup">
+                            <button type="button" class="btn btn-sm btn-dark roll-filter-btn active shadow-sm" data-filter="all" onclick="filterRollTable('all', this)">
+                                All <span class="badge bg-light text-dark ms-1"><?= count($orderRolls) ?></span>
+                            </button>
+                            <?php if ($statusCounts['delivered'] > 0): ?>
+                                <button type="button" class="btn btn-sm btn-outline-success roll-filter-btn" data-filter="delivered" onclick="filterRollTable('delivered', this)">
+                                    <i class="bi bi-check-circle me-1"></i>Delivered <span class="badge bg-success text-white ms-1"><?= $statusCounts['delivered'] ?></span>
+                                </button>
+                            <?php endif; ?>
+                            <?php if ($statusCounts['approved'] > 0): ?>
+                                <button type="button" class="btn btn-sm btn-outline-info text-dark roll-filter-btn" data-filter="approved" onclick="filterRollTable('approved', this)">
+                                    <i class="bi bi-patch-check me-1"></i>Approved <span class="badge bg-info text-dark ms-1"><?= $statusCounts['approved'] ?></span>
+                                </button>
+                            <?php endif; ?>
+                            <?php if ($statusCounts['waiting'] > 0): ?>
+                                <button type="button" class="btn btn-sm btn-outline-warning text-dark roll-filter-btn" data-filter="waiting" onclick="filterRollTable('waiting', this)">
+                                    <i class="bi bi-clock me-1"></i>Waiting QC <span class="badge bg-warning text-dark ms-1"><?= $statusCounts['waiting'] ?></span>
+                                </button>
+                            <?php endif; ?>
+                            <?php if ($statusCounts['finish_good'] > 0): ?>
+                                <button type="button" class="btn btn-sm btn-outline-primary roll-filter-btn" data-filter="finish_good" onclick="filterRollTable('finish_good', this)">
+                                    <i class="bi bi-check2-all me-1"></i>Finish Good <span class="badge bg-primary text-white ms-1"><?= $statusCounts['finish_good'] ?></span>
+                                </button>
+                            <?php endif; ?>
+                            <?php if ($statusCounts['in_slitting'] > 0): ?>
+                                <button type="button" class="btn btn-sm btn-outline-secondary roll-filter-btn" data-filter="in_slitting" onclick="filterRollTable('in_slitting', this)">
+                                    <i class="bi bi-gear me-1"></i>In Slitting <span class="badge bg-secondary text-white ms-1"><?= $statusCounts['in_slitting'] ?></span>
+                                </button>
+                            <?php endif; ?>
+                            <?php if ($statusCounts['planned'] > 0): ?>
+                                <button type="button" class="btn btn-sm roll-filter-btn btn-outline-purple" data-filter="planned" onclick="filterRollTable('planned', this)" style="border-color: #7c3aed; color: #7c3aed;">
+                                    <i class="bi bi-hourglass-split me-1"></i>Planned <span class="badge text-white ms-1" style="background-color: #7c3aed;"><?= $statusCounts['planned'] ?></span>
+                                </button>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                    <div class="small text-muted fw-semibold" id="rollFilterSummaryText">
+                        Showing all <span class="text-dark fw-bold" id="rollVisibleCount"><?= count($orderRolls) ?></span> rolls
+                    </div>
+                </div>
+
                 <div class="table-responsive">
                     <table class="table table-hover table-custom align-middle">
                         <thead>
@@ -782,6 +861,20 @@ $pathPrefix           = $pathPrefix ?? '../';
                                 $isRec  = (($roll['source'] ?? '') === 'recoiling' || !empty($roll['recoiling_id']) || ($roll['cut_type'] ?? '') === 'cut_into_2');
                                 $isRes  = (($roll['source'] ?? '') === 'reslit' || !empty($roll['is_reslitted']));
 
+                                if ($isPlanOnly) {
+                                    $rowStatus = 'planned';
+                                } elseif ($st === 'DELIVERED') {
+                                    $rowStatus = 'delivered';
+                                } elseif ($st === 'APPROVED') {
+                                    $rowStatus = 'approved';
+                                } elseif ($st === 'WAITING') {
+                                    $rowStatus = 'waiting';
+                                } elseif ($sc === 1) {
+                                    $rowStatus = 'finish_good';
+                                } else {
+                                    $rowStatus = 'in_slitting';
+                                }
+
                                 $rowStyle = '';
                                 if ($isPlanOnly) {
                                     $rowStyle = 'border-left: 4px solid #7c3aed; background-color: rgba(124, 58, 237, 0.08);';
@@ -793,8 +886,8 @@ $pathPrefix           = $pathPrefix ?? '../';
                                     $rowStyle = 'border-left: 4px solid #f59e0b; background-color: rgba(245, 158, 11, 0.06);';
                                 }
                             ?>
-                                <tr style="<?= $rowStyle ?>">
-                                    <td class="text-muted"><?= $idx + 1 ?></td>
+                                <tr class="roll-row" data-roll-status="<?= $rowStatus ?>" style="<?= $rowStyle ?>">
+                                    <td class="text-muted roll-index-cell"><?= $idx + 1 ?></td>
                                     <td class="fw-bold text-dark">
                                         <?= $model->formatRollNo($roll['roll_no']) ?>
                                         <?php if ($isPlanOnly): ?>
@@ -886,6 +979,12 @@ $pathPrefix           = $pathPrefix ?? '../';
                                     </td>
                                 </tr>
                             <?php endforeach; ?>
+                            <tr id="noRollsMatchRow" style="display: none;">
+                                <td colspan="9" class="text-center py-4 text-muted">
+                                    <i class="bi bi-inbox fs-3 d-block mb-1 text-secondary"></i>
+                                    <span>No rolls found matching this status filter.</span>
+                                </td>
+                            </tr>
                         </tbody>
                     </table>
                 </div>
@@ -1333,6 +1432,103 @@ $pathPrefix           = $pathPrefix ?? '../';
             if (el) {
                 bootstrap.Collapse.getOrCreateInstance(el).toggle();
                 el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        }
+
+        function filterRollTable(status, clickedBtn) {
+            const filterButtons = document.querySelectorAll('.roll-filter-btn');
+            filterButtons.forEach(btn => {
+                const filter = btn.getAttribute('data-filter');
+                const isActive = (btn === clickedBtn);
+                btn.classList.toggle('active', isActive);
+                btn.classList.toggle('shadow-sm', isActive);
+
+                const badge = btn.querySelector('.badge');
+
+                if (filter === 'all') {
+                    btn.className = `btn btn-sm roll-filter-btn ${isActive ? 'btn-dark text-white active shadow-sm' : 'btn-outline-dark'}`;
+                    if (badge) {
+                        badge.className = `badge ms-1 ${isActive ? 'bg-light text-dark' : 'bg-dark text-white'}`;
+                    }
+                } else if (filter === 'delivered') {
+                    btn.className = `btn btn-sm roll-filter-btn ${isActive ? 'btn-success text-white active shadow-sm' : 'btn-outline-success'}`;
+                    if (badge) {
+                        badge.className = `badge ms-1 ${isActive ? 'bg-white text-success' : 'bg-success text-white'}`;
+                    }
+                } else if (filter === 'approved') {
+                    btn.className = `btn btn-sm roll-filter-btn ${isActive ? 'btn-info text-dark fw-semibold active shadow-sm' : 'btn-outline-info text-dark'}`;
+                    if (badge) {
+                        badge.className = `badge ms-1 ${isActive ? 'bg-white text-dark' : 'bg-info text-dark'}`;
+                    }
+                } else if (filter === 'waiting') {
+                    btn.className = `btn btn-sm roll-filter-btn ${isActive ? 'btn-warning text-dark fw-semibold active shadow-sm' : 'btn-outline-warning text-dark'}`;
+                    if (badge) {
+                        badge.className = `badge ms-1 ${isActive ? 'bg-white text-dark' : 'bg-warning text-dark'}`;
+                    }
+                } else if (filter === 'finish_good') {
+                    btn.className = `btn btn-sm roll-filter-btn ${isActive ? 'btn-primary text-white active shadow-sm' : 'btn-outline-primary'}`;
+                    if (badge) {
+                        badge.className = `badge ms-1 ${isActive ? 'bg-white text-primary' : 'bg-primary text-white'}`;
+                    }
+                } else if (filter === 'in_slitting') {
+                    btn.className = `btn btn-sm roll-filter-btn ${isActive ? 'btn-secondary text-white active shadow-sm' : 'btn-outline-secondary'}`;
+                    if (badge) {
+                        badge.className = `badge ms-1 ${isActive ? 'bg-white text-secondary' : 'bg-secondary text-white'}`;
+                    }
+                } else if (filter === 'planned') {
+                    btn.className = `btn btn-sm roll-filter-btn ${isActive ? 'active shadow-sm' : ''}`;
+                    if (isActive) {
+                        btn.style.backgroundColor = '#7c3aed';
+                        btn.style.borderColor = '#7c3aed';
+                        btn.style.color = '#ffffff';
+                        if (badge) {
+                            badge.style.backgroundColor = '#ffffff';
+                            badge.style.color = '#7c3aed';
+                        }
+                    } else {
+                        btn.style.backgroundColor = 'transparent';
+                        btn.style.borderColor = '#7c3aed';
+                        btn.style.color = '#7c3aed';
+                        if (badge) {
+                            badge.style.backgroundColor = '#7c3aed';
+                            badge.style.color = '#ffffff';
+                        }
+                    }
+                }
+            });
+
+            const rows = document.querySelectorAll('.roll-row');
+            let visibleCount = 0;
+            rows.forEach(row => {
+                const rowStatus = row.getAttribute('data-roll-status');
+                if (status === 'all' || rowStatus === status) {
+                    row.style.display = '';
+                    visibleCount++;
+                    const idxCell = row.querySelector('.roll-index-cell');
+                    if (idxCell) {
+                        idxCell.textContent = visibleCount;
+                    }
+                } else {
+                    row.style.display = 'none';
+                }
+            });
+
+            const countEl = document.getElementById('rollVisibleCount');
+            if (countEl) countEl.textContent = visibleCount;
+
+            const summaryText = document.getElementById('rollFilterSummaryText');
+            if (summaryText) {
+                if (status === 'all') {
+                    summaryText.innerHTML = `Showing all <span class="text-dark fw-bold">${visibleCount}</span> rolls`;
+                } else {
+                    const filterName = clickedBtn.innerText.replace(/[0-9]/g, '').trim();
+                    summaryText.innerHTML = `Showing <span class="text-dark fw-bold">${visibleCount}</span> of ${rows.length} rolls (${filterName})`;
+                }
+            }
+
+            const noMatchRow = document.getElementById('noRollsMatchRow');
+            if (noMatchRow) {
+                noMatchRow.style.display = (visibleCount === 0) ? '' : 'none';
             }
         }
     </script>
