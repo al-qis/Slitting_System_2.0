@@ -24,11 +24,44 @@ class CustomerTrackOrderModel
      * Sanitize string input helper
      */
     /**
-     * Automatically synchronizes missing manual rolls from slitting_product into slitting_plans
+     * Automatically synchronizes slitting_plans with actual production:
+     * 1. If a plan was assigned to SO-A but used for SO-B in production, reassign plan to SO-B
+     * 2. Remove redundant duplicate plans for the same mother coil cut
+     * 3. Insert truly missing plans for rolls cut without an initial plan
      */
     public function autoSyncMissingPlans(): int
     {
-        $sql = "
+        // 1. Reassign plan ref_no and customer when production roll was assigned to another SO or STOCK
+        $sqlUpdateMismatches = "
+            UPDATE slitting_plans p
+            INNER JOIN slitting_product sp 
+                ON sp.mother_id = p.mother_coil_id 
+               AND sp.roll_no = p.roll_seq
+            SET p.ref_no = sp.ref_no,
+                p.customer_name = COALESCE(NULLIF(sp.customer_name, ''), p.customer_name)
+            WHERE (p.ref_no IS NULL OR p.ref_no = '' OR p.ref_no != sp.ref_no)
+              AND (sp.is_voided = 0 OR sp.is_voided IS NULL)
+              AND (sp.is_reslitted = 0 OR sp.is_reslitted IS NULL)
+              AND (sp.is_recoiled = 0 OR sp.is_recoiled IS NULL)
+              AND sp.ref_no IS NOT NULL 
+              AND sp.ref_no != ''
+        ";
+        $this->conn->query($sqlUpdateMismatches);
+
+        // 2. Remove redundant duplicate plans for the same physical cut (keep lowest ID)
+        $sqlDups = "
+            DELETE p1 FROM slitting_plans p1
+            INNER JOIN slitting_plans p2 
+                ON p1.mother_coil_id = p2.mother_coil_id 
+               AND p1.roll_seq = p2.roll_seq 
+               AND p1.id > p2.id
+            WHERE p1.mother_coil_id IS NOT NULL 
+              AND p1.mother_coil_id > 0
+        ";
+        $this->conn->query($sqlDups);
+
+        // 3. Insert truly missing plans for rolls produced without any pre-existing plan
+        $sqlInsert = "
             INSERT INTO slitting_plans (mother_coil_id, roll_seq, planned_width, customer_name, ref_no, sort_order)
             SELECT 
                 sp.mother_id,
@@ -40,8 +73,7 @@ class CustomerTrackOrderModel
             FROM slitting_product sp
             LEFT JOIN slitting_plans p 
                 ON p.mother_coil_id = sp.mother_id 
-               AND p.roll_seq = sp.roll_no 
-               AND p.ref_no = sp.ref_no
+               AND p.roll_seq = sp.roll_no
             WHERE p.id IS NULL
               AND sp.mother_id IS NOT NULL 
               AND sp.mother_id > 0
@@ -53,7 +85,7 @@ class CustomerTrackOrderModel
               AND (sp.is_voided = 0 OR sp.is_voided IS NULL)
             GROUP BY sp.mother_id, sp.roll_no, sp.ref_no
         ";
-        $this->conn->query($sql);
+        $this->conn->query($sqlInsert);
         return $this->conn->affected_rows;
     }
 
@@ -694,7 +726,8 @@ class CustomerTrackOrderModel
                 }
                 $row['excess_breakdown'] = implode(', ', $breakdownParts);
 
-                $row['order_status'] = $st;
+                $row['order_status']   = $st;
+                $row['overall_status'] = strtolower($st);
                 $row['progress_pct'] = $pct;
                 $row['badge_class']  = $badgeClass;
                 $row['status_text']  = $statusText;
@@ -704,6 +737,19 @@ class CustomerTrackOrderModel
             }
             $stmtList->close();
         }
+
+        // Sort orders so active/in-progress orders (< 100%) appear at the top,
+        // and fully completed orders (100%) are placed below in the list.
+        usort($orderList, function($a, $b) {
+            $aDone = ($a['progress_pct'] >= 100) ? 1 : 0;
+            $bDone = ($b['progress_pct'] >= 100) ? 1 : 0;
+            if ($aDone !== $bDone) {
+                return $aDone <=> $bDone;
+            }
+            $dateA = $a['latest_delivered'] ?: $a['first_date'];
+            $dateB = $b['latest_delivered'] ?: $b['first_date'];
+            return strcmp($dateB, $dateA);
+        });
 
         return [
             'orders' => $orderList,

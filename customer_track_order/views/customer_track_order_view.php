@@ -253,6 +253,27 @@ $pathPrefix           = $pathPrefix ?? '../';
             gap: 6px;
         }
 
+        /* Month Section Styling */
+        .month-group-card {
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            overflow: hidden;
+            background: #ffffff;
+            transition: all 0.2s ease;
+        }
+        .month-header-btn {
+            background-color: #ffffff;
+            transition: background-color 0.2s ease;
+            cursor: pointer;
+            user-select: none;
+        }
+        .month-header-btn:hover {
+            background-color: #f8fafc;
+        }
+        .month-header-btn:active {
+            background-color: #f1f5f9;
+        }
+
         /* Table Design */
         .table-custom th {
             background-color: #0f172a;
@@ -270,6 +291,11 @@ $pathPrefix           = $pathPrefix ?? '../';
 
         /* Print Media Stylesheet */
         @media print {
+            .month-collapse {
+                display: block !important;
+                height: auto !important;
+                visibility: visible !important;
+            }
             .no-print {
                 display: none !important;
             }
@@ -860,85 +886,241 @@ $pathPrefix           = $pathPrefix ?? '../';
                         </a>
                     </div>
                 <?php else: ?>
-                    <div class="table-responsive">
-                        <table class="table table-hover table-custom align-middle">
-                            <thead>
-                                <tr>
-                                    <th>Sales Order (SO)</th>
-                                    <th>Customer</th>
-                                    <th>Product Model</th>
-                                    <th>Total Quantity <small class="text-muted fw-normal d-block" style="font-size: 11px;">(Dipotong / Dirancang)</small></th>
-                                    <th>Total Meters</th>
-                                    <th>Fulfillment Progress</th>
-                                    <th>Status</th>
-                                    <th class="text-end no-print">Action</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($orderList as $order): ?>
-                                    <tr>
-                                        <td>
-                                            <a href="<?= $pageUrl ?>?so=<?= urlencode($order['ref_no']) ?>" class="fw-bold text-decoration-none text-primary fs-6">
-                                                <i class="bi bi-receipt me-1"></i> <?= htmlspecialchars($order['ref_no']) ?>
-                                            </a>
-                                            <small class="text-muted d-block">
-                                                Started: <?= $order['first_date'] ? date('d M Y', strtotime($order['first_date'])) : '—' ?>
-                                            </small>
-                                        </td>
-                                        <td>
-                                            <span class="badge bg-light text-dark border fw-bold fs-6">
-                                                <?= htmlspecialchars($order['customer_name']) ?>
-                                            </span>
-                                        </td>
-                                        <td>
-                                            <span class="fw-semibold text-dark"><?= htmlspecialchars($order['products'] ?: '—') ?></span>
-                                        </td>
-                                        <td>
-                                            <strong><?= $order['total_rolls'] ?> / <?= $order['planned_rolls'] ?></strong> <span class="text-muted small">Rolls</span>
-                                            <?php if (!empty($order['excess_breakdown'])): ?>
-                                                <div class="mt-1" style="font-size: 11px;">
-                                                    <span class="badge bg-warning text-dark border border-warning-subtle py-1" title="Extra produce beyond planned cut">
-                                                        <i class="bi bi-plus-circle me-1"></i>+<?= $order['excess_rolls'] ?>: <?= htmlspecialchars($order['excess_breakdown']) ?>
+                    <?php
+                    // Group orders by month (e.g. 2026-10, 2026-09, 2026-08)
+                    $malayMonths = [
+                        '01' => 'Januari',
+                        '02' => 'Februari',
+                        '03' => 'Mac',
+                        '04' => 'April',
+                        '05' => 'Mei',
+                        '06' => 'Jun',
+                        '07' => 'Julai',
+                        '08' => 'Ogos',
+                        '09' => 'September',
+                        '10' => 'Oktober',
+                        '11' => 'November',
+                        '12' => 'Disember',
+                    ];
+
+                    $ordersByMonth = [];
+                    foreach ($orderList as $order) {
+                        $orderDate = !empty($order['first_date']) ? $order['first_date'] : $order['latest_delivered'];
+                        $mKey = $orderDate ? date('Y-m', strtotime($orderDate)) : 'other';
+                        $ordersByMonth[$mKey][] = $order;
+                    }
+                    krsort($ordersByMonth); // Latest months first (e.g. 2026-10, 2026-09, 2026-08...)
+
+                    // Sort orders in each month so active/in-progress orders (< 100%) appear at the top,
+                    // and completed orders (100%) are placed below in the list.
+                    foreach ($ordersByMonth as $mKey => &$mOrders) {
+                        usort($mOrders, function($a, $b) {
+                            $isA100 = ($a['progress_pct'] >= 100) ? 1 : 0;
+                            $isB100 = ($b['progress_pct'] >= 100) ? 1 : 0;
+                            if ($isA100 !== $isB100) {
+                                return $isA100 <=> $isB100; // 0 (< 100%) at top, 1 (100%) below
+                            }
+                            $dateA = $a['latest_delivered'] ?: $a['first_date'];
+                            $dateB = $b['latest_delivered'] ?: $b['first_date'];
+                            return strcmp($dateB, $dateA);
+                        });
+                    }
+                    unset($mOrders);
+
+                    $hasFilter = ($searchQuery !== '' || $filterCustomer !== '' || $filterStatus !== '');
+                    ?>
+
+                    <!-- Monthly View Toolbar -->
+                    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 p-2 px-3 mb-3 bg-light rounded-3 border no-print">
+                        <div class="small text-muted d-flex align-items-center gap-2">
+                            <i class="bi bi-calendar-range text-primary fs-6"></i>
+                            <span>Senarai Mengikut Bulan: <strong>2 Bulan Terkini Dipaparkan Automatik</strong></span>
+                        </div>
+                        <div class="btn-group btn-group-sm">
+                            <button type="button" class="btn btn-outline-secondary" onclick="expandAllMonths()" title="Buka senarai untuk semua bulan">
+                                <i class="bi bi-arrows-expand me-1"></i> Kembang Semua
+                            </button>
+                            <button type="button" class="btn btn-outline-secondary" onclick="collapseOlderMonths()" title="Kekalkan 2 bulan terkini sahaja">
+                                <i class="bi bi-clock-history me-1"></i> 2 Bulan Terkini Sahaja
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Month Accordions -->
+                    <div class="d-flex flex-column gap-3">
+                        <?php 
+                        $monthIndex = 0;
+                        foreach ($ordersByMonth as $mKey => $mOrders): 
+                            if ($mKey !== 'other' && preg_match('/^(\d{4})-(\d{2})$/', $mKey, $matches)) {
+                                $year = $matches[1];
+                                $monthNum = $matches[2];
+                                $monthName = $malayMonths[$monthNum] ?? date('F', mktime(0, 0, 0, (int)$monthNum, 10));
+                                $monthTitle = $monthName . ' ' . $year;
+                            } else {
+                                $monthTitle = 'Lain-lain / Tarikh Lain (Other)';
+                            }
+
+                            // 2 latest months are visible by default ($monthIndex < 2).
+                            // If a filter/search is active, expand all matching months so nothing is hidden.
+                            $isLatestTwo = ($monthIndex < 2);
+                            $isExpanded = $isLatestTwo || $hasFilter;
+                            $collapseId = 'month-collapse-' . preg_replace('/[^a-zA-Z0-9_\-]/', '_', $mKey);
+
+                            // Month aggregated stats
+                            $mDelivered = 0;
+                            $mInProd = 0;
+                            $mReady = 0;
+                            $mTotalRolls = 0;
+                            $mPlannedRolls = 0;
+                            foreach ($mOrders as $mo) {
+                                $mTotalRolls += (int)$mo['total_rolls'];
+                                $mPlannedRolls += (int)$mo['planned_rolls'];
+                                $orderSt = strtoupper($mo['order_status'] ?? ($mo['overall_status'] ?? ''));
+                                if ($orderSt === 'DELIVERED') {
+                                    $mDelivered++;
+                                } elseif ($orderSt === 'READY' || $orderSt === 'APPROVED') {
+                                    $mReady++;
+                                } else {
+                                    $mInProd++;
+                                }
+                            }
+                        ?>
+                            <div class="month-group-card shadow-sm" data-month-index="<?= $monthIndex ?>">
+                                <div class="month-header-btn py-3 px-3 px-md-4 d-flex flex-wrap align-items-center justify-content-between gap-3"
+                                     data-bs-toggle="collapse"
+                                     data-bs-target="#<?= $collapseId ?>"
+                                     aria-expanded="<?= $isExpanded ? 'true' : 'false' ?>"
+                                     aria-controls="<?= $collapseId ?>">
+                                    
+                                    <div class="d-flex align-items-center gap-3">
+                                        <div class="<?= $isLatestTwo ? 'bg-primary text-white' : 'bg-light text-secondary border' ?> p-2 rounded-3 d-flex align-items-center justify-content-center shadow-sm" style="width: 44px; height: 44px;">
+                                            <i class="bi bi-calendar-check fs-5"></i>
+                                        </div>
+                                        <div>
+                                            <div class="d-flex align-items-center gap-2 flex-wrap">
+                                                <h5 class="fw-bold mb-0 text-dark" style="letter-spacing: -0.3px;">
+                                                    <?= htmlspecialchars($monthTitle) ?>
+                                                </h5>
+                                                <?php if ($isLatestTwo): ?>
+                                                    <span class="badge bg-primary text-white px-2 py-1" style="font-size: 11px;">
+                                                        <i class="bi bi-stars me-1"></i> Terkini (Latest)
                                                     </span>
-                                                </div>
-                                            <?php endif; ?>
-                                            <div class="small text-muted mt-1">
-                                                Delivered: <span class="text-success fw-bold"><?= $order['delivered_rolls'] ?></span>
+                                                <?php else: ?>
+                                                    <span class="badge bg-secondary-subtle text-secondary border px-2 py-1" style="font-size: 11px;">
+                                                        <i class="bi bi-archive me-1"></i> Terdahulu (Older)
+                                                    </span>
+                                                <?php endif; ?>
                                             </div>
-                                        </td>
-                                        <td>
-                                            <strong><?= number_format((float)$order['total_meters'], 1) ?></strong> <span class="text-muted small">m</span>
-                                        </td>
-                                        <td style="min-width: 150px;">
-                                            <div class="d-flex align-items-center justify-content-between small text-muted mb-1">
-                                                <span>Progress</span>
-                                                <span class="fw-bold"><?= $order['progress_pct'] ?>%</span>
+                                            <div class="text-muted small mt-1">
+                                                <span class="fw-bold text-dark"><?= count($mOrders) ?></span> Pesanan (Orders) &bull;
+                                                <span class="fw-semibold text-dark"><?= $mTotalRolls ?></span> / <?= $mPlannedRolls ?> Rolls &bull;
+                                                <span class="text-success fw-semibold"><i class="bi bi-check-circle-fill me-1"></i><?= $mDelivered ?> Delivered</span>
+                                                <?php if ($mInProd > 0): ?>
+                                                    &bull; <span class="text-primary fw-semibold"><i class="bi bi-gear-fill me-1"></i><?= $mInProd ?> In Prod</span>
+                                                <?php endif; ?>
+                                                <?php if ($mReady > 0): ?>
+                                                    &bull; <span class="text-info-emphasis fw-semibold"><i class="bi bi-box-seam me-1"></i><?= $mReady ?> Ready</span>
+                                                <?php endif; ?>
                                             </div>
-                                            <div class="progress" style="height: 6px;">
-                                                <div 
-                                                    class="progress-bar <?= ($order['progress_pct'] === 100) ? 'bg-success' : 'bg-primary' ?>" 
-                                                    role="progressbar" 
-                                                    style="width: <?= $order['progress_pct'] ?>%;" 
-                                                    aria-valuenow="<?= $order['progress_pct'] ?>" 
-                                                    aria-valuemin="0" 
-                                                    aria-valuemax="100">
-                                                </div>
-                                            </div>
-                                        </td>
-                                        <td>
-                                            <span class="badge <?= $order['badge_class'] ?> px-2 py-1">
-                                                <?= $order['status_text'] ?>
-                                            </span>
-                                        </td>
-                                        <td class="text-end no-print">
-                                            <a href="<?= $pageUrl ?>?so=<?= urlencode($order['ref_no']) ?>" class="btn btn-outline-primary btn-sm fw-semibold">
-                                                Track <i class="bi bi-arrow-right ms-1"></i>
-                                            </a>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
+                                        </div>
+                                    </div>
+
+                                    <div class="d-flex align-items-center gap-2 no-print ms-auto">
+                                        <button type="button" class="btn btn-sm <?= $isExpanded ? 'btn-outline-primary' : 'btn-light border text-muted' ?> fw-semibold px-3 py-1 month-toggle-btn" tabindex="-1">
+                                            <span class="toggle-label"><?= $isExpanded ? 'Tutup Senarai' : 'Papar Senarai' ?></span>
+                                            <i class="bi <?= $isExpanded ? 'bi-chevron-up' : 'bi-chevron-down' ?> ms-1 toggle-icon"></i>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <!-- Collapsible Orders Table for this Month -->
+                                <div id="<?= $collapseId ?>" class="collapse <?= $isExpanded ? 'show' : '' ?> month-collapse">
+                                    <div class="card-body p-0 border-top">
+                                        <div class="table-responsive">
+                                            <table class="table table-hover table-custom align-middle mb-0">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Sales Order (SO)</th>
+                                                        <th>Customer</th>
+                                                        <th>Product Model</th>
+                                                        <th>Total Quantity <small class="text-muted fw-normal d-block" style="font-size: 11px;">(Dipotong / Dirancang)</small></th>
+                                                        <th>Total Meters</th>
+                                                        <th>Fulfillment Progress</th>
+                                                        <th>Status</th>
+                                                        <th class="text-end no-print">Action</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    <?php foreach ($mOrders as $order): ?>
+                                                        <tr>
+                                                            <td>
+                                                                <a href="<?= $pageUrl ?>?so=<?= urlencode($order['ref_no']) ?>" class="fw-bold text-decoration-none text-primary fs-6">
+                                                                    <i class="bi bi-receipt me-1"></i> <?= htmlspecialchars($order['ref_no']) ?>
+                                                                </a>
+                                                                <small class="text-muted d-block">
+                                                                    Started: <?= $order['first_date'] ? date('d M Y', strtotime($order['first_date'])) : '—' ?>
+                                                                </small>
+                                                            </td>
+                                                            <td>
+                                                                <span class="badge bg-light text-dark border fw-bold fs-6">
+                                                                    <?= htmlspecialchars($order['customer_name']) ?>
+                                                                </span>
+                                                            </td>
+                                                            <td>
+                                                                <span class="fw-semibold text-dark"><?= htmlspecialchars($order['products'] ?: '—') ?></span>
+                                                            </td>
+                                                            <td>
+                                                                <strong><?= $order['total_rolls'] ?> / <?= $order['planned_rolls'] ?></strong> <span class="text-muted small">Rolls</span>
+                                                                <?php if (!empty($order['excess_breakdown'])): ?>
+                                                                    <div class="mt-1" style="font-size: 11px;">
+                                                                        <span class="badge bg-warning text-dark border border-warning-subtle py-1" title="Extra produce beyond planned cut">
+                                                                            <i class="bi bi-plus-circle me-1"></i>+<?= $order['excess_rolls'] ?>: <?= htmlspecialchars($order['excess_breakdown']) ?>
+                                                                        </span>
+                                                                    </div>
+                                                                <?php endif; ?>
+                                                                <div class="small text-muted mt-1">
+                                                                    Delivered: <span class="text-success fw-bold"><?= $order['delivered_rolls'] ?></span>
+                                                                </div>
+                                                            </td>
+                                                            <td>
+                                                                <strong><?= number_format((float)$order['total_meters'], 1) ?></strong> <span class="text-muted small">m</span>
+                                                            </td>
+                                                            <td style="min-width: 150px;">
+                                                                <div class="d-flex align-items-center justify-content-between small text-muted mb-1">
+                                                                    <span>Progress</span>
+                                                                    <span class="fw-bold"><?= $order['progress_pct'] ?>%</span>
+                                                                </div>
+                                                                <div class="progress" style="height: 6px;">
+                                                                    <div 
+                                                                        class="progress-bar <?= ($order['progress_pct'] === 100) ? 'bg-success' : 'bg-primary' ?>" 
+                                                                        role="progressbar" 
+                                                                        style="width: <?= $order['progress_pct'] ?>%;" 
+                                                                        aria-valuenow="<?= $order['progress_pct'] ?>" 
+                                                                        aria-valuemin="0" 
+                                                                        aria-valuemax="100">
+                                                                    </div>
+                                                                </div>
+                                                            </td>
+                                                            <td>
+                                                                <span class="badge <?= $order['badge_class'] ?> px-2 py-1">
+                                                                    <?= $order['status_text'] ?>
+                                                                </span>
+                                                            </td>
+                                                            <td class="text-end no-print">
+                                                                <a href="<?= $pageUrl ?>?so=<?= urlencode($order['ref_no']) ?>" class="btn btn-outline-primary btn-sm fw-semibold">
+                                                                    Track <i class="bi bi-arrow-right ms-1"></i>
+                                                                </a>
+                                                            </td>
+                                                        </tr>
+                                                    <?php endforeach; ?>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <?php $monthIndex++; ?>
+                        <?php endforeach; ?>
                     </div>
                 <?php endif; ?>
             </div>
@@ -965,6 +1147,68 @@ $pathPrefix           = $pathPrefix ?? '../';
                 prompt("Copy this tracking link:", url);
             });
         }
+
+        function expandAllMonths() {
+            document.querySelectorAll('.month-collapse').forEach(function(el) {
+                bootstrap.Collapse.getOrCreateInstance(el, {toggle: false}).show();
+            });
+        }
+
+        function collapseOlderMonths() {
+            document.querySelectorAll('.month-group-card').forEach(function(card) {
+                const idx = parseInt(card.getAttribute('data-month-index') || '0', 10);
+                const collapseEl = card.querySelector('.month-collapse');
+                if (collapseEl) {
+                    const instance = bootstrap.Collapse.getOrCreateInstance(collapseEl, {toggle: false});
+                    if (idx < 2) {
+                        instance.show();
+                    } else {
+                        instance.hide();
+                    }
+                }
+            });
+        }
+
+        // Synchronize collapse header button text and chevron icons
+        document.addEventListener('DOMContentLoaded', function() {
+            const monthCollapses = document.querySelectorAll('.month-collapse');
+            monthCollapses.forEach(function(el) {
+                el.addEventListener('show.bs.collapse', function() {
+                    const card = el.closest('.month-group-card');
+                    if (card) {
+                        const btn = card.querySelector('.month-toggle-btn');
+                        const label = card.querySelector('.toggle-label');
+                        const icon = card.querySelector('.toggle-icon');
+                        if (btn) {
+                            btn.classList.remove('btn-light', 'border', 'text-muted');
+                            btn.classList.add('btn-outline-primary');
+                        }
+                        if (label) label.textContent = 'Tutup Senarai';
+                        if (icon) {
+                            icon.classList.remove('bi-chevron-down');
+                            icon.classList.add('bi-chevron-up');
+                        }
+                    }
+                });
+                el.addEventListener('hide.bs.collapse', function() {
+                    const card = el.closest('.month-group-card');
+                    if (card) {
+                        const btn = card.querySelector('.month-toggle-btn');
+                        const label = card.querySelector('.toggle-label');
+                        const icon = card.querySelector('.toggle-icon');
+                        if (btn) {
+                            btn.classList.remove('btn-outline-primary');
+                            btn.classList.add('btn-light', 'border', 'text-muted');
+                        }
+                        if (label) label.textContent = 'Papar Senarai';
+                        if (icon) {
+                            icon.classList.remove('bi-chevron-up');
+                            icon.classList.add('bi-chevron-down');
+                        }
+                    }
+                });
+            });
+        });
     </script>
 </body>
 </html>

@@ -286,13 +286,17 @@ foreach ($alphabet as $letter) {
     <div class="card shadow-sm mb-4 <?= ($source_data['source_type'] ?? '') === 'slitting_cut_into_2' ? 'source-info-leftover' : 'source-info' ?>">
         <div class="card-body">
             <div class="row">
-                <div class="col-md-3">
+                <div class="col-md-2">
                     <small class="text-muted d-block">Lot No</small>
                     <span class="fw-bold"><?= htmlspecialchars($source_data['lot_no'] ?? '-') ?></span>
                 </div>
-                <div class="col-md-3">
+                <div class="col-md-2">
                     <small class="text-muted d-block">Coil No</small>
                     <span class="fw-bold"><?= htmlspecialchars($source_data['coil_no'] ?? '-') ?></span>
+                </div>
+                <div class="col-md-2">
+                    <small class="text-muted d-block">Mother Product</small>
+                    <span class="badge bg-secondary fs-6"><?= htmlspecialchars($mother_data['product'] ?? $source_data['product'] ?? '-') ?></span>
                 </div>
                 <div class="col-md-2">
                     <small class="text-muted d-block">Grade</small>
@@ -408,7 +412,40 @@ const sourceData = {
     fromStock: <?= $from_stock ? 'true' : 'false' ?>,
     isLeftover: <?= $isLeftoverCut ? 'true' : 'false' ?>,
     nextCutLetter: '<?= $next_cut_letter ?>',
-    product: '<?= htmlspecialchars($mother_data['product'] ?? '') ?>'
+    product: '<?= htmlspecialchars($mother_data['product'] ?? '') ?>',
+    isVCoil: <?= ((stripos($source_data['lot_no'] ?? '', 'V') !== false) || (stripos($source_data['coil_no'] ?? '', 'V') !== false) || (stripos($mother_data['lot_no'] ?? '', 'V') !== false) || (stripos($mother_data['coil_no'] ?? '', 'V') !== false)) ? 'true' : 'false' ?>
+};
+
+const tsTriggerWidths = [66.5, 81.0, 109.5, 118.0, 309.0];
+
+function resolveRollProduct(motherProduct, widthVal) {
+    const w = parseFloat(widthVal) || 0;
+    const clean = (motherProduct || '').trim();
+    const is3020 = /^(RS|TS)-3020/i.test(clean) || (sourceData.isVCoil && /3020/.test(clean));
+    const matchesTs = tsTriggerWidths.some(tw => Math.abs(w - tw) < 0.01);
+    if (is3020) {
+        return matchesTs ? 'TS-3020' : 'RS-3020';
+    }
+    return clean || '-';
+}
+
+function updateRowProduct(idx) {
+    const widthInputs = document.querySelectorAll('.width-input');
+    const badge = document.getElementById(`prodBadge${idx}`);
+    if (!widthInputs[idx] || !badge) return;
+
+    const resolved = resolveRollProduct(sourceData.product, widthInputs[idx].value);
+    badge.textContent = resolved;
+    if (resolved === 'TS-3020') {
+        badge.className = 'badge bg-success';
+        badge.title = 'Auto-set to TS-3020 (White sticker)';
+    } else if (resolved === 'RS-3020') {
+        badge.className = 'badge bg-primary';
+        badge.title = 'Standard RS-3020 (Blue sticker)';
+    } else {
+        badge.className = 'badge bg-secondary';
+        badge.title = '';
+    }
 };
 
 function formatRollLot(baseLot, letter) {
@@ -446,7 +483,10 @@ function fillWidthsFromPlan() {
     if (!slittingPlan || slittingPlan.length === 0) return;
     const widthInputs = document.querySelectorAll('.width-input');
     slittingPlan.forEach((row, i) => {
-        if (widthInputs[i]) widthInputs[i].value = row.planned_width;
+        if (widthInputs[i]) {
+            widthInputs[i].value = row.planned_width;
+            updateRowProduct(i);
+        }
     });
 }
 
@@ -637,6 +677,7 @@ function generateForm(){
                     <th>Cut Letter</th>
                     <th>Length (m)</th>
                     <th>Width (mm)</th>
+                    <th>Product</th>
                     <th class="text-center">To SFC</th>
                     <th>Lot Preview</th>
                 </tr>
@@ -660,6 +701,8 @@ function generateForm(){
         const isSfc = prevSfcs[i - 1] ? 'checked' : '';
         const sfcActive = prevSfcs[i - 1] ? 'sfc-active' : '';
         const rowActive = prevSfcs[i - 1] ? 'sfc-row-active' : '';
+        const curProd = resolveRollProduct(sourceData.product, valWidth);
+        const curBadgeClass = (curProd === 'TS-3020') ? 'bg-success' : ((curProd === 'RS-3020') ? 'bg-primary' : 'bg-secondary');
 
         html += `
                 <tr class="${rowActive}">
@@ -684,7 +727,10 @@ function generateForm(){
                     </td>
                     <td>
                         <input type="number" step="0.1" name="width[]" class="form-control form-control-sm width-input"
-                               placeholder="Width" value="${valWidth}" required>
+                               placeholder="Width" value="${valWidth}" required oninput="updateRowProduct(${i-1})">
+                    </td>
+                    <td>
+                        <span class="badge ${curBadgeClass}" id="prodBadge${i-1}">${curProd}</span>
                     </td>
                     <td class="text-center sfc-cell">
                         <label class="sfc-toggle ${sfcActive}" for="sfcCheck${i-1}">
@@ -727,8 +773,9 @@ function applyWidthToAll() {
         alert('Enter a width value first.');
         return;
     }
-    document.querySelectorAll('.width-input').forEach(input => {
+    document.querySelectorAll('.width-input').forEach((input, idx) => {
         input.value = bulkVal;
+        updateRowProduct(idx);
     });
 }
 

@@ -442,6 +442,66 @@ if (!function_exists('getStockMonthEndSqlCondition')) {
 }
 
 
+if (!function_exists('resolveSlitProductCode')) {
+    /**
+     * Resolves the slitting child product code based on the mother product and slit width.
+     * Rule: From the mother coil RS-3020 (or TS-3020, or V-coil):
+     * If the slit width (mm) is 66.5, 81, 109.5, 118, or 309,
+     * auto set the slitting product code as TS-3020 (White sticker).
+     * Otherwise standard RS-3020 (Blue sticker).
+     *
+     * @param string $motherProductCode Mother product code (e.g. 'RS-3020')
+     * @param bool   $isVCoil           Whether mother coil is a V-coil
+     * @param float|string $slitWidth   Resulting slit roll width in mm
+     * @return array ['code' => string, 'is_ts' => bool]
+     */
+    function resolveSlitProductCode(string $motherProductCode, bool $isVCoil, $slitWidth): array {
+        // Exact TS-trigger widths (mm), compared with float tolerance.
+        $tsWidths = [66.5, 81.0, 109.5, 118.0, 309.0];
+
+        $width = (float)$slitWidth;
+        $matchesTsWidth = false;
+        foreach ($tsWidths as $tsw) {
+            if (abs($width - $tsw) < 0.01) {
+                $matchesTsWidth = true;
+                break;
+            }
+        }
+
+        $cleanMother = trim($motherProductCode);
+
+        // Check if this is an RS-3020 mother coil (or TS-3020, or V-coil 3020)
+        $is3020Mother = (strcasecmp($cleanMother, 'RS-3020') === 0)
+            || (strcasecmp($cleanMother, 'TS-3020') === 0)
+            || (stripos($cleanMother, 'RS-3020') === 0)
+            || (stripos($cleanMother, 'TS-3020') === 0)
+            || ($isVCoil && (stripos($cleanMother, '3020') !== false || $cleanMother === ''));
+
+        if ($is3020Mother) {
+            if ($matchesTsWidth) {
+                return ['code' => 'TS-3020', 'is_ts' => true];
+            } else {
+                return ['code' => 'RS-3020', 'is_ts' => false];
+            }
+        }
+
+        // Generic V-Coil prefix replacement fallback for other product suffixes (if any)
+        $parts  = explode('-', $cleanMother, 2);
+        $suffix = $parts[1] ?? $cleanMother;
+
+        if ($isVCoil && $matchesTsWidth) {
+            return ['code' => 'TS-' . $suffix, 'is_ts' => true];
+        }
+
+        if ($isVCoil) {
+            return ['code' => 'RS-' . $suffix, 'is_ts' => false];
+        }
+
+        // Non-V mother coil: leave product code exactly as passed in — untouched
+        return ['code' => $cleanMother, 'is_ts' => false];
+    }
+}
+
 if (!function_exists('syncSlittingPlanCustomer')) {
     /**
      * Synchronizes customer_name and ref_no to slitting_plans for a given slitting_product ID.

@@ -24,10 +24,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $length_type = $_POST['length_type'];
     $stock_code  = trim($_POST['stock_code'] ?? '');
 
+    // Resolve TS/RS product naming based on width
+    $currProd   = $product['product'] ?? '';
+    $motherId   = intval($product['mother_id'] ?? 0);
+    $motherProd = '';
+    if ($motherId > 0) {
+        $mRes = $conn->query("SELECT product FROM mother_coil WHERE id=$motherId");
+        if ($mRes && $mRow = $mRes->fetch_assoc()) {
+            $motherProd = $mRow['product'] ?? '';
+        }
+    }
+    $baseProd = !empty($motherProd) ? $motherProd : $currProd;
+    $isV = (stripos($product['lot_no'] ?? '', 'V') !== false) || (stripos($product['coil_no'] ?? '', 'V') !== false);
+    $resolvedProd = resolveSlitProductCode($baseProd, $isV, $width);
+    $finalProd = $resolvedProd['code'];
+
     $stmt = $conn->prepare("UPDATE slitting_product
-        SET roll_no=?, width=?, length=?, length_type=?, stock_code=?
+        SET roll_no=?, width=?, length=?, length_type=?, stock_code=?, product=?
         WHERE id=?");
-    $stmt->bind_param("sssssi", $roll_no, $width, $length, $length_type, $stock_code, $id);
+    $stmt->bind_param("ssssssi", $roll_no, $width, $length, $length_type, $stock_code, $finalProd, $id);
     $stmt->execute();
     $stmt->close();
 

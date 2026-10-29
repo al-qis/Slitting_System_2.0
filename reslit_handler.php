@@ -318,6 +318,12 @@ try {
         $roll_cust = trim($posted_customers[$index] ?? ($planCustomerMap[strtoupper($roll_label)] ?? ($planCustomerMap['idx_' . $index] ?? '')));
         $roll_ref  = trim($posted_refs[$index] ?? ($planRefMap[strtoupper($roll_label)] ?? ($planRefMap['idx_' . $index] ?? '')));
 
+        // ── Resolve product code dynamically (TS/RS dynamic naming) ──
+        $isVCoilReslit = (stripos($parent['lot_no'] ?? '', 'V') !== false)
+                      || (stripos($coil_no_val, 'V') !== false);
+        $reslit_resolved   = resolveSlitProductCode($parent['product'] ?? '', $isVCoilReslit, $width);
+        $roll_product_code = $reslit_resolved['code'];
+
         $stmt_ins = $conn->prepare("
             INSERT INTO slitting_product
                 (mother_id, parent_slit_id,
@@ -332,7 +338,7 @@ try {
             "iisssssdddsssss",
             $mother_id_val,
             $parent_slit_id,
-            $parent['product'],
+            $roll_product_code,
             $new_lot_no,
             $coil_no_val,
             $roll_label,
@@ -438,6 +444,9 @@ try {
             $chk_key->close();
 
             $leftover_stock_code = generateStockCode($conn, $prod_date);
+            $leftover_resolved   = resolveSlitProductCode($parent['product'] ?? '', $isVCoilReslit, $leftover_width);
+            $leftover_product    = $leftover_resolved['code'];
+
             $stmt_leftover = $conn->prepare("
                 INSERT INTO slitting_product
                     (mother_id, parent_slit_id,
@@ -451,7 +460,7 @@ try {
                 "iisssssdddsss",
                 $mother_id_val,
                 $parent_slit_id,
-                $parent['product'],
+                $leftover_product,
                 $parent['lot_no'],
                 $coil_no_val,
                 $leftover_roll_no,
