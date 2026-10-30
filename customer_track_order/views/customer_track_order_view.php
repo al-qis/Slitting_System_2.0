@@ -737,8 +737,12 @@ $pathPrefix           = $pathPrefix ?? '../';
                     'finish_good' => 0,
                     'in_slitting' => 0,
                     'planned'     => 0,
+                    'nod'         => 0,
                 ];
                 foreach ($orderRolls as $r) {
+                    if (!empty($r['nod_length']) && (float)$r['nod_length'] > 0) {
+                        $statusCounts['nod']++;
+                    }
                     if (!empty($r['is_planned_only'])) {
                         $statusCounts['planned']++;
                     } else {
@@ -786,6 +790,14 @@ $pathPrefix           = $pathPrefix ?? '../';
                                 <i class="bi bi-scissors me-1"></i>Reslit: <strong><?= $singleOrder['reslit_cnt'] ?></strong>
                             </span>
                         <?php endif; ?>
+                        <?php 
+                            $nodTotalCoils = !empty($singleOrder['nod_cnt']) ? $singleOrder['nod_cnt'] : ($statusCounts['nod'] ?? 0);
+                            if ($nodTotalCoils > 0): 
+                        ?>
+                            <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle px-2 py-1" title="Total coils with Notice of Defect recorded">
+                                <i class="bi bi-exclamation-triangle me-1"></i>NOD: <strong><?= $nodTotalCoils ?></strong>
+                            </span>
+                        <?php endif; ?>
                         <span class="text-muted small fw-semibold">Total: <?= count($orderRolls) ?> Rolls (<?= $singleOrder['total_rolls'] ?> Produced<?= !empty($singleOrder['planning_rolls_cnt']) ? ' + ' . $singleOrder['planning_rolls_cnt'] . ' Planned' : '' ?>)</span>
                     </div>
                 </div>
@@ -828,6 +840,11 @@ $pathPrefix           = $pathPrefix ?? '../';
                             <?php if ($statusCounts['planned'] > 0): ?>
                                 <button type="button" class="btn btn-sm roll-filter-btn btn-outline-purple" data-filter="planned" onclick="filterRollTable('planned', this)" style="border-color: #7c3aed; color: #7c3aed;">
                                     <i class="bi bi-hourglass-split me-1"></i>Planned <span class="badge text-white ms-1" style="background-color: #7c3aed;"><?= $statusCounts['planned'] ?></span>
+                                </button>
+                            <?php endif; ?>
+                            <?php if ($statusCounts['nod'] > 0): ?>
+                                <button type="button" class="btn btn-sm btn-outline-warning text-dark roll-filter-btn" data-filter="nod" onclick="filterRollTable('nod', this)">
+                                    <i class="bi bi-exclamation-triangle me-1"></i>NOD <span class="badge bg-warning text-dark ms-1"><?= $statusCounts['nod'] ?></span>
                                 </button>
                             <?php endif; ?>
                         </div>
@@ -886,8 +903,9 @@ $pathPrefix           = $pathPrefix ?? '../';
                                 } elseif ($isRes) {
                                     $rowStyle = 'border-left: 4px solid #f59e0b; background-color: rgba(245, 158, 11, 0.06);';
                                 }
+                                 $hasNod = (!empty($roll['nod_length']) && (float)$roll['nod_length'] > 0);
                             ?>
-                                <tr class="roll-row" data-roll-status="<?= $rowStatus ?>" style="<?= $rowStyle ?>">
+                                <tr class="roll-row" data-roll-status="<?= $rowStatus ?>" data-has-nod="<?= $hasNod ? '1' : '0' ?>" style="<?= $rowStyle ?>">
                                     <td class="text-muted roll-index-cell"><?= $idx + 1 ?></td>
                                     <td class="fw-bold text-dark">
                                         <?= $model->formatRollNo($roll['roll_no']) ?>
@@ -1504,6 +1522,11 @@ $pathPrefix           = $pathPrefix ?? '../';
                             badge.style.color = '#ffffff';
                         }
                     }
+                } else if (filter === 'nod') {
+                    btn.className = `btn btn-sm roll-filter-btn ${isActive ? 'btn-warning text-dark fw-semibold active shadow-sm' : 'btn-outline-warning text-dark'}`;
+                    if (badge) {
+                        badge.className = `badge ms-1 ${isActive ? 'bg-white text-dark' : 'bg-warning text-dark'}`;
+                    }
                 }
             });
 
@@ -1511,7 +1534,10 @@ $pathPrefix           = $pathPrefix ?? '../';
             let visibleCount = 0;
             rows.forEach(row => {
                 const rowStatus = row.getAttribute('data-roll-status');
-                if (status === 'all' || rowStatus === status) {
+                const hasNod = row.getAttribute('data-has-nod') === '1';
+                const isMatch = (status === 'all') || (status === 'nod' ? hasNod : rowStatus === status);
+
+                if (isMatch) {
                     row.style.display = '';
                     visibleCount++;
                     const idxCell = row.querySelector('.roll-index-cell');

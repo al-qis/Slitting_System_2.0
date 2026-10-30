@@ -301,6 +301,7 @@ class CustomerTrackOrderModel
         $initialStockCount  = 0;
         $recoilCount        = 0;
         $reslitCount        = 0;
+        $nodCount           = 0;
         $totalMeters        = 0.0;
         $customerNames      = [];
         $uniqueProducts     = [];
@@ -330,6 +331,10 @@ class CustomerTrackOrderModel
                 $recoilCount++;
             } elseif ($isReslit) {
                 $reslitCount++;
+            }
+
+            if (!empty($roll['nod_length']) && (float)$roll['nod_length'] > 0) {
+                $nodCount++;
             }
 
             if (!empty($roll['customer_name'])) {
@@ -552,6 +557,7 @@ class CustomerTrackOrderModel
             'initial_stock_cnt'  => $initialStockCount,
             'recoil_cnt'         => $recoilCount,
             'reslit_cnt'         => $reslitCount,
+            'nod_cnt'            => $nodCount,
             'delivered_rolls'    => $deliveredRolls,
             'approved_rolls'     => $approvedRolls,
             'waiting_rolls'      => $waitingRolls,
