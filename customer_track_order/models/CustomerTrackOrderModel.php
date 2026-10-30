@@ -165,6 +165,7 @@ class CustomerTrackOrderModel
                 sp.width,
                 sp.length,
                 sp.actual_length,
+                sp.nod_length,
                 sp.status,
                 sp.stock_counted,
                 sp.is_completed,
@@ -191,7 +192,9 @@ class CustomerTrackOrderModel
             WHERE {$baseWhere}
               AND sp.ref_no = ?
             ORDER BY 
-                CASE sp.status WHEN 'DELIVERED' THEN 1 ELSE 0 END ASC,
+                sp.product ASC,
+                sp.lot_no ASC,
+                sp.coil_no ASC,
                 sp.roll_no ASC,
                 sp.id ASC
         ");
@@ -221,6 +224,7 @@ class CustomerTrackOrderModel
                     sp.width,
                     sp.length,
                     sp.actual_length,
+                    sp.nod_length,
                     sp.status,
                     sp.stock_counted,
                     sp.is_completed,
@@ -247,7 +251,9 @@ class CustomerTrackOrderModel
                 WHERE {$baseWhere}
                   AND sp.ref_no LIKE ?
                 ORDER BY 
-                    CASE sp.status WHEN 'DELIVERED' THEN 1 ELSE 0 END ASC,
+                    sp.product ASC,
+                    sp.lot_no ASC,
+                    sp.coil_no ASC,
                     sp.roll_no ASC,
                     sp.id ASC
             ");
@@ -295,6 +301,7 @@ class CustomerTrackOrderModel
         $initialStockCount  = 0;
         $recoilCount        = 0;
         $reslitCount        = 0;
+        $nodCount           = 0;
         $totalMeters        = 0.0;
         $customerNames      = [];
         $uniqueProducts     = [];
@@ -324,6 +331,10 @@ class CustomerTrackOrderModel
                 $recoilCount++;
             } elseif ($isReslit) {
                 $reslitCount++;
+            }
+
+            if (!empty($roll['nod_length']) && (float)$roll['nod_length'] > 0) {
+                $nodCount++;
             }
 
             if (!empty($roll['customer_name'])) {
@@ -430,6 +441,7 @@ class CustomerTrackOrderModel
                         'width'               => (float)$plan['planned_width'],
                         'length'              => (float)$plan['planned_length'],
                         'actual_length'       => 0,
+                        'nod_length'          => null,
                         'status'              => 'PLANNED',
                         'stock_counted'       => 0,
                         'is_completed'        => 0,
@@ -545,6 +557,7 @@ class CustomerTrackOrderModel
             'initial_stock_cnt'  => $initialStockCount,
             'recoil_cnt'         => $recoilCount,
             'reslit_cnt'         => $reslitCount,
+            'nod_cnt'            => $nodCount,
             'delivered_rolls'    => $deliveredRolls,
             'approved_rolls'     => $approvedRolls,
             'waiting_rolls'      => $waitingRolls,
@@ -557,6 +570,26 @@ class CustomerTrackOrderModel
             'latest_delivered'   => $latestDelivered,
             'pallets'            => array_values($uniquePallets),
         ];
+
+        // Sort all coils (both produced & planning) by product (A-Z), then lot no (natural sort), then coil no, then roll no
+        usort($orderRolls, function ($a, $b) {
+            $cmpProduct = strnatcasecmp((string)($a['product'] ?? ''), (string)($b['product'] ?? ''));
+            if ($cmpProduct !== 0) {
+                return $cmpProduct;
+            }
+
+            $cmpLot = strnatcasecmp((string)($a['lot_no'] ?? ''), (string)($b['lot_no'] ?? ''));
+            if ($cmpLot !== 0) {
+                return $cmpLot;
+            }
+
+            $cmpCoil = strnatcasecmp((string)($a['coil_no'] ?? ''), (string)($b['coil_no'] ?? ''));
+            if ($cmpCoil !== 0) {
+                return $cmpCoil;
+            }
+
+            return strnatcasecmp((string)($a['roll_no'] ?? ''), (string)($b['roll_no'] ?? ''));
+        });
 
         return [
             'summary' => $singleOrder,

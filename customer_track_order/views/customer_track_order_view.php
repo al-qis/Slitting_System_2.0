@@ -274,6 +274,19 @@ $pathPrefix           = $pathPrefix ?? '../';
             background-color: #f1f5f9;
         }
 
+        .pallet-header-btn {
+            background-color: #ffffff;
+            transition: background-color 0.2s ease;
+            cursor: pointer;
+            user-select: none;
+        }
+        .pallet-header-btn:hover {
+            background-color: #f8fafc;
+        }
+        .pallet-header-btn:active {
+            background-color: #f1f5f9;
+        }
+
         /* Table Design */
         .table-custom th {
             background-color: #0f172a;
@@ -291,7 +304,7 @@ $pathPrefix           = $pathPrefix ?? '../';
 
         /* Print Media Stylesheet */
         @media print {
-            .month-collapse {
+            .month-collapse, .pallet-collapse {
                 display: block !important;
                 height: auto !important;
                 visibility: visible !important;
@@ -598,49 +611,157 @@ $pathPrefix           = $pathPrefix ?? '../';
                         </div>
                     </div>
                     <div class="col-6 col-md-3">
-                        <div class="p-3 rounded bg-light border text-center">
+                        <div class="p-3 rounded bg-light border text-center h-100 d-flex flex-column justify-content-center"
+                             <?php if (!empty($singleOrder['pallets'])): ?>
+                                 role="button"
+                                 style="cursor: pointer;"
+                                 onclick="togglePalletCollapse()"
+                                 title="Click to toggle pallets dropdown"
+                             <?php endif; ?>>
                             <small class="text-muted fw-bold text-uppercase d-block mb-1">Pallet Units</small>
                             <span class="fs-4 fw-bold text-primary"><?= count($singleOrder['pallets']) ?></span>
-                            <span class="text-muted small">Pallets Assigned</span>
+                            <span class="text-muted small">
+                                Pallets Assigned
+                                <?php if (!empty($singleOrder['pallets'])): ?>
+                                    <i class="bi bi-chevron-down ms-1 text-primary"></i>
+                                <?php endif; ?>
+                            </span>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- Pallet Summary Box (if pallets exist) -->
-            <?php if (!empty($singleOrder['pallets'])): ?>
-                <div class="card glass-card p-3 p-md-4 mb-4">
-                    <h5 class="fw-bold mb-3 d-flex align-items-center gap-2">
-                        <i class="bi bi-boxes text-primary"></i> Assigned Pallets & Dispatch Units
-                    </h5>
-                    <div class="row g-3">
-                        <?php foreach ($singleOrder['pallets'] as $plt): ?>
-                            <div class="col-12 col-md-6 col-lg-4">
-                                <div class="p-3 border rounded-3 bg-light h-100">
-                                    <div class="d-flex align-items-center justify-content-between mb-2">
-                                        <span class="fw-bold text-dark fs-6"><?= htmlspecialchars($plt['pallet_no']) ?></span>
-                                        <?php if ($plt['status'] === 'delivered'): ?>
-                                            <span class="badge bg-success">Delivered</span>
-                                        <?php elseif ($plt['status'] === 'approved'): ?>
-                                            <span class="badge bg-info text-dark">Approved</span>
-                                        <?php elseif ($plt['status'] === 'pending_qc'): ?>
-                                            <span class="badge bg-warning text-dark">QC Check</span>
-                                        <?php else: ?>
-                                            <span class="badge bg-secondary">Packing</span>
-                                        <?php endif; ?>
-                                    </div>
-                                    <div class="small text-muted">
-                                        <div><i class="bi bi-collection me-1"></i> Rolls Loaded: <strong><?= $plt['roll_count'] ?></strong></div>
-                                        <?php if ($plt['delivered_at']): ?>
-                                            <div><i class="bi bi-clock-history me-1"></i> Delivered: <?= date('d M Y, h:i A', strtotime($plt['delivered_at'])) ?></div>
-                                        <?php endif; ?>
-                                    </div>
+            <!-- Pallet Summary Box (Collapsible Dropdown) -->
+            <?php if (!empty($singleOrder['pallets'])): 
+                $totalPltCount = count($singleOrder['pallets']);
+                $delPltCount = 0;
+                $appPltCount = 0;
+                $packPltCount = 0;
+                $totalPltRolls = 0;
+                foreach ($singleOrder['pallets'] as $pCheck) {
+                    $totalPltRolls += (int)($pCheck['roll_count'] ?? 0);
+                    if (($pCheck['status'] ?? '') === 'delivered') {
+                        $delPltCount++;
+                    } elseif (($pCheck['status'] ?? '') === 'approved') {
+                        $appPltCount++;
+                    } else {
+                        $packPltCount++;
+                    }
+                }
+            ?>
+                <div class="card glass-card mb-4 overflow-hidden border">
+                    <div class="pallet-header-btn py-3 px-3 px-md-4 d-flex flex-wrap align-items-center justify-content-between gap-3"
+                         data-bs-toggle="collapse"
+                         data-bs-target="#assignedPalletsCollapse"
+                         aria-expanded="false"
+                         aria-controls="assignedPalletsCollapse">
+                        
+                        <div class="d-flex align-items-center gap-3">
+                            <div class="bg-primary-subtle text-primary p-2 rounded-3 d-flex align-items-center justify-content-center shadow-sm" style="width: 44px; height: 44px;">
+                                <i class="bi bi-boxes fs-4"></i>
+                            </div>
+                            <div>
+                                <div class="d-flex align-items-center gap-2 flex-wrap">
+                                    <h5 class="fw-bold mb-0 text-dark" style="letter-spacing: -0.3px;">
+                                        Assigned Pallets & Dispatch Units
+                                    </h5>
+                                    <span class="badge bg-primary text-white px-2 py-1" style="font-size: 11px;">
+                                        <?= $totalPltCount ?> Pallet<?= $totalPltCount > 1 ? 's' : '' ?>
+                                    </span>
+                                    <?php if ($delPltCount > 0): ?>
+                                        <span class="badge bg-success text-white px-2 py-1" style="font-size: 11px;">
+                                            <i class="bi bi-check-circle-fill me-1"></i><?= $delPltCount ?> Delivered
+                                        </span>
+                                    <?php endif; ?>
+                                    <?php if ($appPltCount > 0): ?>
+                                        <span class="badge bg-info text-dark px-2 py-1" style="font-size: 11px;">
+                                            <i class="bi bi-box-seam me-1"></i><?= $appPltCount ?> Ready
+                                        </span>
+                                    <?php endif; ?>
+                                </div>
+                                <div class="text-muted small mt-1">
+                                    Total <strong><?= $totalPltRolls ?></strong> rolls loaded across <?= $totalPltCount ?> pallet units &bull; <span class="text-primary fw-semibold">Click dropdown to view details</span>
                                 </div>
                             </div>
-                        <?php endforeach; ?>
+                        </div>
+
+                        <div class="d-flex align-items-center gap-2 no-print ms-auto">
+                            <button type="button" class="btn btn-sm btn-outline-primary fw-semibold px-3 py-1 pallet-toggle-btn" tabindex="-1">
+                                <span class="pallet-toggle-label">View Pallets</span>
+                                <i class="bi bi-chevron-down ms-1 pallet-toggle-icon"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Collapsible Pallet Grid (Dropdown) -->
+                    <div id="assignedPalletsCollapse" class="collapse pallet-collapse">
+                        <div class="card-body p-3 p-md-4 border-top bg-light-subtle">
+                            <div class="row g-3" id="palletCardsGrid">
+                                <?php foreach ($singleOrder['pallets'] as $plt): ?>
+                                    <div class="col-12 col-md-6 col-lg-4 pallet-card-item" data-pallet-no="<?= htmlspecialchars(strtolower($plt['pallet_no'])) ?>" id="pallet-item-<?= htmlspecialchars(preg_replace('/[^a-zA-Z0-9_\-]/', '_', $plt['pallet_no'])) ?>">
+                                        <div class="p-3 border rounded-3 bg-white h-100 shadow-sm">
+                                            <div class="d-flex align-items-center justify-content-between mb-2">
+                                                <span class="fw-bold text-dark fs-6"><?= htmlspecialchars($plt['pallet_no']) ?></span>
+                                                <?php if ($plt['status'] === 'delivered'): ?>
+                                                    <span class="badge bg-success">Delivered</span>
+                                                <?php elseif ($plt['status'] === 'approved'): ?>
+                                                    <span class="badge bg-info text-dark">Approved</span>
+                                                <?php elseif ($plt['status'] === 'pending_qc'): ?>
+                                                    <span class="badge bg-warning text-dark">QC Check</span>
+                                                <?php else: ?>
+                                                    <span class="badge bg-secondary">Packing</span>
+                                                <?php endif; ?>
+                                            </div>
+                                            <div class="small text-muted">
+                                                <div><i class="bi bi-collection me-1"></i> Rolls Loaded: <strong><?= $plt['roll_count'] ?></strong></div>
+                                                <?php if ($plt['delivered_at']): ?>
+                                                    <div><i class="bi bi-clock-history me-1"></i> Delivered: <?= date('d M Y, h:i A', strtotime($plt['delivered_at'])) ?></div>
+                                                <?php endif; ?>
+                                            </div>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
                     </div>
                 </div>
             <?php endif; ?>
+
+            <?php
+                // Pre-calculate status counts for filter buttons
+                $statusCounts = [
+                    'all'         => count($orderRolls),
+                    'delivered'   => 0,
+                    'approved'    => 0,
+                    'waiting'     => 0,
+                    'finish_good' => 0,
+                    'in_slitting' => 0,
+                    'planned'     => 0,
+                    'nod'         => 0,
+                ];
+                foreach ($orderRolls as $r) {
+                    if (!empty($r['nod_length']) && (float)$r['nod_length'] > 0) {
+                        $statusCounts['nod']++;
+                    }
+                    if (!empty($r['is_planned_only'])) {
+                        $statusCounts['planned']++;
+                    } else {
+                        $s = strtoupper($r['status'] ?? 'IN');
+                        $sc = (int)($r['stock_counted'] ?? 0);
+                        if ($s === 'DELIVERED') {
+                            $statusCounts['delivered']++;
+                        } elseif ($s === 'APPROVED') {
+                            $statusCounts['approved']++;
+                        } elseif ($s === 'WAITING') {
+                            $statusCounts['waiting']++;
+                        } elseif ($sc === 1) {
+                            $statusCounts['finish_good']++;
+                        } else {
+                            $statusCounts['in_slitting']++;
+                        }
+                    }
+                }
+            ?>
 
             <!-- Roll Breakdown Table -->
             <div class="card glass-card p-3 p-md-4 mb-4">
@@ -669,7 +790,67 @@ $pathPrefix           = $pathPrefix ?? '../';
                                 <i class="bi bi-scissors me-1"></i>Reslit: <strong><?= $singleOrder['reslit_cnt'] ?></strong>
                             </span>
                         <?php endif; ?>
+                        <?php 
+                            $nodTotalCoils = !empty($singleOrder['nod_cnt']) ? $singleOrder['nod_cnt'] : ($statusCounts['nod'] ?? 0);
+                            if ($nodTotalCoils > 0): 
+                        ?>
+                            <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle px-2 py-1" title="Total coils with Notice of Defect recorded">
+                                <i class="bi bi-exclamation-triangle me-1"></i>NOD: <strong><?= $nodTotalCoils ?></strong>
+                            </span>
+                        <?php endif; ?>
                         <span class="text-muted small fw-semibold">Total: <?= count($orderRolls) ?> Rolls (<?= $singleOrder['total_rolls'] ?> Produced<?= !empty($singleOrder['planning_rolls_cnt']) ? ' + ' . $singleOrder['planning_rolls_cnt'] . ' Planned' : '' ?>)</span>
+                    </div>
+                </div>
+
+                <!-- Status Filter Toolbar -->
+                <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 p-2 px-3 mb-3 bg-light bg-opacity-75 rounded-3 border">
+                    <div class="d-flex flex-wrap align-items-center gap-2">
+                        <span class="small fw-bold text-muted text-uppercase me-1 d-flex align-items-center gap-1">
+                            <i class="bi bi-funnel"></i> Status Filter:
+                        </span>
+                        <div class="d-flex flex-wrap align-items-center gap-1" id="rollStatusFilterGroup">
+                            <button type="button" class="btn btn-sm btn-dark roll-filter-btn active shadow-sm" data-filter="all" onclick="filterRollTable('all', this)">
+                                All <span class="badge bg-light text-dark ms-1"><?= count($orderRolls) ?></span>
+                            </button>
+                            <?php if ($statusCounts['delivered'] > 0): ?>
+                                <button type="button" class="btn btn-sm btn-outline-success roll-filter-btn" data-filter="delivered" onclick="filterRollTable('delivered', this)">
+                                    <i class="bi bi-check-circle me-1"></i>Delivered <span class="badge bg-success text-white ms-1"><?= $statusCounts['delivered'] ?></span>
+                                </button>
+                            <?php endif; ?>
+                            <?php if ($statusCounts['approved'] > 0): ?>
+                                <button type="button" class="btn btn-sm btn-outline-info text-dark roll-filter-btn" data-filter="approved" onclick="filterRollTable('approved', this)">
+                                    <i class="bi bi-patch-check me-1"></i>Approved <span class="badge bg-info text-dark ms-1"><?= $statusCounts['approved'] ?></span>
+                                </button>
+                            <?php endif; ?>
+                            <?php if ($statusCounts['waiting'] > 0): ?>
+                                <button type="button" class="btn btn-sm btn-outline-warning text-dark roll-filter-btn" data-filter="waiting" onclick="filterRollTable('waiting', this)">
+                                    <i class="bi bi-clock me-1"></i>Waiting QC <span class="badge bg-warning text-dark ms-1"><?= $statusCounts['waiting'] ?></span>
+                                </button>
+                            <?php endif; ?>
+                            <?php if ($statusCounts['finish_good'] > 0): ?>
+                                <button type="button" class="btn btn-sm btn-outline-primary roll-filter-btn" data-filter="finish_good" onclick="filterRollTable('finish_good', this)">
+                                    <i class="bi bi-check2-all me-1"></i>Finish Good <span class="badge bg-primary text-white ms-1"><?= $statusCounts['finish_good'] ?></span>
+                                </button>
+                            <?php endif; ?>
+                            <?php if ($statusCounts['in_slitting'] > 0): ?>
+                                <button type="button" class="btn btn-sm btn-outline-secondary roll-filter-btn" data-filter="in_slitting" onclick="filterRollTable('in_slitting', this)">
+                                    <i class="bi bi-gear me-1"></i>In Slitting <span class="badge bg-secondary text-white ms-1"><?= $statusCounts['in_slitting'] ?></span>
+                                </button>
+                            <?php endif; ?>
+                            <?php if ($statusCounts['planned'] > 0): ?>
+                                <button type="button" class="btn btn-sm roll-filter-btn btn-outline-purple" data-filter="planned" onclick="filterRollTable('planned', this)" style="border-color: #7c3aed; color: #7c3aed;">
+                                    <i class="bi bi-hourglass-split me-1"></i>Planned <span class="badge text-white ms-1" style="background-color: #7c3aed;"><?= $statusCounts['planned'] ?></span>
+                                </button>
+                            <?php endif; ?>
+                            <?php if ($statusCounts['nod'] > 0): ?>
+                                <button type="button" class="btn btn-sm btn-outline-warning text-dark roll-filter-btn" data-filter="nod" onclick="filterRollTable('nod', this)">
+                                    <i class="bi bi-exclamation-triangle me-1"></i>NOD <span class="badge bg-warning text-dark ms-1"><?= $statusCounts['nod'] ?></span>
+                                </button>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                    <div class="small text-muted fw-semibold" id="rollFilterSummaryText">
+                        Showing all <span class="text-dark fw-bold" id="rollVisibleCount"><?= count($orderRolls) ?></span> rolls
                     </div>
                 </div>
 
@@ -683,6 +864,7 @@ $pathPrefix           = $pathPrefix ?? '../';
                                 <th>Product Spec</th>
                                 <th>Width</th>
                                 <th>Length</th>
+                                <th>Nod</th>
                                 <th>Stage / Status</th>
                                 <th>Pallet No</th>
                                 <th>Delivery Date</th>
@@ -697,6 +879,20 @@ $pathPrefix           = $pathPrefix ?? '../';
                                 $isRec  = (($roll['source'] ?? '') === 'recoiling' || !empty($roll['recoiling_id']) || ($roll['cut_type'] ?? '') === 'cut_into_2');
                                 $isRes  = (($roll['source'] ?? '') === 'reslit' || !empty($roll['is_reslitted']));
 
+                                if ($isPlanOnly) {
+                                    $rowStatus = 'planned';
+                                } elseif ($st === 'DELIVERED') {
+                                    $rowStatus = 'delivered';
+                                } elseif ($st === 'APPROVED') {
+                                    $rowStatus = 'approved';
+                                } elseif ($st === 'WAITING') {
+                                    $rowStatus = 'waiting';
+                                } elseif ($sc === 1) {
+                                    $rowStatus = 'finish_good';
+                                } else {
+                                    $rowStatus = 'in_slitting';
+                                }
+
                                 $rowStyle = '';
                                 if ($isPlanOnly) {
                                     $rowStyle = 'border-left: 4px solid #7c3aed; background-color: rgba(124, 58, 237, 0.08);';
@@ -707,9 +903,10 @@ $pathPrefix           = $pathPrefix ?? '../';
                                 } elseif ($isRes) {
                                     $rowStyle = 'border-left: 4px solid #f59e0b; background-color: rgba(245, 158, 11, 0.06);';
                                 }
+                                 $hasNod = (!empty($roll['nod_length']) && (float)$roll['nod_length'] > 0);
                             ?>
-                                <tr style="<?= $rowStyle ?>">
-                                    <td class="text-muted"><?= $idx + 1 ?></td>
+                                <tr class="roll-row" data-roll-status="<?= $rowStatus ?>" data-has-nod="<?= $hasNod ? '1' : '0' ?>" style="<?= $rowStyle ?>">
+                                    <td class="text-muted roll-index-cell"><?= $idx + 1 ?></td>
                                     <td class="fw-bold text-dark">
                                         <?= $model->formatRollNo($roll['roll_no']) ?>
                                         <?php if ($isPlanOnly): ?>
@@ -759,6 +956,15 @@ $pathPrefix           = $pathPrefix ?? '../';
                                     <td><?= number_format((float)$roll['width'], 1) ?> mm</td>
                                     <td><?= number_format((float)($roll['actual_length'] ?: $roll['length']), 1) ?> m</td>
                                     <td>
+                                        <?php if (!empty($roll['nod_length']) && (float)$roll['nod_length'] > 0): ?>
+                                            <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle px-2 py-1 fw-semibold" title="Notice of Defect: <?= number_format((float)$roll['nod_length'], 1) ?> m">
+                                                <i class="bi bi-exclamation-triangle me-1"></i><?= number_format((float)$roll['nod_length'], 1) ?> m
+                                            </span>
+                                        <?php else: ?>
+                                            <span class="text-muted small">—</span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td>
                                         <?php if ($isPlanOnly): ?>
                                             <span class="badge text-white shadow-sm" style="background-color: #7c3aed;">
                                                 <i class="bi bi-hourglass-split me-1"></i> Planned (Pending Cut)
@@ -801,6 +1007,12 @@ $pathPrefix           = $pathPrefix ?? '../';
                                     </td>
                                 </tr>
                             <?php endforeach; ?>
+                            <tr id="noRollsMatchRow" style="display: none;">
+                                <td colspan="10" class="text-center py-4 text-muted">
+                                    <i class="bi bi-inbox fs-3 d-block mb-1 text-secondary"></i>
+                                    <span>No rolls found matching this status filter.</span>
+                                </td>
+                            </tr>
                         </tbody>
                     </table>
                 </div>
@@ -1208,7 +1420,153 @@ $pathPrefix           = $pathPrefix ?? '../';
                     }
                 });
             });
+
+            // Synchronize pallet collapse toggle button
+            const palletCollapseEl = document.getElementById('assignedPalletsCollapse');
+            if (palletCollapseEl) {
+                palletCollapseEl.addEventListener('show.bs.collapse', function() {
+                    const btn = document.querySelector('.pallet-toggle-btn');
+                    const label = document.querySelector('.pallet-toggle-label');
+                    const icon = document.querySelector('.pallet-toggle-icon');
+                    if (btn) {
+                        btn.classList.remove('btn-outline-primary');
+                        btn.classList.add('btn-primary', 'text-white');
+                    }
+                    if (label) label.textContent = 'Hide Pallets';
+                    if (icon) {
+                        icon.classList.remove('bi-chevron-down');
+                        icon.classList.add('bi-chevron-up');
+                    }
+                });
+                palletCollapseEl.addEventListener('hide.bs.collapse', function() {
+                    const btn = document.querySelector('.pallet-toggle-btn');
+                    const label = document.querySelector('.pallet-toggle-label');
+                    const icon = document.querySelector('.pallet-toggle-icon');
+                    if (btn) {
+                        btn.classList.remove('btn-primary', 'text-white');
+                        btn.classList.add('btn-outline-primary');
+                    }
+                    if (label) label.textContent = 'View Pallets';
+                    if (icon) {
+                        icon.classList.remove('bi-chevron-up');
+                        icon.classList.add('bi-chevron-down');
+                    }
+                });
+            }
         });
+
+        function togglePalletCollapse() {
+            const el = document.getElementById('assignedPalletsCollapse');
+            if (el) {
+                bootstrap.Collapse.getOrCreateInstance(el).toggle();
+                el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        }
+
+        function filterRollTable(status, clickedBtn) {
+            const filterButtons = document.querySelectorAll('.roll-filter-btn');
+            filterButtons.forEach(btn => {
+                const filter = btn.getAttribute('data-filter');
+                const isActive = (btn === clickedBtn);
+                btn.classList.toggle('active', isActive);
+                btn.classList.toggle('shadow-sm', isActive);
+
+                const badge = btn.querySelector('.badge');
+
+                if (filter === 'all') {
+                    btn.className = `btn btn-sm roll-filter-btn ${isActive ? 'btn-dark text-white active shadow-sm' : 'btn-outline-dark'}`;
+                    if (badge) {
+                        badge.className = `badge ms-1 ${isActive ? 'bg-light text-dark' : 'bg-dark text-white'}`;
+                    }
+                } else if (filter === 'delivered') {
+                    btn.className = `btn btn-sm roll-filter-btn ${isActive ? 'btn-success text-white active shadow-sm' : 'btn-outline-success'}`;
+                    if (badge) {
+                        badge.className = `badge ms-1 ${isActive ? 'bg-white text-success' : 'bg-success text-white'}`;
+                    }
+                } else if (filter === 'approved') {
+                    btn.className = `btn btn-sm roll-filter-btn ${isActive ? 'btn-info text-dark fw-semibold active shadow-sm' : 'btn-outline-info text-dark'}`;
+                    if (badge) {
+                        badge.className = `badge ms-1 ${isActive ? 'bg-white text-dark' : 'bg-info text-dark'}`;
+                    }
+                } else if (filter === 'waiting') {
+                    btn.className = `btn btn-sm roll-filter-btn ${isActive ? 'btn-warning text-dark fw-semibold active shadow-sm' : 'btn-outline-warning text-dark'}`;
+                    if (badge) {
+                        badge.className = `badge ms-1 ${isActive ? 'bg-white text-dark' : 'bg-warning text-dark'}`;
+                    }
+                } else if (filter === 'finish_good') {
+                    btn.className = `btn btn-sm roll-filter-btn ${isActive ? 'btn-primary text-white active shadow-sm' : 'btn-outline-primary'}`;
+                    if (badge) {
+                        badge.className = `badge ms-1 ${isActive ? 'bg-white text-primary' : 'bg-primary text-white'}`;
+                    }
+                } else if (filter === 'in_slitting') {
+                    btn.className = `btn btn-sm roll-filter-btn ${isActive ? 'btn-secondary text-white active shadow-sm' : 'btn-outline-secondary'}`;
+                    if (badge) {
+                        badge.className = `badge ms-1 ${isActive ? 'bg-white text-secondary' : 'bg-secondary text-white'}`;
+                    }
+                } else if (filter === 'planned') {
+                    btn.className = `btn btn-sm roll-filter-btn ${isActive ? 'active shadow-sm' : ''}`;
+                    if (isActive) {
+                        btn.style.backgroundColor = '#7c3aed';
+                        btn.style.borderColor = '#7c3aed';
+                        btn.style.color = '#ffffff';
+                        if (badge) {
+                            badge.style.backgroundColor = '#ffffff';
+                            badge.style.color = '#7c3aed';
+                        }
+                    } else {
+                        btn.style.backgroundColor = 'transparent';
+                        btn.style.borderColor = '#7c3aed';
+                        btn.style.color = '#7c3aed';
+                        if (badge) {
+                            badge.style.backgroundColor = '#7c3aed';
+                            badge.style.color = '#ffffff';
+                        }
+                    }
+                } else if (filter === 'nod') {
+                    btn.className = `btn btn-sm roll-filter-btn ${isActive ? 'btn-warning text-dark fw-semibold active shadow-sm' : 'btn-outline-warning text-dark'}`;
+                    if (badge) {
+                        badge.className = `badge ms-1 ${isActive ? 'bg-white text-dark' : 'bg-warning text-dark'}`;
+                    }
+                }
+            });
+
+            const rows = document.querySelectorAll('.roll-row');
+            let visibleCount = 0;
+            rows.forEach(row => {
+                const rowStatus = row.getAttribute('data-roll-status');
+                const hasNod = row.getAttribute('data-has-nod') === '1';
+                const isMatch = (status === 'all') || (status === 'nod' ? hasNod : rowStatus === status);
+
+                if (isMatch) {
+                    row.style.display = '';
+                    visibleCount++;
+                    const idxCell = row.querySelector('.roll-index-cell');
+                    if (idxCell) {
+                        idxCell.textContent = visibleCount;
+                    }
+                } else {
+                    row.style.display = 'none';
+                }
+            });
+
+            const countEl = document.getElementById('rollVisibleCount');
+            if (countEl) countEl.textContent = visibleCount;
+
+            const summaryText = document.getElementById('rollFilterSummaryText');
+            if (summaryText) {
+                if (status === 'all') {
+                    summaryText.innerHTML = `Showing all <span class="text-dark fw-bold">${visibleCount}</span> rolls`;
+                } else {
+                    const filterName = clickedBtn.innerText.replace(/[0-9]/g, '').trim();
+                    summaryText.innerHTML = `Showing <span class="text-dark fw-bold">${visibleCount}</span> of ${rows.length} rolls (${filterName})`;
+                }
+            }
+
+            const noMatchRow = document.getElementById('noRollsMatchRow');
+            if (noMatchRow) {
+                noMatchRow.style.display = (visibleCount === 0) ? '' : 'none';
+            }
+        }
     </script>
 </body>
 </html>
