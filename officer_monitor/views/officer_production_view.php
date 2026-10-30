@@ -212,11 +212,12 @@ include __DIR__ . '/../../header.php';
                                     <th class="text-end">Varian (m)</th>
                                     <th class="text-center">Pencapaian (%)</th>
                                     <th class="text-center">Recoiling</th>
+                                    <th class="text-center">Tukar Pisau</th>
                                 </tr>
                             </thead>
                             <tbody id="weeklySlotsTableBody">
                                 <tr>
-                                    <td colspan="7" class="text-center py-4 text-muted">
+                                    <td colspan="8" class="text-center py-4 text-muted">
                                         <div class="spinner-border spinner-border-sm me-2 text-primary"></div> Muat turun data slot mingguan...
                                     </td>
                                 </tr>
@@ -388,10 +389,15 @@ function initChart() {
                                 const rolls = parseInt(slot.recoil_rolls) || 0;
                                 const rewind = parseInt(slot.rewinding_count) || 0;
                                 const defect = parseInt(slot.cut_defect_count) || 0;
+                                const blade = parseInt(slot.blade_changes) || 0;
+                                const lines = [];
                                 if (rolls > 0) {
-                                    return ['Recoiling: ' + rolls + ' rolls (Rewinding: ' + rewind + ', Cut Defect: ' + defect + ')'];
+                                    lines.push('Recoiling: ' + rolls + ' rolls (Rewinding: ' + rewind + ', Cut Defect: ' + defect + ')');
+                                } else {
+                                    lines.push('Recoiling: 0 rolls');
                                 }
-                                return ['Recoiling: 0 rolls'];
+                                lines.push('Tukar Pisau: ' + blade + ' kali');
+                                return lines;
                             }
                         }
                     }
@@ -468,10 +474,15 @@ function initChart() {
                                 const rolls = parseInt(slot.recoil_rolls) || 0;
                                 const rewind = parseInt(slot.rewinding_count) || 0;
                                 const defect = parseInt(slot.cut_defect_count) || 0;
+                                const blade = parseInt(slot.blade_changes) || 0;
+                                const lines = [];
                                 if (rolls > 0) {
-                                    return ['Recoiling: ' + rolls + ' rolls (Rewinding: ' + rewind + ', Cut Defect: ' + defect + ')'];
+                                    lines.push('Recoiling: ' + rolls + ' rolls (Rewinding: ' + rewind + ', Cut Defect: ' + defect + ')');
+                                } else {
+                                    lines.push('Recoiling: 0 rolls');
                                 }
-                                return ['Recoiling: 0 rolls'];
+                                lines.push('Tukar Pisau: ' + blade + ' kali');
+                                return lines;
                             }
                         }
                     }
@@ -542,8 +553,10 @@ function loadOfficerData() {
                     const endD   = new Date(perf.sunday_cycle_end.replace(/-/g, '/'));
                     const sStr   = ('0' + startD.getDate()).slice(-2) + '/' + ('0' + (startD.getMonth() + 1)).slice(-2);
                     const eStr   = ('0' + endD.getDate()).slice(-2) + '/' + ('0' + (endD.getMonth() + 1)).slice(-2);
+                    const currentBladeTotal = parseInt(perf.weekly_blade_changes_total) || 0;
+                    const bladeSummary = currentBladeTotal > 0 ? ` | ${currentBladeTotal} kali tukar pisau` : '';
                     const rangeEl = document.getElementById('currentWeekRangeBadge');
-                    if (rangeEl) rangeEl.innerText = `${sStr} - ${eStr} (Minggu Ini)`;
+                    if (rangeEl) rangeEl.innerText = `${sStr} - ${eStr} (Minggu Ini${bladeSummary})`;
                 }
 
                 renderSlotsTable(perf.slots);
@@ -560,10 +573,12 @@ function loadOfficerData() {
                     const eStr   = ('0' + endD.getDate()).slice(-2) + '/' + ('0' + (endD.getMonth() + 1)).slice(-2);
                     const lastTotal = Math.round(lastWeekPerf.weekly_produced_total || 0).toLocaleString();
                     const lastRecoilRolls = parseInt(lastWeekPerf.weekly_recoil_rolls_total) || 0;
+                    const lastBladeTotal = parseInt(lastWeekPerf.weekly_blade_changes_total) || 0;
                     const rangeEl = document.getElementById('lastWeekRangeBadge');
                     if (rangeEl) {
                         const recoilSummary = lastRecoilRolls > 0 ? ` | ${lastRecoilRolls} rolls recoiling` : '';
-                        rangeEl.innerText = `${sStr} - ${eStr} (${lastTotal} m${recoilSummary})`;
+                        const bladeSummary = lastBladeTotal > 0 ? `, ${lastBladeTotal} tukar pisau` : '';
+                        rangeEl.innerText = `${sStr} - ${eStr} (${lastTotal} m${recoilSummary}${bladeSummary})`;
                     }
                 }
                 updateLastWeekChart(lastWeekPerf.slots);
@@ -580,7 +595,7 @@ function renderSlotsTable(slots) {
     if (!tbody || !slots) return;
 
     if (slots.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="text-center py-4 text-muted">Tiada data rekod slot mingguan.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" class="text-center py-4 text-muted">Tiada data rekod slot mingguan.</td></tr>';
         return;
     }
 
@@ -613,6 +628,18 @@ function renderSlotsTable(slots) {
             recoilBadge = `<span class="badge bg-warning text-dark fw-bold px-2 py-1 fs-7" title="${breakdownTooltip}" data-bs-toggle="tooltip"><i class="bi bi-arrow-repeat me-1"></i>${recoilRolls} roll${coilSub}</span>`;
         }
 
+        const bladeChanges = parseInt(slot.blade_changes) || 0;
+        const detailsList = slot.blade_change_details || [];
+        let bladeDetails = detailsList.join('\n');
+        if (!bladeDetails) {
+            bladeDetails = bladeChanges > 0 ? `${bladeChanges} kali pertukaran bilah/pelan` : 'Tiada pertukaran bilah';
+        }
+
+        let bladeBadge = `<span class="text-muted small">0</span>`;
+        if (bladeChanges > 0) {
+            bladeBadge = `<span class="badge bg-danger bg-opacity-10 text-danger border border-danger border-opacity-25 fw-bold px-2 py-1 fs-7" title="${bladeDetails.replace(/"/g, '&quot;')}" data-bs-toggle="tooltip"><i class="bi bi-scissors me-1"></i>${bladeChanges} kali</span>`;
+        }
+
         html += `
             <tr class="${trClass}">
                 <td class="fw-bold text-dark">
@@ -632,11 +659,20 @@ function renderSlotsTable(slots) {
                 <td class="text-center">
                     ${recoilBadge}
                 </td>
+                <td class="text-center">
+                    ${bladeBadge}
+                </td>
             </tr>
         `;
     });
 
     tbody.innerHTML = html;
+
+    // Initialize Bootstrap tooltips on rendered badges
+    const tooltips = [].slice.call(tbody.querySelectorAll('[data-bs-toggle="tooltip"]'));
+    tooltips.forEach(function (el) {
+        new bootstrap.Tooltip(el);
+    });
 }
 
 // Update Current Week Chart

@@ -113,6 +113,10 @@ class OfficerProductionModel
         $weeklyRecoilRollsTotal = 0;
         $weeklyRewindingTotal = 0;
         $weeklyCutDefectTotal = 0;
+        $weeklyBladeChangesTotal = 0;
+
+        // Compute blade changes across the 7-day cycle
+        $bladeSlots = $this->computeBladeChangesForCycle($mondayTimestamp);
 
         for ($i = 0; $i < 7; $i++) {
             $slotStartTs = strtotime("+{$i} days", $mondayTimestamp);
@@ -192,6 +196,12 @@ class OfficerProductionModel
             $weeklyProducedTotal += $produced;
             $weeklyTargetTotal   += $slotTarget;
 
+            $bladeData = $bladeSlots[$i] ?? ['blade_changes' => 0, 'details' => [], 'coils_count' => 0];
+            $bladeChanges = (int)($bladeData['blade_changes'] ?? 0);
+            $bladeDetails = $bladeData['details'] ?? [];
+            $coilsCount   = (int)($bladeData['coils_count'] ?? 0);
+            $weeklyBladeChangesTotal += $bladeChanges;
+
             $variance = $produced - $slotTarget;
             $percentage = ($slotTarget > 0) ? min(100.0, round(($produced / $slotTarget) * 100, 1)) : 0.0;
             $isToday = (date('Y-m-d', $now) === date('Y-m-d', $slotStartTs));
@@ -216,6 +226,9 @@ class OfficerProductionModel
                 'recoil_rolls'              => $recoilRolls,
                 'rewinding_count'           => $rewindingCount,
                 'cut_defect_count'          => $cutDefectCount,
+                'blade_changes'             => $bladeChanges,
+                'blade_change_details'      => $bladeDetails,
+                'coils_count'               => $coilsCount,
                 'is_today'                  => $isToday
             ];
         }
@@ -228,18 +241,19 @@ class OfficerProductionModel
         $overallPct = ($weeklyTargetTotal > 0) ? min(100.0, round(($weeklyProducedTotal / $weeklyTargetTotal) * 100, 1)) : 0.0;
 
         return [
-            'monday_cycle_start'        => date('Y-m-d H:i:s', $mondayTimestamp),
-            'sunday_cycle_end'          => date('Y-m-d H:i:s', strtotime("+7 days -1 second", $mondayTimestamp)),
-            'shift_target_meters'       => $shiftTarget,
-            'daily_target_meters'       => $activeDailyTarget,
-            'weekly_target_meters'      => $weeklyTargetTotal,
-            'weekly_produced_total'     => $weeklyProducedTotal,
-            'weekly_recoil_coils_total' => $weeklyRecoilCoilsTotal,
-            'weekly_recoil_rolls_total' => $weeklyRecoilRollsTotal,
-            'weekly_rewinding_total'    => $weeklyRewindingTotal,
-            'weekly_cut_defect_total'   => $weeklyCutDefectTotal,
-            'weekly_overall_pct'        => $overallPct,
-            'slots'                     => $slots
+            'monday_cycle_start'         => date('Y-m-d H:i:s', $mondayTimestamp),
+            'sunday_cycle_end'           => date('Y-m-d H:i:s', strtotime("+7 days -1 second", $mondayTimestamp)),
+            'shift_target_meters'        => $shiftTarget,
+            'daily_target_meters'        => $activeDailyTarget,
+            'weekly_target_meters'       => $weeklyTargetTotal,
+            'weekly_produced_total'      => $weeklyProducedTotal,
+            'weekly_recoil_coils_total'  => $weeklyRecoilCoilsTotal,
+            'weekly_recoil_rolls_total'  => $weeklyRecoilRollsTotal,
+            'weekly_rewinding_total'     => $weeklyRewindingTotal,
+            'weekly_cut_defect_total'    => $weeklyCutDefectTotal,
+            'weekly_blade_changes_total' => $weeklyBladeChangesTotal,
+            'weekly_overall_pct'         => $overallPct,
+            'slots'                      => $slots
         ];
     }
 
@@ -308,5 +322,219 @@ class OfficerProductionModel
         }
 
         return $nowStr;
+    }
+
+    /**
+     * Compute blade changes per daily slot across a 7-day cycle starting at $mondayTimestamp
+     *
+     * A blade change occurs when the plan width configuration of a mother coil differs
+     * from the immediately preceding coil in chronological slitting sequence.
+     * Example:
+     *   Coil A: 56, 56, 56, 56, 56, 56, 56, 56
+     *   Coil B: 415, 415 -> Plan changed (+1 Blade Change)
+     *   Coil C: 415, 415 -> Same plan (0 Blade Change)
+     *
+     * @param int $mondayTimestamp
+     * @return array Map of slot index (0..6) => ['blade_changes' => int, 'details' => array, 'coils_count' => int]
+     */
+    public function computeBladeChangesForCycle(int $mondayTimestamp): array
+    {
+        $conn = $this->conn;
+        $cycleStartStr = date('Y-m-d H:i:s', $mondayTimestamp);
+        $cycleEndStr   = date('Y-m-d H:i:s', strtotime("+7 days -1 second", $mondayTimestamp));
+
+        $slotResults = [];
+        for ($s = 0; $s < 7; $s++) {
+            $slotResults[$s] = [
+                'blade_changes' => 0,
+                'details'       => [],
+                'coils_count'   => 0
+            ];
+        }
+
+        // 1. Fetch all mother coils produced in the 7-day cycle in chronological order
+        $sqlCoils = "
+            SELECT 
+                mc.id, 
+                mc.coil_no, 
+                COALESCE(mc.date_out, MIN(sp.date_in)) AS slit_time
+            FROM mother_coil mc
+            JOIN slitting_product sp ON sp.mother_id = mc.id
+            WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
+              AND (sp.source IS NULL OR sp.source NOT IN ('recoiling', 'reslit'))
+              AND (sp.original_source IS NULL OR sp.original_source NOT IN ('recoiling', 'reslit'))
+              AND (sp.is_recoiled = 0 OR sp.is_recoiled IS NULL)
+              AND (sp.is_reslitted = 0 OR sp.is_reslitted IS NULL)
+              AND sp.recoiling_id IS NULL
+              AND sp.parent_slit_id IS NULL
+              AND (sp.is_completed = 1 OR (sp.actual_length IS NOT NULL AND sp.actual_length > 0))
+            GROUP BY mc.id, mc.coil_no
+            HAVING slit_time >= ? AND slit_time <= ?
+            ORDER BY slit_time ASC, mc.id ASC
+        ";
+
+        $coils = [];
+        $coilIds = [];
+        $stmtCoils = $conn->prepare($sqlCoils);
+        if ($stmtCoils) {
+            $stmtCoils->bind_param("ss", $cycleStartStr, $cycleEndStr);
+            $stmtCoils->execute();
+            $res = $stmtCoils->get_result();
+            while ($row = $res->fetch_assoc()) {
+                $coils[] = $row;
+                $coilIds[] = (int)$row['id'];
+            }
+            $stmtCoils->close();
+        }
+
+        if (empty($coils)) {
+            return $slotResults;
+        }
+
+        // 2. Fetch slitting plans for these mother coils
+        $idList = implode(',', $coilIds);
+        $plansMap = []; // [mother_id => [width1, width2, ...]]
+
+        $sqlPlans = "
+            SELECT mother_coil_id, planned_width
+            FROM slitting_plans
+            WHERE mother_coil_id IN ($idList)
+              AND (stock_id IS NULL OR stock_id = 0)
+            ORDER BY mother_coil_id ASC, sort_order ASC, id ASC
+        ";
+        $resPlans = $conn->query($sqlPlans);
+        if ($resPlans) {
+            while ($r = $resPlans->fetch_assoc()) {
+                $mId = (int)$r['mother_coil_id'];
+                $plansMap[$mId][] = (float)$r['planned_width'];
+            }
+        }
+
+        // 3. Fallback: if any coil has no planned_width in slitting_plans, get actual width from slitting_product
+        $missingIds = [];
+        foreach ($coilIds as $cid) {
+            if (empty($plansMap[$cid])) {
+                $missingIds[] = $cid;
+            }
+        }
+        if (!empty($missingIds)) {
+            $missingList = implode(',', $missingIds);
+            $sqlProd = "
+                SELECT mother_id, width
+                FROM slitting_product
+                WHERE mother_id IN ($missingList)
+                  AND (is_voided = 0 OR is_voided IS NULL)
+                  AND (source IS NULL OR source NOT IN ('recoiling', 'reslit'))
+                  AND (original_source IS NULL OR original_source NOT IN ('recoiling', 'reslit'))
+                  AND (is_recoiled = 0 OR is_recoiled IS NULL)
+                  AND (is_reslitted = 0 OR is_reslitted IS NULL)
+                  AND recoiling_id IS NULL
+                  AND parent_slit_id IS NULL
+                ORDER BY mother_id ASC, id ASC
+            ";
+            $resProd = $conn->query($sqlProd);
+            if ($resProd) {
+                while ($rp = $resProd->fetch_assoc()) {
+                    $mId = (int)$rp['mother_id'];
+                    $plansMap[$mId][] = (float)$rp['width'];
+                }
+            }
+        }
+
+        // 4. Build signatures: e.g. "56, 56, 56, 56, 56, 56, 56, 56" or "415, 415"
+        $signatures = [];
+        foreach ($coilIds as $cid) {
+            $widths = $plansMap[$cid] ?? [];
+            if (!empty($widths)) {
+                $formatted = array_map(function($w) {
+                    return rtrim(rtrim(number_format((float)$w, 2, '.', ''), '0'), '.');
+                }, $widths);
+                $signatures[$cid] = implode(', ', $formatted);
+            } else {
+                $signatures[$cid] = '';
+            }
+        }
+
+        // 5. Lookback: check last coil slit prior to cycle start (within 48 hours)
+        $priorLookback = date('Y-m-d H:i:s', strtotime('-48 hours', $mondayTimestamp));
+        $prevSignature = null;
+        $prevCoilNo = '';
+
+        $sqlPrior = "
+            SELECT 
+                mc.id, 
+                mc.coil_no, 
+                COALESCE(mc.date_out, MIN(sp.date_in)) AS slit_time
+            FROM mother_coil mc
+            JOIN slitting_product sp ON sp.mother_id = mc.id
+            WHERE (sp.is_voided = 0 OR sp.is_voided IS NULL)
+              AND (sp.source IS NULL OR sp.source NOT IN ('recoiling', 'reslit'))
+              AND (sp.original_source IS NULL OR sp.original_source NOT IN ('recoiling', 'reslit'))
+              AND (sp.is_recoiled = 0 OR sp.is_recoiled IS NULL)
+              AND (sp.is_reslitted = 0 OR sp.is_reslitted IS NULL)
+              AND sp.recoiling_id IS NULL
+              AND sp.parent_slit_id IS NULL
+              AND (sp.is_completed = 1 OR (sp.actual_length IS NOT NULL AND sp.actual_length > 0))
+            GROUP BY mc.id, mc.coil_no
+            HAVING slit_time < ? AND slit_time >= ?
+            ORDER BY slit_time DESC
+            LIMIT 1
+        ";
+        $stmtPrior = $conn->prepare($sqlPrior);
+        if ($stmtPrior) {
+            $stmtPrior->bind_param("ss", $cycleStartStr, $priorLookback);
+            $stmtPrior->execute();
+            $resPrior = $stmtPrior->get_result();
+            if ($rowPrior = $resPrior->fetch_assoc()) {
+                $pId = (int)$rowPrior['id'];
+                $prevCoilNo = $rowPrior['coil_no'];
+                $pW = [];
+                $qP = $conn->query("SELECT planned_width FROM slitting_plans WHERE mother_coil_id = {$pId} AND (stock_id IS NULL OR stock_id = 0) ORDER BY sort_order ASC, id ASC");
+                if ($qP) {
+                    while ($pRow = $qP->fetch_assoc()) $pW[] = (float)$pRow['planned_width'];
+                }
+                if (empty($pW)) {
+                    $qProd = $conn->query("SELECT width FROM slitting_product WHERE mother_id = {$pId} AND (is_voided = 0 OR is_voided IS NULL) ORDER BY id ASC");
+                    if ($qProd) {
+                        while ($pRow = $qProd->fetch_assoc()) $pW[] = (float)$pRow['width'];
+                    }
+                }
+                if (!empty($pW)) {
+                    $pFormatted = array_map(function($w) {
+                        return rtrim(rtrim(number_format((float)$w, 2, '.', ''), '0'), '.');
+                    }, $pW);
+                    $prevSignature = implode(', ', $pFormatted);
+                }
+            }
+            $stmtPrior->close();
+        }
+
+        // 6. Iterate through coils in chronological order and assign blade changes to daily slots
+        foreach ($coils as $mc) {
+            $mId = (int)$mc['id'];
+            $cNo = $mc['coil_no'];
+            $timeStr = $mc['slit_time'];
+            $ts = strtotime($timeStr);
+
+            $dayOffset = (int)floor(($ts - $mondayTimestamp) / 86400);
+            if ($dayOffset < 0) $dayOffset = 0;
+            if ($dayOffset > 6) $dayOffset = 6;
+
+            $slotResults[$dayOffset]['coils_count']++;
+
+            $currentSig = $signatures[$mId] ?? '';
+            if ($currentSig !== '') {
+                if ($prevSignature !== null && $prevSignature !== '') {
+                    if ($currentSig !== $prevSignature) {
+                        $slotResults[$dayOffset]['blade_changes']++;
+                        $slotResults[$dayOffset]['details'][] = "Coil {$cNo} [{$currentSig}] tukar bilah dari {$prevCoilNo} [{$prevSignature}]";
+                    }
+                }
+                $prevSignature = $currentSig;
+                $prevCoilNo = $cNo;
+            }
+        }
+
+        return $slotResults;
     }
 }
