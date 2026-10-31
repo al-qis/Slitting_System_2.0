@@ -695,12 +695,6 @@ class PalletManager
             $currentCount = (int)$stmt->get_result()->fetch_assoc()['cnt'];
             $stmt->close();
 
-            if ($currentCount >= self::MAX_ROLLS) {
-                throw new RuntimeException(
-                    "Pallet {$pallet['pallet_no']} is full ({$currentCount}/" . self::MAX_ROLLS . " rolls)."
-                );
-            }
-
             $product = $this->fetchProduct($productId);
             if (!$product) {
                 throw new RuntimeException("Product #{$productId} not found.");
@@ -709,6 +703,78 @@ class PalletManager
             $guard = $this->guardProductForPallet($product, $palletId);
             if (!$guard['ok']) {
                 throw new RuntimeException($guard['msg']);
+            }
+
+            $isReplacement = !empty($guard['is_replacement']);
+
+            if (!$isReplacement && $currentCount >= self::MAX_ROLLS) {
+                throw new RuntimeException(
+                    "Pallet {$pallet['pallet_no']} is full ({$currentCount}/" . self::MAX_ROLLS . " rolls)."
+                );
+            }
+
+            if ($isReplacement) {
+                // If the replacement roll is missing customer_name or ref_no, inherit them from pallet
+                if (empty($product['customer_name']) || empty($product['ref_no'])) {
+                    $newCust = !empty($product['customer_name']) ? $product['customer_name'] : $pallet['customer_name'];
+                    $newRef  = !empty($product['ref_no']) ? $product['ref_no'] : $pallet['ref_no'];
+                    $updProd = $this->conn->prepare("
+                        UPDATE slitting_product
+                        SET customer_name = ?, ref_no = ?
+                        WHERE id = ?
+                    ");
+                    $updProd->bind_param("ssi", $newCust, $newRef, $productId);
+                    $updProd->execute();
+                    $updProd->close();
+                    $product['customer_name'] = $newCust;
+                    $product['ref_no']        = $newRef;
+                }
+
+                $rawLen = (!empty($product['actual_length']) && $product['actual_length'] > 0)
+                    ? (float)$product['actual_length'] : (float)$product['length'];
+                $nodLen = !empty($product['nod_length']) ? (float)$product['nod_length'] : 0.0;
+                $lenForCode = max(0.0, $rawLen - $nodLen);
+                $stockCode = self::formatStockCode($product['coil_no'], $product['width'], $lenForCode);
+
+                $voidProductId = (int)$guard['void_matched_id'];
+                $updItem = $this->conn->prepare("
+                    UPDATE pallet_items
+                    SET slitting_product_id = ?, stock_code = ?
+                    WHERE pallet_id = ? AND slitting_product_id = ?
+                ");
+                $updItem->bind_param("isii", $productId, $stockCode, $palletId, $voidProductId);
+                $updItem->execute();
+                $updItem->close();
+
+                $seqStmt = $this->conn->prepare("SELECT seq FROM pallet_items WHERE pallet_id = ? AND slitting_product_id = ? LIMIT 1");
+                $seqStmt->bind_param("ii", $palletId, $productId);
+                $seqStmt->execute();
+                $seq = (int)($seqStmt->get_result()->fetch_assoc()['seq'] ?? 1);
+                $seqStmt->close();
+
+                $updP = $this->conn->prepare("UPDATE pallets SET updated_at = NOW() WHERE id = ?");
+                $updP->bind_param("i", $palletId);
+                $updP->execute();
+                $updP->close();
+
+                $this->writeEditLog(
+                    $palletId, $pallet['pallet_no'], 'auto_recoil_swap', $productId,
+                    $this->makeProductRef($product),
+                    "Auto-replaced voided roll #{$voidProductId} with active roll #{$productId} in slot {$seq}."
+                );
+
+                $this->conn->commit();
+                return [
+                    'ok'            => true,
+                    'msg'           => "Auto-replaced voided roll with active roll #{$productId} at position {$seq}.",
+                    'seq'           => $seq,
+                    'roll_count'    => $currentCount,
+                    'customer_name' => $pallet['customer_name'],
+                    'ref_no'        => $pallet['ref_no'],
+                    'product_type'  => $pallet['product_type'],
+                    'width'         => $pallet['width'],
+                    'swapped'       => true,
+                ];
             }
 
             // ── First roll: seed constraints ─────────────────
@@ -1820,13 +1886,13 @@ class PalletManager
                 'msg' => "Roll #{$product['id']}: actual length not saved yet. Click Update first.",
             ];
         }
-        if (!($product['customer_name'] ?? '')) {
+        if (!($product['customer_name'] ?? '') && $palletId <= 0) {
             return [
                 'ok'  => false,
                 'msg' => "Roll #{$product['id']} has no Customer assigned.",
             ];
         }
-        if (!($product['ref_no'] ?? '')) {
+        if (!($product['ref_no'] ?? '') && $palletId <= 0) {
             return [
                 'ok'  => false,
                 'msg' => "Roll #{$product['id']} has no Ref No assigned.",
@@ -1888,9 +1954,17 @@ class PalletManager
             $displayRoll = $r_dash_1;
             if ($palletId > 0 && (int)$existing['pallet_id'] === $palletId) {
                 $isVoid = (strpos($existing['matched_roll'], '_void_') !== false || strpos($existing['matched_roll'], '_OLD_') !== false);
+                if ($isVoid) {
+                    return [
+                        'ok'              => true,
+                        'is_replacement'  => true,
+                        'void_matched_id' => (int)$existing['matched_id'],
+                        'display_roll'    => $displayRoll,
+                    ];
+                }
                 return [
                     'ok'  => false,
-                    'msg' => "Roll {$lotNo} {$coilNo} {$displayRoll} is already on this pallet" . ($isVoid ? " (as a voided roll). Please remove the voided roll first." : "."),
+                    'msg' => "Roll {$lotNo} {$coilNo} {$displayRoll} is already on this pallet.",
                 ];
             }
             return [

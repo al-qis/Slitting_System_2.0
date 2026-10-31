@@ -500,6 +500,17 @@ function applySlittingPlanToForm() {
     fillWidthsFromPlan();
 }
 
+let isSubmitting = false;
+
+function lockSubmitButton() {
+    isSubmitting = true;
+    const submitBtn = document.getElementById('submitBtn');
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Saving Production Data...';
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function () {
     // If a slitting plan is present, inform the operator with a banner
     if (typeof slittingPlan !== 'undefined' && slittingPlan && slittingPlan.length > 0) {
@@ -909,23 +920,40 @@ function handleSfcChoice(choice) {
         }
 
         isBypassingSfcWarning = true;
+        lockSubmitButton();
         const mainForm = document.querySelector('form');
         if (mainForm) mainForm.submit();
     }
 }
 
+
+
 document.addEventListener('DOMContentLoaded', function () {
     const mainForm = document.querySelector('form');
     if (mainForm) {
         mainForm.addEventListener('submit', function (e) {
-            checkAndShowSfcModal(e);
+            if (isSubmitting) {
+                e.preventDefault();
+                return false;
+            }
+            if (!checkAndShowSfcModal(e)) {
+                return false;
+            }
+            lockSubmitButton();
         });
     }
 
     const submitBtn = document.getElementById('submitBtn');
     if (submitBtn) {
         submitBtn.addEventListener('click', function (e) {
-            checkAndShowSfcModal(e);
+            if (isSubmitting) {
+                e.preventDefault();
+                return false;
+            }
+            if (!checkAndShowSfcModal(e)) {
+                return false;
+            }
+            lockSubmitButton();
         });
     }
 });

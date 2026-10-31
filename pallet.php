@@ -3810,16 +3810,14 @@ async function lookupAndAdd(lot, coil, roll, width = '', id = '') {
             return;
         }
 
-        // ── Already on THIS pallet → duplicate scan of a roll we
-        //    just added. Silently ignore so a camera double-decode
-        //    cannot trigger a server "already on pallet" error or
-        //    jam the UI. It's already shown in a slot.
-        //    If it's on this pallet as a voided roll, inform the operator. ───────────
+        // ── Already on THIS pallet ─────────────────────────────
+        //    If it's an identical scan of a roll just added, silently ignore.
+        //    If it matches a voided roll in this pallet, proceed so server auto-swaps it!
         if (p.pallet_id && p.pallet_id == PALLET_ID) {
-            if (p.matched_roll_on_pallet && (p.matched_roll_on_pallet.includes('_void_') || p.matched_roll_on_pallet.includes('_OLD_'))) {
-                showFeedback(`Roll is already on this pallet as voided roll (${escHtml(p.matched_roll_on_pallet)}). Please remove the voided roll first.`, false);
+            const isVoidOnPallet = p.matched_roll_on_pallet && (p.matched_roll_on_pallet.includes('_void_') || p.matched_roll_on_pallet.includes('_OLD_'));
+            if (!isVoidOnPallet) {
+                return;
             }
-            return;
         }
 
         // ── Belt-and-suspenders: if a slot already shows this
@@ -3858,10 +3856,17 @@ async function lookupAndAdd(lot, coil, roll, width = '', id = '') {
         const manCombinedEl = document.getElementById('manCombined');
         if (manCombinedEl) manCombinedEl.value = '';
 
-        showFeedback(
-            `✓ Added: ${escHtml(lot)} ${escHtml(coil)} – R-${escHtml(roll)} (slot ${ad.seq})`,
-            true
-        );
+        if (ad.swapped) {
+            showFeedback(
+                `✓ Auto-replaced voided roll with active roll in slot ${ad.seq}`,
+                true
+            );
+        } else {
+            showFeedback(
+                `✓ Added: ${escHtml(lot)} ${escHtml(coil)} – R-${escHtml(roll)} (slot ${ad.seq})`,
+                true
+            );
+        }
 
         // First roll seeds the pallet constraints. Update the badges
         // live instead of reloading the page — the old reload created
