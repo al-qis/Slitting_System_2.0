@@ -245,6 +245,32 @@ try {
         $fallback_cut_letter = 'a';
     }
 
+    // ── Upfront Validation: Block any duplicate rolls (same lot_no, coil_no, roll_no, width) ──
+    $chk_dup = $conn->prepare("
+        SELECT id FROM slitting_product
+        WHERE lot_no = ? AND coil_no = ? AND roll_no = ?
+          AND ABS(width - ?) < 0.5
+          AND (is_voided = 0 OR is_voided IS NULL)
+        LIMIT 1
+    ");
+    foreach ($roll_nos as $i => $r_no) {
+        $r_width = floatval($widths[$i] ?? 0);
+        $r_let   = trim($cut_letters[$i] ?? '');
+        if ($r_let === '' && $fallback_cut_letter !== '') {
+            $r_let = $fallback_cut_letter;
+        }
+        $r_lot   = formatRollLotNo($lot_no, $r_let);
+
+        $chk_dup->bind_param("sssd", $r_lot, $coil_no, $r_no, $r_width);
+        $chk_dup->execute();
+        $dup_row = $chk_dup->get_result()->fetch_assoc();
+        if ($dup_row) {
+            $chk_dup->close();
+            throw new Exception("Roll {$r_no} (Lot: {$r_lot}, Coil: {$coil_no}, Width: {$r_width}mm) already exists in the system (Roll ID #{$dup_row['id']}). Duplicate slitting is blocked.");
+        }
+    }
+    $chk_dup->close();
+
     // ── Process each roll ───────────────────────────────────────
     foreach ($roll_nos as $index => $roll_no) {
         $length       = floatval($lengths[$index]  ?? 0);
@@ -495,7 +521,12 @@ try {
 
 } catch (Exception $e) {
     $conn->rollback();
-    die("Error: " . $e->getMessage());
+    die("<div style='color:#721c24; font-family:sans-serif; padding:25px; border:1px solid #f5c6cb; background:#f8d7da; border-radius:8px; max-width:650px; margin:40px auto; box-shadow:0 4px 12px rgba(0,0,0,0.1);'>
+            <h3 style='margin-top:0;'>⚠️ Duplicate Slitting Blocked</h3>
+            <p style='font-size:15px; line-height:1.5;'><strong>" . htmlspecialchars($e->getMessage()) . "</strong></p>
+            <p style='color:#555;'>Roll ini sudah wujud di dalam sistem. Sila semak semula roll number atau tambah suffix huruf pada Lot No bagi mengelakkan pertindihan data.</p>
+            <button onclick='history.back()' style='padding:10px 20px; background:#dc3545; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:14px; font-weight:bold;'>← Go Back and Correct</button>
+         </div>");
 }
 
 $conn->close();

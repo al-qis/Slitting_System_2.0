@@ -160,6 +160,12 @@ try {
         $stmt_void_parent->bind_param("i", $parent_slit_id);
         $stmt_void_parent->execute();
         $stmt_void_parent->close();
+
+        // Clean up from pallet_items if parent was attached to any pallet
+        $stmt_del_pallet = $conn->prepare("DELETE FROM pallet_items WHERE slitting_product_id = ?");
+        $stmt_del_pallet->bind_param("i", $parent_slit_id);
+        $stmt_del_pallet->execute();
+        $stmt_del_pallet->close();
     }
 
     // ── Validation: check for duplicate active (non-voided) lot+coil+roll ─────────
