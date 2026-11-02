@@ -970,21 +970,9 @@ document.addEventListener('DOMContentLoaded', function () {
             if (!checkAndShowSfcModal(e)) {
                 return false;
             }
-            lockSubmitButton();
-        });
-    }
-
-    const submitBtn = document.getElementById('submitBtn');
-    if (submitBtn) {
-        submitBtn.addEventListener('click', function (e) {
-            if (isSubmitting) {
-                e.preventDefault();
-                return false;
-            }
-            if (!checkAndShowSfcModal(e)) {
-                return false;
-            }
-            lockSubmitButton();
+            setTimeout(function() {
+                lockSubmitButton();
+            }, 0);
         });
     }
 });

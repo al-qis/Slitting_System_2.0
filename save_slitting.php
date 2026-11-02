@@ -271,6 +271,66 @@ try {
     }
     $chk_dup->close();
 
+        // ── Check if leftover_length column exists (cached once outside the loop) ──
+    $col_check = $conn->query(
+        "SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME   = 'slitting_product'
+           AND COLUMN_NAME  = 'leftover_length'"
+    );
+    $col_row      = $col_check ? $col_check->fetch_assoc() : ['cnt' => 0];
+    $leftover_col = (($col_row['cnt'] ?? 0) > 0) ? 'leftover_length' : 'stock';
+
+    // ── Resolve production month & timestamp once for all rolls ──
+    $prod_month_opt = trim($_POST['production_month'] ?? '');
+    if (empty($prod_month_opt)) {
+        $prod_month_opt = getDefaultProductionMonthKey($conn);
+    }
+    $prod_date      = resolveProductionMonthDate($prod_month_opt);
+    $date_in_val    = ($prod_month_opt === 'current') ? date('Y-m-d H:i:s') : $prod_date . ' ' . date('H:i:s');
+
+    // Remember selected production month so following coils stay in the same month automatically
+    $_SESSION['production_month_opt']  = $prod_month_opt;
+    $_SESSION['production_month_yymm'] = date('ym', strtotime($prod_date));
+
+    // ── Pre-prepare statements for finished product insert & key check ──
+    $check_key_stmt = $conn->prepare(
+        "SELECT id FROM slitting_product 
+         WHERE roll_key = ? AND (is_voided = 0 OR is_voided IS NULL)
+         LIMIT 1"
+    );
+
+    $insert_stmt = $conn->prepare(
+        "INSERT INTO slitting_product
+             (product, lot_no, coil_no, roll_no, roll_key, width, length,
+              mother_id, status, cut_type, slit_quantity,
+              customer_name, ref_no, {$leftover_col}, parent_slit_id, date_in, source, stock_code)
+         VALUES
+             (?, ?, ?, ?, ?, ?, ?, ?, 'IN', ?, ?, ?, ?, NULL, NULL, ?, ?, ?)"
+    );
+    if (!$insert_stmt) {
+        throw new Exception("Prepare failed: " . $conn->error);
+    }
+
+    $roll_product_bind = '';
+    $roll_lot_no_bind  = '';
+    $display_roll_no_b = '';
+    $target_roll_key_b = '';
+    $width_bind        = 0.0;
+    $length_bind       = 0.0;
+    $slit_qty_bind     = 0.0;
+    $plannedCust_bind  = null;
+    $plannedRef_bind   = null;
+    $stock_code_bind   = '';
+
+    $insert_stmt->bind_param(
+        "sssssddisdsssss",
+        $roll_product_bind, $roll_lot_no_bind, $coil_no, $display_roll_no_b, $target_roll_key_b,
+        $width_bind, $length_bind, $mother_id,
+        $cut_type, $slit_qty_bind, $plannedCust_bind, $plannedRef_bind,
+        $date_in_val, $source_type, $stock_code_bind
+    );
+
     // ── Process each roll ───────────────────────────────────────
     foreach ($roll_nos as $index => $roll_no) {
         $length       = floatval($lengths[$index]  ?? 0);
@@ -379,10 +439,6 @@ try {
         $base_roll_key   = $roll_lot_no . $coil_no . $display_roll_no;
         $target_roll_key = $base_roll_key;
 
-        $check_key_stmt = $conn->prepare(
-            "SELECT id FROM slitting_product 
-             WHERE roll_key = ? AND (is_voided = 0 OR is_voided IS NULL)"
-        );
         $check_key_stmt->bind_param("s", $target_roll_key);
         $check_key_stmt->execute();
         $dup_res = $check_key_stmt->get_result();
@@ -390,70 +446,34 @@ try {
             $suffix_num = 1;
             while (true) {
                 $candidate_key = $base_roll_key . "_" . $suffix_num;
-                $chk = $conn->prepare(
-                    "SELECT id FROM slitting_product 
-                     WHERE roll_key = ? AND (is_voided = 0 OR is_voided IS NULL)"
-                );
-                $chk->bind_param("s", $candidate_key);
-                $chk->execute();
-                if ($chk->get_result()->num_rows === 0) {
+                $check_key_stmt->bind_param("s", $candidate_key);
+                $check_key_stmt->execute();
+                if ($check_key_stmt->get_result()->num_rows === 0) {
                     $target_roll_key = $candidate_key;
-                    $chk->close();
                     break;
                 }
-                $chk->close();
                 $suffix_num++;
             }
         }
-        $check_key_stmt->close();
 
-        // Check if leftover_length column exists (migration may not have run yet)
-        // Use a safe fallback: try leftover_length first, fall back to stock column name
-        $col_check = $conn->query(
-            "SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.COLUMNS
-             WHERE TABLE_SCHEMA = DATABASE()
-               AND TABLE_NAME   = 'slitting_product'
-               AND COLUMN_NAME  = 'leftover_length'"
-        );
-        $col_row        = $col_check->fetch_assoc();
-        $leftover_col   = ($col_row['cnt'] > 0) ? 'leftover_length' : 'stock';
+        $stock_code = generateStockCode($conn, $prod_date);
 
-        // Build insert dynamically based on which column exists
-        $prod_month_opt = trim($_POST['production_month'] ?? '');
-        if (empty($prod_month_opt)) {
-            $prod_month_opt = getDefaultProductionMonthKey($conn);
-        }
-        $prod_date      = resolveProductionMonthDate($prod_month_opt);
-        $date_in_val    = ($prod_month_opt === 'current') ? date('Y-m-d H:i:s') : $prod_date . ' ' . date('H:i:s');
-        $stock_code     = generateStockCode($conn, $prod_date);
+        // Assign bound variables
+        $roll_product_bind = $roll_product;
+        $roll_lot_no_bind  = $roll_lot_no;
+        $display_roll_no_b = $display_roll_no;
+        $target_roll_key_b = $target_roll_key;
+        $width_bind        = $width;
+        $length_bind       = $length;
+        $slit_qty_bind     = $slit_quantity_val;
+        $plannedCust_bind  = $plannedCustomer;
+        $plannedRef_bind   = $plannedRefNo;
+        $stock_code_bind   = $stock_code;
 
-        // Remember selected production month so following coils stay in the same month automatically
-        $_SESSION['production_month_opt']  = $prod_month_opt;
-        $_SESSION['production_month_yymm'] = date('ym', strtotime($prod_date));
-        $insert_stmt = $conn->prepare(
-            "INSERT INTO slitting_product
-                 (product, lot_no, coil_no, roll_no, roll_key, width, length,
-                  mother_id, status, cut_type, slit_quantity,
-                  customer_name, ref_no, {$leftover_col}, parent_slit_id, date_in, source, stock_code)
-             VALUES
-                 (?, ?, ?, ?, ?, ?, ?, ?, 'IN', ?, ?, ?, ?, NULL, NULL, ?, ?, ?)"
-        );
-        if (!$insert_stmt) {
-            throw new Exception("Prepare failed: " . $conn->error);
-        }
-        // types: s s s s s d d i s d s s s s s
-        $insert_stmt->bind_param(
-            "sssssddisdsssss",
-            $roll_product, $roll_lot_no, $coil_no, $display_roll_no, $target_roll_key,
-            $width, $length, $mother_id,
-            $cut_type, $slit_quantity_val, $plannedCustomer, $plannedRefNo,
-            $date_in_val, $source_type, $stock_code
-        );
         if (!$insert_stmt->execute()) {
             throw new Exception("Failed to insert slitting product: " . $insert_stmt->error);
         }
         $new_slit_id = $conn->insert_id;
-        $insert_stmt->close();
 
         log_process($conn, 'slitting', $new_slit_id, $mother_id,
             null, 'IN',
@@ -467,6 +487,9 @@ try {
              VALUES ($mother_id, 'send_to_finished', '$rn_esc', 'slitting_product', NOW())"
         );
     }
+
+    if (isset($check_key_stmt)) $check_key_stmt->close();
+    if (isset($insert_stmt)) $insert_stmt->close();
 
     // ── Normal slitting: mark mother OUT ────────────────────────
     if ($cut_type === 'normal') {

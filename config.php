@@ -401,26 +401,33 @@ if (!function_exists('generateStockCode')) {
      * Guaranteed strictly unique across all rolls.
      */
     function generateStockCode(mysqli $conn, ?string $dateStr = null): string {
+        static $lastPrefix = null;
+        static $nextSeq = 0;
+
         $ts = (!empty($dateStr) && strtotime($dateStr) !== false) ? strtotime($dateStr) : time();
         $prefix = date('ym', $ts); // YYMM e.g. 2610
 
-        $maxSeq = 0;
-        $stmt = $conn->prepare("
-            SELECT MAX(CAST(SUBSTRING(stock_code, 6) AS UNSIGNED)) AS max_seq
-            FROM slitting_product
-            WHERE stock_code LIKE CONCAT(?, '-%')
-        ");
-        if ($stmt) {
-            $stmt->bind_param("s", $prefix);
-            $stmt->execute();
-            $res = $stmt->get_result()->fetch_assoc();
-            $stmt->close();
-            $maxSeq = (isset($res['max_seq']) && $res['max_seq'] !== null) ? (int)$res['max_seq'] : 0;
+        if ($lastPrefix !== $prefix || $nextSeq <= 0) {
+            $maxSeq = 0;
+            $stmt = $conn->prepare("
+                SELECT MAX(CAST(SUBSTRING(stock_code, 6) AS UNSIGNED)) AS max_seq
+                FROM slitting_product
+                WHERE stock_code LIKE CONCAT(?, '-%')
+            ");
+            if ($stmt) {
+                $stmt->bind_param("s", $prefix);
+                $stmt->execute();
+                $res = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                $maxSeq = (isset($res['max_seq']) && $res['max_seq'] !== null) ? (int)$res['max_seq'] : 0;
+            }
+            $lastPrefix = $prefix;
+            $nextSeq = $maxSeq + 1;
         }
 
-        $candidateSeq = $maxSeq + 1;
         while (true) {
-            $candidateCode = sprintf("%s-%04d", $prefix, $candidateSeq);
+            $candidateCode = sprintf("%s-%04d", $prefix, $nextSeq);
+            $nextSeq++;
 
             $chkStmt = $conn->prepare("SELECT id FROM slitting_product WHERE stock_code = ? LIMIT 1");
             if ($chkStmt) {
@@ -436,8 +443,6 @@ if (!function_exists('generateStockCode')) {
             } else {
                 return $candidateCode;
             }
-
-            $candidateSeq++;
         }
     }
 }
