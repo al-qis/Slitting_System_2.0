@@ -315,11 +315,17 @@ try {
         }
         $chk_key->close();
 
-        $prod_month_opt = trim($_POST['production_month'] ?? 'current');
+        $prod_month_opt = trim($_POST['production_month'] ?? '');
+        if (empty($prod_month_opt)) {
+            $prod_month_opt = getDefaultProductionMonthKey($conn);
+        }
         $prod_date      = resolveProductionMonthDate($prod_month_opt);
 
         $date_in_val    = ($prod_month_opt === 'current') ? date('Y-m-d H:i:s') : $prod_date . ' ' . date('H:i:s');
         $stock_code     = generateStockCode($conn, $prod_date);
+
+        $_SESSION['production_month_opt']  = $prod_month_opt;
+        $_SESSION['production_month_yymm'] = date('ym', strtotime($prod_date));
 
         $roll_cust = trim($posted_customers[$index] ?? ($planCustomerMap[strtoupper($roll_label)] ?? ($planCustomerMap['idx_' . $index] ?? '')));
         $roll_ref  = trim($posted_refs[$index] ?? ($planRefMap[strtoupper($roll_label)] ?? ($planRefMap['idx_' . $index] ?? '')));

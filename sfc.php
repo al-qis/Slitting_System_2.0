@@ -170,10 +170,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfc_id']) && isset($_
 
             } elseif ($action === 'SELL') {
                 $actLen = (float)($sfc['length'] ?? 0);
-                $prod_month_opt = trim($_POST['production_month'] ?? 'current');
+                $prod_month_opt = trim($_POST['production_month'] ?? '');
+                if (empty($prod_month_opt)) {
+                    $prod_month_opt = getDefaultProductionMonthKey($conn);
+                }
                 $prod_date      = resolveProductionMonthDate($prod_month_opt);
                 $date_in_val    = ($prod_month_opt === 'current') ? date('Y-m-d H:i:s') : $prod_date . ' ' . date('H:i:s');
                 $stock_code     = generateStockCode($conn, $prod_date);
+
+                $_SESSION['production_month_opt']  = $prod_month_opt;
+                $_SESSION['production_month_yymm'] = date('ym', strtotime($prod_date));
                 $stmt = $conn->prepare("INSERT INTO slitting_product
                     (mother_id, product, lot_no, coil_no, roll_no, width, length, actual_length,
                      status, is_completed, stock_counted, date_in, date_out, cut_type, source, original_source, stock_code)
@@ -695,9 +701,12 @@ include 'header.php';
                     <i class="bi bi-calendar-check me-1"></i>Production Month (Stock Code Start for SELL):
                 </label>
                 <select name="production_month" id="sfc_production_month" class="form-select form-select-sm">
-                    <?php $prodOptions = getProductionMonthOptions(); ?>
+                    <?php 
+                    $prodOptions = getProductionMonthOptions(); 
+                    $defaultProdKey = getDefaultProductionMonthKey($conn);
+                    ?>
                     <?php foreach ($prodOptions as $optKey => $opt): ?>
-                        <option value="<?= $opt['value'] ?>" <?= $optKey === 'current' ? 'selected' : '' ?>>
+                        <option value="<?= $opt['value'] ?>" data-yymm="<?= $opt['yymm'] ?>" <?= $optKey === $defaultProdKey ? 'selected' : '' ?>>
                             <?= htmlspecialchars($opt['label']) ?>
                         </option>
                     <?php endforeach; ?>
