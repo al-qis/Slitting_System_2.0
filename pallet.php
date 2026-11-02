@@ -269,6 +269,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
     $nodLen = !empty($row['nod_length']) ? (float)$row['nod_length'] : 0.0;
     $lenForCode = max(0.0, $rawLen - $nodLen);
     $row['stock_code'] = PalletManager::formatStockCode($row['coil_no'], $row['width'], $lenForCode);
+    $row['net_length'] = $lenForCode;
     echo json_encode(['ok' => true, 'product' => $row]);
     exit;
 }
@@ -601,7 +602,7 @@ function buildSummaryPalletRows(mysqli $conn): array {
         SELECT p.id AS pallet_id, p.pallet_no, p.status, p.created_at AS pallet_date, p.ref_no AS pallet_ref_no,
                pi.stock_code AS pi_stock_code,
                sp.roll_no, sp.lot_no, sp.coil_no, sp.product,
-               sp.customer_name, sp.ref_no, sp.width, sp.length, sp.actual_length
+               sp.customer_name, sp.ref_no, sp.width, sp.length, sp.actual_length, sp.nod_length
         FROM pallets p
         LEFT JOIN pallet_items pi     ON pi.pallet_id = p.id
         LEFT JOIN slitting_product sp ON sp.id = pi.slitting_product_id
@@ -613,10 +614,18 @@ function buildSummaryPalletRows(mysqli $conn): array {
         // Trusts the value stored on pallet_items (set at insert time via
         // PalletManager); only recomputes for legacy rows added before that
         // column existed, so old pallets still show a code.
-        $rawLen = (!empty($r['actual_length']) && $r['actual_length'] > 0)
-            ? (float)$r['actual_length'] : (float)$r['length'];
-        $nodLen = !empty($r['nod_length']) ? (float)$r['nod_length'] : 0.0;
-        $lenVal = max(0.0, $rawLen - $nodLen);
+        $hasLen = ($r['actual_length'] !== null && $r['actual_length'] !== '') || ($r['length'] !== null && $r['length'] !== '');
+        if ($hasLen) {
+            $rawLen = (!empty($r['actual_length']) && (float)$r['actual_length'] > 0)
+                ? (float)$r['actual_length'] : (float)$r['length'];
+            $nodLen = !empty($r['nod_length']) ? (float)$r['nod_length'] : 0.0;
+            $lenVal = max(0.0, $rawLen - $nodLen);
+        } else {
+            $rawLen = null;
+            $nodLen = 0.0;
+            $lenVal = null;
+        }
+
         $stockCode = !empty($r['coil_no'])
             ? PalletManager::formatStockCode($r['coil_no'], $r['width'] ?? 0, $lenVal)
             : ($r['pi_stock_code'] ?? null);
@@ -643,6 +652,8 @@ function buildSummaryPalletRows(mysqli $conn): array {
             'ref_no'     => $effectiveRef,
             'width'      => $r['width'] !== null ? (float)$r['width'] : null,
             'length'     => $lenVal !== null ? (float)$lenVal : null,
+            'nod_length' => $nodLen > 0 ? (float)$nodLen : null,
+            'raw_length' => $rawLen !== null ? (float)$rawLen : null,
         ];
     }, $rows);
 }
@@ -983,8 +994,11 @@ $palletCust = trim($activePallet['customer_name'] ?? '');
 $palletRef  = trim($activePallet['ref_no'] ?? '');
 
 foreach ($activeItems as &$item) {
-    $len = (float)($item['actual_length'] ?: $item['length']);
-    $totalEstWgt += calcEstWeight($len, (float)$item['width'], (float)$item['std_weight']);
+    $rawLen  = (float)($item['actual_length'] ?: $item['length']);
+    $itemNod = (float)($item['nod_length'] ?? 0);
+    $netLen  = max(0.0, $rawLen - $itemNod);
+    $totalEstWgt += calcEstWeight($netLen, (float)$item['width'], (float)$item['std_weight']);
+    $item['net_length'] = $netLen;
 
     $rollCust = trim($item['customer_name'] ?? '');
     $rollRef  = trim($item['ref_no'] ?? '');
@@ -1864,11 +1878,11 @@ if (isset($_GET['success'])): ?>
                             $item = $itemsBySeq[$s] ?? null;
                         ?>
                         <?php if ($item):
-                            $itemLen = (float)($item['actual_length'] ?: $item['length']);
-                            $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)$item['std_weight']);
+                            $rawLen  = (float)($item['actual_length'] ?: $item['length']);
                             $itemNod = (float)($item['nod_length'] ?? 0);
+                            $netLen  = max(0.0, $rawLen - $itemNod);
+                            $itemWgt = calcEstWeight($netLen, (float)$item['width'], (float)$item['std_weight']);
                             $hasNod  = $itemNod > 0;
-                            $netLen  = $itemLen - $itemNod;
                             $isItemStock = !empty($item['is_stock_ref']);
                             $isItemUnm   = !empty($item['is_unmatched']);
                             $unmInfo     = $item['unmatched_reason'] ?? '';
@@ -1877,9 +1891,9 @@ if (isset($_GET['success'])): ?>
                             <td class="fw-bold text-start ps-3" style="font-family:monospace; font-size:12px;"><?= htmlspecialchars(($item['stock_code'] ?? '') ?: '-') ?></td>
                             <td><?= htmlspecialchars($item['lot_no']) ?> <?= htmlspecialchars($item['coil_no']) ?></td>
                             <td>
-                                <?= number_format($itemLen, 1) ?>
+                                <?= number_format($netLen, 1) ?>
                                 <?php if ($hasNod): ?>
-                                <br><span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m"><i class="bi bi-exclamation-triangle-fill"></i> NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m</span>
+                                <br><span class="nod-chip" title="Actual <?= number_format($rawLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m"><i class="bi bi-exclamation-triangle-fill"></i> NOD &minus;<?= number_format($itemNod, 2) ?> (Actual: <?= number_format($rawLen, 1) ?>m)</span>
                                 <?php endif; ?>
                             </td>
                             <td><?= formatWidthDisplay($item['width']) ?></td>
@@ -2055,8 +2069,10 @@ if (isset($_GET['success'])): ?>
                 <?php
                 $rejectedTotalWgt = 0.0;
                 foreach ($activeItems as $item) {
-                    $len = (float)($item['actual_length'] ?: $item['length']);
-                    $rejectedTotalWgt += calcEstWeight($len, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                    $rawLen  = (float)($item['actual_length'] ?: $item['length']);
+                    $itemNod = (float)($item['nod_length'] ?? 0);
+                    $netLen  = max(0.0, $rawLen - $itemNod);
+                    $rejectedTotalWgt += calcEstWeight($netLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
                 }
                 ?>
                 <?php if ($rejectedTotalWgt > 0): ?>
@@ -2106,19 +2122,19 @@ if (isset($_GET['success'])): ?>
                         </thead>
                         <tbody>
                         <?php foreach ($activeItems as $item):
-                            $itemLen = (float)($item['actual_length'] ?: $item['length']);
-                            $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                            $rawLen  = (float)($item['actual_length'] ?: $item['length']);
                             $itemNod = (float)($item['nod_length'] ?? 0);
+                            $netLen  = max(0.0, $rawLen - $itemNod);
+                            $itemWgt = calcEstWeight($netLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
                             $hasNod  = $itemNod > 0;
-                            $netLen  = $itemLen - $itemNod;
                         ?>
                         <tr>
                             <td class="fw-bold text-start ps-3" style="font-family:monospace; font-size:12px;"><?= htmlspecialchars(($item['stock_code'] ?? '') ?: '-') ?></td>
                             <td><?= htmlspecialchars($item['lot_no']) ?> <?= htmlspecialchars($item['coil_no']) ?></td>
                             <td>
-                                <?= number_format($itemLen, 1) ?>
+                                <?= number_format($netLen, 1) ?>
                                 <?php if ($hasNod): ?>
-                                <br><span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m"><i class="bi bi-exclamation-triangle-fill"></i> NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m</span>
+                                <br><span class="nod-chip" title="Actual <?= number_format($rawLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m"><i class="bi bi-exclamation-triangle-fill"></i> NOD &minus;<?= number_format($itemNod, 2) ?> (Actual: <?= number_format($rawLen, 1) ?>m)</span>
                                 <?php endif; ?>
                             </td>
                             <td><?= formatWidthDisplay($item['width']) ?></td>
@@ -2211,8 +2227,10 @@ if (isset($_GET['success'])): ?>
                 <?php
                 $pendingTotalWgt = 0.0;
                 foreach ($activeItems as $item) {
-                    $len = (float)($item['actual_length'] ?: $item['length']);
-                    $pendingTotalWgt += calcEstWeight($len, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                    $rawLen  = (float)($item['actual_length'] ?: $item['length']);
+                    $itemNod = (float)($item['nod_length'] ?? 0);
+                    $netLen  = max(0.0, $rawLen - $itemNod);
+                    $pendingTotalWgt += calcEstWeight($netLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
                 }
                 ?>
                 <?php if ($pendingTotalWgt > 0): ?>
@@ -2261,19 +2279,19 @@ if (isset($_GET['success'])): ?>
                         </thead>
                         <tbody>
                         <?php foreach ($activeItems as $item):
-                            $itemLen = (float)($item['actual_length'] ?: $item['length']);
-                            $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                            $rawLen  = (float)($item['actual_length'] ?: $item['length']);
                             $itemNod = (float)($item['nod_length'] ?? 0);
+                            $netLen  = max(0.0, $rawLen - $itemNod);
+                            $itemWgt = calcEstWeight($netLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
                             $hasNod  = $itemNod > 0;
-                            $netLen  = $itemLen - $itemNod;
                         ?>
                         <tr>
                             <td class="fw-bold text-start ps-3" style="font-family:monospace; font-size:12px;"><?= htmlspecialchars(($item['stock_code'] ?? '') ?: '-') ?></td>
                             <td><?= htmlspecialchars($item['lot_no']) ?> <?= htmlspecialchars($item['coil_no']) ?></td>
                             <td>
-                                <?= number_format($itemLen, 1) ?>
+                                <?= number_format($netLen, 1) ?>
                                 <?php if ($hasNod): ?>
-                                <br><span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m"><i class="bi bi-exclamation-triangle-fill"></i> NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m</span>
+                                <br><span class="nod-chip" title="Actual <?= number_format($rawLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m"><i class="bi bi-exclamation-triangle-fill"></i> NOD &minus;<?= number_format($itemNod, 2) ?> (Actual: <?= number_format($rawLen, 1) ?>m)</span>
                                 <?php endif; ?>
                             </td>
                             <td><?= formatWidthDisplay($item['width']) ?></td>
@@ -2387,8 +2405,10 @@ if (isset($_GET['success'])): ?>
                 <?php
                 $approvedTotalWgt = 0.0;
                 foreach ($activeItems as $item) {
-                    $len = (float)($item['actual_length'] ?: $item['length']);
-                    $approvedTotalWgt += calcEstWeight($len, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                    $rawLen  = (float)($item['actual_length'] ?: $item['length']);
+                    $itemNod = (float)($item['nod_length'] ?? 0);
+                    $netLen  = max(0.0, $rawLen - $itemNod);
+                    $approvedTotalWgt += calcEstWeight($netLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
                 }
                 ?>
                 <?php if ($approvedTotalWgt > 0): ?>
@@ -2439,19 +2459,19 @@ if (isset($_GET['success'])): ?>
                         </thead>
                         <tbody>
                         <?php foreach ($activeItems as $item):
-                            $itemLen = (float)($item['actual_length'] ?: $item['length']);
-                            $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                            $rawLen  = (float)($item['actual_length'] ?: $item['length']);
                             $itemNod = (float)($item['nod_length'] ?? 0);
+                            $netLen  = max(0.0, $rawLen - $itemNod);
+                            $itemWgt = calcEstWeight($netLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
                             $hasNod  = $itemNod > 0;
-                            $netLen  = $itemLen - $itemNod;
                         ?>
                         <tr>
                             <td class="fw-bold text-start ps-3" style="font-family:monospace; font-size:12px;"><?= htmlspecialchars(($item['stock_code'] ?? '') ?: '-') ?></td>
                             <td><?= htmlspecialchars($item['lot_no']) ?> <?= htmlspecialchars($item['coil_no']) ?></td>
                             <td>
-                                <?= number_format($itemLen, 1) ?>
+                                <?= number_format($netLen, 1) ?>
                                 <?php if ($hasNod): ?>
-                                <br><span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m"><i class="bi bi-exclamation-triangle-fill"></i> NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m</span>
+                                <br><span class="nod-chip" title="Actual <?= number_format($rawLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m"><i class="bi bi-exclamation-triangle-fill"></i> NOD &minus;<?= number_format($itemNod, 2) ?> (Actual: <?= number_format($rawLen, 1) ?>m)</span>
                                 <?php endif; ?>
                             </td>
                             <td><?= formatWidthDisplay($item['width']) ?></td>
@@ -2556,8 +2576,10 @@ if (isset($_GET['success'])): ?>
                 <?php
                 $deliveredTotalWgt = 0.0;
                 foreach ($activeItems as $item) {
-                    $len = (float)($item['actual_length'] ?: $item['length']);
-                    $deliveredTotalWgt += calcEstWeight($len, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                    $rawLen  = (float)($item['actual_length'] ?: $item['length']);
+                    $itemNod = (float)($item['nod_length'] ?? 0);
+                    $netLen  = max(0.0, $rawLen - $itemNod);
+                    $deliveredTotalWgt += calcEstWeight($netLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
                 }
                 ?>
                 <?php if ($deliveredTotalWgt > 0): ?>
@@ -2606,19 +2628,19 @@ if (isset($_GET['success'])): ?>
                         </thead>
                         <tbody>
                         <?php foreach ($activeItems as $item):
-                            $itemLen = (float)($item['actual_length'] ?: $item['length']);
-                            $itemWgt = calcEstWeight($itemLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
+                            $rawLen  = (float)($item['actual_length'] ?: $item['length']);
                             $itemNod = (float)($item['nod_length'] ?? 0);
+                            $netLen  = max(0.0, $rawLen - $itemNod);
+                            $itemWgt = calcEstWeight($netLen, (float)$item['width'], (float)($item['std_weight'] ?? 0));
                             $hasNod  = $itemNod > 0;
-                            $netLen  = $itemLen - $itemNod;
                         ?>
                         <tr>
                             <td class="fw-bold text-start ps-3" style="font-family:monospace; font-size:12px;"><?= htmlspecialchars(($item['stock_code'] ?? '') ?: '-') ?></td>
                             <td><?= htmlspecialchars($item['lot_no']) ?> <?= htmlspecialchars($item['coil_no']) ?></td>
                             <td>
-                                <?= number_format($itemLen, 1) ?>
+                                <?= number_format($netLen, 1) ?>
                                 <?php if ($hasNod): ?>
-                                <br><span class="nod-chip" title="Actual <?= number_format($itemLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m"><i class="bi bi-exclamation-triangle-fill"></i> NOD &minus;<?= number_format($itemNod, 2) ?> &rarr; <?= number_format($netLen, 2) ?>m</span>
+                                <br><span class="nod-chip" title="Actual <?= number_format($rawLen, 2) ?>m &minus; NOD <?= number_format($itemNod, 2) ?>m = <?= number_format($netLen, 2) ?>m"><i class="bi bi-exclamation-triangle-fill"></i> NOD &minus;<?= number_format($itemNod, 2) ?> (Actual: <?= number_format($rawLen, 1) ?>m)</span>
                                 <?php endif; ?>
                             </td>
                             <td><?= formatWidthDisplay($item['width']) ?></td>
@@ -3900,17 +3922,17 @@ function fillSlot(seq, p) {
     const slotEl = document.getElementById('slot' + seq);
     if (!slotEl) return;
 
-    const len       = parseFloat(p.actual_length) > 0 ? parseFloat(p.actual_length) : parseFloat(p.length);
+    const rawLen    = parseFloat(p.actual_length) > 0 ? parseFloat(p.actual_length) : parseFloat(p.length);
+    const nod       = parseFloat(p.nod_length) || 0;
+    const netLen    = Math.max(0, rawLen - nod);
     const stdWeight = parseFloat(p.std_weight) || 0;
-    const wgt       = calcWeight(len, p.width, stdWeight);
+    const wgt       = calcWeight(netLen, p.width, stdWeight);
     const wgtStr    = wgt > 0 ? wgt.toFixed(2) : '-';
 
-    const nod       = parseFloat(p.nod_length) || 0;
     const hasNod    = nod > 0;
-    const netLen    = len - nod;
     const nodChip   = hasNod
-        ? `<br><span class="nod-chip" title="Actual ${len.toFixed(2)}m − NOD ${nod.toFixed(2)}m = ${netLen.toFixed(2)}m">
-               <i class="bi bi-exclamation-triangle-fill"></i> NOD −${nod.toFixed(2)} → ${netLen.toFixed(2)}m
+        ? `<br><span class="nod-chip" title="Actual ${rawLen.toFixed(2)}m − NOD ${nod.toFixed(2)}m = ${netLen.toFixed(2)}m">
+               <i class="bi bi-exclamation-triangle-fill"></i> NOD −${nod.toFixed(2)} (Actual: ${rawLen.toFixed(1)}m)
            </span>`
         : '';
 
@@ -3948,7 +3970,7 @@ function fillSlot(seq, p) {
         <td>
             ${escHtml(p.lot_no)} ${escHtml(p.coil_no)}
         </td>
-        <td>${len.toFixed(1)}${nodChip}</td>
+        <td>${netLen.toFixed(1)}${nodChip}</td>
         <td>${p.width !== null && p.width !== undefined ? (+p.width) : '-'}</td>
         <td>1</td>
         <td class="fw-bold">${escHtml(p.roll_no.replace(/^R/, 'R-'))}${stockBadge}${unmBadge}</td>
@@ -4937,6 +4959,9 @@ function renderSummaryTable(rows) {
         const rollsCell  = r.roll_no
             ? `<span class="fw-bold">${escHtml(r.lot_coil)}</span> &ndash; ${escHtml(r.roll_no)}`
             : '<span class="text-muted">&mdash; no rolls &mdash;</span>';
+        const lengthCell = r.length !== null
+            ? (+r.length) + ' m' + (r.nod_length ? `<br><span class="nod-chip" title="Actual ${+r.raw_length}m &minus; NOD ${+r.nod_length}m = ${+r.length}m"><i class="bi bi-exclamation-triangle-fill"></i> NOD &minus;${+r.nod_length}</span>` : '')
+            : '<span class="text-muted">&mdash;</span>';
         return `
             <tr>
                 <td class="fw-bold">${r.pallet_id ? `<a href="pallet.php?pallet_id=${r.pallet_id}" class="text-decoration-none">${escHtml(r.pallet_no)}</a>` : escHtml(r.pallet_no)}</td>
@@ -4948,7 +4973,7 @@ function renderSummaryTable(rows) {
                 <td>${r.customer ? escHtml(r.customer) : '<span class="text-muted">&mdash;</span>'}</td>
                 <td>${r.ref_no ? escHtml(r.ref_no) : '<span class="text-muted">&mdash;</span>'}</td>
                 <td>${r.width !== null ? (+r.width) + ' mm' : '<span class="text-muted">&mdash;</span>'}</td>
-                <td>${r.length !== null ? (+r.length) + ' m' : '<span class="text-muted">&mdash;</span>'}</td>
+                <td>${lengthCell}</td>
             </tr>
         `;
     }).join('');
