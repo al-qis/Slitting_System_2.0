@@ -28,22 +28,48 @@ if ($resScans = $mysqli->query($sqlScans)) {
 }
 
 // -----------------------------------------------------------------------
-// Produced Date Filtering (defaults to all dates, or officer selected cutoff date)
+// Produced Date & Time Filtering (defaults to all dates, or officer selected cutoff)
 // -----------------------------------------------------------------------
 $fromDate = isset($_GET['from_date']) ? trim($_GET['from_date']) : '';
 $toDate   = isset($_GET['to_date'])   ? trim($_GET['to_date'])   : (isset($_GET['cutoff_date']) ? trim($_GET['cutoff_date']) : '');
+$fromTime = isset($_GET['from_time']) ? trim($_GET['from_time']) : '';
+$toTime   = isset($_GET['to_time'])   ? trim($_GET['to_time'])   : (isset($_GET['cutoff_time']) ? trim($_GET['cutoff_time']) : '');
 
 if ($fromDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $fromDate)) $fromDate = '';
 if ($toDate   && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $toDate))   $toDate   = '';
+if ($fromTime && !preg_match('/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/', $fromTime)) $fromTime = '';
+if ($toTime   && !preg_match('/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/', $toTime))   $toTime   = '';
 
 $whereDate = [];
 if ($fromDate !== '') {
-    $whereDate[] = "DATE(COALESCE(sp.date_in, sp.updated_at)) >= '" . $mysqli->real_escape_string($fromDate) . "'";
+    if ($fromTime !== '') {
+        $fromDateTime = $fromDate . ' ' . (strlen($fromTime) === 5 ? $fromTime . ':00' : $fromTime);
+        $whereDate[] = "COALESCE(sp.date_in, sp.updated_at) >= '" . $mysqli->real_escape_string($fromDateTime) . "'";
+    } else {
+        $whereDate[] = "DATE(COALESCE(sp.date_in, sp.updated_at)) >= '" . $mysqli->real_escape_string($fromDate) . "'";
+    }
+} elseif ($fromTime !== '') {
+    $fromDate = date('Y-m-d');
+    $fromDateTime = $fromDate . ' ' . (strlen($fromTime) === 5 ? $fromTime . ':00' : $fromTime);
+    $whereDate[] = "COALESCE(sp.date_in, sp.updated_at) >= '" . $mysqli->real_escape_string($fromDateTime) . "'";
 }
+
 if ($toDate !== '') {
-    $whereDate[] = "DATE(COALESCE(sp.date_in, sp.updated_at)) <= '" . $mysqli->real_escape_string($toDate) . "'";
+    if ($toTime !== '') {
+        $toDateTime = $toDate . ' ' . (strlen($toTime) === 5 ? $toTime . ':59' : $toTime);
+        $whereDate[] = "COALESCE(sp.date_in, sp.updated_at) <= '" . $mysqli->real_escape_string($toDateTime) . "'";
+    } else {
+        $whereDate[] = "DATE(COALESCE(sp.date_in, sp.updated_at)) <= '" . $mysqli->real_escape_string($toDate) . "'";
+    }
+} elseif ($toTime !== '') {
+    $toDate = date('Y-m-d');
+    $toDateTime = $toDate . ' ' . (strlen($toTime) === 5 ? $toTime . ':59' : $toTime);
+    $whereDate[] = "COALESCE(sp.date_in, sp.updated_at) <= '" . $mysqli->real_escape_string($toDateTime) . "'";
 }
 $dateClause = count($whereDate) > 0 ? " AND " . implode(" AND ", $whereDate) : "";
+
+$toTimeInput   = $toTime !== '' ? substr($toTime, 0, 5) : '';
+$fromTimeInput = $fromTime !== '' ? substr($fromTime, 0, 5) : '';
 
 $baselineStock = [];
 $baselineRolls = [];
@@ -834,28 +860,69 @@ if ($res = $mysqli->query($sql)) {
   }
   .summary-filter-grid {
     display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
+    flex-direction: column;
+    gap: 8px;
     margin-bottom: 10px;
   }
   .summary-filter-grid .date-input-group {
-    flex: 1 1 45%;
-    min-width: 130px;
+    width: 100%;
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 3px;
+    gap: 4px;
+  }
+  .date-label-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
   }
   .summary-filter-grid .date-input-group label {
     font-size: 11.5px;
     color: var(--navy);
   }
-  .summary-filter-grid .date-input-group input[type="date"] {
+  .btn-time-now {
+    background: #e0e7ff;
+    color: #3730a3;
+    border: 1px solid #c7d2fe;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    line-height: 1.3;
+    transition: all .15s ease;
+  }
+  .btn-time-now:hover {
+    background: #c7d2fe;
+  }
+  .input-with-time {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+  }
+  .input-with-time input[type="date"] {
+    flex: 1.55;
+    min-width: 0;
     width: 100%;
     padding: 5px 8px;
     font-size: 12px;
     border: 1px solid var(--border);
     border-radius: 6px;
+    background: #fff;
+    color: var(--text);
+  }
+  .input-with-time input[type="time"] {
+    flex: 1;
+    min-width: 0;
+    width: 100%;
+    padding: 5px 8px;
+    font-size: 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #fff;
+    color: var(--text);
   }
   .summary-filter-actions {
     display: flex;
@@ -1149,8 +1216,8 @@ if ($res = $mysqli->query($sql)) {
         <div class="summary-filter-toggle-header" id="toggleFilterBoxHeader">
           <div class="summary-filter-header">
             <span class="icon">📊</span>
-            <b>Filter Baseline Stock by Last Date</b>
-            <?php if ($fromDate !== '' || $toDate !== ''): ?>
+            <b>Filter Baseline Stock by Cutoff Date &amp; Time</b>
+            <?php if ($fromDate !== '' || $toDate !== '' || $fromTime !== '' || $toTime !== ''): ?>
               <span class="tally-active-badge">Active Filter</span>
             <?php endif; ?>
           </div>
@@ -1161,24 +1228,35 @@ if ($res = $mysqli->query($sql)) {
 
         <div id="summaryFilterContent" class="summary-filter-content">
           <div class="summary-filter-sub">
-            Filter system baseline stock up to the cut-off date to tally against physical scans
+            Filter system baseline stock up to the cut-off date and time to tally against physical scans
           </div>
 
           <form method="GET" action="index.php" id="dateFilterForm" class="date-filter-form">
             <div class="summary-filter-grid">
               <div class="date-input-group">
-                <label for="to_date"><b>📅 Cutoff / Last Date:</b></label>
-                <input type="date" id="to_date" name="to_date" value="<?php echo htmlspecialchars($toDate); ?>">
+                <div class="date-label-row">
+                  <label for="to_date"><b>📅 Cutoff / Last Date &amp; Time:</b></label>
+                  <button type="button" class="btn-time-now" onclick="setCutoffToNow(event)" title="Set Cutoff to Current Date &amp; Time">Set Now</button>
+                </div>
+                <div class="input-with-time">
+                  <input type="date" id="to_date" name="to_date" value="<?php echo htmlspecialchars($toDate); ?>" title="Cutoff Date">
+                  <input type="time" id="to_time" name="to_time" value="<?php echo htmlspecialchars($toTimeInput); ?>" title="Cutoff Time (Optional)">
+                </div>
               </div>
               <div class="date-input-group">
-                <label for="from_date" style="color: var(--text-muted);">From (Optional):</label>
-                <input type="date" id="from_date" name="from_date" value="<?php echo htmlspecialchars($fromDate); ?>">
+                <div class="date-label-row">
+                  <label for="from_date" style="color: var(--text-muted);">From Date &amp; Time (Optional):</label>
+                </div>
+                <div class="input-with-time">
+                  <input type="date" id="from_date" name="from_date" value="<?php echo htmlspecialchars($fromDate); ?>" title="From Date">
+                  <input type="time" id="from_time" name="from_time" value="<?php echo htmlspecialchars($fromTimeInput); ?>" title="From Time (Optional)">
+                </div>
               </div>
             </div>
 
             <div class="summary-filter-actions">
               <button type="submit" class="btn-filter-submit">🔍 Tally System Stock</button>
-              <?php if ($fromDate !== '' || $toDate !== ''): ?>
+              <?php if ($fromDate !== '' || $toDate !== '' || $fromTime !== '' || $toTime !== ''): ?>
                 <a href="index.php" class="btn-filter-reset">🔄 Reset (All Stock)</a>
               <?php endif; ?>
             </div>
@@ -1189,6 +1267,7 @@ if ($res = $mysqli->query($sql)) {
               <button type="button" class="btn-preset" onclick="setFilterDates('', '<?php echo date('Y-m-t', strtotime('-1 month')); ?>', event)">🏁 End of Last Month (<?php echo date('31/m', strtotime('-1 month')); ?>)</button>
               <button type="button" class="btn-preset" onclick="setFilterDates('', '<?php echo date('Y-m-d', strtotime('-1 day')); ?>', event)">📅 Yesterday</button>
               <button type="button" class="btn-preset" onclick="setFilterDates('', '<?php echo date('Y-m-d'); ?>', event)">📅 Today (<?php echo date('d/m'); ?>)</button>
+              <button type="button" class="btn-preset" onclick="setFilterDates('', '<?php echo date('Y-m-d'); ?>', event, '', '<?php echo date('H:i'); ?>')">🕒 Today Up to Now (<?php echo date('H:i'); ?>)</button>
             </div>
           </form>
         </div>
@@ -1198,7 +1277,21 @@ if ($res = $mysqli->query($sql)) {
         <div class="tally-banner-title">
           <span>🏁 <b>System Tally Cutoff:</b></span>
           <span class="tally-date-chip">
-            <?php echo $toDate ? "Up to " . htmlspecialchars($toDate) : ($fromDate ? "From " . htmlspecialchars($fromDate) : "All Dates"); ?>
+            <?php
+              if ($fromDate !== '' && $toDate !== '') {
+                  $fromDisplay = $fromDate . ($fromTimeInput !== '' ? ' ' . $fromTimeInput : '');
+                  $toDisplay   = $toDate . ($toTimeInput !== '' ? ' ' . $toTimeInput : '');
+                  echo htmlspecialchars($fromDisplay . ' → ' . $toDisplay);
+              } elseif ($toDate !== '') {
+                  $toDisplay = $toDate . ($toTimeInput !== '' ? ' ' . $toTimeInput : '');
+                  echo "Up to " . htmlspecialchars($toDisplay);
+              } elseif ($fromDate !== '') {
+                  $fromDisplay = $fromDate . ($fromTimeInput !== '' ? ' ' . $fromTimeInput : '');
+                  echo "From " . htmlspecialchars($fromDisplay);
+              } else {
+                  echo "All Dates";
+              }
+            ?>
           </span>
         </div>
         <div class="tally-banner-sub">
@@ -2211,16 +2304,20 @@ function restoreScrollPositions() {
 
 document.addEventListener('DOMContentLoaded', restoreScrollPositions);
 
-function setFilterDates(from, to, e) {
+function setFilterDates(from, to, e, fromTime = '', toTime = '') {
   if (e) {
     e.preventDefault();
     e.stopPropagation();
   }
   saveScrollPositions();
-  const fromEl = document.getElementById('from_date');
-  const toEl = document.getElementById('to_date');
+  const fromEl     = document.getElementById('from_date');
+  const toEl       = document.getElementById('to_date');
+  const fromTimeEl = document.getElementById('from_time');
+  const toTimeEl   = document.getElementById('to_time');
   if (fromEl) fromEl.value = from;
   if (toEl) toEl.value = to;
+  if (fromTimeEl) fromTimeEl.value = fromTime;
+  if (toTimeEl) toTimeEl.value = toTime;
   const form = document.getElementById('dateFilterForm');
   if (form) {
     if (typeof form.requestSubmit === 'function') {
@@ -2229,6 +2326,22 @@ function setFilterDates(from, to, e) {
       form.submit();
     }
   }
+}
+
+function setCutoffToNow(e) {
+  if (e) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const timeStr = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+
+  const toDateEl = document.getElementById('to_date');
+  const toTimeEl = document.getElementById('to_time');
+  if (toDateEl) toDateEl.value = todayStr;
+  if (toTimeEl) toTimeEl.value = timeStr;
 }
 
 document.getElementById('dateFilterForm')?.addEventListener('submit', saveScrollPositions);
