@@ -328,10 +328,16 @@ try {
         }
         $chk_key->close();
 
-        $prod_month_opt = trim($_POST['production_month'] ?? 'current');
+        $prod_month_opt = trim($_POST['production_month'] ?? '');
+        if (empty($prod_month_opt)) {
+            $prod_month_opt = getDefaultProductionMonthKey($conn);
+        }
         $prod_date      = resolveProductionMonthDate($prod_month_opt);
         $date_in_val    = ($prod_month_opt === 'current') ? date('Y-m-d H:i:s') : $prod_date . ' ' . date('H:i:s');
         $stock_code     = generateStockCode($conn, $prod_date);
+
+        $_SESSION['production_month_opt']  = $prod_month_opt;
+        $_SESSION['production_month_yymm'] = date('ym', strtotime($prod_date));
         $insert_stmt = $conn->prepare("
             INSERT INTO slitting_product
                 (recoiling_id, mother_id, parent_slit_id,

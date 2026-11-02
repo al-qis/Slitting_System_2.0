@@ -263,16 +263,20 @@ foreach ($alphabet as $letter) {
                     <label for="production_month" class="form-label mb-0 fw-bold small text-nowrap">
                         <i class="bi bi-calendar-check me-1 text-primary"></i>Production Month:
                     </label>
-                    <select name="production_month" id="production_month" class="form-select form-select-sm w-auto fw-semibold" onchange="updateStockCodePreview()">
-                        <?php $prodOptions = getProductionMonthOptions(); ?>
+                    <select name="production_month" id="production_month" class="form-select form-select-sm w-auto fw-semibold" onchange="handleProductionMonthChange(this)">
+                        <?php 
+                        $prodOptions = getProductionMonthOptions(); 
+                        $defaultProdKey = getDefaultProductionMonthKey($conn);
+                        $defaultProdYymm = $prodOptions[$defaultProdKey]['yymm'] ?? date('ym');
+                        ?>
                         <?php foreach ($prodOptions as $optKey => $opt): ?>
-                            <option value="<?= $opt['value'] ?>" data-yymm="<?= $opt['yymm'] ?>" <?= $optKey === 'current' ? 'selected' : '' ?>>
+                            <option value="<?= $opt['value'] ?>" data-yymm="<?= $opt['yymm'] ?>" <?= $optKey === $defaultProdKey ? 'selected' : '' ?>>
                                 <?= htmlspecialchars($opt['label']) ?>
                             </option>
                         <?php endforeach; ?>
                     </select>
                     <span id="stockCodePrefixBadge" class="badge bg-primary fs-6 font-monospace" title="Generated Stock Code YYMM Prefix">
-                        <?= date('ym') ?>-XXXX
+                        <?= htmlspecialchars($defaultProdYymm) ?>-XXXX
                     </span>
                 </div>
             </div>
@@ -531,15 +535,42 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
+    // Restore locally saved production month if present and matches an option in the dropdown
+    try {
+        const savedYymm = localStorage.getItem('slitting_production_month_yymm');
+        const sel = document.getElementById('production_month');
+        if (savedYymm && sel) {
+            for (let i = 0; i < sel.options.length; i++) {
+                if (sel.options[i].getAttribute('data-yymm') === savedYymm) {
+                    sel.selectedIndex = i;
+                    break;
+                }
+            }
+        }
+    } catch (e) {}
+
     updateStockCodePreview();
 });
+
+function handleProductionMonthChange(sel) {
+    updateStockCodePreview();
+    if (sel && sel.selectedIndex >= 0) {
+        const opt = sel.options[sel.selectedIndex];
+        const yymm = opt ? opt.getAttribute('data-yymm') : '';
+        if (yymm) {
+            try {
+                localStorage.setItem('slitting_production_month_yymm', yymm);
+            } catch (e) {}
+        }
+    }
+}
 
 function updateStockCodePreview() {
     const sel = document.getElementById('production_month');
     const badge = document.getElementById('stockCodePrefixBadge');
-    if (sel && badge) {
+    if (sel && badge && sel.selectedIndex >= 0) {
         const opt = sel.options[sel.selectedIndex];
-        const yymm = opt.getAttribute('data-yymm') || '<?= date('ym') ?>';
+        const yymm = (opt ? opt.getAttribute('data-yymm') : null) || '<?= date('ym') ?>';
         badge.textContent = yymm + '-XXXX';
     }
 }

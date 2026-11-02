@@ -419,10 +419,17 @@ try {
         $leftover_col   = ($col_row['cnt'] > 0) ? 'leftover_length' : 'stock';
 
         // Build insert dynamically based on which column exists
-        $prod_month_opt = trim($_POST['production_month'] ?? 'current');
+        $prod_month_opt = trim($_POST['production_month'] ?? '');
+        if (empty($prod_month_opt)) {
+            $prod_month_opt = getDefaultProductionMonthKey($conn);
+        }
         $prod_date      = resolveProductionMonthDate($prod_month_opt);
         $date_in_val    = ($prod_month_opt === 'current') ? date('Y-m-d H:i:s') : $prod_date . ' ' . date('H:i:s');
         $stock_code     = generateStockCode($conn, $prod_date);
+
+        // Remember selected production month so following coils stay in the same month automatically
+        $_SESSION['production_month_opt']  = $prod_month_opt;
+        $_SESSION['production_month_yymm'] = date('ym', strtotime($prod_date));
         $insert_stmt = $conn->prepare(
             "INSERT INTO slitting_product
                  (product, lot_no, coil_no, roll_no, roll_key, width, length,

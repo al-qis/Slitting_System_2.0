@@ -328,6 +328,71 @@ if (!function_exists('resolveProductionMonthDate')) {
     }
 }
 
+
+if (!function_exists('getDefaultProductionMonthKey')) {
+    /**
+     * Determines the active production month option ('current', 'before', 'forward')
+     * to pre-select in UI dropdowns and default in handlers.
+     *
+     * Prioritization:
+     * 1. Active session choice ($_SESSION['production_month_yymm']).
+     * 2. Database check on recent slitting_product roll stock_code prefix (YYMM).
+     *    If the last roll produced is >= current month (e.g. forward month was started on 31/10),
+     *    continue with that forward month automatically for following coils.
+     * 3. Fallback to 'current'.
+     *
+     * @param mysqli|null $conn
+     * @param string|null $baseDate
+     * @return string ('current', 'before', or 'forward')
+     */
+    function getDefaultProductionMonthKey(?mysqli $conn = null, ?string $baseDate = null): string {
+        $options = getProductionMonthOptions($baseDate);
+        $currentYymm = $options['current']['yymm'] ?? date('ym');
+
+        // 1. Session preference (explicit choice during current user session)
+        if (session_status() === PHP_SESSION_ACTIVE && !empty($_SESSION['production_month_yymm'])) {
+            $sessYymm = trim((string)$_SESSION['production_month_yymm']);
+            foreach ($options as $key => $opt) {
+                if ($opt['yymm'] === $sessYymm) {
+                    return $key;
+                }
+            }
+        }
+
+        // 2. Database check: check latest produced coil in slitting_product
+        if ($conn instanceof mysqli && !$conn->connect_error) {
+            $stmt = $conn->prepare("
+                SELECT stock_code 
+                FROM slitting_product 
+                WHERE stock_code REGEXP '^[0-9]{4}-' 
+                ORDER BY id DESC 
+                LIMIT 1
+            ");
+            if ($stmt) {
+                $stmt->execute();
+                $res = $stmt->get_result();
+                if ($row = $res->fetch_assoc()) {
+                    $stockCode = $row['stock_code'] ?? '';
+                    if (preg_match('/^(\d{4})-/', $stockCode, $m)) {
+                        $lastYymm = $m[1];
+                        if ($lastYymm >= $currentYymm) {
+                            foreach ($options as $key => $opt) {
+                                if ($opt['yymm'] === $lastYymm) {
+                                    $stmt->close();
+                                    return $key;
+                                }
+                            }
+                        }
+                    }
+                }
+                $stmt->close();
+            }
+        }
+
+        return 'current';
+    }
+}
+
 if (!function_exists('generateStockCode')) {
     /**
      * Generates a unique stock in code for a produced roll coil.
