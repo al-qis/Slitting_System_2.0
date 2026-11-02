@@ -12,6 +12,143 @@ if ($_SESSION['role'] !== 'slitting') {
 }
 
 include 'config.php';
+require_once __DIR__ . '/control_system/config_store.php';
+$isReslitActive = function_exists('isButtonActive') ? isButtonActive('reslit_reslit') : true;
+
+// ── Defensive Schema Check: Ensure reslit_id exists in slitting_plans ──
+$colCheck = $conn->query("SHOW COLUMNS FROM slitting_plans LIKE 'reslit_id'");
+if ($colCheck && $colCheck->num_rows === 0) {
+    $conn->query("ALTER TABLE slitting_plans ADD COLUMN reslit_id INT NULL DEFAULT NULL AFTER stock_id, ADD KEY idx_slitting_plans_reslit (reslit_id)");
+    $conn->query("ALTER TABLE slitting_plans MODIFY COLUMN mother_coil_id INT NULL");
+}
+
+// ── AJAX Endpoint: Get Slitting Plan for Reslit Roll ───────────────────
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'get_reslit_plan') {
+    header('Content-Type: application/json; charset=utf-8');
+    $reslit_id = intval($_GET['reslit_id'] ?? 0);
+    $plans = [];
+    $reslit = null;
+    if ($reslit_id > 0) {
+        $rRes = $conn->query("SELECT id, product, lot_no, coil_no, roll_no, width, length, mother_id FROM reslit_product WHERE id = $reslit_id LIMIT 1");
+        if ($rRes && $rRes->num_rows > 0) {
+            $reslit = $rRes->fetch_assoc();
+        }
+        $stmt = $conn->prepare("SELECT roll_seq, planned_width, customer_name, ref_no FROM slitting_plans WHERE reslit_id = ? ORDER BY sort_order ASC, id ASC");
+        if ($stmt) {
+            $stmt->bind_param("i", $reslit_id);
+            $stmt->execute();
+            $plans = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+        }
+    }
+    echo json_encode(['ok' => true, 'plans' => $plans, 'reslit' => $reslit]);
+    exit;
+}
+
+// ── POST Action: Save Slitting Plan for Reslit Roll ───────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_reslit_plan') {
+    $is_ajax = (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest') || ($_POST['ajax'] ?? '') === '1';
+
+    $reslit_id = intval($_POST['reslit_id'] ?? 0);
+    if ($reslit_id <= 0) {
+        if ($is_ajax) { echo json_encode(['ok' => false, 'msg' => 'Invalid reslit ID']); exit; }
+        $_SESSION['error'] = 'Invalid reslit ID.';
+        header('Location: reslit.php');
+        exit;
+    }
+
+    $rRes = $conn->query("SELECT id, mother_id, lot_no, coil_no, roll_no, width, length FROM reslit_product WHERE id = $reslit_id LIMIT 1");
+    if (!$rRes || $rRes->num_rows === 0) {
+        if ($is_ajax) { echo json_encode(['ok' => false, 'msg' => 'Reslit record not found']); exit; }
+        $_SESSION['error'] = 'Reslit record not found.';
+        header('Location: reslit.php');
+        exit;
+    }
+    $reslitItem = $rRes->fetch_assoc();
+    $mother_id = !empty($reslitItem['mother_id']) ? intval($reslitItem['mother_id']) : null;
+
+    $planSeqs      = $_POST['plan_seq']      ?? [];
+    $planWidths    = $_POST['plan_width']    ?? [];
+    $planCustomers = $_POST['plan_customer'] ?? [];
+    $planRefs      = $_POST['plan_ref']      ?? [];
+
+    $conn->begin_transaction();
+    try {
+        $del = $conn->prepare("DELETE FROM slitting_plans WHERE reslit_id = ?");
+        $del->bind_param("i", $reslit_id);
+        $del->execute();
+        $del->close();
+
+        $savedCount = 0;
+        if (is_array($planSeqs) && is_array($planWidths)) {
+            $ins = $conn->prepare("
+                INSERT INTO slitting_plans (mother_coil_id, stock_id, reslit_id, roll_seq, planned_width, customer_name, ref_no, sort_order)
+                VALUES (?, NULL, ?, ?, ?, ?, ?, ?)
+            ");
+            $order = 0;
+            foreach ($planSeqs as $i => $seqRaw) {
+                $seq   = trim($seqRaw);
+                $wRaw  = trim($planWidths[$i] ?? '');
+                $cust  = trim($planCustomers[$i] ?? '');
+                $refNo = trim($planRefs[$i] ?? '');
+                if ($seq === '' || $wRaw === '' || !is_numeric($wRaw)) continue;
+                $order++;
+                $savedCount++;
+                $wVal = (float)$wRaw;
+                $ins->bind_param("iisdssi", $mother_id, $reslit_id, $seq, $wVal, $cust, $refNo, $order);
+                $ins->execute();
+            }
+            $ins->close();
+        }
+
+        $conn->commit();
+        $label = trim(($reslitItem['lot_no'] ?? '') . ' ' . ($reslitItem['coil_no'] ?? '') . ' ' . ($reslitItem['roll_no'] ?? ''));
+        $msg = $savedCount > 0
+            ? "✓ Slitting plan saved for reslit roll {$label} ({$savedCount} rolls planned)."
+            : "✓ Slitting plan cleared for reslit roll {$label}.";
+
+        if ($is_ajax) {
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode(['ok' => true, 'msg' => $msg, 'count' => $savedCount, 'reslit_id' => $reslit_id]);
+            exit;
+        }
+
+        $_SESSION['success'] = $msg;
+        header('Location: reslit.php');
+        exit;
+    } catch (Exception $e) {
+        $conn->rollback();
+        if ($is_ajax) {
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode(['ok' => false, 'msg' => 'Error: ' . $e->getMessage()]);
+            exit;
+        }
+        $_SESSION['error'] = 'Error: ' . $e->getMessage();
+        header('Location: reslit.php');
+        exit;
+    }
+}
+
+// ── Slitting plan counts for reslit items ─────────────────────
+$reslit_plan_counts = [];
+$rpRes = $conn->query("SELECT reslit_id, COUNT(*) as cnt FROM slitting_plans WHERE reslit_id IS NOT NULL AND reslit_id > 0 GROUP BY reslit_id");
+if ($rpRes) {
+    while ($rpr = $rpRes->fetch_assoc()) {
+        $reslit_plan_counts[(int)$rpr['reslit_id']] = (int)$rpr['cnt'];
+    }
+}
+
+// ── Known Customer Codes for Autocomplete ─────────────────────
+$knownCustomers = ['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA','NIPPON','NTC','SGC','STAMPING','YANTAI','NIPP','NVC','NSJ','NIP','YTEC','NSA','NCI 2','STOCK','TRIAL'];
+$cRes = $conn->query("SELECT DISTINCT customer FROM nci_product_mapping WHERE customer IS NOT NULL AND customer != ''");
+if ($cRes) {
+    while ($cr = $cRes->fetch_assoc()) {
+        $c = trim($cr['customer']);
+        if ($c !== '' && !in_array($c, $knownCustomers, true)) {
+            $knownCustomers[] = $c;
+        }
+    }
+}
 
 // ── Excel Download ────────────────────────────────────────────
 if (isset($_GET['download']) && $_GET['download'] === 'excel') {
@@ -291,13 +428,49 @@ include 'header.php';
     </div>
 </div>
 
-<?php if(isset($_GET['success'])): ?>
+<?php 
+$sessSuccess = $_SESSION['success'] ?? null;
+$sessError   = $_SESSION['error'] ?? null;
+unset($_SESSION['success'], $_SESSION['error']);
+?>
+<?php if ($sessSuccess): ?>
+    <div class="alert alert-success alert-dismissible fade show shadow-sm mb-4">
+        <i class="bi bi-check-circle-fill me-2"></i><?= htmlspecialchars($sessSuccess) ?>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+<?php endif; ?>
+<?php if ($sessError): ?>
+    <div class="alert alert-danger alert-dismissible fade show shadow-sm mb-4">
+        <i class="bi bi-exclamation-triangle-fill me-2"></i><?= htmlspecialchars($sessError) ?>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+<?php endif; ?>
+
+<?php 
+$autoPrintUrl = '';
+if(isset($_GET['success'])): 
+    $printBtnHtml = '';
+    if ($_GET['success'] === 'completed') {
+        $printIdsRaw = $_GET['print_ids'] ?? '';
+        $printIds = array_values(array_filter(array_map('intval', explode(',', $printIdsRaw))));
+        if (!empty($printIds)) {
+            $printUrl = (count($printIds) === 1)
+                ? "select_customer.php?id=" . $printIds[0] . "&from=reslit"
+                : "mixed_batch_setup.php?ids=" . implode(',', $printIds) . "&from=reslit";
+            
+            $printBtnHtml = ' <a href="' . htmlspecialchars($printUrl) . '" target="_blank" class="btn btn-sm btn-success text-white fw-bold ms-2 shadow-sm"><i class="bi bi-printer-fill me-1"></i> Print Sticker Now</a>';
+            if (!empty($_GET['auto_print'])) {
+                $autoPrintUrl = $printUrl . "&autoprint=1";
+            }
+        }
+    }
+?>
     <div class="alert alert-success alert-dismissible fade show shadow-sm mb-4">
         <i class="bi bi-check-circle-fill me-2"></i>
         <?php 
             if($_GET['success'] === 'added') echo "Product successfully added to reslit list!";
             elseif($_GET['success'] === 'started') echo "Reslit process started!";
-            elseif($_GET['success'] === 'completed') echo "Reslit completed! Product added to stock.";
+            elseif($_GET['success'] === 'completed') echo "Reslit completed! Product added to stock." . $printBtnHtml;
             elseif($_GET['success'] === 'returned_fp') echo "<strong>Sent back to Finished Product.</strong> This item has been removed from the Reslit queue.";
             elseif($_GET['success'] === 'returned_sfc') echo "<strong>Sent back to SFC Inventory.</strong> This item has been removed from the Reslit queue.";
             elseif($_GET['success'] === 'returned') echo "<strong>Sent back.</strong> This item has been removed from the Reslit queue.";
@@ -401,7 +574,9 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
                             data-search="<?= htmlspecialchars($parentSearchBlob) ?>">
                             <td><?= $rowNum ?></td>
                             <td>
-                                <?php if($row['status'] === 'pending'): ?>
+                                <?php if($row['status'] === 'in_progress'): ?>
+                                    <span class="badge bg-primary">IN PROGRESS</span>
+                                <?php elseif($row['status'] === 'pending'): ?>
                                     <span class="badge bg-warning text-dark">PENDING</span>
                                 <?php else: ?>
                                     <span class="badge bg-success">COMPLETED</span>
@@ -421,27 +596,92 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
                             </td>
                             <td class="small"><?= htmlspecialchars($row['date_in'] ?? '-') ?></td>
                             <td>
-                                <?php if ($row['status'] === 'pending'): ?>
-                                    <button class="btn btn-primary btn-sm mb-1" 
-                                            onclick="showReslitModal(<?= (int)$row['id'] ?>, '<?= htmlspecialchars($row['product'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['lot_no'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['coil_no'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['roll_no'] ?? '', ENT_QUOTES) ?>', <?= (float)($row['width'] ?? 0) ?>, <?= (float)($row['effective_length'] ?? ($row['length'] ?? 0)) ?>)">
-                                        <i class="bi bi-play-circle"></i> Reslit
+                                <?php if ($row['status'] === 'pending' || $row['status'] === 'in_progress'): ?>
+                                    <?php if ($isReslitActive): ?>
+                                        <button class="btn btn-primary btn-sm mb-1" 
+                                                onclick="showReslitModal(<?= (int)$row['id'] ?>, '<?= htmlspecialchars($row['product'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['lot_no'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['coil_no'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['roll_no'] ?? '', ENT_QUOTES) ?>', <?= (float)($row['width'] ?? 0) ?>, <?= (float)($row['effective_length'] ?? ($row['length'] ?? 0)) ?>)">
+                                            <i class="bi bi-play-circle"></i> Reslit
+                                        </button>
+                                    <?php else: ?>
+                                        <button class="btn btn-secondary btn-sm mb-1 disabled opacity-75" title="Reslit button function is BLOCKED by Control Center" disabled>
+                                            <i class="bi bi-slash-circle"></i> Reslit
+                                        </button>
+                                    <?php endif; ?>
+                                    <?php $pCount = $reslit_plan_counts[(int)$row['id']] ?? 0; ?>
+                                    <button type="button"
+                                            class="btn btn-sm btn-reslit-plan <?= $pCount > 0 ? 'btn-info text-white' : 'btn-outline-primary' ?> mb-1"
+                                            id="plan_btn_<?= $row['id'] ?>"
+                                            data-reslit-id="<?= (int)$row['id'] ?>"
+                                            data-product="<?= htmlspecialchars($row['product'] ?? '', ENT_QUOTES) ?>"
+                                            data-lot-no="<?= htmlspecialchars($row['lot_no'] ?? '', ENT_QUOTES) ?>"
+                                            data-coil-no="<?= htmlspecialchars($row['coil_no'] ?? '', ENT_QUOTES) ?>"
+                                            data-roll-no="<?= htmlspecialchars($row['roll_no'] ?? '', ENT_QUOTES) ?>"
+                                            data-width="<?= (float)($row['width'] ?? 0) ?>"
+                                            data-length="<?= (float)($row['effective_length'] ?? ($row['length'] ?? 0)) ?>"
+                                            title="<?= $pCount > 0 ? 'Edit Slitting Plan (' . $pCount . ' rolls planned)' : 'Add Slitting Plan for this roll' ?>">
+                                        <?php if ($pCount > 0): ?>
+                                            <i class="bi bi-pencil-square me-1"></i>Edit Plan
+                                            <span class="badge bg-white text-dark ms-1 plan-badge-count"><?= $pCount ?></span>
+                                        <?php else: ?>
+                                            <i class="bi bi-plus-circle me-1"></i>+ Slitting Plan
+                                        <?php endif; ?>
                                     </button>
-                                    <a href="edit_reslit.php?id=<?= $row['id'] ?>" class="btn btn-warning btn-sm mb-1"><i class="bi bi-pencil"></i></a>
+                                    <a href="edit_reslit.php?id=<?= $row['id'] ?>" class="btn btn-warning btn-sm mb-1" title="Edit Record"><i class="bi bi-pencil"></i></a>
                                     <?php
                                         // Route label mirrors reslit_send_back.php's own routing rule:
                                         // slitting_product_id set -> Finish Product, otherwise -> SFC Inventory.
                                         $sendBackOrigin = !empty($row['slitting_product_id']) ? 'Finished Product' : 'SFC Inventory';
                                     ?>
-                                    <button type="button"
-                                            class="btn btn-outline-danger btn-sm mb-1 btn-send-back-reslit"
-                                            data-rid="<?= (int)$row['id'] ?>"
-                                            data-origin="<?= htmlspecialchars($sendBackOrigin, ENT_QUOTES) ?>"
-                                            data-label="<?= htmlspecialchars(($row['lot_no'] ?? '-') . ' ' . ($row['coil_no'] ?? '') . ' / Roll ' . ($row['roll_no'] ?? '-')) ?>"
-                                            title="Send this item back to <?= htmlspecialchars($sendBackOrigin) ?>">
-                                        <i class="bi bi-arrow-return-left"></i> Send Back
-                                    </button>
+                                    <?php if ($row['status'] === 'pending'): ?>
+                                        <button type="button"
+                                                class="btn btn-outline-danger btn-sm mb-1 btn-send-back-reslit"
+                                                data-rid="<?= (int)$row['id'] ?>"
+                                                data-origin="<?= htmlspecialchars($sendBackOrigin, ENT_QUOTES) ?>"
+                                                data-label="<?= htmlspecialchars(($row['lot_no'] ?? '-') . ' ' . ($row['coil_no'] ?? '') . ' / Roll ' . ($row['roll_no'] ?? '-')) ?>"
+                                                title="Send this item back to <?= htmlspecialchars($sendBackOrigin) ?>">
+                                            <i class="bi bi-arrow-return-left"></i> Send Back
+                                        </button>
+                                    <?php endif; ?>
                                 <?php else: ?>
-                                    <span class="badge bg-light text-dark border">Done</span>
+                                    <?php
+                                    $pCount = $reslit_plan_counts[(int)$row['id']] ?? 0;
+                                    if ($pCount > 0):
+                                    ?>
+                                        <button type="button"
+                                                class="btn btn-sm btn-outline-secondary mb-1 btn-reslit-plan"
+                                                id="plan_btn_<?= $row['id'] ?>"
+                                                data-reslit-id="<?= (int)$row['id'] ?>"
+                                                data-product="<?= htmlspecialchars($row['product'] ?? '', ENT_QUOTES) ?>"
+                                                data-lot-no="<?= htmlspecialchars($row['lot_no'] ?? '', ENT_QUOTES) ?>"
+                                                data-coil-no="<?= htmlspecialchars($row['coil_no'] ?? '', ENT_QUOTES) ?>"
+                                                data-roll-no="<?= htmlspecialchars($row['roll_no'] ?? '', ENT_QUOTES) ?>"
+                                                data-width="<?= (float)($row['width'] ?? 0) ?>"
+                                                data-length="<?= (float)($row['effective_length'] ?? ($row['length'] ?? 0)) ?>"
+                                                title="View Slitting Plan (<?= $pCount ?> rolls)">
+                                            <i class="bi bi-card-checklist me-1"></i>Plan <span class="badge bg-secondary ms-1"><?= $pCount ?></span>
+                                        </button>
+                                    <?php endif; ?>
+                                    <?php
+                                    $reslitProdIds = [];
+                                    if (!empty($row['slitting_product_id'])) {
+                                        $spRes = $conn->query("SELECT id FROM slitting_product WHERE source = 'reslit' AND parent_slit_id = " . (int)$row['slitting_product_id'] . " AND (is_voided = 0 OR is_voided IS NULL)");
+                                        if ($spRes && $spRes->num_rows > 0) {
+                                            while ($spRow = $spRes->fetch_assoc()) {
+                                                $reslitProdIds[] = (int)$spRow['id'];
+                                            }
+                                        }
+                                    }
+                                    if (!empty($reslitProdIds)):
+                                        $reslitPrintUrl = (count($reslitProdIds) === 1)
+                                            ? "select_customer.php?id=" . $reslitProdIds[0] . "&from=reslit"
+                                            : "mixed_batch_setup.php?ids=" . implode(',', $reslitProdIds) . "&from=reslit";
+                                    ?>
+                                        <a href="<?= htmlspecialchars($reslitPrintUrl) ?>" target="_blank" class="btn btn-outline-success btn-sm shadow-sm" title="Print Sticker">
+                                            <i class="bi bi-printer-fill me-1"></i> Print Sticker
+                                        </a>
+                                    <?php else: ?>
+                                        <span class="badge bg-light text-dark border">Done</span>
+                                    <?php endif; ?>
                                 <?php endif; ?>
                             </td>
                         </tr>
@@ -597,7 +837,12 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
                             <div class="col-12"><strong>Length:</strong> <span id="modal_length">-</span> mtr</div>
                         </div>
                     </div>
-                    
+
+                    <div id="reslitPlanAlert" class="alert alert-info py-2 mb-3" style="display:none;">
+                        <i class="bi bi-clipboard-check me-2"></i>
+                        <span id="reslitPlanAlertText">A slitting plan is available for this roll.</span>
+                    </div>
+
                     <div class="mb-4">
                         <h6 class="fw-bold">Step 1: Select Cut Type</h6>
                         <div class="d-flex gap-4">
@@ -657,6 +902,34 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
 
                     <div id="slittingForm"></div>
                     <div class="form-text mt-1"><i class="bi bi-box-seam-fill me-1 text-primary"></i>Tick <strong>To SFC</strong> for any roll that should be sent to SFC instead of finished stock.</div>
+
+                    <!-- ── SFC Balance Width Section (Unticked by default: does NOT auto save) ── -->
+                    <div id="reslitCutSfcSection" style="display:none;" class="card shadow-sm mt-3 mb-2 border-info">
+                        <div class="card-body py-3">
+                            <div class="d-flex align-items-center justify-content-between">
+                                <label class="sfc-toggle mb-0" for="enable_sfc_balance_width">
+                                    <input class="form-check-input sfc-checkbox" type="checkbox" id="enable_sfc_balance_width" onchange="toggleSfcBalanceWidth(this)">
+                                    <span class="sfc-toggle-text"><i class="bi bi-box-seam-fill me-1"></i>Save Balance Width to SFC</span>
+                                </label>
+                                <span class="badge bg-secondary-subtle text-muted border">Optional — unticked by default</span>
+                            </div>
+                            <div id="sfcBalanceInputGroup" style="display:none;" class="mt-3 pt-2 border-top">
+                                <p class="text-muted small mb-2">Capture remaining width as an SFC scrap/balance roll (Roll No: <strong>BALANCE</strong>).</p>
+                                <div class="input-group">
+                                    <span class="input-group-text">Balance Width</span>
+                                    <input type="number" step="0.01" name="sfc_balance_width" id="reslit_sfc_balance_width" class="form-control" placeholder="0.00" disabled>
+                                    <span class="input-group-text">mm</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-check form-switch mt-3 p-2 bg-light border rounded">
+                        <input class="form-check-input ms-0 me-2" type="checkbox" name="auto_print" id="reslit_auto_print" value="1" checked>
+                        <label class="form-check-label fw-bold text-primary" for="reslit_auto_print">
+                            <i class="bi bi-printer-fill me-1"></i> Cetak sticker automatik selepas selesai
+                        </label>
+                    </div>
                 </div>
                 <div class="modal-footer bg-light">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -669,7 +942,125 @@ $completed = $conn->query("SELECT COUNT(*) as count FROM reslit_product WHERE st
     </div>
 </div>
 
-<script src="camera_scanner.js"></script>
+<datalist id="validCustomerList">
+    <?php foreach ($knownCustomers as $c): ?>
+        <option value="<?= htmlspecialchars($c) ?>">
+    <?php endforeach; ?>
+</datalist>
+
+<!-- ═══ RESLIT SLITTING PLAN MODAL ═════════════════════════════ -->
+<div class="modal fade" id="reslitPlanModal" tabindex="-1" aria-labelledby="reslitPlanModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-centered">
+        <div class="modal-content border-0 shadow-lg">
+            <div class="modal-header bg-primary text-white py-3">
+                <div>
+                    <h5 class="modal-title mb-1" id="reslitPlanModalLabel">
+                        <i class="bi bi-scissors me-2"></i>Slitting Plan — Reslit Roll
+                    </h5>
+                    <div class="small opacity-75">
+                        Plan cut sequences, widths, and customer assignments for this reslit roll.
+                    </div>
+                </div>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+
+            <form id="reslitPlanForm" method="post" action="reslit.php">
+                <input type="hidden" name="action" value="save_reslit_plan">
+                <input type="hidden" name="reslit_id" id="planModalReslitId" value="0">
+
+                <div class="modal-body p-4">
+                    <!-- Roll Info Summary Banner -->
+                    <div class="card bg-light border-0 shadow-sm mb-4">
+                        <div class="card-body py-3 px-4">
+                            <div class="row g-3 align-items-center">
+                                <div class="col-auto">
+                                    <span class="text-muted small text-uppercase fw-bold d-block">Product</span>
+                                    <span class="fs-5 fw-bold text-dark" id="reslitPlanBadgeProduct">—</span>
+                                </div>
+                                <div class="col-auto border-start ps-3">
+                                    <span class="text-muted small text-uppercase fw-bold d-block">Lot & Coil No.</span>
+                                    <span class="fs-5 fw-bold text-primary font-monospace" id="reslitPlanBadgeLotCoil">—</span>
+                                </div>
+                                <div class="col-auto border-start ps-3">
+                                    <span class="text-muted small text-uppercase fw-bold d-block">Roll No.</span>
+                                    <span class="fs-5 fw-bold text-dark font-monospace" id="reslitPlanBadgeRoll">—</span>
+                                </div>
+                                <div class="col-auto border-start ps-3">
+                                    <span class="text-muted small text-uppercase fw-bold d-block">Original Width</span>
+                                    <span class="fs-5 fw-bold text-dark" id="reslitPlanBadgeWidth">—</span>
+                                </div>
+                                <div class="col-auto border-start ps-3">
+                                    <span class="text-muted small text-uppercase fw-bold d-block">Length</span>
+                                    <span class="fs-5 fw-bold text-success" id="reslitPlanBadgeLength">—</span>
+                                </div>
+                                <div class="col text-end border-start ps-3">
+                                    <div id="reslitWidthAllocBadge" class="d-inline-block px-3 py-2 rounded-3 border bg-white text-start shadow-sm">
+                                        <div class="d-flex align-items-center gap-3">
+                                            <div>
+                                                <small class="text-muted fw-bold d-block">Planned Total</small>
+                                                <span class="fw-bold" id="plannedTotalReslitWidth">0.00 mm</span>
+                                            </div>
+                                            <div class="border-start ps-3">
+                                                <small class="text-muted fw-bold d-block">Unplanned Balance</small>
+                                                <span class="fw-bold text-success" id="plannedBalanceReslitWidth">0.00 mm</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Quick Excel / CSV Slitting Plan Paste -->
+                    <div class="p-3 bg-light rounded-3 border mb-3">
+                        <label class="form-label fw-semibold small text-secondary mb-1">
+                            <i class="bi bi-clipboard-plus me-1"></i> Quick Excel / CSV Slitting Plan Paste
+                        </label>
+                        <textarea id="reslit_plan_paste_zone" class="form-control form-control-sm border-secondary-subtle" rows="2"
+                                  placeholder="Paste from Excel/CSV — Roll, Width, Customer, Ref No, e.g.&#10;R1, 125, NAE, SO-26-0110&#10;R2, 125, STAMPING, STOCK"></textarea>
+                        <div class="alert alert-warning py-1 px-2 small mt-2 mb-0 d-none" id="reslit_plan_paste_warning">
+                            Couldn't read that as Seq + Width pairs — check the format.
+                        </div>
+                    </div>
+
+                    <!-- Structured Table / Grid for Slitting Plan Rows -->
+                    <div class="card border shadow-sm mb-3">
+                        <div class="card-header bg-light py-2 px-3">
+                            <div class="row g-2 align-items-center text-secondary fw-bold small text-uppercase">
+                                <div style="width: 85px;">Seq</div>
+                                <div style="width: 130px;">Width (mm)</div>
+                                <div style="width: 240px;">Customer Code</div>
+                                <div class="col">Customer Ref No</div>
+                                <div style="width: 45px;" class="text-end"></div>
+                            </div>
+                        </div>
+                        <div class="card-body p-2" id="reslitPlanRowsContainer" style="max-height: 280px; overflow-y: auto;">
+                            <!-- Dynamic rows injected here -->
+                        </div>
+                    </div>
+
+                    <div class="d-flex justify-content-between align-items-center">
+                        <button type="button" class="btn btn-outline-primary btn-sm px-3" onclick="addReslitPlanRow()">
+                            <i class="bi bi-plus-lg me-1"></i>Add Row Manually
+                        </button>
+                        <button type="button" class="btn btn-outline-danger btn-sm px-3" onclick="clearReslitPlanRows()">
+                            <i class="bi bi-trash3 me-1"></i>Clear All Rows
+                        </button>
+                    </div>
+
+                    <div id="reslitPlanSaveAlert" class="mt-3 d-none"></div>
+                </div>
+
+                <div class="modal-footer bg-light px-4 py-3">
+                    <button type="button" class="btn btn-secondary px-4" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-success px-4" id="saveReslitPlanSubmitBtn">
+                        <i class="bi bi-check-circle me-1"></i> Save Slitting Plan
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
 <script>
 let productData = {};
 
@@ -716,11 +1107,21 @@ function addToReslitQueue(raw, source) {
         showIntakeFeedback(data.ok, data.msg);
         input.value = '';
         if (data.ok) {
-            // Brief pause so the confirmation is actually seen before the
-            // page reloads to show the newly-added pending roll — the
-            // input's `autofocus` attribute takes care of re-focusing it
-            // on the fresh page load, ready for the very next scan.
-            setTimeout(() => window.location.reload(), 1400);
+            if (data.action === 'open_modal' && data.roll) {
+                // 2nd scan: Open Reslit Process modal directly!
+                showReslitModal(
+                    data.roll.id,
+                    data.roll.product,
+                    data.roll.lot_no,
+                    data.roll.coil_no,
+                    data.roll.roll_no,
+                    data.roll.width,
+                    data.roll.length
+                );
+            } else {
+                // 1st scan: Brief pause then reload to show new pending item in table
+                setTimeout(() => window.location.reload(), 1400);
+            }
         } else {
             // Failed — no reload, so refocus immediately so the operator
             // can correct and retry without touching the mouse.
@@ -792,8 +1193,49 @@ function applyReslitFilters() {
     }
 }
 
+const isReslitActive = <?= $isReslitActive ? 'true' : 'false' ?>;
+let activeReslitPlan = [];
+
 function showReslitModal(id, product, lot_no, coil_no, roll_no, width, length) {
+    if (!isReslitActive) {
+        alert('The Reslit button function is currently BLOCKED in Control Center.');
+        return;
+    }
+    reslitFormSubmitted = false;
     productData = { id, product, lot_no, coil_no, roll_no, width, length };
+    activeReslitPlan = [];
+
+    const planAlert = document.getElementById('reslitPlanAlert');
+    if (planAlert) planAlert.style.display = 'none';
+
+    if (id > 0) {
+        const fd = new FormData();
+        fd.append('action', 'start_reslit_process');
+        fd.append('id', id);
+        fetch('reslit_handler.php', { method: 'POST', body: fd }).catch(console.error);
+
+        // Fetch slitting plan if available for this roll
+        fetch('reslit.php?ajax=get_reslit_plan&reslit_id=' + encodeURIComponent(id))
+            .then(res => res.json())
+            .then(data => {
+                if (data.ok && Array.isArray(data.plans) && data.plans.length > 0) {
+                    activeReslitPlan = data.plans;
+                    if (planAlert) {
+                        const alertText = document.getElementById('reslitPlanAlertText');
+                        if (alertText) {
+                            alertText.innerHTML = `<i class="bi bi-clipboard-check me-2"></i>A slitting plan is available for this roll — <strong>${data.plans.length} roll(s) planned</strong>. Choose Normal or Cut Into 2 below and it will be applied automatically.`;
+                        }
+                        planAlert.style.display = 'block';
+                    }
+                    const checkedCut = document.querySelector('input[name="cut_type"]:checked');
+                    if (checkedCut) {
+                        applyPlanToReslitForm();
+                    }
+                }
+            })
+            .catch(console.error);
+    }
+
     document.getElementById('reslit_id').value = id;
     document.getElementById('modal_product').textContent = product;
     document.getElementById('modal_lot').textContent = lot_no + ' ' + coil_no;
@@ -807,7 +1249,32 @@ function showReslitModal(id, product, lot_no, coil_no, roll_no, width, length) {
     document.getElementById('rollCountSection').style.display = 'none';
     document.getElementById('slittingForm').innerHTML = '';
     document.getElementById('submitBtn').style.display = 'none';
-    new bootstrap.Modal(document.getElementById('reslitModal')).show();
+
+    const sfcCheck = document.getElementById('enable_sfc_balance_width');
+    if (sfcCheck) {
+        sfcCheck.checked = false;
+        const pill = sfcCheck.closest('.sfc-toggle');
+        if (pill) pill.classList.remove('sfc-active');
+    }
+    const sfcGroup = document.getElementById('sfcBalanceInputGroup');
+    if (sfcGroup) sfcGroup.style.display = 'none';
+
+    const sfcBalInput = document.getElementById('reslit_sfc_balance_width');
+    if (sfcBalInput) {
+        sfcBalInput.value = '';
+        sfcBalInput.disabled = true;
+        sfcBalInput.dataset.userEdited = 'false';
+        if (!sfcBalInput.dataset.listenerAttached) {
+            sfcBalInput.dataset.listenerAttached = 'true';
+            sfcBalInput.addEventListener('input', function () {
+                this.dataset.userEdited = 'true';
+            });
+        }
+    }
+    const sfcBalSec = document.getElementById('reslitCutSfcSection');
+    if (sfcBalSec) sfcBalSec.style.display = 'none';
+
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('reslitModal')).show();
 }
 
 function calculateReslitStock() {
@@ -853,6 +1320,145 @@ function handleCutTypeChange() {
         document.getElementById('rollCountSection').style.display = 'block';
         if (rollCountTitle) rollCountTitle.innerText = 'Step 2: Number of Rolls';
     }
+
+    if (activeReslitPlan && activeReslitPlan.length > 0) {
+        applyPlanToReslitForm();
+    }
+}
+
+function applyPlanToReslitForm() {
+    if (!activeReslitPlan || activeReslitPlan.length === 0) return;
+    const totalSelect = document.getElementById('total');
+    if (totalSelect) {
+        totalSelect.value = String(Math.min(activeReslitPlan.length, 10));
+    }
+    generateForm();
+    fillReslitRollsFromPlan();
+}
+
+function fillReslitRollsFromPlan() {
+    if (!activeReslitPlan || activeReslitPlan.length === 0) return;
+    const widthInputs = document.querySelectorAll('#slittingForm .width-input');
+    const custInputs = document.querySelectorAll('#slittingForm input[name="customer_name[]"]');
+    const refInputs = document.querySelectorAll('#slittingForm input[name="ref_no[]"]');
+    activeReslitPlan.forEach((p, idx) => {
+        if (widthInputs[idx]) {
+            widthInputs[idx].value = p.planned_width;
+        }
+        if (custInputs[idx]) {
+            custInputs[idx].value = p.customer_name || '';
+        }
+        if (refInputs[idx]) {
+            refInputs[idx].value = p.ref_no || '';
+        }
+        const lotDisp = document.getElementById('lotDisplay' + idx);
+        if (lotDisp && p.customer_name) {
+            const existingBadge = lotDisp.querySelector('.badge-plan-cust');
+            if (existingBadge) existingBadge.remove();
+            const badge = document.createElement('span');
+            badge.className = 'badge bg-info-subtle text-info border border-info-subtle ms-1 badge-plan-cust';
+            badge.textContent = p.customer_name + (p.ref_no ? ' / ' + p.ref_no : '');
+            lotDisp.appendChild(badge);
+        }
+    });
+    calculateReslitWidths();
+}
+
+function calculateReslitWidths() {
+    const origWidth = parseFloat(productData.width) || 0;
+    const widthInputs = document.querySelectorAll('#slittingForm .width-input');
+    let totalCut = 0;
+    widthInputs.forEach(inp => {
+        totalCut += parseFloat(inp.value) || 0;
+    });
+
+    const balance = origWidth - totalCut;
+    const origDisp = document.getElementById('modalOriginalWidthDisplay');
+    const cutDisp = document.getElementById('modalTotalCutWidthDisplay');
+    const balDisp = document.getElementById('modalBalanceWidthDisplay');
+    const warnEl = document.getElementById('modalWidthWarning');
+    const sfcSection = document.getElementById('reslitCutSfcSection');
+    const sfcInput = document.getElementById('reslit_sfc_balance_width');
+
+    if (origDisp) origDisp.textContent = origWidth.toFixed(2) + ' mm';
+    if (cutDisp) cutDisp.textContent = totalCut.toFixed(2) + ' mm';
+
+    if (balDisp) {
+        balDisp.textContent = balance.toFixed(2) + ' mm';
+        if (balance < -0.01) {
+            balDisp.className = 'fs-5 text-danger fw-bold';
+        } else if (Math.abs(balance) <= 0.01) {
+            balDisp.className = 'fs-5 text-muted fw-bold';
+        } else {
+            balDisp.className = 'fs-5 text-success fw-bold';
+        }
+    }
+
+    if (warnEl) {
+        if (balance < -0.01) {
+            warnEl.innerHTML = `<i class="bi bi-exclamation-triangle-fill me-1"></i><strong>Warning:</strong> Total cut width (${totalCut.toFixed(2)} mm) exceeds original width (${origWidth.toFixed(2)} mm) by ${Math.abs(balance).toFixed(2)} mm!`;
+            warnEl.style.display = 'block';
+        } else {
+            warnEl.style.display = 'none';
+        }
+    }
+
+    if (sfcSection) {
+        const sfcCheck = document.getElementById('enable_sfc_balance_width');
+        if (balance > 0.01) {
+            sfcSection.style.display = 'block';
+            // IMPORTANT: Do NOT auto save to SFC!
+            // Only update input value if operator has explicitly checked the box.
+            if (sfcCheck && sfcCheck.checked && sfcInput && (!sfcInput.dataset.userEdited || sfcInput.dataset.userEdited === 'false')) {
+                sfcInput.value = balance.toFixed(2);
+            }
+        } else {
+            sfcSection.style.display = 'none';
+            if (sfcCheck) sfcCheck.checked = false;
+            const pill = sfcCheck?.closest('.sfc-toggle');
+            if (pill) pill.classList.remove('sfc-active');
+            const group = document.getElementById('sfcBalanceInputGroup');
+            if (group) group.style.display = 'none';
+            if (sfcInput) {
+                sfcInput.value = '';
+                sfcInput.disabled = true;
+                sfcInput.dataset.userEdited = 'false';
+            }
+        }
+    }
+}
+
+function toggleSfcBalanceWidth(checkbox) {
+    const group = document.getElementById('sfcBalanceInputGroup');
+    const input = document.getElementById('reslit_sfc_balance_width');
+    const pill  = checkbox.closest('.sfc-toggle');
+
+    if (pill) pill.classList.toggle('sfc-active', checkbox.checked);
+
+    if (checkbox.checked) {
+        if (group) group.style.display = 'block';
+        if (input) {
+            input.disabled = false;
+            // Pre-fill with remaining balance width if empty
+            if (!input.value || parseFloat(input.value) <= 0) {
+                const origWidth = parseFloat(productData.width) || 0;
+                let totalCut = 0;
+                document.querySelectorAll('#slittingForm .width-input').forEach(inp => {
+                    totalCut += parseFloat(inp.value) || 0;
+                });
+                const rem = origWidth - totalCut;
+                input.value = rem > 0 ? rem.toFixed(2) : '0.00';
+            }
+            input.focus();
+        }
+    } else {
+        if (group) group.style.display = 'none';
+        if (input) {
+            input.value = '';
+            input.disabled = true;
+            input.dataset.userEdited = 'false';
+        }
+    }
 }
 
 function generateForm() {
@@ -861,7 +1467,24 @@ function generateForm() {
     let submitBtn = document.getElementById('submitBtn');
     container.innerHTML = "";
 
-    if (!total || total <= 0) { submitBtn.style.display = 'none'; return; }
+    if (!total || total <= 0) {
+        submitBtn.style.display = 'none';
+        const sfcSec = document.getElementById('reslitCutSfcSection');
+        if (sfcSec) sfcSec.style.display = 'none';
+        const sfcCheck = document.getElementById('enable_sfc_balance_width');
+        if (sfcCheck) sfcCheck.checked = false;
+        const pill = sfcCheck?.closest('.sfc-toggle');
+        if (pill) pill.classList.remove('sfc-active');
+        const sfcGroup = document.getElementById('sfcBalanceInputGroup');
+        if (sfcGroup) sfcGroup.style.display = 'none';
+        const sfcInput = document.getElementById('reslit_sfc_balance_width');
+        if (sfcInput) {
+            sfcInput.value = '';
+            sfcInput.disabled = true;
+            sfcInput.dataset.userEdited = 'false';
+        }
+        return;
+    }
 
     // ── Nominal Length default: for Cut Into 2, this should be the
     // Slit Quantity (Length Used) the user just entered — NOT the full
@@ -872,9 +1495,30 @@ function generateForm() {
         ? slitQty
         : productData.length;
 
-    // ── Bulk "Apply to All" toolbar for New Width + Actual Length (same pattern as add_slitting.php) ──
+    // ── Width Allocation Summary Card + Bulk "Apply to All" toolbar ──
     let html = `
-        <hr><h6 class="mb-3 fw-bold text-primary">Roll Output Details</h6>
+        <div class="card bg-light-subtle border shadow-sm mb-3">
+            <div class="card-body py-2 px-3">
+                <div class="row g-2 align-items-center text-center">
+                    <div class="col-sm-4">
+                        <span class="text-muted small d-block">Original Width</span>
+                        <strong class="fs-5" id="modalOriginalWidthDisplay">${parseFloat(productData.width || 0).toFixed(2)} mm</strong>
+                    </div>
+                    <div class="col-sm-4 border-start border-end">
+                        <span class="text-muted small d-block">Total Cut Width</span>
+                        <strong class="fs-5 text-primary" id="modalTotalCutWidthDisplay">0.00 mm</strong>
+                    </div>
+                    <div class="col-sm-4">
+                        <span class="text-muted small d-block">Remaining Balance Width</span>
+                        <strong class="fs-5 text-success" id="modalBalanceWidthDisplay">${parseFloat(productData.width || 0).toFixed(2)} mm</strong>
+                    </div>
+                </div>
+                <div id="modalWidthWarning" class="alert alert-danger py-1 px-2 mt-2 mb-0 small text-center" style="display:none;"></div>
+            </div>
+        </div>
+
+        <hr class="my-2">
+        <h6 class="mb-3 fw-bold text-primary">Roll Output Details</h6>
         <div id="bulkApplyBar" class="mb-2 d-flex flex-wrap gap-2 align-items-center">
             <i class="bi bi-lightning-charge-fill text-primary"></i>
             <strong class="small">Apply to All Rolls:</strong>
@@ -926,6 +1570,12 @@ function generateForm() {
     `;
 
     for (let i = 1; i <= total; i++) {
+        const pRow = (activeReslitPlan && activeReslitPlan[i - 1]) ? activeReslitPlan[i - 1] : null;
+        const pWidth = pRow ? pRow.planned_width : '';
+        const pCust = pRow ? (pRow.customer_name || '') : '';
+        const pRef = pRow ? (pRow.ref_no || '') : '';
+        const custBadgeHtml = pCust ? `<span class="badge bg-info-subtle text-info border border-info-subtle ms-1 badge-plan-cust">${escHtml(pCust)}${pRef ? ' / ' + escHtml(pRef) : ''}</span>` : '';
+
         html += `
                 <tr>
                     <td>
@@ -945,7 +1595,9 @@ function generateForm() {
                         <input type="number" step="0.01" name="length[]" class="form-control form-control-sm nominal-length-input" value="${defaultNominalLength}">
                     </td>
                     <td>
-                        <input type="number" step="0.01" name="new_width[]" class="form-control form-control-sm highlight-field width-input" required>
+                        <input type="number" step="0.01" name="new_width[]" class="form-control form-control-sm highlight-field width-input" value="${pWidth}" required oninput="calculateReslitWidths()">
+                        <input type="hidden" name="customer_name[]" value="${escHtml(pCust)}">
+                        <input type="hidden" name="ref_no[]" value="${escHtml(pRef)}">
                     </td>
                     <td>
                         <input type="number" step="0.01" name="actual_length[]" class="form-control form-control-sm highlight-field actual-length-input" placeholder="Optional">
@@ -960,6 +1612,7 @@ function generateForm() {
                     <td>
                         <small class="text-primary" id="lotDisplay${i - 1}">
                             <i class="bi bi-tag me-1"></i>${productData.lot_no} ${productData.coil_no} R${i} | ${productData.width}mm
+                            ${custBadgeHtml}
                         </small>
                     </td>
                 </tr>
@@ -973,6 +1626,7 @@ function generateForm() {
     `;
 
     container.innerHTML = html;
+    calculateReslitWidths();
     submitBtn.style.display = 'inline-block';
 }
 
@@ -993,6 +1647,7 @@ function applyWidthToAll() {
     document.querySelectorAll('#slittingForm .width-input').forEach(input => {
         input.value = bulkVal;
     });
+    calculateReslitWidths();
 }
 
 function applyActualLengthToAll() {
@@ -1035,7 +1690,39 @@ document.getElementById('reslitForm').addEventListener('submit', function(e) {
             return;
         }
     }
-    if (!confirm('Complete reslit process now? Product will be added back to stock.')) e.preventDefault();
+
+    const origWidth = parseFloat(productData.width) || 0;
+    let totalCut = 0;
+    document.querySelectorAll('#slittingForm .width-input').forEach(inp => {
+        totalCut += parseFloat(inp.value) || 0;
+    });
+    if (origWidth > 0 && totalCut > origWidth + 0.01) {
+        e.preventDefault();
+        alert('Total cut width (' + totalCut.toFixed(2) + ' mm) exceeds the original roll width (' + origWidth.toFixed(2) + ' mm). Please adjust roll widths before completing.');
+        return;
+    }
+
+    const sfcBalInput = document.getElementById('reslit_sfc_balance_width');
+    const sfcCheck    = document.getElementById('enable_sfc_balance_width');
+    if (!sfcCheck || !sfcCheck.checked) {
+        if (sfcBalInput) {
+            sfcBalInput.disabled = true;
+            sfcBalInput.value = '';
+        }
+    } else {
+        const sfcBalVal = parseFloat(sfcBalInput?.value) || 0;
+        if (sfcBalVal <= 0) {
+            e.preventDefault();
+            alert('Please enter a valid SFC balance width (> 0), or uncheck "Save Balance Width to SFC".');
+            return;
+        }
+    }
+
+    if (!confirm('Complete reslit process now? Product will be added back to stock.')) {
+        e.preventDefault();
+        return;
+    }
+    reslitFormSubmitted = true;
 });
 
 // ── Summary Report ─────────────────────────────────────────────
@@ -1102,9 +1789,35 @@ function escHtml(s) {
     return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+let reslitFormSubmitted = false;
+
 document.addEventListener('DOMContentLoaded', function () {
     // Apply the default 'pending' filter to the table on first load
     applyReslitFilters();
+
+    const reslitModalEl = document.getElementById('reslitModal');
+    if (reslitModalEl) {
+        reslitModalEl.addEventListener('hidden.bs.modal', function () {
+            if (!reslitFormSubmitted && productData.id > 0) {
+                const fd = new FormData();
+                fd.append('action', 'cancel_reslit_process');
+                fd.append('id', productData.id);
+                fetch('reslit_handler.php', { method: 'POST', body: fd }).catch(console.error);
+            }
+        });
+    }
+
+    window.addEventListener('beforeunload', function () {
+        if (!reslitFormSubmitted && productData.id > 0) {
+            const m = document.getElementById('reslitModal');
+            if (m && m.classList.contains('show')) {
+                const fd = new FormData();
+                fd.append('action', 'cancel_reslit_process');
+                fd.append('id', productData.id);
+                navigator.sendBeacon('reslit_handler.php', fd);
+            }
+        }
+    });
 
     // Initialize the shared camera scanner widget (same library used by
     // sfc.php / finish_product.php / recoiling.php) — it manages its own
@@ -1150,6 +1863,319 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     });
 });
+
+// ── Reslit Slitting Plan Modal Logic ────────────────────────────
+(function () {
+    var modalEl = document.getElementById('reslitPlanModal');
+    if (!modalEl) return;
+    var planModal = new bootstrap.Modal(modalEl);
+
+    var currentRollWidth = 0;
+    var elReslitId = document.getElementById('planModalReslitId');
+    var elBadgeProd = document.getElementById('reslitPlanBadgeProduct');
+    var elBadgeLotCoil = document.getElementById('reslitPlanBadgeLotCoil');
+    var elBadgeRoll = document.getElementById('reslitPlanBadgeRoll');
+    var elBadgeWidth = document.getElementById('reslitPlanBadgeWidth');
+    var elBadgeLength = document.getElementById('reslitPlanBadgeLength');
+    var elContainer = document.getElementById('reslitPlanRowsContainer');
+    var elPasteZone = document.getElementById('reslit_plan_paste_zone');
+    var elPasteWarn = document.getElementById('reslit_plan_paste_warning');
+    var elTotalW = document.getElementById('plannedTotalReslitWidth');
+    var elBalW = document.getElementById('plannedBalanceReslitWidth');
+    var elAllocBadge = document.getElementById('reslitWidthAllocBadge');
+    var elSaveBtn = document.getElementById('saveReslitPlanSubmitBtn');
+    var elAlert = document.getElementById('reslitPlanSaveAlert');
+    var planForm = document.getElementById('reslitPlanForm');
+
+    function esc(s) {
+        return String(s ?? '').replace(/[&<>"']/g, function(c) {
+            return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+        });
+    }
+
+    function updateReslitWidthCalculations() {
+        var total = 0;
+        var inputs = elContainer.querySelectorAll('input[name="plan_width[]"]');
+        inputs.forEach(function (inp) {
+            var val = parseFloat(inp.value);
+            if (!isNaN(val) && val > 0) total += val;
+        });
+
+        elTotalW.textContent = total.toFixed(2) + ' mm';
+        var balance = currentRollWidth - total;
+        elBalW.textContent = balance.toFixed(2) + ' mm';
+
+        if (currentRollWidth > 0 && total > currentRollWidth + 0.01) {
+            elBalW.className = 'fw-bold text-danger';
+            elAllocBadge.classList.add('border-danger', 'bg-danger-subtle');
+            elAllocBadge.classList.remove('bg-white');
+        } else {
+            elBalW.className = 'fw-bold text-success';
+            elAllocBadge.classList.remove('border-danger', 'bg-danger-subtle');
+            elAllocBadge.classList.add('bg-white');
+        }
+    }
+
+    function renderEmptyState() {
+        elContainer.innerHTML = `
+            <div id="reslitPlanEmptyPlaceholder" class="text-center py-4 text-muted small">
+                <i class="bi bi-card-list fs-3 d-block mb-2 text-secondary opacity-50"></i>
+                <div class="fw-semibold text-secondary">Slitting Plan is currently blank.</div>
+                <div class="text-muted mt-1">Paste rows from Excel above or click <strong>Add Row Manually</strong> to key in planned cuts.</div>
+            </div>
+        `;
+    }
+
+    window.addReslitPlanRow = function (seq, width, customer, refNo) {
+        var placeholder = document.getElementById('reslitPlanEmptyPlaceholder');
+        if (placeholder) {
+            placeholder.remove();
+        }
+
+        seq = seq || '';
+        width = (width !== undefined && width !== null) ? width : '';
+        customer = customer || '';
+        refNo = refNo || '';
+
+        if (!seq) {
+            var maxNum = 0;
+            elContainer.querySelectorAll('input[name="plan_seq[]"]').forEach(function (inp) {
+                var m = inp.value.trim().match(/^R(\d+)$/i);
+                if (m) {
+                    var n = parseInt(m[1], 10);
+                    if (n > maxNum) maxNum = n;
+                }
+            });
+            if (maxNum === 0) {
+                maxNum = elContainer.querySelectorAll('.plan-row').length;
+            }
+            seq = 'R' + (maxNum + 1);
+        }
+
+        var row = document.createElement('div');
+        row.className = 'row g-2 align-items-center mb-2 plan-row';
+        row.innerHTML = `
+            <div style="width: 85px;">
+                <input type="text" name="plan_seq[]" class="form-control form-control-sm text-center fw-bold bg-light" placeholder="R1" value="${esc(seq)}">
+            </div>
+            <div style="width: 130px;">
+                <input type="number" step="0.01" name="plan_width[]" class="form-control form-control-sm plan-width-input" placeholder="e.g. 125" value="${esc(width)}">
+            </div>
+            <div style="width: 240px;">
+                <input type="text" name="plan_customer[]" class="form-control form-control-sm text-uppercase" list="validCustomerList" placeholder="e.g. NAE" value="${esc(customer)}">
+            </div>
+            <div class="col">
+                <input type="text" name="plan_ref[]" class="form-control form-control-sm" placeholder="e.g. SO-26-0110" value="${esc(refNo)}">
+            </div>
+            <div style="width: 45px;" class="text-end">
+                <button type="button" class="btn btn-sm btn-outline-danger border-0 px-2 btn-remove-row" title="Remove Roll">
+                    <i class="bi bi-trash3-fill"></i>
+                </button>
+            </div>
+        `;
+
+        elContainer.appendChild(row);
+
+        row.querySelector('.plan-width-input').addEventListener('input', updateReslitWidthCalculations);
+        row.querySelector('.btn-remove-row').addEventListener('click', function () {
+            row.remove();
+            if (elContainer.querySelectorAll('.plan-row').length === 0) {
+                renderEmptyState();
+            }
+            updateReslitWidthCalculations();
+        });
+
+        updateReslitWidthCalculations();
+    };
+
+    window.clearReslitPlanRows = function () {
+        renderEmptyState();
+        updateReslitWidthCalculations();
+    };
+
+    // Parse Excel / CSV paste
+    function parsePasteText(text) {
+        var lines = text.trim().split(/\r?\n/).filter(function (l) { return l.trim() !== ''; });
+        var parsed = [];
+
+        for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            var cols = [];
+            if (line.indexOf(',') !== -1) {
+                cols = line.split(',').map(function (c) { return c.trim(); });
+            } else if (line.indexOf('\t') !== -1) {
+                cols = line.split('\t').map(function (c) { return c.trim(); }).filter(function (c) { return c !== ''; });
+            } else {
+                cols = line.trim().split(/\s+/);
+            }
+
+            if (cols.length < 2) continue;
+
+            var seq = cols[0].trim();
+            var width = parseFloat(cols[1]);
+            if (seq === '' || isNaN(width)) continue;
+
+            var customer = (cols.length >= 3) ? cols[2].trim().toUpperCase() : '';
+            var refNo = (cols.length >= 4) ? cols[3].trim() : '';
+
+            parsed.push({ seq: seq, width: width, customer: customer, refNo: refNo });
+        }
+
+        return parsed;
+    }
+
+    if (elPasteZone) {
+        elPasteZone.addEventListener('input', function () {
+            var text = this.value.trim();
+            if (!text) {
+                elPasteWarn.classList.add('d-none');
+                return;
+            }
+            var parsed = parsePasteText(text);
+            if (parsed.length === 0) {
+                elPasteWarn.classList.remove('d-none');
+                return;
+            }
+            elPasteWarn.classList.add('d-none');
+            elContainer.innerHTML = '';
+            parsed.forEach(function (p) {
+                addReslitPlanRow(p.seq, p.width, p.customer, p.refNo);
+            });
+            updateReslitWidthCalculations();
+        });
+    }
+
+    // Attach click listener to table plan buttons
+    document.addEventListener('click', function (e) {
+        var btn = e.target.closest('.btn-reslit-plan');
+        if (!btn) return;
+
+        var reslitId = btn.dataset.reslitId;
+        var product = btn.dataset.product || '-';
+        var lotNo = btn.dataset.lotNo || '';
+        var coilNo = btn.dataset.coilNo || '';
+        var rollNo = btn.dataset.rollNo || '-';
+        var width = parseFloat(btn.dataset.width || 0);
+        var length = parseFloat(btn.dataset.length || 0);
+
+        currentRollWidth = width;
+        elReslitId.value = reslitId;
+        elBadgeProd.textContent = product;
+        elBadgeLotCoil.textContent = (lotNo + ' ' + coilNo).trim();
+        elBadgeRoll.textContent = rollNo;
+        elBadgeWidth.textContent = width.toFixed(2) + ' mm';
+        elBadgeLength.textContent = length.toFixed(1) + ' m';
+
+        if (elPasteZone) elPasteZone.value = '';
+        if (elPasteWarn) elPasteWarn.classList.add('d-none');
+        if (elAlert) elAlert.classList.add('d-none');
+        elContainer.innerHTML = '<div class="text-center py-4 text-muted"><div class="spinner-border spinner-border-sm text-primary me-2"></div>Loading slitting plan...</div>';
+
+        updateReslitWidthCalculations();
+        planModal.show();
+
+        fetch('reslit.php?ajax=get_reslit_plan&reslit_id=' + encodeURIComponent(reslitId))
+            .then(function (res) { return res.json(); })
+            .then(function (data) {
+                elContainer.innerHTML = '';
+                if (data.ok && Array.isArray(data.plans) && data.plans.length > 0) {
+                    data.plans.forEach(function (p) {
+                        addReslitPlanRow(p.roll_seq, p.planned_width, p.customer_name, p.ref_no);
+                    });
+                } else {
+                    renderEmptyState();
+                }
+                updateReslitWidthCalculations();
+            })
+            .catch(function (err) {
+                console.error('Fetch plan error:', err);
+                elContainer.innerHTML = '<div class="alert alert-danger py-2 m-2">Failed to load existing plan.</div>';
+            });
+    });
+
+    // Handle plan form AJAX submission
+    planForm.addEventListener('submit', function (e) {
+        e.preventDefault();
+
+        elSaveBtn.disabled = true;
+        elSaveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
+        if (elAlert) elAlert.classList.add('d-none');
+
+        var formData = new FormData(planForm);
+        formData.append('ajax', '1');
+
+        fetch('reslit.php', {
+            method: 'POST',
+            body: formData,
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        })
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+            elSaveBtn.disabled = false;
+            elSaveBtn.innerHTML = '<i class="bi bi-check-circle me-1"></i> Save Slitting Plan';
+
+            if (data.ok) {
+                // Update button in table
+                var reslitId = data.reslit_id || elReslitId.value;
+                var tableBtn = document.getElementById('plan_btn_' + reslitId);
+                if (tableBtn) {
+                    var count = data.count || 0;
+                    if (count > 0) {
+                        tableBtn.className = 'btn btn-sm btn-reslit-plan btn-info text-white mb-1';
+                        tableBtn.innerHTML = '<i class="bi bi-pencil-square me-1"></i>Edit Plan <span class="badge bg-white text-dark ms-1 plan-badge-count">' + count + '</span>';
+                        tableBtn.title = 'Edit Slitting Plan (' + count + ' rolls planned)';
+                    } else {
+                        tableBtn.className = 'btn btn-sm btn-reslit-plan btn-outline-primary mb-1';
+                        tableBtn.innerHTML = '<i class="bi bi-plus-circle me-1"></i>+ Slitting Plan';
+                        tableBtn.title = 'Add Slitting Plan for this roll';
+                    }
+                }
+
+                planModal.hide();
+
+                if (typeof Swal !== 'undefined') {
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Slitting Plan Saved',
+                        text: data.msg || 'The slitting plan has been updated.',
+                        timer: 2000,
+                        showConfirmButton: false,
+                        toast: true,
+                        position: 'top-end'
+                    });
+                }
+            } else {
+                if (elAlert) {
+                    elAlert.className = 'alert alert-danger py-2 mt-3';
+                    elAlert.textContent = data.msg || 'Failed to save slitting plan.';
+                    elAlert.classList.remove('d-none');
+                } else {
+                    alert(data.msg || 'Failed to save slitting plan.');
+                }
+            }
+        })
+        .catch(function (err) {
+            console.error('Save plan error:', err);
+            elSaveBtn.disabled = false;
+            elSaveBtn.innerHTML = '<i class="bi bi-check-circle me-1"></i> Save Slitting Plan';
+            if (elAlert) {
+                elAlert.className = 'alert alert-danger py-2 mt-3';
+                elAlert.textContent = 'Network or server error while saving plan.';
+                elAlert.classList.remove('d-none');
+            } else {
+                alert('Network or server error while saving plan.');
+            }
+        });
+    });
+})();
 </script>
+
+<?php if (!empty($autoPrintUrl)): ?>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    window.open(<?= json_encode($autoPrintUrl) ?>, '_blank');
+});
+</script>
+<?php endif; ?>
 
 <?php include 'footer.php'; ?>

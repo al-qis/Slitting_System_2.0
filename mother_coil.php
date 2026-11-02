@@ -234,7 +234,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'get_slitting_plan') {
     $mother_id = intval($_GET['mother_id'] ?? 0);
     $plans = [];
     if ($mother_id > 0) {
-        $stmt = $conn->prepare("SELECT roll_seq, planned_width, customer_name, ref_no FROM slitting_plans WHERE mother_coil_id = ? ORDER BY sort_order ASC, id ASC");
+        $stmt = $conn->prepare("SELECT roll_seq, planned_width, customer_name, ref_no FROM slitting_plans WHERE mother_coil_id = ? AND (stock_id IS NULL OR stock_id = 0) ORDER BY sort_order ASC, id ASC");
         $stmt->bind_param("i", $mother_id);
         $stmt->execute();
         $plans = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -533,7 +533,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt->close();
 
             // Update slitting_plans for this mother_coil
-            $delPlan = $conn->prepare("DELETE FROM slitting_plans WHERE mother_coil_id = ?");
+            $delPlan = $conn->prepare("DELETE FROM slitting_plans WHERE mother_coil_id = ? AND (stock_id IS NULL OR stock_id = 0)");
             if ($delPlan) {
                 $delPlan->bind_param("i", $id);
                 $delPlan->execute();

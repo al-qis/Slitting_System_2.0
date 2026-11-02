@@ -77,6 +77,9 @@ if (
     $stmt->bind_param("ssi", $customer, $ref_no, $id);
     $ok = $stmt->execute();
     $stmt->close();
+    if ($ok && function_exists('syncSlittingPlanCustomer')) {
+        syncSlittingPlanCustomer($conn, $id, $customer, $ref_no);
+    }
 
     echo json_encode([
         'ok'  => $ok,
@@ -169,7 +172,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     die("Product ID required");
 }
 
-$backUrl           = ($from === 'slitting_product') ? 'slitting_product.php' : 'finish_product.php';
+if ($from === 'slitting_product') {
+    $backUrl = 'slitting_product.php';
+} elseif ($from === 'recoiling') {
+    $backUrl = 'recoiling.php';
+} elseif ($from === 'reslit') {
+    $backUrl = 'reslit.php';
+} else {
+    $backUrl = 'finish_product.php';
+}
 $changeCustomerUrl = "select_customer.php?id={$id}" . ($from !== '' ? "&from=" . urlencode($from) : "");
 
 // ── Resolve copies (1–3, defaults to 1) ───────────────────────────
@@ -343,6 +354,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $id > 0 && !in_array($customer, $sk
             $stmt->bind_param("ssi", $customer, $ref_no, $id);
             $stmt->execute();
             $stmt->close();
+            if (function_exists('syncSlittingPlanCustomer')) {
+                syncSlittingPlanCustomer($conn, $id, $customer, $ref_no);
+            }
         }
     }
 }
@@ -490,6 +504,12 @@ $lastPrintedAtDisplay = $lastPrintedAt ? date('d M Y H:i', strtotime($lastPrinte
 <div class="no-print" style="max-width:500px;margin:0 auto 12px;padding:10px 16px;background:#fff3cd;border:1px solid #ffe69c;border-radius:6px;color:#664d03;font-size:13px;text-align:center;">
     <strong>⚠ Already printed <?= $priorPrintCount ?>×</strong> — last on <?= htmlspecialchars($lastPrintedAtDisplay) ?>.
     Double-check before printing again.
+</div>
+<?php endif; ?>
+
+<?php if (strtoupper(trim($ref_no ?? '')) === 'STOCK' && !$embed): ?>
+<div class="no-print" style="max-width:500px;margin:0 auto 12px;padding:10px 16px;background:#dc3545;color:#ffffff;border-radius:6px;font-size:13px;font-weight:bold;text-align:center;box-shadow:0 2px 6px rgba(220,53,69,0.3);">
+    🚨 WARNING: STICKER SO NUMBER IS STOCK
 </div>
 <?php endif; ?>
 
@@ -661,6 +681,15 @@ function escHtml(s) {
     return String(s ?? '').replace(/[&<>"']/g,
         c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+
+<?php if (!empty($_REQUEST['autoprint']) || !empty($_REQUEST['auto_print'])): ?>
+window.addEventListener('DOMContentLoaded', () => {
+    setTimeout(async () => {
+        await markPrinted();
+        window.print();
+    }, 400);
+});
+<?php endif; ?>
 </script>
 
 </body>

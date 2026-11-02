@@ -25,6 +25,8 @@ if ($_SESSION['role'] !== 'slitting') { die("Access denied"); }
 
 include 'config.php';
 require_once 'PalletManager.php';
+require_once __DIR__ . '/control_system/config_store.php';
+$isManualDeliverActive = function_exists('isButtonActive') ? isButtonActive('pallet_manual_deliver') : true;
 
 // Auto-create operators table if not exists
 $conn->query("
@@ -132,7 +134,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
             SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
                    sp.width, sp.actual_length, sp.length, sp.nod_length,
                    sp.stock_counted, sp.status, sp.is_voided,
-                   sp.customer_name, sp.ref_no,
+                   sp.customer_name, sp.ref_no, sp.parent_slit_id,
                    pi.pallet_id, p.pallet_no,
                    COALESCE(sw.std_weight, 0) AS std_weight
             FROM slitting_product sp
@@ -148,7 +150,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
             SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
                    sp.width, sp.actual_length, sp.length, sp.nod_length,
                    sp.stock_counted, sp.status, sp.is_voided,
-                   sp.customer_name, sp.ref_no,
+                   sp.customer_name, sp.ref_no, sp.parent_slit_id,
                    pi.pallet_id, p.pallet_no,
                    COALESCE(sw.std_weight, 0) AS std_weight
             FROM slitting_product sp
@@ -168,7 +170,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
             SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
                    sp.width, sp.actual_length, sp.length, sp.nod_length,
                    sp.stock_counted, sp.status, sp.is_voided,
-                   sp.customer_name, sp.ref_no,
+                   sp.customer_name, sp.ref_no, sp.parent_slit_id,
                    pi.pallet_id, p.pallet_no,
                    COALESCE(sw.std_weight, 0) AS std_weight
             FROM slitting_product sp
@@ -187,7 +189,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
             SELECT sp.id, sp.product, sp.lot_no, sp.coil_no, sp.roll_no,
                    sp.width, sp.actual_length, sp.length, sp.nod_length,
                    sp.stock_counted, sp.status, sp.is_voided,
-                   sp.customer_name, sp.ref_no,
+                   sp.customer_name, sp.ref_no, sp.parent_slit_id,
                    pi.pallet_id, p.pallet_no,
                    COALESCE(sw.std_weight, 0) AS std_weight
             FROM slitting_product sp
@@ -205,6 +207,64 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'lookup_product') {
     $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
     if (!$row) { echo json_encode(['ok' => false, 'msg' => "Roll not found: {$lot} {$coil} {$roll}"]); exit; }
+
+    // If the active row is not directly in a pallet, check if this roll identity
+    // (or its pre-recoil parent/voided counterpart) is already in pallet_items on any pallet
+    if (empty($row['pallet_id'])) {
+        $rawR        = trim($row['roll_no'] ?? '');
+        $baseR       = preg_replace('/(_void_|_OLD_).*$/i', '', $rawR);
+        $cleanDigits = preg_replace('/[^0-9A-Za-z]/', '', $baseR);
+        $r1          = 'R' . ltrim($cleanDigits, 'R');
+        $r_dash_1    = 'R-' . ltrim($cleanDigits, 'R');
+        $parentSlitId = (int)($row['parent_slit_id'] ?? 0);
+        $pid          = (int)$row['id'];
+        $lotNo        = trim($row['lot_no'] ?? '');
+        $coilNo       = trim($row['coil_no'] ?? '');
+        $widthVal     = (float)($row['width'] ?? 0);
+
+        $chkPallet = $conn->prepare("
+            SELECT pi.pallet_id, p.pallet_no, sp.id AS matched_id, sp.roll_no AS matched_roll
+            FROM pallet_items pi
+            JOIN pallets p ON p.id = pi.pallet_id
+            JOIN slitting_product sp ON sp.id = pi.slitting_product_id
+            WHERE (
+                sp.id = ?
+                OR (? > 0 AND sp.id = ?)
+                OR (sp.parent_slit_id IS NOT NULL AND sp.parent_slit_id = ?)
+                OR (
+                    sp.lot_no = ?
+                    AND sp.coil_no = ?
+                    AND ABS(sp.width - ?) < 0.5
+                    AND (
+                        sp.roll_no = ? OR sp.roll_no = ?
+                        OR sp.roll_no LIKE CONCAT(?, '_void_%') OR sp.roll_no LIKE CONCAT(?, '_void_%')
+                        OR sp.roll_no LIKE CONCAT(?, '_OLD_%') OR sp.roll_no LIKE CONCAT(?, '_OLD_%')
+                    )
+                )
+            )
+            LIMIT 1
+        ");
+        $chkPallet->bind_param(
+            "iiiissdssssss",
+            $pid,
+            $parentSlitId, $parentSlitId,
+            $pid,
+            $lotNo, $coilNo, $widthVal,
+            $r1, $r_dash_1,
+            $r1, $r_dash_1,
+            $r1, $r_dash_1
+        );
+        $chkPallet->execute();
+        $palletRes = $chkPallet->get_result()->fetch_assoc();
+        $chkPallet->close();
+
+        if ($palletRes) {
+            $row['pallet_id'] = (int)$palletRes['pallet_id'];
+            $row['pallet_no'] = $palletRes['pallet_no'];
+            $row['matched_roll_on_pallet'] = $palletRes['matched_roll'];
+        }
+    }
+
     $rawLen = (!empty($row['actual_length']) && $row['actual_length'] > 0) ? (float)$row['actual_length'] : (float)$row['length'];
     $nodLen = !empty($row['nod_length']) ? (float)$row['nod_length'] : 0.0;
     $lenForCode = max(0.0, $rawLen - $nodLen);
@@ -269,6 +329,38 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === 'update_pallet_date') {
         exit;
     }
     echo json_encode($pm->updatePalletDate($palletId, $newDate));
+    exit;
+}
+
+// ── AJAX: Auto Deliver Pallet ──────────────────────────────────
+if (isset($_POST['ajax']) && $_POST['ajax'] === 'auto_deliver_pallet') {
+    header('Content-Type: application/json');
+    $palletId = (int)($_POST['pallet_id'] ?? 0);
+    if ($palletId <= 0) {
+        echo json_encode(['ok' => false, 'msg' => 'Missing or invalid pallet_id.']);
+        exit;
+    }
+    $result = $pm->bundleDeliver($palletId);
+    echo json_encode($result);
+    exit;
+}
+
+// ── AJAX: Poll Auto-Deliver (15 sec after approval) ───────────────
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'poll_auto_deliver') {
+    header('Content-Type: application/json');
+    $delivered = [];
+    if (!$isManualDeliverActive) {
+        $stmt = $conn->query("SELECT id, pallet_no FROM pallets WHERE status = 'approved' AND TIMESTAMPDIFF(SECOND, updated_at, NOW()) >= 15");
+        if ($stmt && $stmt->num_rows > 0) {
+            while ($row = $stmt->fetch_assoc()) {
+                $delRes = $pm->bundleDeliver((int)$row['id']);
+                if ($delRes['ok']) {
+                    $delivered[] = $row['pallet_no'];
+                }
+            }
+        }
+    }
+    echo json_encode(['ok' => true, 'delivered' => $delivered]);
     exit;
 }
 
@@ -387,6 +479,20 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === 'deliver_by_scan') {
                 LIMIT 1
             ");
             $stmt->bind_param("i", $id);
+        } elseif ($width > 0 && $lot !== '' && $coil !== '') {
+            $stmt = $conn->prepare("
+                SELECT sp.id, sp.is_voided,
+                       pi.pallet_id,
+                       p.status AS pallet_status, p.pallet_no
+                FROM slitting_product sp
+                LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+                LEFT JOIN pallets p       ON p.id = pi.pallet_id
+                WHERE sp.lot_no = ? AND sp.coil_no = ? AND (sp.roll_no = ? OR sp.roll_no = ?)
+                  AND ABS(sp.width - ?) < 0.5
+                ORDER BY sp.id DESC
+                LIMIT 1
+            ");
+            $stmt->bind_param("ssssd", $lot, $coil, $roll, $cleanRoll, $width);
         } elseif ($width > 0 && $roll !== '') {
             $stmt = $conn->prepare("
                 SELECT sp.id, sp.is_voided,
@@ -467,13 +573,24 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === 'deliver_by_scan') {
         }
     }
 
+    // ── Auto-Deliver Scanned Approved Pallet (when manual delivery is blocked) ──
+    $targetDelivered = false;
+    if ($targetStatus === 'approved' && !$isManualDeliverActive) {
+        $delivRes = $pm->bundleDeliver($targetPalletId);
+        if ($delivRes['ok']) {
+            $targetDelivered = true;
+            $targetStatus = 'delivered';
+        }
+    }
+
     echo json_encode([
-        'ok'             => true,
-        'pallet_id'      => $targetPalletId,
-        'pallet_no'      => $targetPalletNo,
-        'status'         => $targetStatus,
-        'prev_delivered' => $prevDelivered,
-        'prev_pallet_no' => $prevPalletNo,
+        'ok'               => true,
+        'pallet_id'        => $targetPalletId,
+        'pallet_no'        => $targetPalletNo,
+        'status'           => $targetStatus,
+        'target_delivered' => $targetDelivered,
+        'prev_delivered'   => $prevDelivered,
+        'prev_pallet_no'   => $prevPalletNo,
     ]);
     exit;
 }
@@ -481,7 +598,8 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === 'deliver_by_scan') {
 // ── Shared: build the flattened Summary Pallet dataset ─────────
 function buildSummaryPalletRows(mysqli $conn): array {
     $rows = $conn->query("
-        SELECT p.id AS pallet_id, p.pallet_no, p.status, p.created_at AS pallet_date, pi.stock_code AS pi_stock_code,
+        SELECT p.id AS pallet_id, p.pallet_no, p.status, p.created_at AS pallet_date, p.ref_no AS pallet_ref_no,
+               pi.stock_code AS pi_stock_code,
                sp.roll_no, sp.lot_no, sp.coil_no, sp.product,
                sp.customer_name, sp.ref_no, sp.width, sp.length, sp.actual_length
         FROM pallets p
@@ -505,6 +623,13 @@ function buildSummaryPalletRows(mysqli $conn): array {
 
         $formattedDate = !empty($r['pallet_date']) ? date('d/m/Y', strtotime($r['pallet_date'])) : '-';
 
+        $rollRef   = trim((string)($r['ref_no'] ?? ''));
+        $palletRef = trim((string)($r['pallet_ref_no'] ?? ''));
+        $isStockRef = ($rollRef === '' || strtoupper($rollRef) === 'STOCK');
+        $effectiveRef = ($isStockRef && $palletRef !== '' && strtoupper($palletRef) !== 'STOCK')
+            ? $palletRef
+            : ($rollRef !== '' ? $rollRef : ($palletRef !== '' ? $palletRef : null));
+
         return [
             'pallet_id'  => $r['pallet_id'],
             'pallet_no'  => $r['pallet_no'],
@@ -515,7 +640,7 @@ function buildSummaryPalletRows(mysqli $conn): array {
             'lot_coil'   => trim(($r['lot_no'] ?? '') . ' ' . ($r['coil_no'] ?? '')),
             'product'    => $r['product'],
             'customer'   => $r['customer_name'],
-            'ref_no'     => $r['ref_no'],
+            'ref_no'     => $effectiveRef,
             'width'      => $r['width'] !== null ? (float)$r['width'] : null,
             'length'     => $lenVal !== null ? (float)$lenVal : null,
         ];
@@ -541,7 +666,7 @@ function filterSummaryPalletRows(array $rows, string $cat, string $val, string $
                 $val = "{$m[3]}/{$m[2]}/{$m[1]}";
             }
             $rows = array_values(array_filter($rows, fn($r) => (string)($r['date'] ?? '') === $val));
-        } elseif ($cat === 'customer' || $cat === 'product') {
+        } elseif ($cat === 'customer' || $cat === 'product' || $cat === 'ref_no') {
             $rows = array_values(array_filter($rows, fn($r) => (string)($r[$cat] ?? '') === $val));
         } elseif ($cat === 'suffix') {
             $rows = array_values(array_filter($rows, function ($r) use ($val) {
@@ -606,7 +731,7 @@ if (isset($_GET['export']) && $_GET['export'] === 'summary_pallet') {
     $rows = buildSummaryPalletRows($conn);
     $rows = filterSummaryPalletRows($rows, $cat, $val, $statusParam, $suffixParam);
 
-    $catLabels = ['customer' => 'Customer', 'product' => 'Product Type', 'date' => 'Date', 'width' => 'Width', 'length' => 'Length', 'suffix' => 'Pallet Suffix'];
+    $catLabels = ['customer' => 'Customer', 'product' => 'Product Type', 'ref_no' => 'SOS No. / Ref No', 'date' => 'Date', 'width' => 'Width', 'length' => 'Length', 'suffix' => 'Pallet Suffix'];
     $filterParts = [];
     if ($val !== '') {
         $filterParts[] = isset($catLabels[$cat]) ? "{$catLabels[$cat]}: {$val}" : "Search: {$val}";
@@ -699,9 +824,11 @@ if (isset($_GET['export']) && $_GET['export'] === 'summary_pallet') {
 // ── POST: Create pallet ───────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'create_pallet') {
     header('Content-Type: application/json');
-    $palletNo = trim($_POST['pallet_no'] ?? '');
+    $palletNo     = trim($_POST['pallet_no'] ?? '');
+    $customerName = trim($_POST['customer_name'] ?? '');
+    $refNo        = trim($_POST['ref_no'] ?? '');
     if (!$palletNo) { echo json_encode(['ok' => false, 'msg' => 'Pallet No is required.']); exit; }
-    echo json_encode($pm->createPallet($palletNo));
+    echo json_encode($pm->createPallet($palletNo, $customerName, $refNo));
     exit;
 }
 
@@ -786,9 +913,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'resub
 // ── POST: Deliver ─────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'deliver_pallet') {
     $palletId = intval($_POST['pallet_id'] ?? 0);
+    if (!$isManualDeliverActive) {
+        header("Location: pallet.php?pallet_id={$palletId}&error=" . urlencode("Manual pallet delivery is currently BLOCKED in Control Center."));
+        exit;
+    }
     $result   = $pm->bundleDeliver($palletId);
-    if ($result['ok']) { header("Location: pallet.php?success=delivered&pallet_no=" . urlencode($result['pallet_no'] ?? '')); }
-    else               { header("Location: pallet.php?error=" . urlencode($result['msg'])); }
+    if ($result['ok']) { header("Location: pallet.php?pallet_id={$palletId}&success=delivered&pallet_no=" . urlencode($result['pallet_no'] ?? '')); }
+    else               { header("Location: pallet.php?pallet_id={$palletId}&error=" . urlencode($result['msg'])); }
     exit;
 }
 
@@ -841,18 +972,53 @@ function calcEstWeight(float $lengthM, float $widthMm, float $stdWeight): float 
 
 $activeItems = $activePallet ? getPalletItemsWithWeight($conn, $activePalletId) : [];
 
-// Build a lookup: seq → item, so PHP can render all 8 slots in order
+// Pre-calculate total Est. Weight, check for STOCK rolls/SO and Unmatched Customer/SO
+$totalEstWgt = 0.0;
+$hasStockRoll = false;
+$hasUnmatchedRoll = false;
+$stockRollsList = [];
+$unmatchedRollsList = [];
+
+$palletCust = trim($activePallet['customer_name'] ?? '');
+$palletRef  = trim($activePallet['ref_no'] ?? '');
+
+foreach ($activeItems as &$item) {
+    $len = (float)($item['actual_length'] ?: $item['length']);
+    $totalEstWgt += calcEstWeight($len, (float)$item['width'], (float)$item['std_weight']);
+
+    $rollCust = trim($item['customer_name'] ?? '');
+    $rollRef  = trim($item['ref_no'] ?? '');
+
+    $isStockRoll = PalletManager::isStockRefNo($rollRef);
+    if ($isStockRoll) {
+        $hasStockRoll = true;
+        $stockRollsList[] = trim($item['lot_no'] . ' ' . $item['coil_no'] . ' ' . str_replace('R', 'R-', $item['roll_no']));
+    }
+
+    $isCustMismatch = ($rollCust !== '' && $palletCust !== '' && strtolower($rollCust) !== strtolower($palletCust));
+    $isRefMismatch  = (!PalletManager::isStockRefNo($rollRef) && !PalletManager::isStockRefNo($palletRef) && $rollRef !== $palletRef);
+    $isUnmatched    = $isCustMismatch || $isRefMismatch;
+
+    $item['is_stock_ref'] = $isStockRoll;
+    $item['is_unmatched'] = $isUnmatched;
+    $item['unmatched_reason'] = $isUnmatched ? "Sticker: {$rollCust} / {$rollRef}" : '';
+
+    if ($isUnmatched) {
+        $hasUnmatchedRoll = true;
+        $unmatchedRollsList[] = trim($item['lot_no'] . ' ' . $item['coil_no'] . ' ' . str_replace('R', 'R-', $item['roll_no']))
+            . " (Sticker: {$rollCust}, {$rollRef} | Pallet: {$palletCust}, {$palletRef})";
+    }
+}
+unset($item);
+
+// Re-index $itemsBySeq with enriched items
 $itemsBySeq = [];
 foreach ($activeItems as $item) {
     $itemsBySeq[(int)$item['seq']] = $item;
 }
 
-// Pre-calculate total Est. Weight for PHP-rendered slots
-$totalEstWgt = 0.0;
-foreach ($activeItems as $item) {
-    $len = (float)($item['actual_length'] ?: $item['length']);
-    $totalEstWgt += calcEstWeight($len, (float)$item['width'], (float)$item['std_weight']);
-}
+$isStockPalletRef = PalletManager::isStockRefNo($activePallet['ref_no'] ?? '');
+$isSoStock = $isStockPalletRef || $hasStockRoll;
 
 // Pallets rejected by QC — still queried server-side because the
 // "Need Attention" banner near the top of the page renders on first
@@ -881,6 +1047,10 @@ $MAX = PalletManager::MAX_ROLLS;
 $isBuilding  = $activePallet && $activePallet['status'] === 'building';
 $isRejected  = $activePallet && $activePallet['status'] === 'rejected';
 $isApproved  = $activePallet && $activePallet['status'] === 'approved';
+$secondsSinceApproved = 0;
+if ($isApproved && !empty($activePallet['updated_at'])) {
+    $secondsSinceApproved = max(0, time() - strtotime($activePallet['updated_at']));
+}
 $isPendingQc = $activePallet && $activePallet['status'] === 'pending_qc';
 $isDelivered = $activePallet && $activePallet['status'] === 'delivered';
 $isReadOnly  = $activePallet && !in_array($activePallet['status'], ['building', 'rejected']);
@@ -960,6 +1130,7 @@ if ($activePalletId) {
 .pallet-card.is-edit-building.active .pallet-card-customer,
 .pallet-card.is-edit-building.active .pallet-card-rolls,
 .pallet-card.is-edit-building.active .pallet-card-lot,
+.pallet-card.is-edit-building.active .pallet-card-spec,
 .pallet-card.is-edit-building.active .pallet-card-date { color:#854d0e !important; }
 
 /* .active is declared last so it wins the cascade over the status
@@ -968,6 +1139,7 @@ if ($activePalletId) {
 .pallet-card.active .pallet-card-customer,
 .pallet-card.active .pallet-card-rolls,
 .pallet-card.active .pallet-card-lot,
+.pallet-card.active .pallet-card-spec,
 .pallet-card.active .pallet-card-date { color:rgba(255,255,255,.75) !important; }
 .pallet-card.active .pallet-progress { background:rgba(255,255,255,.25); }
 
@@ -981,8 +1153,10 @@ if ($activePalletId) {
     border-radius:8px; padding:1px 6px; margin-left:6px; vertical-align:middle;
 }
 .pallet-card-lot        { font-family:'Courier New', monospace; font-size:10px; color:#adb5bd; margin-top:1px; }
+.pallet-card-spec       { font-size:11px; font-weight:600; color:#64748b; margin-top:2px; }
 .pallet-card-date       { font-size:10px; color:#6c757d; font-weight:500; margin-top:2px; white-space:nowrap; }
 .pallet-card-customer  { font-size:12.5px; font-weight:600; margin-bottom:7px; }
+.pallet-card-ref       { font-weight:500; font-size:11.5px; opacity:.85; }
 .pallet-card-rolls      { font-size:11px; font-weight:600; color:#6c757d; white-space:nowrap; }
 
 .pallet-list-empty, .pallet-list-loading { text-align:center; color:#adb5bd; font-size:13px; padding:36px 16px; }
@@ -1236,6 +1410,7 @@ $successMsgs = [
     'resubmitted'    => 'Pallet re-submitted to QC after editing.',
     'reopened'       => 'Pallet returned to edit mode — make necessary corrections, then re-submit to QC.',
     'delivered'      => 'Pallet ' . htmlspecialchars($_GET['pallet_no'] ?? '') . ' delivered.',
+    'auto_delivered' => 'Pallet ' . htmlspecialchars($_GET['pallet_no'] ?? '') . ' was automatically sent to deliver.',
     'prev_delivered' => 'Previous approved Pallet ' . htmlspecialchars($_GET['prev_no'] ?? '') . ' was automatically delivered as you transitioned to a new pallet.',
     'pallet_deleted' => 'Pallet ' . htmlspecialchars($_GET['pallet_no'] ?? '') . ' deleted. Rolls returned to stock.',
 ];
@@ -1422,15 +1597,15 @@ if (isset($_GET['success'])): ?>
                             </tr>
                             <tr>
                                 <td class="bg-light fw-bold text-muted">SOS No.</td>
-                                <td class="fw-bold text-dark"><span id="constraintRefNoText"><?= htmlspecialchars($activePallet['ref_no']) ?></span></td>
+                                <td class="fw-bold text-dark"><span id="constraintRefNoText" class="<?= $isSoStock ? 'text-danger fw-bold' : '' ?>" style="<?= $isSoStock ? 'color:#dc2626 !important;' : '' ?>"><?= htmlspecialchars($activePallet['ref_no']) ?></span></td>
                                 <td class="bg-light fw-bold text-muted">Serial No.</td>
                                 <td class="fw-bold text-primary"><?= htmlspecialchars($activePallet['pallet_no']) ?></td>
                             </tr>
                             <tr>
                                 <td class="bg-light fw-bold text-muted">Product Type :</td>
-                                <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['product_type']) ?></td>
+                                <td class="fw-bold text-dark" id="constraintProductTypeText"><?= !empty($activeItems) ? htmlspecialchars($activePallet['product_type'] ?: '') : '' ?></td>
                                 <td class="bg-light fw-bold text-muted">Width (mm)</td>
-                                <td class="fw-bold text-dark"><?= formatWidthDisplay($activePallet['width']) ?> mm</td>
+                                <td class="fw-bold text-dark" id="constraintWidthText"><?= (!empty($activeItems) && (float)($activePallet['width'] ?? 0) > 0) ? formatWidthDisplay($activePallet['width']) . ' mm' : '' ?></td>
                             </tr>
                             <tr>
                                 <td class="bg-light fw-bold text-muted">Active Operator</td>
@@ -1594,6 +1769,41 @@ if (isset($_GET['success'])): ?>
                     </div>
                 </div>
 
+                <!-- ── Stock SOS No Warning Card ── -->
+                <?php $isStockPallet = PalletManager::isStockRefNo($activePallet['ref_no'] ?? ''); ?>
+                <div class="alert alert-warning d-flex align-items-center mb-3 py-2 px-3 <?= $isStockPallet ? '' : 'd-none' ?>" id="palletStockWarningCard" style="border-left: 4px solid #f59e0b; background: #fffbeb; border-color: #fcd34d; color: #92400e;">
+                    <i class="bi bi-exclamation-triangle-fill fs-4 me-2 text-warning flex-shrink-0"></i>
+                    <div class="d-flex justify-content-between align-items-center w-100 flex-wrap gap-2">
+                        <div>
+                            <strong style="color: #b45309;"><i class="bi bi-shield-exclamation me-1"></i>Action Required: Pallet SOS No. is STOCK</strong>
+                            <div style="font-size:12.5px;" class="mt-1">
+                                Pallet SOS No. is currently <strong><span id="warningStockRefText"><?= htmlspecialchars(($activePallet['ref_no'] ?? '') ?: 'STOCK') ?></span></strong>. Sending to QC is blocked until the operator edits the Customer SO number.
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-warning btn-sm fw-bold shadow-sm" onclick="startEditConstraint()" style="background:#fef08a; color:#713f12; border:1px solid #fde047;">
+                            <i class="bi bi-pencil-square me-1"></i> Edit SO Number
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ── Unmatched Customer / SO Warning Card ── -->
+                <div class="alert alert-warning d-flex align-items-center mb-3 py-2 px-3 <?= $hasUnmatchedRoll ? '' : 'd-none' ?>" id="palletUnmatchedWarningCard" style="border-left: 4px solid #f59e0b; background: #fffbeb; border-color: #fcd34d; color: #92400e;">
+                    <i class="bi bi-exclamation-triangle-fill fs-4 me-2 text-warning flex-shrink-0"></i>
+                    <div class="d-flex justify-content-between align-items-center w-100 flex-wrap gap-2">
+                        <div>
+                            <strong style="color: #b45309;"><i class="bi bi-shield-exclamation me-1"></i>Warning: Customer / SO Mismatch Detected!</strong>
+                            <div style="font-size:12.5px;" class="mt-1">
+                                Pallet Header is set to <strong><?= htmlspecialchars($palletCust) ?> (<?= htmlspecialchars($palletRef) ?>)</strong>, but coil(s) on this pallet have different sticker details:
+                                <ul class="mb-0 mt-1 ps-3">
+                                    <?php foreach ($unmatchedRollsList as $unm): ?>
+                                    <li><strong><?= htmlspecialchars($unm) ?></strong></li>
+                                    <?php endforeach; ?>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="alert <?= $isEditBuilding ? ($isReturnToStock ? 'alert-info border-info-subtle' : 'alert-warning border-warning-subtle') : 'alert-info' ?> py-2 mb-3" style="<?= $isEditBuilding ? ($isReturnToStock ? 'background:#f0f9ff; color:#0c4a6e;' : 'background:#fffbe6; color:#78350f;') : '' ?>">
                     <i class="bi <?= $isEditBuilding ? ($isReturnToStock ? 'bi-info-circle-fill text-info' : 'bi-info-circle-fill text-warning') : 'bi-qr-code-scan' ?> me-1"></i>
                     <?= $isEditBuilding
@@ -1659,8 +1869,11 @@ if (isset($_GET['success'])): ?>
                             $itemNod = (float)($item['nod_length'] ?? 0);
                             $hasNod  = $itemNod > 0;
                             $netLen  = $itemLen - $itemNod;
+                            $isItemStock = !empty($item['is_stock_ref']);
+                            $isItemUnm   = !empty($item['is_unmatched']);
+                            $unmInfo     = $item['unmatched_reason'] ?? '';
                         ?>
-                        <tr id="slot<?= $s ?>" data-slot="<?= $s ?>" data-filled="1" data-product-id="<?= $item['product_id'] ?>" data-weight="<?= number_format($itemWgt, 4) ?>">
+                        <tr id="slot<?= $s ?>" data-slot="<?= $s ?>" data-filled="1" data-product-id="<?= $item['product_id'] ?>" data-weight="<?= number_format($itemWgt, 4) ?>" data-roll-ref="<?= htmlspecialchars($item['ref_no'] ?? '') ?>" data-roll-customer="<?= htmlspecialchars($item['customer_name'] ?? '') ?>" data-lot-coil="<?= htmlspecialchars($item['lot_no'] . ' ' . $item['coil_no']) ?>" data-roll-no="<?= htmlspecialchars(str_replace('R','R-',$item['roll_no'])) ?>" data-is-stock="<?= $isItemStock ? '1' : '0' ?>" data-is-unmatched="<?= $isItemUnm ? '1' : '0' ?>" data-unmatched-info="<?= htmlspecialchars("Sticker: " . ($item['customer_name'] ?? '') . " / " . ($item['ref_no'] ?? '') . " vs Pallet: {$palletCust} / {$palletRef}") ?>">
                             <td class="fw-bold text-start ps-3" style="font-family:monospace; font-size:12px;"><?= htmlspecialchars(($item['stock_code'] ?? '') ?: '-') ?></td>
                             <td><?= htmlspecialchars($item['lot_no']) ?> <?= htmlspecialchars($item['coil_no']) ?></td>
                             <td>
@@ -1671,7 +1884,15 @@ if (isset($_GET['success'])): ?>
                             </td>
                             <td><?= formatWidthDisplay($item['width']) ?></td>
                             <td>1</td>
-                            <td class="fw-bold"><?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?></td>
+                            <td class="fw-bold">
+                                <?= str_replace('R','R-', htmlspecialchars($item['roll_no'])) ?>
+                                <?php if ($isItemStock): ?>
+                                <br><span class="badge badge-warning-stock ms-1" style="font-size:10px;"><i class="bi bi-exclamation-octagon-fill me-1"></i>SO: STOCK</span>
+                                <?php endif; ?>
+                                <?php if ($isItemUnm): ?>
+                                <br><span class="badge badge-warning-cust-mismatch ms-1" style="font-size:10px;" title="Sticker: <?= htmlspecialchars($item['customer_name'] ?? '') ?> (<?= htmlspecialchars($item['ref_no'] ?? '') ?>)"><i class="bi bi-exclamation-triangle-fill me-1"></i>Customer Detail Mismatch</span>
+                                <?php endif; ?>
+                            </td>
                             <td class="fw-bold text-end pe-3 text-primary"><?= $itemWgt > 0 ? number_format($itemWgt, 2) : '-' ?></td>
                             <td>
                                 <button type="button" class="btn btn-outline-danger btn-sm py-0 px-2" title="Remove this roll" data-product-id="<?= $item['product_id'] ?>" onclick="removeRoll(<?= $activePalletId ?>, <?= $item['product_id'] ?>, <?= $s ?>, this)">
@@ -1718,17 +1939,15 @@ if (isset($_GET['success'])): ?>
                     $qcAction = $isEdit ? 'resubmit_to_qc' : 'send_to_qc';
                     $qcLabel  = $isEdit ? 'Re-submit to QC' : 'Send to QC';
                     ?>
-                    <form method="post">
+                    <form method="post" id="sendToQcForm">
                         <input type="hidden" name="action"    value="<?= $qcAction ?>">
                         <input type="hidden" name="pallet_id" value="<?= $activePalletId ?>">
                         <button type="submit"
-                                class="btn <?= $isEdit ? 'btn-sm fw-bold' : 'btn-primary btn-sm fw-bold' ?>"
-                                style="<?= $isEdit ? 'background:#fef08a; color:#713f12; border:1px solid #fde047;' : '' ?>"
+                                class="btn btn-warning btn-sm fw-bold"
+                                style="background:#fef08a; color:#713f12; border:1px solid #fde047;"
                                 id="sendToQcBtn"
                                 <?= count($activeItems) < 1 ? 'disabled' : '' ?>
-                                onclick="return confirm('<?= $isEdit
-                                    ? 'Re-submit this edited pallet to QC?'
-                                    : 'Send pallet to QC? No more rolls can be added after this.' ?>')">
+                                onclick="return confirmSendToQC(event, <?= $isEdit ? 'true' : 'false' ?>)">
                             <i class="bi bi-send me-1"></i> <?= $qcLabel ?>
                         </button>
                     </form>
@@ -1793,7 +2012,7 @@ if (isset($_GET['success'])): ?>
                         </tr>
                         <tr>
                             <td class="bg-light fw-bold text-muted">SOS No.</td>
-                            <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['ref_no'] ?: '-') ?></td>
+                            <td class="fw-bold <?= $isSoStock ? 'text-danger' : 'text-dark' ?>" style="<?= $isSoStock ? 'color:#dc2626 !important;' : '' ?>"><?= htmlspecialchars($activePallet['ref_no'] ?: '-') ?></td>
                             <td class="bg-light fw-bold text-muted">Serial No.</td>
                             <td class="fw-bold text-primary"><?= htmlspecialchars($activePallet['pallet_no'] ?: '-') ?></td>
                         </tr>
@@ -1973,7 +2192,7 @@ if (isset($_GET['success'])): ?>
                         </tr>
                         <tr>
                             <td class="bg-light fw-bold text-muted">SOS No.</td>
-                            <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['ref_no'] ?: '-') ?></td>
+                            <td class="fw-bold <?= $isSoStock ? 'text-danger' : 'text-dark' ?>" style="<?= $isSoStock ? 'color:#dc2626 !important;' : '' ?>"><?= htmlspecialchars($activePallet['ref_no'] ?: '-') ?></td>
                             <td class="bg-light fw-bold text-muted">Serial No.</td>
                             <td class="fw-bold text-primary"><?= htmlspecialchars($activePallet['pallet_no'] ?: '-') ?></td>
                         </tr>
@@ -2120,7 +2339,7 @@ if (isset($_GET['success'])): ?>
                         </tr>
                         <tr>
                             <td class="bg-light fw-bold text-muted">SOS No.</td>
-                            <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['ref_no'] ?: '-') ?></td>
+                            <td class="fw-bold <?= $isSoStock ? 'text-danger' : 'text-dark' ?>" style="<?= $isSoStock ? 'color:#dc2626 !important;' : '' ?>"><?= htmlspecialchars($activePallet['ref_no'] ?: '-') ?></td>
                             <td class="bg-light fw-bold text-muted">Serial No.</td>
                             <td class="fw-bold text-primary"><?= htmlspecialchars($activePallet['pallet_no'] ?: '-') ?></td>
                         </tr>
@@ -2136,6 +2355,35 @@ if (isset($_GET['success'])): ?>
             <?php endif; ?>
 
             <div class="card-body p-4">
+                <?php if (!$isManualDeliverActive): ?>
+                <!-- Auto Send to Deliver Banner (Only shown when manual delivery is blocked in Control Center) -->
+                <div class="alert d-flex align-items-center justify-content-between p-3 mb-3 border-0 shadow-sm" id="autoDeliverAlert" style="background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%); border-left: 5px solid #10b981 !important; border-radius: 8px;">
+                    <div class="d-flex align-items-center gap-3">
+                        <div class="spinner-grow spinner-grow-sm text-success" role="status" id="autoDeliverSpinner" style="width: 1.4rem; height: 1.4rem;"></div>
+                        <div>
+                            <div class="fw-bold text-success d-flex align-items-center gap-2" style="font-size: 14.5px;">
+                                <i class="bi bi-lightning-charge-fill text-warning"></i> Auto Send to Deliver Active
+                                <span class="badge bg-success text-white" id="autoDeliverBadge" style="font-size: 11px;">AUTO-SENDING</span>
+                            </div>
+                            <div class="text-dark small mt-1" id="autoDeliverStatusText">
+                                This pallet is approved and will automatically be sent to deliver in <span class="badge bg-dark fs-6 px-2 py-0" id="autoDeliverCountdown">15</span> seconds...
+                            </div>
+                            <div class="progress mt-2" style="height: 5px; width: 260px; background: rgba(16, 185, 129, 0.2);">
+                                <div class="progress-bar bg-success progress-bar-striped progress-bar-animated" id="autoDeliverProgressBar" style="width: 100%; transition: width 0.1s linear;"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="d-flex align-items-center gap-2 flex-wrap">
+                        <button type="button" class="btn btn-sm btn-success fw-bold px-3 shadow-sm" id="btnDeliverNow" onclick="triggerAutoDeliverImmediate()">
+                            <i class="bi bi-truck me-1"></i> Deliver Now
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary px-3 bg-white" id="btnToggleAutoDeliver" onclick="togglePauseAutoDeliver()">
+                            <i class="bi bi-pause-fill me-1" id="btnToggleAutoDeliverIcon"></i> <span id="btnToggleAutoDeliverText">Pause</span>
+                        </button>
+                    </div>
+                </div>
+                <?php endif; ?>
+
                 <?php
                 $approvedTotalWgt = 0.0;
                 foreach ($activeItems as $item) {
@@ -2229,7 +2477,8 @@ if (isset($_GET['success'])): ?>
                     </button>
                 </div>
 
-                <form method="post"
+                <?php if ($isManualDeliverActive): ?>
+                <form method="post" id="manualDeliverForm"
                       onsubmit="return confirm('Deliver pallet ' + currentPalletNo + '?\n\nAll <?= count($activeItems) ?> roll(s) will be marked DELIVERED.')">
                     <input type="hidden" name="action"    value="deliver_pallet">
                     <input type="hidden" name="pallet_id" value="<?= $activePalletId ?>">
@@ -2237,6 +2486,16 @@ if (isset($_GET['success'])): ?>
                         <i class="bi bi-truck me-1"></i> Deliver Pallet
                     </button>
                 </form>
+                <?php else: ?>
+                <div class="d-inline-flex align-items-center gap-2">
+                    <button type="button" class="btn btn-secondary fw-bold" disabled title="Manual delivery button is currently BLOCKED in Control Center" style="cursor: not-allowed; opacity: 0.65;">
+                        <i class="bi bi-slash-circle me-1 text-danger"></i> Deliver Pallet (Blocked)
+                    </button>
+                    <span class="badge bg-danger-subtle text-danger border border-danger small py-1 px-2" style="font-size:11px;">
+                        <i class="bi bi-lock-fill me-1"></i>Manual Deliver Blocked in Control Center
+                    </span>
+                </div>
+                <?php endif; ?>
             </div>
         </div>
 
@@ -2278,7 +2537,7 @@ if (isset($_GET['success'])): ?>
                         </tr>
                         <tr>
                             <td class="bg-light fw-bold text-muted">SOS No.</td>
-                            <td class="fw-bold text-dark"><?= htmlspecialchars($activePallet['ref_no'] ?: '-') ?></td>
+                            <td class="fw-bold <?= $isSoStock ? 'text-danger' : 'text-dark' ?>" style="<?= $isSoStock ? 'color:#dc2626 !important;' : '' ?>"><?= htmlspecialchars($activePallet['ref_no'] ?: '-') ?></td>
                             <td class="bg-light fw-bold text-muted">Serial No.</td>
                             <td class="fw-bold text-primary"><?= htmlspecialchars($activePallet['pallet_no'] ?: '-') ?></td>
                         </tr>
@@ -2685,6 +2944,92 @@ if (isset($_GET['success'])): ?>
   </div>
 </div>
 
+<!-- ── STOCK SO WARNING MODAL (RED POPUP) ───────────────────── -->
+<div class="modal fade" id="soStockAlertModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content shadow border-danger" style="border-width: 2px;">
+      <div class="modal-header bg-danger text-white py-2">
+        <h5 class="modal-title fs-6 fw-bold text-white d-flex align-items-center gap-2">
+          <i class="bi bi-exclamation-triangle-fill fs-5"></i> Sila Semak Roll SO Detail
+        </h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body py-3">
+        <div class="alert alert-danger mb-3 py-2 px-3 fw-bold d-flex align-items-center gap-2" style="background:#fef2f2; color:#991b1b; border-color:#fca5a5;">
+          <i class="bi bi-shield-exclamation fs-4 flex-shrink-0"></i>
+          <div>
+            Roll di bawah masih mempunyai detail SO sebagai <strong>STOCK</strong>:
+          </div>
+        </div>
+        <div class="p-3 bg-light rounded border border-danger-subtle" style="max-height:220px; overflow-y:auto;" id="soStockRollsListContainer">
+          <!-- List of stock rolls inserted dynamically -->
+        </div>
+      </div>
+      <div class="modal-footer py-2 px-3 bg-light d-flex justify-content-between">
+        <button type="button" class="btn btn-secondary btn-sm fw-bold" data-bs-dismiss="modal">
+          <i class="bi bi-x-lg me-1"></i> Batal / Edit SO
+        </button>
+        <button type="button" class="btn btn-danger btn-sm fw-bold" id="soStockModalProceedBtn">
+          Teruskan Hantar ke QC <i class="bi bi-send ms-1"></i>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── MISMATCH CONSTRAINT ALERT MODAL ───────────────────────── -->
+<div class="modal fade" id="mismatchAlertModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content shadow border-danger" style="border-width: 2px;">
+      <div class="modal-header bg-danger text-white py-2">
+        <h5 class="modal-title fs-6 fw-bold text-white d-flex align-items-center gap-2">
+          <i class="bi bi-x-octagon-fill fs-5"></i> Roll Does Not Match Pallet!
+        </h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body py-3">
+        <div class="alert alert-danger mb-3 py-2 px-3 fw-semibold d-flex align-items-center gap-2" style="background:#fef2f2; color:#991b1b; border-color:#fca5a5; font-size:13px;">
+          <i class="bi bi-exclamation-triangle-fill fs-4 flex-shrink-0"></i>
+          <div id="mismatchModalSummary">
+            The scanned coil details do not match this pallet's constraints.
+          </div>
+        </div>
+
+        <div class="card border mb-3">
+          <div class="card-header bg-light py-1 px-3 fw-bold text-secondary" style="font-size:12px;">
+            <i class="bi bi-arrow-left-right me-1"></i>Comparison &amp; Differences
+          </div>
+          <div class="card-body p-0">
+            <div class="table-responsive">
+              <table class="table table-sm table-bordered mb-0 align-middle text-center" style="font-size:12px;">
+                <thead class="table-light">
+                  <tr>
+                    <th style="width:25%;">Field</th>
+                    <th style="width:37.5%;" class="text-primary"><i class="bi bi-box-seam me-1"></i>Pallet Requirement</th>
+                    <th style="width:37.5%;" class="text-danger"><i class="bi bi-disc me-1"></i>Scanned Roll</th>
+                  </tr>
+                </thead>
+                <tbody id="mismatchModalTableBody">
+                  <!-- Injected via showMismatchModal -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div id="mismatchModalDetailsList" class="small text-danger fw-semibold">
+          <!-- Text bullets of mismatches -->
+        </div>
+      </div>
+      <div class="modal-footer py-2 px-3 bg-light">
+        <button type="button" class="btn btn-danger btn-sm fw-bold w-100" data-bs-dismiss="modal">
+          <i class="bi bi-check2 me-1"></i> Understand &amp; Close
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ── ADD OPERATOR MODAL ────────────────────────────────────── -->
 <div class="modal fade" id="addOperatorModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-sm modal-dialog-centered">
@@ -2820,15 +3165,99 @@ if (isset($_GET['success'])): ?>
             Pallet Serial No <span class="text-danger">*</span>
           </label>
           <input type="text" id="palletNoInput" class="form-control"
-                 placeholder="e.g. 2608108 or 2608287(B)"
+                 placeholder="e.g. 2610194, 2610194a, or 2610194a(B)"
                  autocomplete="off" spellcheck="false"
                  style="font-family:monospace;letter-spacing:.4px;">
-          <div class="form-text">Format: <code>SFS-YYMM-XXX</code> or <code>SFS-YYMM-XXX (B)</code></div>
+          <div class="form-text">Format: <code>SFS-YYMM-XXX</code>, <code>SFS-YYMM-XXXa</code>, or with suffix: <code>SFS-YYMM-XXX (B)</code>, <code>SFS-YYMM-XXXa (B)</code></div>
           <div id="palletNoFeedback" class="mt-1" style="font-size:12px;min-height:18px;"></div>
         </div>
+        <!-- ── STEP 2: SELECT CUSTOMER (RADIO BUTTON LIST) ── -->
+        <div class="card bg-light border mb-3">
+          <div class="card-header bg-white py-1 px-3 fw-bold text-primary" style="font-size:12px;">
+            <i class="bi bi-person-badge me-1"></i>Step 2: Select Customer <span class="text-danger">*</span>
+          </div>
+          <div class="card-body p-2" style="font-size:12px;">
+            <div class="row g-1" id="newPalletCustomerRadioGroup" style="max-height: 190px; overflow-y: auto;">
+              <?php
+                $modalCustomers = [
+                  'NAE'      => 'NICHIAS AUTOPARTS EUROPE (NAE)',
+                  'NAX'      => 'NAX MFG, SA.DE C.V',
+                  'NCI MFG'  => 'NCI MFG., INC.',
+                  'TAIHO'    => 'TAIHO MFG OF TN. INC',
+                  'NRI'      => 'PT NICHIAS ROCKWOOL IND.',
+                  'ASHUKA'   => 'ASHUKA TECHNOLOGIES SDN. BHD.',
+                  'NIPPON'   => 'NTC(NIPPON GASKET)',
+                  'NTC'      => 'NICHIAS THAILAND',
+                  'SGC'      => 'SHANGHAI XINGSHENG',
+                  'STAMPING' => 'MK STAMPING',
+                  'YANTAI'   => 'NICHIAS (SHANGHAI) AUTOPARTS TRADING',
+                  'NIPP'     => 'NICHIAS IND.PRODUCTS PVT. LTD.',
+                  'NVC'      => 'NICHIAS VIETNAM CO., LTD',
+                  'NSJ'      => 'NC-PT NICHIAS SUNIJAYA',
+                  'NIP'      => 'SUZHOU NICHIAS IND. PRODUCTS',
+                  'YTEC'     => 'YTEC CO., LTD.',
+                  'NSA'      => 'NICHIAS SOUTH EAST ASIA (UP PACKING)',
+                  'NCI 2'    => 'NCI 2',
+                  'STOCK'    => 'STOCK',
+                  'TRIAL'    => 'TRIAL',
+                ];
+                foreach ($modalCustomers as $code => $fullName):
+                  $escCode = htmlspecialchars($code);
+                  $escName = htmlspecialchars($fullName);
+                  $radioId = 'newCust_' . preg_replace('/[^A-Za-z0-9_]/', '_', $code);
+              ?>
+                <div class="col-4 col-sm-3">
+                  <div class="form-check form-check-inline m-0 p-0 w-100">
+                    <input class="btn-check" type="radio" name="newPalletCustomer" id="<?= $radioId ?>" value="<?= $escCode ?>" autocomplete="off" onchange="onNewPalletCustomerChange(this.value)">
+                    <label class="btn btn-outline-secondary btn-sm w-100 text-truncate text-start px-2 py-1 mb-1 fw-semibold" for="<?= $radioId ?>" title="<?= $escName ?>" style="font-size:11px;">
+                      <?= $escCode ?>
+                    </label>
+                  </div>
+                </div>
+              <?php endforeach; ?>
+                <div class="col-4 col-sm-3">
+                  <div class="form-check form-check-inline m-0 p-0 w-100">
+                    <input class="btn-check" type="radio" name="newPalletCustomer" id="newCust_OTHER" value="OTHER" autocomplete="off" onchange="onNewPalletCustomerChange(this.value)">
+                    <label class="btn btn-outline-secondary btn-sm w-100 text-truncate text-start px-2 py-1 mb-1 fw-semibold" for="newCust_OTHER" title="Other Customer" style="font-size:11px;">
+                      OTHER
+                    </label>
+                  </div>
+                </div>
+            </div>
+
+            <!-- OTHER custom input if OTHER selected -->
+            <div id="newPalletOtherCustomerContainer" class="mt-2" style="display:none;">
+              <input type="text" id="newPalletCustomCustomerInput" class="form-control form-control-sm"
+                     placeholder="Enter custom customer name..." maxlength="100">
+            </div>
+            <div id="newPalletCustomerFeedback" class="mt-1" style="font-size:11px;"></div>
+          </div>
+        </div>
+
+        <!-- ── STEP 3: REF NO ── -->
+        <div class="card bg-light border mb-3">
+          <div class="card-header bg-white py-1 px-3 fw-bold text-primary" style="font-size:12px;">
+            <i class="bi bi-hash me-1"></i>Step 3: Ref No <span class="text-danger">*</span>
+          </div>
+          <div class="card-body p-2" style="font-size:12px;">
+            <div class="input-group input-group-sm">
+              <input type="text" id="newPalletRefNoInput" class="form-control font-monospace"
+                     placeholder="e.g. SO-26-0123 or MS-0000000 A"
+                     autocomplete="off" spellcheck="false" maxlength="80">
+              <button class="btn btn-outline-secondary" type="button" id="newPalletStockBtn" onclick="setNewPalletRefToStock()" title="Quick fill STOCK">
+                STOCK
+              </button>
+            </div>
+            <div class="form-text mt-1 text-muted" id="newPalletRefNoHint" style="font-size:11px;">
+              Format: <code>SO-XX-XXXX</code> (e.g. <code>SO-26-0123</code>) or <code>MS-XXXXXXX X</code> (e.g. <code>MS-0000000 A</code> for STAMPING)
+            </div>
+            <div id="newPalletRefNoFeedback" class="mt-1" style="font-size:11px;min-height:16px;"></div>
+          </div>
+        </div>
+
         <div class="alert alert-info py-2 mb-0" style="font-size:12px;">
           <i class="bi bi-info-circle me-1"></i>
-          The <strong>first roll</strong> scanned will set the Customer, Ref No, Product Type and Width constraints.
+          Customer &amp; Ref No are locked upon creation. Scanned rolls must match these details; the first roll will set Product Type and Width.
         </div>
       </div>
       <div class="modal-footer">
@@ -2863,6 +3292,7 @@ if (isset($_GET['success'])): ?>
           <div class="col-md-2">
             <select id="summaryFilterCategory" class="form-select form-select-sm" onchange="onSummaryCategoryChange()">
               <option value="">All Fields</option>
+              <option value="ref_no">SOS No. / Ref No</option>
               <option value="suffix">Pallet Suffix (B, BN, None)</option>
               <option value="date">Date</option>
               <option value="product">Product Type</option>
@@ -2961,6 +3391,8 @@ if (isset($_GET['success'])): ?>
 const PALLET_ID   = <?= $activePalletId ?: 'null' ?>;
 const MAX_ROLLS   = <?= $MAX ?>;
 const IS_BUILDING = <?= json_encode($isBuilding) ?>;
+const IS_APPROVED = <?= json_encode($isApproved) ?>;
+const IS_MANUAL_DELIVER_ACTIVE = <?= json_encode($isManualDeliverActive) ?>;
 let currentPalletNo = <?= json_encode($activePallet['pallet_no'] ?? '') ?>;
 let   rollCount = <?= count($activeItems) ?>;
 
@@ -3135,6 +3567,7 @@ function updateConstraintBadges(p) {
     `;
     currentConstraintCustomer = p.customer_name || '';
     currentConstraintRefNo    = p.ref_no || '';
+    if (typeof updateSendToQcState === 'function') updateSendToQcState();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -3150,6 +3583,7 @@ function refreshConstraintRefBadge(refNo) {
     if (el && refNo !== undefined && refNo !== currentConstraintRefNo) {
         el.textContent = refNo;
         currentConstraintRefNo = refNo;
+        if (typeof updateSendToQcState === 'function') updateSendToQcState();
     }
 }
 
@@ -3263,7 +3697,13 @@ async function processDeliveryScan(raw) {
         }
 
         if (res.ok && res.pallet_id) {
-            if (res.prev_delivered && res.prev_pallet_no) {
+            if (res.target_delivered) {
+                showDeliverFeedback(`✓ Pallet ${escHtml(res.pallet_no)} auto-delivered successfully! Opening details...`, true);
+                setTimeout(() => {
+                    window.location.href = `pallet.php?pallet_id=${res.pallet_id}&success=auto_delivered&pallet_no=${encodeURIComponent(res.pallet_no)}`;
+                }, 350);
+                return;
+            } else if (res.prev_delivered && res.prev_pallet_no) {
                 showDeliverFeedback(`✓ Previous approved Pallet ${escHtml(res.prev_pallet_no)} delivered! Opening Pallet ${escHtml(res.pallet_no)}...`, true);
             } else {
                 showDeliverFeedback(`✓ Found Pallet ${escHtml(res.pallet_no || '')}. Opening pallet information...`, true);
@@ -3370,12 +3810,14 @@ async function lookupAndAdd(lot, coil, roll, width = '', id = '') {
             return;
         }
 
-        // ── Already on THIS pallet → duplicate scan of a roll we
-        //    just added. Silently ignore so a camera double-decode
-        //    cannot trigger a server "already on pallet" error or
-        //    jam the UI. It's already shown in a slot. ───────────
+        // ── Already on THIS pallet ─────────────────────────────
+        //    If it's an identical scan of a roll just added, silently ignore.
+        //    If it matches a voided roll in this pallet, proceed so server auto-swaps it!
         if (p.pallet_id && p.pallet_id == PALLET_ID) {
-            return;
+            const isVoidOnPallet = p.matched_roll_on_pallet && (p.matched_roll_on_pallet.includes('_void_') || p.matched_roll_on_pallet.includes('_OLD_'));
+            if (!isVoidOnPallet) {
+                return;
+            }
         }
 
         // ── Belt-and-suspenders: if a slot already shows this
@@ -3398,7 +3840,13 @@ async function lookupAndAdd(lot, coil, roll, width = '', id = '') {
             showFeedback('Network error while adding roll.', false);
             return;
         }
-        if (!ad.ok) { showFeedback(ad.msg, false); return; }
+        if (!ad.ok) {
+            if (ad.is_mismatch || (ad.msg && ad.msg.includes('does not match pallet constraints'))) {
+                showMismatchModal(ad, p);
+            }
+            showFeedback(ad.msg, false);
+            return;
+        }
 
         rollCount = ad.roll_count;
         fillSlot(ad.seq, p);
@@ -3408,10 +3856,17 @@ async function lookupAndAdd(lot, coil, roll, width = '', id = '') {
         const manCombinedEl = document.getElementById('manCombined');
         if (manCombinedEl) manCombinedEl.value = '';
 
-        showFeedback(
-            `✓ Added: ${escHtml(lot)} ${escHtml(coil)} – R-${escHtml(roll)} (slot ${ad.seq})`,
-            true
-        );
+        if (ad.swapped) {
+            showFeedback(
+                `✓ Auto-replaced voided roll with active roll in slot ${ad.seq}`,
+                true
+            );
+        } else {
+            showFeedback(
+                `✓ Added: ${escHtml(lot)} ${escHtml(coil)} – R-${escHtml(roll)} (slot ${ad.seq})`,
+                true
+            );
+        }
 
         // First roll seeds the pallet constraints. Update the badges
         // live instead of reloading the page — the old reload created
@@ -3459,10 +3914,32 @@ function fillSlot(seq, p) {
            </span>`
         : '';
 
+    const isRollStock = isStockRef(p.ref_no);
     slotEl.classList.remove('table-light', 'text-muted');
     slotEl.setAttribute('data-filled', '1');
     slotEl.setAttribute('data-product-id', p.id);
     slotEl.setAttribute('data-weight', wgt.toFixed(4));
+    slotEl.setAttribute('data-roll-ref', p.ref_no || '');
+    slotEl.setAttribute('data-lot-coil', (p.lot_no || '') + ' ' + (p.coil_no || ''));
+    slotEl.setAttribute('data-roll-no', (p.roll_no || '').replace(/^R/, 'R-'));
+    slotEl.setAttribute('data-is-stock', isRollStock ? '1' : '0');
+
+    const palletCust = (document.getElementById('constraintCustomerText')?.innerText || '').trim();
+    const palletRef  = (document.getElementById('constraintRefNoText')?.innerText || '').trim();
+    const rollCust   = (p.customer_name || '').trim();
+    const rollRef    = (p.ref_no || '').trim();
+
+    const isCustMismatch = (rollCust !== '' && palletCust !== '' && rollCust.toLowerCase() !== palletCust.toLowerCase());
+    const isRefMismatch  = (!isStockRef(rollRef) && !isStockRef(palletRef) && rollRef !== palletRef);
+    const isUnmatched    = isCustMismatch || isRefMismatch;
+
+    const stockBadge = isRollStock
+        ? `<br><span class="badge badge-warning-stock ms-1" style="font-size:10px;"><i class="bi bi-exclamation-octagon-fill me-1"></i>SO: STOCK</span>`
+        : '';
+
+    const unmBadge = isUnmatched
+        ? `<br><span class="badge badge-warning-cust-mismatch ms-1" style="font-size:10px;" title="Sticker: ${escHtml(rollCust)} (${escHtml(rollRef)})"><i class="bi bi-exclamation-triangle-fill me-1"></i>Customer Detail Mismatch</span>`
+        : '';
 
     slotEl.innerHTML = `
         <td class="fw-bold text-start ps-3" style="font-family:monospace; font-size:12px;">
@@ -3474,7 +3951,7 @@ function fillSlot(seq, p) {
         <td>${len.toFixed(1)}${nodChip}</td>
         <td>${p.width !== null && p.width !== undefined ? (+p.width) : '-'}</td>
         <td>1</td>
-        <td class="fw-bold">${escHtml(p.roll_no.replace(/^R/, 'R-'))}</td>
+        <td class="fw-bold">${escHtml(p.roll_no.replace(/^R/, 'R-'))}${stockBadge}${unmBadge}</td>
         <td class="fw-bold text-end pe-3 text-primary">${wgtStr}</td>
         <td>
             <button type="button"
@@ -3490,6 +3967,79 @@ function fillSlot(seq, p) {
     slotEl.classList.add('scan-flash');
     slotEl.addEventListener('animationend', () => slotEl.classList.remove('scan-flash'), { once: true });
     recalcTotalWeight();
+    reevaluatePalletMismatches();
+}
+
+function reevaluatePalletMismatches() {
+    const palletCustEl = document.getElementById('constraintCustomerText');
+    const palletRefEl  = document.getElementById('constraintRefNoText');
+    const palletCust   = (palletCustEl ? palletCustEl.innerText : '').trim();
+    const palletRef    = (palletRefEl ? palletRefEl.innerText : '').trim();
+    const warningCard  = document.getElementById('palletUnmatchedWarningCard');
+    const problemRollsList = [];
+
+    document.querySelectorAll('#rollList tr[data-filled="1"]').forEach(tr => {
+        const rollCust = (tr.getAttribute('data-roll-customer') || '').trim();
+        const rollRef  = (tr.getAttribute('data-roll-ref') || '').trim();
+        const lotCoil  = tr.getAttribute('data-lot-coil') || '';
+        const rollNo   = tr.getAttribute('data-roll-no') || '';
+        const fullRoll = (lotCoil + ' ' + rollNo).trim();
+
+        const isRollStock    = isStockRef(rollRef);
+        const isCustMismatch = (rollCust !== '' && palletCust !== '' && rollCust.toLowerCase() !== palletCust.toLowerCase());
+        const isRefMismatch  = (!isStockRef(rollRef) && !isStockRef(palletRef) && rollRef !== palletRef);
+        const isUnmatched    = isCustMismatch || isRefMismatch;
+
+        tr.setAttribute('data-is-unmatched', isUnmatched ? '1' : '0');
+        const unmInfo = isUnmatched ? `Sticker: ${rollCust} / ${rollRef} vs Pallet: ${palletCust} / ${palletRef}` : '';
+        tr.setAttribute('data-unmatched-info', unmInfo);
+
+        const rollTd = tr.querySelector('td.fw-bold:nth-child(6)');
+        if (rollTd) {
+            rollTd.querySelectorAll('.badge-warning-stock, .badge-warning-cust-mismatch').forEach(el => el.remove());
+            rollTd.querySelectorAll('br').forEach(br => br.remove());
+
+            if (isRollStock) {
+                const br = document.createElement('br');
+                const span = document.createElement('span');
+                span.className = 'badge badge-warning-stock ms-1';
+                span.style.fontSize = '10px';
+                span.innerHTML = '<i class="bi bi-exclamation-octagon-fill me-1"></i>SO: STOCK';
+                rollTd.appendChild(br);
+                rollTd.appendChild(span);
+            }
+
+            if (isUnmatched) {
+                const br = document.createElement('br');
+                const span = document.createElement('span');
+                span.className = 'badge badge-warning-cust-mismatch ms-1';
+                span.style.fontSize = '10px';
+                span.title = `Sticker: ${rollCust} (${rollRef})`;
+                span.innerHTML = '<i class="bi bi-exclamation-triangle-fill me-1"></i>Customer Detail Mismatch';
+                rollTd.appendChild(br);
+                rollTd.appendChild(span);
+
+                problemRollsList.push(`${fullRoll} (Sticker: ${rollCust}, ${rollRef} | Pallet: ${palletCust}, ${palletRef})`);
+            }
+        }
+    });
+
+    if (warningCard) {
+        if (problemRollsList.length > 0) {
+            warningCard.classList.remove('d-none');
+            const detailBox = warningCard.querySelector('div[style*="font-size:12.5px"], div[style*="font-size: 12.5px"]');
+            if (detailBox) {
+                detailBox.innerHTML = `
+                    Pallet Header is set to <strong>${escHtml(palletCust)} (${escHtml(palletRef)})</strong>, but coil(s) on this pallet have different sticker details:
+                    <ul class="mb-0 mt-1 ps-3">
+                        ${problemRollsList.map(r => `<li><strong>${escHtml(r)}</strong></li>`).join('')}
+                    </ul>
+                `;
+            }
+        } else {
+            warningCard.classList.add('d-none');
+        }
+    }
 }
 
 function clearSlot(seq) {
@@ -3509,6 +4059,7 @@ function clearSlot(seq) {
         <td>&mdash;</td>
         <td>&mdash;</td>
     `;
+    reevaluatePalletMismatches();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -3568,28 +4119,185 @@ async function removeRoll(palletId, productId, seq, btnEl) {
         recalcTotalWeight();
         rollCount = res.new_count;
         updateProgress(rollCount);
+        updateSendToQcState();
+        showFeedback(res.msg, true);
 
+        // When pallet is now empty: clear Product Type and Width from the header.
+        // Customer and Ref No are permanent and stay as-is.
         if (res.new_count === 0) {
-            window.location.reload();
-        } else {
-            showFeedback(res.msg, true);
+            const ptEl = document.getElementById('constraintProductTypeText');
+            const wEl  = document.getElementById('constraintWidthText');
+            if (ptEl) ptEl.textContent = '';
+            if (wEl)  wEl.textContent  = '';
         }
+
     } catch (e) {
         showFeedback('Network error while removing roll.', false);
         if (btnEl) btnEl.disabled = false;
     }
 }
 
+
 // ─────────────────────────────────────────────────────────────
 // UI HELPERS
 // ─────────────────────────────────────────────────────────────
+function isStockRef(ref) {
+    const r = (ref || '').trim().toUpperCase();
+    return r === '' || r === 'STOCK' || r === '-' || r === '—' || r === 'SO-' || r === 'MS-';
+}
+
+function updateSendToQcState() {
+    const btn = document.getElementById('sendToQcBtn');
+    const warnCard = document.getElementById('palletStockWarningCard');
+    const warnRefText = document.getElementById('warningStockRefText');
+    const constraintRefEl = document.getElementById('constraintRefNoText');
+
+    const palletRef = typeof currentConstraintRefNo !== 'undefined' ? currentConstraintRefNo : '';
+    const isPalletStock = isStockRef(palletRef);
+
+    let hasStockRoll = false;
+    document.querySelectorAll('#rollList tr[data-filled="1"]').forEach(tr => {
+        const ref = tr.getAttribute('data-roll-ref') || '';
+        const isStockAttr = tr.getAttribute('data-is-stock');
+        if (isStockAttr === '1' || isStockRef(ref)) {
+            hasStockRoll = true;
+        }
+    });
+
+    const isSoStock = isPalletStock || hasStockRoll;
+
+    if (constraintRefEl) {
+        if (isSoStock) {
+            constraintRefEl.classList.add('text-danger', 'fw-bold');
+            constraintRefEl.classList.remove('text-dark');
+            constraintRefEl.style.color = '#dc2626';
+        } else {
+            constraintRefEl.classList.remove('text-danger', 'fw-bold');
+            constraintRefEl.classList.add('text-dark');
+            constraintRefEl.style.color = '';
+        }
+    }
+
+    if (warnRefText) {
+        warnRefText.textContent = (typeof currentConstraintRefNo !== 'undefined' && currentConstraintRefNo ? currentConstraintRefNo.trim() : '') || 'STOCK';
+    }
+    if (warnCard) {
+        if (isPalletStock) {
+            warnCard.classList.remove('d-none');
+        } else {
+            warnCard.classList.add('d-none');
+        }
+    }
+
+    if (btn) {
+        const filledSlots = document.querySelectorAll('#rollList tr[data-filled="1"]').length;
+        btn.disabled = filledSlots < 1;
+        if (filledSlots < 1) {
+            btn.title = 'Add at least 1 roll to send to QC.';
+        } else {
+            btn.removeAttribute('title');
+        }
+    }
+}
+
+function confirmSendToQC(event, isEdit) {
+    if (isStockRef(typeof currentConstraintRefNo !== 'undefined' ? currentConstraintRefNo : '')) {
+        if (event) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+        alert('Cannot ' + (isEdit ? 're-submit' : 'send') + ' to QC: Pallet SOS No. is STOCK.\n\nPlease edit the Customer & SO number first.');
+        if (typeof startEditConstraint === 'function') startEditConstraint();
+        return false;
+    }
+
+    // List rolls where SO detail is STOCK or Unmatched Customer/SO
+    const problemRolls = [];
+    document.querySelectorAll('#rollList tr[data-filled="1"]').forEach(tr => {
+        const ref = tr.getAttribute('data-roll-ref') || '';
+        const isStockAttr = tr.getAttribute('data-is-stock');
+        const isUnmatchedAttr = tr.getAttribute('data-is-unmatched');
+        const isStock = isStockAttr === '1' || isStockRef(ref);
+        const isUnm   = isUnmatchedAttr === '1';
+
+        if (isStock || isUnm) {
+            const lotCoil = tr.getAttribute('data-lot-coil') || '';
+            const rollNo = tr.getAttribute('data-roll-no') || '';
+            const fullRoll = (lotCoil + ' ' + rollNo).trim();
+            const detailStr = isUnm
+                ? (' — ' + (tr.getAttribute('data-unmatched-info') || 'Unmatched Customer/SO'))
+                : ' (SO: STOCK)';
+            if (fullRoll) {
+                problemRolls.push(fullRoll + detailStr);
+            }
+        }
+    });
+
+    if (problemRolls.length > 0) {
+        if (event) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+        showRedStockModal(problemRolls, isEdit);
+        return false;
+    }
+
+    const msg = isEdit
+        ? 'Re-submit this edited pallet to QC?'
+        : 'Send pallet to QC? No more rolls can be added after this.';
+    return confirm(msg);
+}
+
+function showRedStockModal(problemRolls, isEdit) {
+    const container = document.getElementById('soStockRollsListContainer');
+    if (container) {
+        container.innerHTML = `
+            <div class="fw-bold mb-2 text-danger" style="font-size:13px;">sila semak roll detail (STOCK / Unmatched Customer & SO):</div>
+            <ul class="mb-0 ps-3 text-danger fw-bold" style="font-size:13px; line-height:1.6;">
+                ${problemRolls.map(r => `<li>${escHtml(r)}</li>`).join('')}
+            </ul>
+        `;
+    }
+
+    const proceedBtn = document.getElementById('soStockModalProceedBtn');
+    if (proceedBtn) {
+        proceedBtn.onclick = function() {
+            const modalEl = document.getElementById('soStockAlertModal');
+            if (modalEl) {
+                if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+                    const inst = bootstrap.Modal.getInstance(modalEl);
+                    if (inst) inst.hide();
+                } else if (typeof $ !== 'undefined' && $.fn && $.fn.modal) {
+                    $(modalEl).modal('hide');
+                }
+            }
+            const msg = isEdit
+                ? 'Re-submit this edited pallet to QC?'
+                : 'Send pallet to QC? No more rolls can be added after this.';
+            if (confirm(msg)) {
+                const form = document.getElementById('sendToQcForm');
+                if (form) form.submit();
+            }
+        };
+    }
+
+    const modalEl = document.getElementById('soStockAlertModal');
+    if (modalEl) {
+        if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+            const modal = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
+            modal.show();
+        } else if (typeof $ !== 'undefined' && $.fn && $.fn.modal) {
+            $(modalEl).modal('show');
+        }
+    }
+}
+
 function updateProgress(count) {
     const bar   = document.getElementById('palletProgressBar');
     const badge = document.getElementById('rollCountBadge');
-    const btn   = document.getElementById('sendToQcBtn');
     if (bar)   bar.style.width = (count / MAX_ROLLS * 100) + '%';
     if (badge) badge.textContent = count + ' / ' + MAX_ROLLS + ' rolls';
-    if (btn)   btn.disabled = count < 1;
+    updateSendToQcState();
 }
 
 function showFeedback(msg, ok) {
@@ -3601,6 +4309,75 @@ function showFeedback(msg, ok) {
             <span>${msg}</span>
         </div>`;
     setTimeout(() => { el.innerHTML = ''; }, 5000);
+}
+
+function showMismatchModal(ad, product) {
+    const modalEl = document.getElementById('mismatchAlertModal');
+    if (!modalEl) return;
+
+    const summaryEl = document.getElementById('mismatchModalSummary');
+    const tbody     = document.getElementById('mismatchModalTableBody');
+    const listEl    = document.getElementById('mismatchModalDetailsList');
+
+    const rollLotCoil = ((product?.lot_no || '') + ' ' + (product?.coil_no || '') + ' ' + (product?.roll_no ? 'R-' + product.roll_no.replace(/^R/, '') : '')).trim();
+    if (summaryEl) {
+        summaryEl.innerHTML = `Roll <strong>${escHtml(rollLotCoil || 'scanned')}</strong> does not match this pallet's constraints.`;
+    }
+
+    const palletData = ad.pallet || {};
+    const rollData   = ad.roll || product || {};
+
+    const palletCust = (palletData.customer_name || document.getElementById('constraintCustomerText')?.innerText || '').trim();
+    const rollCust   = (rollData.customer_name || '').trim();
+
+    const palletRef  = (palletData.ref_no || document.getElementById('constraintRefNoText')?.innerText || '').trim();
+    const rollRef    = (rollData.ref_no || '').trim();
+
+    const palletProd = (palletData.product_type || '').trim();
+    const rollProd   = (rollData.product_type || rollData.product || '').trim();
+
+    const palletWidth = parseFloat(palletData.width || 0);
+    const rollWidth   = parseFloat(rollData.width || 0);
+
+    const isCustDiff = (palletCust !== '' && rollCust !== '' && palletCust.toLowerCase() !== rollCust.toLowerCase());
+    const isRefDiff  = (!isStockRef(palletRef) && !isStockRef(rollRef) && palletRef !== '' && rollRef !== '' && palletRef !== rollRef);
+    const isProdDiff = (palletProd !== '' && rollProd !== '' && palletProd.toLowerCase() !== rollProd.toLowerCase());
+    const isWidthDiff = (palletWidth > 0 && rollWidth > 0 && Math.abs(palletWidth - rollWidth) > 0.01);
+
+    const makeRow = (label, palVal, rollVal, isDiff) => `
+        <tr class="${isDiff ? 'table-danger' : ''}">
+            <td class="fw-bold ${isDiff ? 'text-danger' : 'text-secondary'}">
+                ${isDiff ? '<i class="bi bi-x-circle-fill text-danger me-1"></i>' : '<i class="bi bi-check-circle-fill text-success me-1"></i>'}${label}
+            </td>
+            <td class="fw-semibold font-monospace ${isDiff ? 'text-dark' : 'text-muted'}">${escHtml(palVal || '—')}</td>
+            <td class="fw-bold font-monospace ${isDiff ? 'text-danger' : 'text-dark'}">${escHtml(rollVal || '—')}</td>
+        </tr>
+    `;
+
+    let rowsHtml = '';
+    rowsHtml += makeRow('Customer', palletCust, rollCust, isCustDiff);
+    rowsHtml += makeRow('Ref No', palletRef, rollRef, isRefDiff);
+    if (palletProd || rollProd) {
+        rowsHtml += makeRow('Product Type', palletProd, rollProd, isProdDiff);
+    }
+    if (palletWidth > 0 || rollWidth > 0) {
+        rowsHtml += makeRow('Width (mm)', palletWidth > 0 ? palletWidth + ' mm' : '—', rollWidth > 0 ? rollWidth + ' mm' : '—', isWidthDiff);
+    }
+
+    if (tbody) tbody.innerHTML = rowsHtml;
+
+    if (listEl) {
+        if (ad.mismatches && ad.mismatches.length > 0) {
+            listEl.innerHTML = '<div class="fw-bold mb-1"><i class="bi bi-info-circle me-1"></i>Reason for rejection:</div><ul class="mb-0 ps-3">'
+                + ad.mismatches.map(m => `<li>${escHtml(m)}</li>`).join('')
+                + '</ul>';
+        } else {
+            listEl.innerHTML = '';
+        }
+    }
+
+    const bsModal = new bootstrap.Modal(modalEl);
+    bsModal.show();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -3713,6 +4490,24 @@ document.getElementById('createPalletModal')?.addEventListener('show.bs.modal', 
     const dispEl = document.getElementById('nextAutoPalletDisplay');
     if (dispEl) dispEl.innerHTML = '<span class="text-muted fst-italic" style="font-size:12px;">Select Pallet Type above</span>';
 
+    // Reset Step 2 (Customer) & Step 3 (Ref No)
+    document.querySelectorAll('input[name="newPalletCustomer"]').forEach(r => r.checked = false);
+    const otherContainer = document.getElementById('newPalletOtherCustomerContainer');
+    if (otherContainer) otherContainer.style.display = 'none';
+    const otherInp = document.getElementById('newPalletCustomCustomerInput');
+    if (otherInp) otherInp.value = '';
+    const custFb = document.getElementById('newPalletCustomerFeedback');
+    if (custFb) custFb.innerHTML = '';
+
+    const refInp = document.getElementById('newPalletRefNoInput');
+    if (refInp) {
+        refInp.value = '';
+        refInp.classList.remove('is-valid', 'is-invalid');
+    }
+    const refFb = document.getElementById('newPalletRefNoFeedback');
+    if (refFb) refFb.innerHTML = '';
+    updateNewPalletRefHint();
+
     const sp = '<span class="spinner-border spinner-border-sm text-secondary" style="width:.75rem;height:.75rem;"></span>';
     const elNone = document.getElementById('latestPalletNone');
     const elB    = document.getElementById('latestPalletB');
@@ -3743,6 +4538,157 @@ document.getElementById('createPalletModal')?.addEventListener('show.bs.modal', 
     setTimeout(() => inp.focus(), 300);
 });
 
+// ── Step 2 & 3: Customer and Ref No Helpers ────────────────────
+function getSelectedNewPalletCustomer() {
+    const checked = document.querySelector('input[name="newPalletCustomer"]:checked');
+    if (!checked) return '';
+    if (checked.value === 'OTHER') {
+        const custom = document.getElementById('newPalletCustomCustomerInput');
+        return custom ? custom.value.trim() : '';
+    }
+    return checked.value;
+}
+
+function onNewPalletCustomerChange(custCode) {
+    const otherCont = document.getElementById('newPalletOtherCustomerContainer');
+    const otherInp  = document.getElementById('newPalletCustomCustomerInput');
+    if (otherCont) otherCont.style.display = (custCode === 'OTHER') ? 'block' : 'none';
+    if (custCode === 'OTHER' && otherInp) {
+        setTimeout(() => otherInp.focus(), 100);
+    }
+
+    const refInp = document.getElementById('newPalletRefNoInput');
+    if (refInp) {
+        if (custCode === 'STOCK') {
+            refInp.value = 'STOCK';
+        } else if (custCode === 'STAMPING') {
+            if (!refInp.value || refInp.value === 'STOCK' || refInp.value.startsWith('SO-')) {
+                refInp.value = 'MS-';
+            }
+        } else {
+            if (!refInp.value || refInp.value === 'STOCK' || refInp.value.startsWith('MS-')) {
+                refInp.value = 'SO-';
+            }
+        }
+    }
+    updateNewPalletRefHint();
+    validateNewPalletForm();
+}
+
+document.getElementById('newPalletCustomCustomerInput')?.addEventListener('input', () => {
+    validateNewPalletForm();
+});
+
+function setNewPalletRefToStock() {
+    const refInp = document.getElementById('newPalletRefNoInput');
+    if (refInp) {
+        refInp.value = 'STOCK';
+        refInp.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    const stockRadio = document.getElementById('newCust_STOCK');
+    if (stockRadio && !stockRadio.checked) {
+        stockRadio.checked = true;
+        onNewPalletCustomerChange('STOCK');
+    }
+    validateNewPalletForm();
+}
+
+function updateNewPalletRefHint() {
+    const checked = document.querySelector('input[name="newPalletCustomer"]:checked');
+    const code = checked ? checked.value : '';
+    const hintEl = document.getElementById('newPalletRefNoHint');
+    if (!hintEl) return;
+    if (code === 'STAMPING') {
+        hintEl.innerHTML = 'Format: <code>MS-XXXXXXX X</code> (e.g. <code>MS-0000000 A</code>)';
+    } else if (code === 'STOCK') {
+        hintEl.innerHTML = 'Format: <code>STOCK</code>';
+    } else {
+        hintEl.innerHTML = 'Format: <code>SO-XX-XXXX</code> (e.g. <code>SO-26-0123</code>)';
+    }
+}
+
+function formatNewPalletRefNo(val, cust) {
+    if (!val) return '';
+    const trimmed = val.trim();
+    if (trimmed.toUpperCase() === 'STOCK') return 'STOCK';
+    if (cust === 'STOCK') return 'STOCK';
+
+    if (cust === 'STAMPING' || /^MS-/i.test(trimmed)) {
+        // MS-0000000 A pattern
+        let clean = trimmed.replace(/^MS-?/i, '');
+        let digits = clean.replace(/[^0-9]/g, '').slice(0, 7);
+        let letters = clean.replace(/[^A-Za-z]/g, '').toUpperCase().slice(0, 1);
+        let out = 'MS-';
+        if (digits) out += digits;
+        if (letters && digits.length >= 7) out += ' ' + letters;
+        return out;
+    } else {
+        // SO-XX-XXXX pattern (e.g. SO-26-0123)
+        let clean = trimmed.replace(/^SO-?/i, '');
+        let digits = clean.replace(/[^0-9]/g, '').slice(0, 6);
+        let out = 'SO-';
+        if (digits.length <= 2) {
+            out += digits;
+        } else {
+            out += digits.slice(0, 2) + '-' + digits.slice(2);
+        }
+        return out;
+    }
+}
+
+document.getElementById('newPalletRefNoInput')?.addEventListener('input', function() {
+    const cust = document.querySelector('input[name="newPalletCustomer"]:checked')?.value || '';
+    if (cust !== 'NCI MFG' && cust !== 'NCI 2') {
+        const formatted = formatNewPalletRefNo(this.value, cust);
+        if (formatted && formatted !== this.value) {
+            this.value = formatted;
+        }
+    }
+    validateNewPalletForm();
+});
+
+function isRefNoValid(refVal, cust) {
+    const val = (refVal || '').trim();
+    if (!val) return false;
+    if (val.toUpperCase() === 'STOCK') return true;
+    if (cust === 'NCI MFG' || cust === 'NCI 2') return true;
+    if (cust === 'STAMPING') {
+        return /^MS-\d{7}( [A-Z])?$/i.test(val);
+    }
+    return /^SO-\d{2}-\d{4}$/i.test(val);
+}
+
+function validateNewPalletForm() {
+    const cust = getSelectedNewPalletCustomer();
+    const refInp = document.getElementById('newPalletRefNoInput');
+    const refVal = refInp ? refInp.value.trim() : '';
+    const refFb  = document.getElementById('newPalletRefNoFeedback');
+
+    let isRefOk = false;
+    if (refVal) {
+        isRefOk = isRefNoValid(refVal, cust);
+        if (refInp) {
+            refInp.classList.remove('is-valid', 'is-invalid');
+            if (isRefOk) {
+                refInp.classList.add('is-valid');
+                if (refFb) refFb.innerHTML = '<span class="text-success"><i class="bi bi-check-circle me-1"></i>Valid Ref No</span>';
+            } else {
+                refInp.classList.add('is-invalid');
+                if (refFb) refFb.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle me-1"></i>Format: SO-XX-XXXX or MS-XXXXXXX X</span>';
+            }
+        }
+    } else {
+        if (refInp) refInp.classList.remove('is-valid', 'is-invalid');
+        if (refFb) refFb.innerHTML = '';
+    }
+
+    const btn = document.getElementById('createPalletBtn');
+    if (btn) {
+        btn.disabled = !(palletNoValid && cust !== '' && isRefOk);
+    }
+    return (palletNoValid && cust !== '' && isRefOk);
+}
+
 // ── Pallet No auto-formatting ───────────────────────────────────
 // User only types digits (and optionally letters for a suffix like
 // "A" or "AB"); we build "SFS-XXXX-XXX" or "SFS-XXXX-XXX (A)" for
@@ -3754,16 +4700,45 @@ const PALLET_NO_PREFIX = 'SFS-';
 function formatPalletNo(raw) {
     if (!raw) return '';
     const hasTrailingSpace = raw.endsWith(' ') || raw.endsWith(' (');
-    const cleaned = raw.replace(/^\s*SFS-?\s*/i, '');
-    const digits  = cleaned.replace(/[^0-9]/g, '').slice(0, 7);   // XXXX + XXX
-    const letters = cleaned.replace(/[^A-Za-z]/g, '').toUpperCase().slice(0, 3); // optional (B)/(BN)/(A)
 
-    if (!digits && !letters) return raw;
+    // 1. Extract suffix in parentheses if present, e.g. (B), (BN)
+    let suffix = '';
+    let mainPart = raw;
+    const parenMatch = raw.match(/\(([A-Za-z]{1,3})\)/);
+    if (parenMatch) {
+        suffix = parenMatch[1].toUpperCase();
+        mainPart = raw.replace(/\([^)]*\)/, '');
+    } else {
+        const spaceMatch = raw.match(/\s+([A-Za-z]{1,3})\s*$/);
+        if (spaceMatch) {
+            suffix = spaceMatch[1].toUpperCase();
+            mainPart = raw.replace(/\s+[A-Za-z]{1,3}\s*$/, '');
+        }
+    }
+
+    // 2. Clean mainPart (remove leading SFS-)
+    const cleaned = mainPart.replace(/^\s*SFS-?\s*/i, '');
+    const cleanNoDash = cleaned.replace(/-/g, '');
+    const digits = cleanNoDash.replace(/[^0-9]/g, '').slice(0, 7);
+
+    // Check if there is an extra letter attached to the sequence (e.g. 194a)
+    let extraLetter = '';
+    if (digits.length >= 5) {
+        const letterMatch = cleanNoDash.match(/\d{5,7}\s*([A-Za-z])/i);
+        if (letterMatch) {
+            extraLetter = letterMatch[1];
+        }
+    }
+
+    if (!digits && !extraLetter && !suffix) return raw;
 
     let out = PALLET_NO_PREFIX + (digits.length <= 4 ? digits : digits.slice(0, 4) + '-' + digits.slice(4));
-    if (letters) {
-        out += ` (${letters})`;
-    } else if (hasTrailingSpace && digits.length === 7) {
+    if (extraLetter) {
+        out += extraLetter;
+    }
+    if (suffix) {
+        out += ` (${suffix})`;
+    } else if (hasTrailingSpace && digits.length >= 7) {
         out += ' ';
     }
     return out;
@@ -3777,12 +4752,6 @@ document.getElementById('palletNoInput')?.addEventListener('input', function () 
     const raw      = this.value;
     const selStart = this.selectionStart;
 
-    // Preserve cursor position across reformatting: count how many real
-    // "content" characters (digits/letters typed by the user, not the
-    // literal SFS-/-/space/() the mask inserts) sit before the cursor,
-    // ignoring the fixed "SFS-" prefix — this is what makes backspace
-    // and mid-string edits land in the right place instead of always
-    // jumping to the end of the field.
     const prefixMatch     = raw.match(/^\s*SFS-?\s*/i);
     const prefixLen       = prefixMatch ? prefixMatch[0].length : 0;
     const afterPrefixCur  = Math.max(0, selStart - prefixLen);
@@ -3794,6 +4763,7 @@ document.getElementById('palletNoInput')?.addEventListener('input', function () 
     if (!formatted) {
         document.getElementById('palletNoFeedback').innerHTML = '';
         this.classList.remove('is-valid', 'is-invalid');
+        validateNewPalletForm();
         return;
     }
 
@@ -3817,30 +4787,51 @@ document.getElementById('palletNoInput')?.addEventListener('input', function () 
                 fb.innerHTML = `<span class="text-success"><i class="bi bi-check-circle me-1"></i>Valid &amp; available</span>`;
                 this.classList.add('is-valid');
                 palletNoValid = true;
-                document.getElementById('createPalletBtn').disabled = false;
             } else {
                 fb.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>${escHtml(r.msg)}</span>`;
                 this.classList.add('is-invalid');
+                palletNoValid = false;
             }
+            validateNewPalletForm();
         } catch (_) {}
     }, 500);
 });
 
 document.getElementById('palletNoInput')?.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter' && palletNoValid) submitCreatePallet();
+    if (e.key === 'Enter' && validateNewPalletForm()) submitCreatePallet();
+});
+
+document.getElementById('newPalletRefNoInput')?.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && validateNewPalletForm()) submitCreatePallet();
 });
 
 async function submitCreatePallet() {
     const palletNo = document.getElementById('palletNoInput').value.trim();
-    if (!palletNo || !palletNoValid) return;
+    const customer = getSelectedNewPalletCustomer();
+    const refNo    = document.getElementById('newPalletRefNoInput')?.value.trim() || '';
+
+    if (!palletNo || !palletNoValid) {
+        alert('Please provide a valid Pallet Serial No.');
+        return;
+    }
+    if (!customer) {
+        alert('Please select a Customer.');
+        return;
+    }
+    if (!refNo || !isRefNoValid(refNo, customer)) {
+        alert('Please provide a valid Ref No.');
+        return;
+    }
 
     const btn = document.getElementById('createPalletBtn');
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Creating…';
 
     const fd = new FormData();
-    fd.append('action',    'create_pallet');
-    fd.append('pallet_no', palletNo);
+    fd.append('action',        'create_pallet');
+    fd.append('pallet_no',     palletNo);
+    fd.append('customer_name', customer);
+    fd.append('ref_no',        refNo);
 
     let r;
     try {
@@ -3982,10 +4973,10 @@ function onSummaryCategoryChange() {
     if (cat === 'date') {
         dateInput.value = '';
         dateInput.classList.remove('d-none');
-    } else if (cat === 'customer' || cat === 'product') {
+    } else if (cat === 'customer' || cat === 'product' || cat === 'ref_no') {
         const distinct = [...new Set(
             summaryData
-                .map(r => cat === 'customer' ? r.customer : r.product)
+                .map(r => cat === 'customer' ? r.customer : (cat === 'product' ? r.product : r.ref_no))
                 .filter(v => v !== null && v !== '' && v !== '-')
         )].sort();
 
@@ -4032,7 +5023,7 @@ function applySummaryFilter() {
                 rows = rows.filter(r => String(r.date ?? '') === targetDate);
             }
         }
-    } else if (cat === 'customer' || cat === 'product') {
+    } else if (cat === 'customer' || cat === 'product' || cat === 'ref_no') {
         const val = document.getElementById('summaryFilterValueSelect').value;
         if (val !== '') {
             rows = rows.filter(r => String(r[cat] ?? '') === val);
@@ -4098,26 +5089,39 @@ function clearSummaryFilter() {
 let palletRenameSaving = false;
 
 function startEditPalletRename() {
-    document.getElementById('palletRenameDisplay').classList.add('d-none');
-    document.getElementById('palletRenameEditBtn').classList.add('d-none');
+    const disp = document.getElementById('palletRenameDisplay');
+    const btn  = document.getElementById('palletRenameEditBtn');
+    if (disp) disp.classList.add('d-none');
+    if (btn)  btn.classList.add('d-none');
     const form = document.getElementById('palletRenameForm');
-    form.classList.remove('d-none');
-    form.classList.add('d-flex');
+    if (form) {
+        form.classList.remove('d-none');
+        form.classList.add('d-flex');
+    }
     hidePalletRenameError();
 
     const input = document.getElementById('palletRenameInput');
-    input.value = currentPalletNo;
-    input.focus();
-    input.select();
+    if (input && typeof currentPalletNo !== 'undefined') {
+        input.value = currentPalletNo;
+        input.focus();
+        input.select();
+    }
 }
 
 function cancelEditPalletRename() {
     const form = document.getElementById('palletRenameForm');
-    form.classList.add('d-none');
-    form.classList.remove('d-flex');
-    document.getElementById('palletRenameDisplay').classList.remove('d-none');
-    document.getElementById('palletRenameEditBtn').classList.remove('d-none');
-    document.getElementById('palletRenameInput').value = currentPalletNo;
+    const disp = document.getElementById('palletRenameDisplay');
+    const btn  = document.getElementById('palletRenameEditBtn');
+    if (form) {
+        form.classList.add('d-none');
+        form.classList.remove('d-flex');
+    }
+    if (disp) disp.classList.remove('d-none');
+    if (btn)  btn.classList.remove('d-none');
+    const input = document.getElementById('palletRenameInput');
+    if (input && typeof currentPalletNo !== 'undefined') {
+        input.value = currentPalletNo;
+    }
     hidePalletRenameError();
 }
 
@@ -4128,11 +5132,13 @@ function onPalletRenameKeydown(event) {
 
 function showPalletRenameError(msg) {
     const el = document.getElementById('palletRenameError');
+    if (!el) return;
     el.textContent = msg;
     el.classList.remove('d-none');
 }
 function hidePalletRenameError() {
-    document.getElementById('palletRenameError').classList.add('d-none');
+    const el = document.getElementById('palletRenameError');
+    if (el) el.classList.add('d-none');
 }
 
 async function savePalletRename() {
@@ -4379,6 +5385,20 @@ const PALLET_CUSTOMERS_MAP = {
 let constraintEditSaving = false;
 let currentConstraintCustomer = <?= json_encode($activePallet['customer_name'] ?? '') ?>;
 let currentConstraintRefNo    = <?= json_encode($activePallet['ref_no'] ?? '') ?>;
+if (typeof updateSendToQcState === 'function') updateSendToQcState();
+
+// ── Auto-blank Product Type & Width on load if pallet is empty ──
+// If the pallet has no coils at all (on first load or after refresh),
+// Product Type and Width must show blank. Customer and Ref No stay.
+(function syncHeaderToRollCount() {
+    if (rollCount === 0) {
+        const ptEl = document.getElementById('constraintProductTypeText');
+        const wEl  = document.getElementById('constraintWidthText');
+        if (ptEl) ptEl.textContent = '';
+        if (wEl)  wEl.textContent  = '';
+    }
+})();
+
 
 function handleConstraintCustomerChange() {
     const sel = document.getElementById('constraintCustomerInput');
@@ -4402,11 +5422,15 @@ function handleConstraintCustomerChange() {
 }
 
 function startEditConstraint() {
-    document.getElementById('constraintDisplayGroup').classList.add('d-none');
+    const dispGroup = document.getElementById('constraintDisplayGroup');
+    if (dispGroup) dispGroup.classList.add('d-none');
     const form = document.getElementById('constraintEditForm');
-    form.classList.remove('d-none');
-    form.classList.add('d-flex');
-    document.getElementById('constraintHintText').classList.add('d-none');
+    if (form) {
+        form.classList.remove('d-none');
+        form.classList.add('d-flex');
+    }
+    const hint = document.getElementById('constraintHintText');
+    if (hint) hint.classList.add('d-none');
     hideConstraintEditError();
 
     const customerSelect = document.getElementById('constraintCustomerInput');
@@ -4414,7 +5438,7 @@ function startEditConstraint() {
     const refNoInput     = document.getElementById('constraintRefNoInput');
 
     let matchedCode = '';
-    if (currentConstraintCustomer) {
+    if (typeof currentConstraintCustomer !== 'undefined' && currentConstraintCustomer) {
         if (PALLET_CUSTOMERS_MAP[currentConstraintCustomer]) {
             matchedCode = currentConstraintCustomer;
         } else {
@@ -4427,36 +5451,47 @@ function startEditConstraint() {
         }
     }
 
-    if (matchedCode) {
-        customerSelect.value = matchedCode;
-        if (customInput) customInput.style.display = 'none';
-    } else if (currentConstraintCustomer) {
-        customerSelect.value = 'OTHER';
-        if (customInput) {
-            customInput.value = currentConstraintCustomer;
-            customInput.style.display = 'block';
+    if (customerSelect) {
+        if (matchedCode) {
+            customerSelect.value = matchedCode;
+            if (customInput) customInput.style.display = 'none';
+        } else if (typeof currentConstraintCustomer !== 'undefined' && currentConstraintCustomer) {
+            customerSelect.value = 'OTHER';
+            if (customInput) {
+                customInput.value = currentConstraintCustomer;
+                customInput.style.display = 'block';
+            }
+        } else {
+            customerSelect.value = '';
+            if (customInput) customInput.style.display = 'none';
         }
-    } else {
-        customerSelect.value = '';
-        if (customInput) customInput.style.display = 'none';
     }
 
-    refNoInput.value = currentConstraintRefNo;
-    customerSelect.focus();
+    if (refNoInput && typeof currentConstraintRefNo !== 'undefined') {
+        refNoInput.value = currentConstraintRefNo;
+    }
+    if (customerSelect) customerSelect.focus();
 }
 
 function cancelEditConstraint() {
     const form = document.getElementById('constraintEditForm');
-    form.classList.add('d-none');
-    form.classList.remove('d-flex');
-    document.getElementById('constraintDisplayGroup').classList.remove('d-none');
-    document.getElementById('constraintHintText').classList.remove('d-none');
+    if (form) {
+        form.classList.add('d-none');
+        form.classList.remove('d-flex');
+    }
+    const dispGroup = document.getElementById('constraintDisplayGroup');
+    if (dispGroup) dispGroup.classList.remove('d-none');
+    const hint = document.getElementById('constraintHintText');
+    if (hint) hint.classList.remove('d-none');
 
     const customerSelect = document.getElementById('constraintCustomerInput');
     const customInput    = document.getElementById('constraintCustomCustomerInput');
+    const refNoInput     = document.getElementById('constraintRefNoInput');
     if (customerSelect) customerSelect.value = '';
     if (customInput) { customInput.value = ''; customInput.style.display = 'none'; }
-    document.getElementById('constraintRefNoInput').value = currentConstraintRefNo;
+    if (refNoInput && typeof currentConstraintRefNo !== 'undefined') {
+        refNoInput.value = currentConstraintRefNo;
+    }
     hideConstraintEditError();
 }
 
@@ -4467,6 +5502,7 @@ function onConstraintEditKeydown(event) {
 
 function showConstraintEditError(msg) {
     const el = document.getElementById('constraintEditError');
+    if (!el) return;
     el.textContent = msg;
     el.classList.remove('d-none');
 }
@@ -4536,6 +5572,11 @@ async function saveConstraintEdit() {
 
         const refTextEl = document.getElementById('constraintRefNoText');
         if (refTextEl) refTextEl.textContent = currentConstraintRefNo;
+
+        // Re-evaluate all mismatches & update warning card now that header changed!
+        reevaluatePalletMismatches();
+
+        if (typeof updateSendToQcState === 'function') updateSendToQcState();
 
         cancelEditConstraint();
 
@@ -4685,6 +5726,18 @@ function renderPalletList() {
         const badgeClass      = SUMMARY_STATUS_BADGE[p.status] || 'badge-building';
         const isActive        = PALLET_ID && Number(p.id) === Number(PALLET_ID);
         const pct             = Math.min(100, Math.round((p.roll_count / p.max_rolls) * 100));
+
+        const wVal = Number(p.width || 0);
+        const wStr = wVal > 0 ? (wVal % 1 === 0 ? wVal : wVal.toFixed(2).replace(/\.?0+$/, '')) + ' mm' : '';
+        const prodStr = (p.product_type || '').trim();
+        const specParts = [];
+        if (prodStr) specParts.push(prodStr);
+        if (wStr) specParts.push(wStr);
+        const specText = specParts.join(', ');
+
+        const custStr = (p.customer_name || '').trim();
+        const refStr  = (p.ref_no || '').trim();
+
         return `
             <a href="pallet.php?pallet_id=${p.id}${tabParam}"
                class="pallet-card border-${escHtml(p.status)} ${isActive ? 'active' : ''} ${isEditBuilding ? 'is-edit-building' : ''}">
@@ -4695,7 +5748,7 @@ function renderPalletList() {
                             ${isActive ? '<span class="pallet-card-open-pill"><i class="bi bi-eye-fill"></i> Open</span>' : ''}
                         </div>
                         ${p.created_by ? `<div class="pallet-card-operator" style="font-size:11px; ${isActive && !isEditBuilding ? 'color:rgba(255,255,255,.9);' : (isEditBuilding ? (isReturnToStock ? 'color:#0369a1;' : 'color:#854d0e;') : 'color:#475569;')} font-weight:600;"><i class="bi bi-person-fill ${isEditBuilding ? (isReturnToStock ? 'text-info' : 'text-warning') : (isActive ? 'text-warning' : 'text-primary')} me-1"></i>${escHtml(p.created_by)}</div>` : ''}
-                        ${p.lot_nos ? `<div class="pallet-card-lot">${escHtml(p.lot_nos)}</div>` : ''}
+                        ${specText ? `<div class="pallet-card-spec">${escHtml(specText)}</div>` : ''}
                     </div>
                     <div class="d-flex flex-column align-items-end">
                         ${isEditBuilding 
@@ -4704,18 +5757,21 @@ function renderPalletList() {
                                 : `<span class="badge ${isActive ? 'bg-white text-dark shadow-sm border' : 'border'}" style="${isActive ? 'border-color:#fde047 !important;' : 'background:#fffbe6; color:#92400e; border-color:#ffe58f !important;'}" title="Re-opened Building Pallet"><i class="bi bi-pencil-fill me-1 text-warning"></i>BUILDING (EDIT #${p.edit_count})</span>`)
                             : `<span class="badge ${badgeClass}">${escHtml(summaryStatusLabel(p.status))}</span>`}
                         ${p.created_date ? `<div class="pallet-card-date"><i class="bi bi-calendar-event me-1"></i>${escHtml(p.created_date)}</div>` : ''}
+                        ${p.status === 'approved' ? (IS_MANUAL_DELIVER_ACTIVE ? `<button type="button" class="btn btn-sm btn-success py-0 px-2 fw-bold mt-1 shadow-sm" style="font-size:11px;" onclick="quickDeliverPallet(event, ${p.id}, '${escHtml(p.pallet_no)}')" title="Deliver Pallet without opening"><i class="bi bi-truck me-1"></i>Deliver</button>` : `<span class="badge bg-warning text-dark border px-2 py-1 shadow-sm mt-1 auto-card-badge" data-pallet-id="${p.id}" style="font-size:11px;"><i class="bi bi-clock-history me-1"></i>Auto in <strong id="cardSec_${p.id}">15</strong>s</span>`) : ''}
                     </div>
                 </div>
-                <div class="pallet-card-customer">${escHtml(p.customer_name || 'No constraint set yet')}</div>
+                <div class="pallet-card-customer">${escHtml(custStr || (refStr ? '' : 'No constraint set yet'))}${refStr ? ` <span class="pallet-card-ref">(${escHtml(refStr)})</span>` : ''}</div>
                 <div class="d-flex align-items-center gap-2">
                     <div class="pallet-progress flex-grow-1">
                         <div class="pallet-progress-bar" style="width:${pct}%;"></div>
                     </div>
-                    <span class="pallet-card-rolls">${p.roll_count}/${p.max_rolls}</span>
+                    <span class="pallet-card-rolls">${p.roll_count} coil</span>
                 </div>
             </a>
         `;
     }).join('');
+
+    startSidebarCardTimers();
 
     if (PALLET_ID) {
         const activeCard = scroll.querySelector('.pallet-card.active');
@@ -4794,7 +5850,7 @@ function exportSummaryPallet() {
 
     if (cat === 'date') {
         val = document.getElementById('summaryFilterValueDate').value;
-    } else if (cat === 'customer' || cat === 'product' || cat === 'suffix') {
+    } else if (cat === 'customer' || cat === 'product' || cat === 'suffix' || cat === 'ref_no') {
         val = document.getElementById('summaryFilterValueSelect').value;
     } else {
         val = document.getElementById('summaryFilterValueText').value.trim();
@@ -4875,6 +5931,248 @@ async function submitAddOperator() {
             feedback.classList.remove('d-none');
         }
     }
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// AUTO SEND TO DELIVER LOGIC
+// ─────────────────────────────────────────────────────────────
+let autoDeliverTimer = null;
+let autoDeliverSecondsLeft = 15;
+let autoDeliverTotalSeconds = 15;
+let isAutoDeliverPaused = false;
+let isAutoDeliverInProgress = false;
+
+let sidebarCardTimers = {};
+function startSidebarCardTimers() {
+    if (typeof IS_MANUAL_DELIVER_ACTIVE !== 'undefined' && IS_MANUAL_DELIVER_ACTIVE) return;
+    document.querySelectorAll('.auto-card-badge').forEach(badge => {
+        const palletId = badge.dataset.palletId;
+        if (!palletId || sidebarCardTimers[palletId]) return;
+
+        let sec = 15;
+        const countEl = document.getElementById('cardSec_' + palletId);
+
+        sidebarCardTimers[palletId] = setInterval(async () => {
+            sec--;
+            if (countEl) countEl.textContent = sec;
+            if (sec <= 0) {
+                clearInterval(sidebarCardTimers[palletId]);
+                delete sidebarCardTimers[palletId];
+                badge.className = 'badge bg-primary text-white border px-2 py-1 shadow-sm mt-1';
+                badge.innerHTML = '<i class="bi bi-arrow-repeat spin me-1"></i>Delivering...';
+
+                try {
+                    const fd = new FormData();
+                    fd.append('ajax', 'auto_deliver_pallet');
+                    fd.append('pallet_id', palletId);
+                    const resp = await fetch('pallet.php', { method: 'POST', body: fd });
+                    const res = await resp.json();
+                    if (res.ok) {
+                        badge.className = 'badge bg-success text-white border px-2 py-1 shadow-sm mt-1';
+                        badge.innerHTML = '<i class="bi bi-check-circle-fill me-1"></i>Delivered';
+                        setTimeout(() => {
+                            loadPalletList();
+                        }, 400);
+                    }
+                } catch(e) {}
+            }
+        }, 1000);
+    });
+}
+
+async function quickDeliverPallet(event, palletId, palletNo) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+    if (!confirm('Deliver pallet ' + palletNo + ' now?\n\nAll rolls on this pallet will be marked DELIVERED.')) {
+        return;
+    }
+    try {
+        const fd = new FormData();
+        fd.append('ajax', 'auto_deliver_pallet');
+        fd.append('pallet_id', palletId);
+        const resp = await fetch('pallet.php', { method: 'POST', body: fd });
+        const res = await resp.json();
+        if (res.ok) {
+            loadPalletList();
+            if (typeof showDeliverFeedback === 'function') {
+                showDeliverFeedback(`✓ Pallet ${escHtml(palletNo)} delivered successfully!`, true);
+            }
+        } else {
+            alert('Delivery failed: ' + (res.msg || 'Unknown error'));
+        }
+    } catch(err) {
+        alert('Network error delivering pallet.');
+    }
+}
+
+function initAutoDeliver() {
+    if (typeof IS_MANUAL_DELIVER_ACTIVE !== 'undefined' && IS_MANUAL_DELIVER_ACTIVE) {
+        return; // Manual deliver is active in Control Center, skip countdown auto send
+    }
+    const alertEl = document.getElementById('autoDeliverAlert');
+    if (!alertEl) return;
+
+    const palletId = Number(PALLET_ID);
+    if (!palletId) return;
+    const palletNo = currentPalletNo;
+
+    const countdownEl = document.getElementById('autoDeliverCountdown');
+    const progressBar = document.getElementById('autoDeliverProgressBar');
+
+    autoDeliverTotalSeconds = 15;
+    autoDeliverSecondsLeft = 15;
+    if (countdownEl) countdownEl.textContent = 15;
+    let startTime = Date.now();
+    let totalDurationMs = autoDeliverTotalSeconds * 1000;
+
+    autoDeliverTimer = setInterval(() => {
+        if (isAutoDeliverPaused || isAutoDeliverInProgress) return;
+
+        let elapsed = Date.now() - startTime;
+        let remainingMs = Math.max(0, totalDurationMs - elapsed);
+        autoDeliverSecondsLeft = Math.ceil(remainingMs / 1000);
+        let pct = Math.max(0, (remainingMs / totalDurationMs) * 100);
+
+        if (countdownEl) countdownEl.textContent = autoDeliverSecondsLeft;
+        if (progressBar) progressBar.style.width = pct + '%';
+
+        if (remainingMs <= 0) {
+            clearInterval(autoDeliverTimer);
+            executeAutoDeliver(palletId, palletNo);
+        }
+    }, 100);
+}
+
+function togglePauseAutoDeliver() {
+    isAutoDeliverPaused = !isAutoDeliverPaused;
+    const badgeEl   = document.getElementById('autoDeliverBadge');
+    const statusEl  = document.getElementById('autoDeliverStatusText');
+    const iconEl    = document.getElementById('btnToggleAutoDeliverIcon');
+    const btnTextEl = document.getElementById('btnToggleAutoDeliverText');
+    const spinner   = document.getElementById('autoDeliverSpinner');
+
+    if (isAutoDeliverPaused) {
+        if (badgeEl) {
+            badgeEl.className = 'badge bg-warning text-dark';
+            badgeEl.textContent = 'PAUSED';
+        }
+        if (statusEl) {
+            statusEl.innerHTML = '<span class="text-warning-emphasis fw-bold"><i class="bi bi-pause-circle me-1"></i>Auto Send to Deliver is paused.</span> Click Resume to continue or deliver manually.';
+        }
+        if (iconEl) iconEl.className = 'bi bi-play-fill me-1';
+        if (btnTextEl) btnTextEl.textContent = 'Resume';
+        if (spinner) spinner.classList.add('d-none');
+    } else {
+        if (badgeEl) {
+            badgeEl.className = 'badge bg-success text-white';
+            badgeEl.textContent = 'AUTO-SENDING';
+        }
+        if (statusEl) {
+            statusEl.innerHTML = 'This pallet is approved and will automatically be sent to deliver in <span class="badge bg-dark fs-6 px-2 py-0" id="autoDeliverCountdown">' + autoDeliverSecondsLeft + '</span> seconds...';
+        }
+        if (iconEl) iconEl.className = 'bi bi-pause-fill me-1';
+        if (btnTextEl) btnTextEl.textContent = 'Pause';
+        if (spinner) spinner.classList.remove('d-none');
+    }
+}
+
+function triggerAutoDeliverImmediate() {
+    if (isAutoDeliverInProgress) return;
+    if (autoDeliverTimer) clearInterval(autoDeliverTimer);
+    const palletId = Number(PALLET_ID);
+    if (!palletId) return;
+    executeAutoDeliver(palletId, currentPalletNo);
+}
+
+async function executeAutoDeliver(palletId, palletNo) {
+    if (isAutoDeliverInProgress) return;
+    isAutoDeliverInProgress = true;
+
+    const statusEl  = document.getElementById('autoDeliverStatusText');
+    const badgeEl   = document.getElementById('autoDeliverBadge');
+    const btnNow    = document.getElementById('btnDeliverNow');
+    const btnToggle = document.getElementById('btnToggleAutoDeliver');
+    const spinner   = document.getElementById('autoDeliverSpinner');
+
+    if (badgeEl) {
+        badgeEl.className = 'badge bg-primary text-white';
+        badgeEl.textContent = 'DELIVERING...';
+    }
+    if (statusEl) {
+        statusEl.innerHTML = '<i class="bi bi-arrow-repeat spin me-1"></i> <strong>Sending pallet to deliver...</strong> Please wait.';
+    }
+    if (spinner) spinner.classList.remove('d-none');
+    if (btnNow) btnNow.disabled = true;
+    if (btnToggle) btnToggle.disabled = true;
+
+    try {
+        const fd = new FormData();
+        fd.append('ajax', 'auto_deliver_pallet');
+        fd.append('pallet_id', palletId);
+
+        const resp = await fetch('pallet.php', { method: 'POST', body: fd });
+        const res = await resp.json();
+
+        if (res.ok) {
+            if (statusEl) {
+                statusEl.innerHTML = '<span class="text-success fw-bold"><i class="bi bi-check-circle-fill me-1"></i>Delivered successfully! Reloading...</span>';
+            }
+            if (badgeEl) {
+                badgeEl.className = 'badge bg-success text-white';
+                badgeEl.textContent = 'DELIVERED';
+            }
+            setTimeout(() => {
+                window.location.href = `pallet.php?pallet_id=${palletId}&success=auto_delivered&pallet_no=${encodeURIComponent(palletNo)}`;
+            }, 300);
+        } else {
+            isAutoDeliverInProgress = false;
+            if (statusEl) {
+                statusEl.innerHTML = `<span class="text-danger fw-bold"><i class="bi bi-exclamation-triangle-fill me-1"></i>Auto-delivery failed: ${escHtml(res.msg || 'Unknown error')}</span>`;
+            }
+            if (badgeEl) {
+                badgeEl.className = 'badge bg-danger text-white';
+                badgeEl.textContent = 'ERROR';
+            }
+            if (btnNow) btnNow.disabled = false;
+            if (btnToggle) btnToggle.disabled = false;
+        }
+    } catch (err) {
+        isAutoDeliverInProgress = false;
+        if (statusEl) {
+            statusEl.innerHTML = `<span class="text-danger fw-bold"><i class="bi bi-wifi-off me-1"></i>Network error during auto-delivery.</span>`;
+        }
+        if (badgeEl) {
+            badgeEl.className = 'badge bg-danger text-white';
+            badgeEl.textContent = 'ERROR';
+        }
+        if (btnNow) btnNow.disabled = false;
+        if (btnToggle) btnToggle.disabled = false;
+    }
+}
+
+if (typeof IS_APPROVED !== 'undefined' && IS_APPROVED && typeof IS_MANUAL_DELIVER_ACTIVE !== 'undefined' && !IS_MANUAL_DELIVER_ACTIVE) {
+    window.addEventListener('load', function() {
+        initAutoDeliver();
+    });
+}
+
+// Background Auto-Deliver Worker (polls every 1.5s when manual delivery is blocked)
+if (typeof IS_MANUAL_DELIVER_ACTIVE !== 'undefined' && !IS_MANUAL_DELIVER_ACTIVE) {
+    setInterval(async () => {
+        try {
+            const resp = await fetch('pallet.php?ajax=poll_auto_deliver');
+            const data = await resp.json();
+            if (data.ok && Array.isArray(data.delivered) && data.delivered.length > 0) {
+                loadPalletList();
+                if (typeof showDeliverFeedback === 'function') {
+                    showDeliverFeedback(`✓ Pallet ${data.delivered.join(', ')} automatically transferred to Delivered!`, true);
+                }
+            }
+        } catch(e) {}
+    }, 1500);
 }
 </script>
 

@@ -48,40 +48,58 @@ function log_process(
 // Applies ONLY to child products generated from a slit (never to the
 // mother_coil record itself, which always keeps its original RS prefix).
 //
-// Rule: if the mother coil's Lot/Coil No contains "V", AND the resulting
-// slit width matches one of the TS trigger widths, the child product gets
-// the TS- prefix (+ White sticker, handled automatically by print_product.php's
-// existing $PRODUCT_COLOR map). Otherwise it gets the standard RS- prefix.
-// Non-V mother coils are left completely unaffected (original code passes through).
-function resolveSlitProductCode(string $motherProductCode, bool $isVCoil, $slitWidth): array
-{
-    // Exact TS-trigger widths (mm), compared with a small float tolerance.
-    $tsWidths = [66.5, 81.0, 109.5, 118.0, 309.0];
+// Rule: if the mother coil is RS-3020 (or TS-3020 or V-coil), AND the resulting
+// slit width matches one of the TS trigger widths (66.5, 81, 109.5, 118, 309),
+// the child product gets the TS- prefix (TS-3020, White sticker).
+// Otherwise it gets the standard RS- prefix (RS-3020, Blue sticker).
+// Other non-3020 mother coils are left completely unaffected.
+if (!function_exists('resolveSlitProductCode')) {
+    function resolveSlitProductCode(string $motherProductCode, bool $isVCoil, $slitWidth): array
+    {
+        // Exact TS-trigger widths (mm), compared with a small float tolerance.
+        $tsWidths = [66.5, 81.0, 109.5, 118.0, 309.0];
 
-    $width = (float)$slitWidth;
-    $matchesTsWidth = false;
-    foreach ($tsWidths as $tsw) {
-        if (abs($width - $tsw) < 0.01) {
-            $matchesTsWidth = true;
-            break;
+        $width = (float)$slitWidth;
+        $matchesTsWidth = false;
+        foreach ($tsWidths as $tsw) {
+            if (abs($width - $tsw) < 0.01) {
+                $matchesTsWidth = true;
+                break;
+            }
         }
+
+        $cleanMother = trim($motherProductCode);
+
+        // Check if this is an RS-3020 mother coil (or TS-3020, or V-coil 3020)
+        $is3020Mother = (strcasecmp($cleanMother, 'RS-3020') === 0)
+            || (strcasecmp($cleanMother, 'TS-3020') === 0)
+            || (stripos($cleanMother, 'RS-3020') === 0)
+            || (stripos($cleanMother, 'TS-3020') === 0)
+            || ($isVCoil && (stripos($cleanMother, '3020') !== false || $cleanMother === ''));
+
+        if ($is3020Mother) {
+            if ($matchesTsWidth) {
+                return ['code' => 'TS-3020', 'is_ts' => true];
+            } else {
+                return ['code' => 'RS-3020', 'is_ts' => false];
+            }
+        }
+
+        // Generic V-Coil prefix replacement fallback for other product suffixes (if any)
+        $parts  = explode('-', $cleanMother, 2);
+        $suffix = $parts[1] ?? $cleanMother;
+
+        if ($isVCoil && $matchesTsWidth) {
+            return ['code' => 'TS-' . $suffix, 'is_ts' => true];
+        }
+
+        if ($isVCoil) {
+            return ['code' => 'RS-' . $suffix, 'is_ts' => false];
+        }
+
+        // Non-V mother coil: leave product code exactly as passed in — untouched
+        return ['code' => $cleanMother, 'is_ts' => false];
     }
-
-    // Split "RS-3020" -> suffix "3020"
-    $parts  = explode('-', $motherProductCode, 2);
-    $suffix = $parts[1] ?? $motherProductCode;
-
-    if ($isVCoil && $matchesTsWidth) {
-        return ['code' => 'TS-' . $suffix, 'is_ts' => true];
-    }
-
-    if ($isVCoil) {
-        // V coil, but width not on the TS list -> standard RS prefix
-        return ['code' => 'RS-' . $suffix, 'is_ts' => false];
-    }
-
-    // Non-V mother coil: leave product code exactly as passed in — untouched
-    return ['code' => $motherProductCode, 'is_ts' => false];
 }
 
 // ── Read form data ──────────────────────────────────────────────
@@ -118,6 +136,11 @@ try {
     }
     $mother = $mother_result->fetch_assoc();
 
+    $motherProductCode = !empty($mother['product']) ? trim($mother['product']) : trim($product);
+    $isVCoil = $isVCoil
+        || (!empty($mother['coil_no']) && stripos($mother['coil_no'], 'V') !== false)
+        || (!empty($mother['lot_no']) && stripos($mother['lot_no'], 'V') !== false);
+
     $balance_stock_id = null;
 
     // ── CUT INTO 2: save leftover to stock_raw_material ────────
@@ -126,7 +149,15 @@ try {
         $leftover_length = floatval($_POST['stock']         ?? 0); // form field still named 'stock'
 
         if ($leftover_length > 0) {
-            $new_lot_no = $lot_no;
+            $base_lot_src = !empty($mother['lot_no']) ? $mother['lot_no'] : $lot_no;
+            // Clean away any letter suffix so leftover mother coil stays clean base lot (e.g. 222225)
+            // But if mother coil originally had a letter suffix (e.g. 826928a), preserve it!
+            $mother_orig_lot = trim($mother['lot_no'] ?? '');
+            if ($mother_orig_lot !== '' && preg_match('/[a-z]$/i', $mother_orig_lot)) {
+                $new_lot_no = $mother_orig_lot;
+            } else {
+                $new_lot_no = preg_replace('/[a-z]$/i', '', $base_lot_src);
+            }
             $grade_val  = $mother['grade'] ?? '';
             $width_val  = floatval($mother['width']);
 
@@ -165,9 +196,14 @@ try {
     // ── Fetch Slitting Plan (if any) to map customer & ref_no by roll sequence ──────
     $planCustomerMap = [];
     $planRefMap      = [];
-    if ($mother_id) {
-        $planRes = $conn->query("SELECT roll_seq, customer_name, ref_no FROM slitting_plans WHERE mother_coil_id = " . intval($mother_id) . " ORDER BY sort_order ASC, id ASC");
-        if ($planRes) {
+    $planRes = null;
+    if ($stock_id > 0) {
+        $planRes = $conn->query("SELECT roll_seq, customer_name, ref_no FROM slitting_plans WHERE stock_id = " . intval($stock_id) . " ORDER BY sort_order ASC, id ASC");
+    }
+    if ((!$planRes || $planRes->num_rows === 0) && $mother_id > 0) {
+        $planRes = $conn->query("SELECT roll_seq, customer_name, ref_no FROM slitting_plans WHERE mother_coil_id = " . intval($mother_id) . " AND (stock_id IS NULL OR stock_id = 0) ORDER BY sort_order ASC, id ASC");
+    }
+    if ($planRes) {
             $pIdx = 0;
             while ($pRow = $planRes->fetch_assoc()) {
                 $cName = trim($pRow['customer_name'] ?? '');
@@ -180,16 +216,70 @@ try {
                 if ($cName !== '') $planCustomerMap['idx_' . $pIdx] = $cName;
                 if ($rNo !== '')   $planRefMap['idx_' . $pIdx]      = $rNo;
                 $pIdx++;
-            }
         }
     }
+
+    if (!function_exists('formatRollLotNo')) {
+        function formatRollLotNo($base_lot, $cut_letter) {
+            $base_lot   = trim($base_lot);
+            $cut_letter = trim($cut_letter);
+            if ($cut_letter === '') {
+                return $base_lot;
+            }
+            if (strcasecmp(substr($base_lot, -strlen($cut_letter)), $cut_letter) === 0) {
+                return $base_lot;
+            }
+            if (preg_match('/[a-z]$/i', $base_lot)) {
+                return preg_replace('/[a-z]$/i', $cut_letter, $base_lot);
+            }
+            return $base_lot . $cut_letter;
+        }
+    }
+
+    // ── Pre-calculate fallback default cut letter for cut_into_2 ──
+    $fallback_cut_letter = '';
+    $is_leftover_source  = ($stock_id > 0);
+    // Only auto-assign 'a' if it's Cut Into 2 on a fresh mother coil (leftover mother coils stay NO suffix)
+    // AND mother coil does not already end with a letter
+    if ($cut_type === 'cut_into_2' && !$is_leftover_source && !preg_match('/[a-z]$/i', $lot_no)) {
+        $fallback_cut_letter = 'a';
+    }
+
+    // ── Upfront Validation: Block any duplicate rolls (same lot_no, coil_no, roll_no, width) ──
+    $chk_dup = $conn->prepare("
+        SELECT id FROM slitting_product
+        WHERE lot_no = ? AND coil_no = ? AND roll_no = ?
+          AND ABS(width - ?) < 0.5
+          AND (is_voided = 0 OR is_voided IS NULL)
+        LIMIT 1
+    ");
+    foreach ($roll_nos as $i => $r_no) {
+        $r_width = floatval($widths[$i] ?? 0);
+        $r_let   = trim($cut_letters[$i] ?? '');
+        if ($r_let === '' && $fallback_cut_letter !== '') {
+            $r_let = $fallback_cut_letter;
+        }
+        $r_lot   = formatRollLotNo($lot_no, $r_let);
+
+        $chk_dup->bind_param("sssd", $r_lot, $coil_no, $r_no, $r_width);
+        $chk_dup->execute();
+        $dup_row = $chk_dup->get_result()->fetch_assoc();
+        if ($dup_row) {
+            $chk_dup->close();
+            throw new Exception("Roll {$r_no} (Lot: {$r_lot}, Coil: {$coil_no}, Width: {$r_width}mm) already exists in the system (Roll ID #{$dup_row['id']}). Duplicate slitting is blocked.");
+        }
+    }
+    $chk_dup->close();
 
     // ── Process each roll ───────────────────────────────────────
     foreach ($roll_nos as $index => $roll_no) {
         $length       = floatval($lengths[$index]  ?? 0);
         $width        = floatval($widths[$index]   ?? 0);
         $cut_letter   = trim($cut_letters[$index]  ?? '');
-        $roll_lot_no  = $lot_no . $cut_letter;
+        if ($cut_letter === '' && $fallback_cut_letter !== '') {
+            $cut_letter = $fallback_cut_letter;
+        }
+        $roll_lot_no  = formatRollLotNo($lot_no, $cut_letter);
         $roll_no_safe = $roll_no;
 
         $plannedCustomer = null;
@@ -206,8 +296,43 @@ try {
             $plannedRefNo = $planRefMap['idx_' . $index];
         }
 
+        // ── Auto-Insert into slitting_plans if this roll was not planned ──
+        $existsInPlan = false;
+        if ($stock_id > 0) {
+            $chkP = $conn->prepare("SELECT id FROM slitting_plans WHERE stock_id = ? AND roll_seq = ? LIMIT 1");
+            if ($chkP) {
+                $chkP->bind_param("is", $stock_id, $roll_no_safe);
+                $chkP->execute();
+                if ($chkP->get_result()->num_rows > 0) $existsInPlan = true;
+                $chkP->close();
+            }
+        } elseif ($mother_id > 0) {
+            $chkP = $conn->prepare("SELECT id FROM slitting_plans WHERE mother_coil_id = ? AND (stock_id IS NULL OR stock_id = 0) AND roll_seq = ? LIMIT 1");
+            if ($chkP) {
+                $chkP->bind_param("is", $mother_id, $roll_no_safe);
+                $chkP->execute();
+                if ($chkP->get_result()->num_rows > 0) $existsInPlan = true;
+                $chkP->close();
+            }
+        }
+
+        if (!$existsInPlan) {
+            $insPlan = $conn->prepare("
+                INSERT INTO slitting_plans 
+                    (mother_coil_id, stock_id, roll_seq, planned_width, customer_name, ref_no, sort_order)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ");
+            if ($insPlan) {
+                $sIdVal = ($stock_id > 0) ? $stock_id : null;
+                $sortVal = $index + 1;
+                $insPlan->bind_param("iisdssi", $mother_id, $sIdVal, $roll_no_safe, $width, $plannedCustomer, $plannedRefNo, $sortVal);
+                $insPlan->execute();
+                $insPlan->close();
+            }
+        }
+
         // ── Resolve this roll's product code (TS/RS dynamic naming) ──
-        $resolved     = resolveSlitProductCode($product, $isVCoil, $width);
+        $resolved     = resolveSlitProductCode($motherProductCode, $isVCoil, $width);
         $roll_product = $resolved['code'];
 
         $roll_number_str  = (string)($index + 1);
@@ -294,24 +419,28 @@ try {
         $leftover_col   = ($col_row['cnt'] > 0) ? 'leftover_length' : 'stock';
 
         // Build insert dynamically based on which column exists
+        $prod_month_opt = trim($_POST['production_month'] ?? 'current');
+        $prod_date      = resolveProductionMonthDate($prod_month_opt);
+        $date_in_val    = ($prod_month_opt === 'current') ? date('Y-m-d H:i:s') : $prod_date . ' ' . date('H:i:s');
+        $stock_code     = generateStockCode($conn, $prod_date);
         $insert_stmt = $conn->prepare(
             "INSERT INTO slitting_product
                  (product, lot_no, coil_no, roll_no, roll_key, width, length,
                   mother_id, status, cut_type, slit_quantity,
-                  customer_name, ref_no, {$leftover_col}, parent_slit_id, date_in, source)
+                  customer_name, ref_no, {$leftover_col}, parent_slit_id, date_in, source, stock_code)
              VALUES
-                 (?, ?, ?, ?, ?, ?, ?, ?, 'IN', ?, ?, ?, ?, NULL, NULL, NOW(), ?)"
+                 (?, ?, ?, ?, ?, ?, ?, ?, 'IN', ?, ?, ?, ?, NULL, NULL, ?, ?, ?)"
         );
         if (!$insert_stmt) {
             throw new Exception("Prepare failed: " . $conn->error);
         }
-        // types: s s s s s d d i s d s s s
+        // types: s s s s s d d i s d s s s s s
         $insert_stmt->bind_param(
-            "sssssddisdsss",
+            "sssssddisdsssss",
             $roll_product, $roll_lot_no, $coil_no, $display_roll_no, $target_roll_key,
             $width, $length, $mother_id,
             $cut_type, $slit_quantity_val, $plannedCustomer, $plannedRefNo,
-            $source_type
+            $date_in_val, $source_type, $stock_code
         );
         if (!$insert_stmt->execute()) {
             throw new Exception("Failed to insert slitting product: " . $insert_stmt->error);
@@ -358,7 +487,7 @@ try {
         $balance_roll_no = "BALANCE";
 
         // Resolve TS/RS naming for the balance-width entry too
-        $balance_resolved = resolveSlitProductCode($product, $isVCoil, $sfc_balance_width);
+        $balance_resolved = resolveSlitProductCode($motherProductCode, $isVCoil, $sfc_balance_width);
         $balance_product  = $balance_resolved['code'];
 
         $sfc_bal = $conn->prepare(
@@ -392,7 +521,12 @@ try {
 
 } catch (Exception $e) {
     $conn->rollback();
-    die("Error: " . $e->getMessage());
+    die("<div style='color:#721c24; font-family:sans-serif; padding:25px; border:1px solid #f5c6cb; background:#f8d7da; border-radius:8px; max-width:650px; margin:40px auto; box-shadow:0 4px 12px rgba(0,0,0,0.1);'>
+            <h3 style='margin-top:0;'>⚠️ Duplicate Slitting Blocked</h3>
+            <p style='font-size:15px; line-height:1.5;'><strong>" . htmlspecialchars($e->getMessage()) . "</strong></p>
+            <p style='color:#555;'>Roll ini sudah wujud di dalam sistem. Sila semak semula roll number atau tambah suffix huruf pada Lot No bagi mengelakkan pertindihan data.</p>
+            <button onclick='history.back()' style='padding:10px 20px; background:#dc3545; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:14px; font-weight:bold;'>← Go Back and Correct</button>
+         </div>");
 }
 
 $conn->close();

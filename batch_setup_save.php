@@ -70,6 +70,14 @@ foreach ($selections as $sel) {
     $stmt->bind_param("ssdi", $customerToSave, $ref_no, $length, $id);
     if ($stmt->execute()) {
         $saved++;
+        if (function_exists('syncSlittingPlanCustomer')) {
+            syncSlittingPlanCustomer($conn, $id, $customerToSave, $ref_no);
+        }
+
+        if (isset($sel['stock_code']) && trim($sel['stock_code']) !== '') {
+            $stSc = trim($sel['stock_code']);
+            $conn->query("UPDATE slitting_product SET stock_code = '" . $conn->real_escape_string($stSc) . "' WHERE id = {$id}");
+        }
 
         // If transitioning from pending to completed, handle leftover for cut_into_2
         if ($wasPending && $existing) {

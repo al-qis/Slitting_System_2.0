@@ -10,6 +10,8 @@ if ($_SESSION['role'] !== 'slitting') {
 }
 
 include 'config.php';
+require_once __DIR__ . '/control_system/config_store.php';
+$isRecoilActive = function_exists('isButtonActive') ? isButtonActive('recoiling_recoil') : true;
 
 // ── Excel Download ────────────────────────────────────────────
 if (isset($_GET['download']) && $_GET['download'] === 'excel') {
@@ -175,7 +177,7 @@ $query = "
 $result = $conn->query($query);
 
 $childRes = $conn->query("
-    SELECT recoiling_id, lot_no, coil_no, roll_no, width, length, actual_length
+    SELECT id, recoiling_id, lot_no, coil_no, roll_no, width, length, actual_length
     FROM slitting_product
     WHERE recoiling_id IS NOT NULL
     ORDER BY recoiling_id ASC, id ASC
@@ -225,6 +227,19 @@ if (isset($_GET['error'])) {
         $alertMessage = "<strong>Sent back to Finished Product.</strong> This item has been removed from the Recoiling queue.";
     } else {
         $alertMessage = "<strong>Recoiling completed successfully!</strong> The product has been saved.";
+        
+        $printIdsRaw = $_GET['print_ids'] ?? '';
+        $printIds = array_values(array_filter(array_map('intval', explode(',', $printIdsRaw))));
+        if (!empty($printIds)) {
+            $printUrl = (count($printIds) === 1)
+                ? "select_customer.php?id=" . $printIds[0] . "&from=recoiling"
+                : "mixed_batch_setup.php?ids=" . implode(',', $printIds) . "&from=recoiling";
+            
+            $alertMessage .= ' <a href="' . htmlspecialchars($printUrl) . '" target="_blank" class="btn btn-sm btn-success text-white fw-bold ms-2 shadow-sm"><i class="bi bi-printer-fill me-1"></i> Print Sticker Now</a>';
+            if (!empty($_GET['auto_print'])) {
+                $autoPrintUrl = $printUrl . "&autoprint=1";
+            }
+        }
     }
 }
 
@@ -435,18 +450,24 @@ include 'header.php';
                     <td>
                         <?php if ($canRecoil): ?>
                             <div class="d-flex flex-column gap-1">
-                            <button type="button"
-                                    class="btn btn-primary btn-sm btn-recoil"
-                                    data-rid="<?= $rid ?>"
-                                    data-product="<?= htmlspecialchars($row['product'] ?? '') ?>"
-                                    data-lot="<?= htmlspecialchars($row['lot_no'] ?? '') ?>"
-                                    data-coil="<?= htmlspecialchars($row['coil_no'] ?? '') ?>"
-                                    data-roll="<?= htmlspecialchars($row['roll_no'] ?? '') ?>"
-                                    data-width="<?= (float)($row['width'] ?? 0) ?>"
-                                    data-length="<?= (float)($row['actual_length'] ?? 0) ?>"
-                                    data-source="<?= htmlspecialchars($source) ?>">
-                                <i class="bi bi-play-circle"></i> Recoil
-                            </button>
+                            <?php if ($isRecoilActive): ?>
+                                <button type="button"
+                                        class="btn btn-primary btn-sm btn-recoil"
+                                        data-rid="<?= $rid ?>"
+                                        data-product="<?= htmlspecialchars($row['product'] ?? '') ?>"
+                                        data-lot="<?= htmlspecialchars($row['lot_no'] ?? '') ?>"
+                                        data-coil="<?= htmlspecialchars($row['coil_no'] ?? '') ?>"
+                                        data-roll="<?= htmlspecialchars($row['roll_no'] ?? '') ?>"
+                                        data-width="<?= (float)($row['width'] ?? 0) ?>"
+                                        data-length="<?= (float)($row['actual_length'] ?? 0) ?>"
+                                        data-source="<?= htmlspecialchars($source) ?>">
+                                    <i class="bi bi-play-circle"></i> Recoil
+                                </button>
+                            <?php else: ?>
+                                <button type="button" class="btn btn-secondary btn-sm disabled opacity-75" title="Recoil button function is BLOCKED by Control Center" disabled>
+                                    <i class="bi bi-slash-circle me-1"></i> Recoil
+                                </button>
+                            <?php endif; ?>
                             <?php if ($status === 'pending'): ?>
                                 <button type="button"
                                         class="btn btn-outline-danger btn-sm btn-send-back-recoil"
@@ -458,7 +479,24 @@ include 'header.php';
                             <?php endif; ?>
                             </div>
                         <?php else: ?>
-                            <span class="badge bg-light text-dark border">Done</span>
+                            <?php
+                            $rowKidIds = [];
+                            if (!empty($kids)) {
+                                foreach ($kids as $k) {
+                                    if (!empty($k['id'])) $rowKidIds[] = (int)$k['id'];
+                                }
+                            }
+                            if (!empty($rowKidIds)):
+                                $rowPrintUrl = (count($rowKidIds) === 1)
+                                    ? "select_customer.php?id=" . $rowKidIds[0] . "&from=recoiling"
+                                    : "mixed_batch_setup.php?ids=" . implode(',', $rowKidIds) . "&from=recoiling";
+                            ?>
+                                <a href="<?= htmlspecialchars($rowPrintUrl) ?>" target="_blank" class="btn btn-outline-success btn-sm shadow-sm" title="Print Sticker">
+                                    <i class="bi bi-printer-fill me-1"></i> Print Sticker
+                                </a>
+                            <?php else: ?>
+                                <span class="badge bg-light text-dark border">Done</span>
+                            <?php endif; ?>
                         <?php endif; ?>
                     </td>
                 </tr>
@@ -703,6 +741,12 @@ include 'header.php';
                         <hr>
                         <h6 class="mb-3 fw-bold">Step 2: Enter Details</h6>
                         <div id="rollsContainer"></div>
+                        <div class="form-check form-switch mt-3 p-2 bg-light border rounded">
+                            <input class="form-check-input ms-0 me-2" type="checkbox" name="auto_print" id="recoil_auto_print" value="1" checked>
+                            <label class="form-check-label fw-bold text-primary" for="recoil_auto_print">
+                                <i class="bi bi-printer-fill me-1"></i> Cetak sticker automatik selepas selesai
+                            </label>
+                        </div>
                     </div>
 
                 </div>
@@ -779,11 +823,25 @@ function addToRecoilingQueue(raw, source) {
         showIntakeFeedback(data.ok, data.msg);
         input.value = '';
         if (data.ok) {
-            // Brief pause so the confirmation is actually seen before the
-            // page reloads to show the newly-added pending roll — the
-            // input's `autofocus` attribute takes care of re-focusing it
-            // on the fresh page load, ready for the very next scan.
-            setTimeout(() => window.location.reload(), 1400);
+            if (data.action === 'open_modal' && data.roll) {
+                // 2nd scan: Open Recoiling Process modal directly!
+                const dummyBtn = {
+                    dataset: {
+                        rid: data.roll.rid,
+                        product: data.roll.product,
+                        lot: data.roll.lot_no,
+                        coil: data.roll.coil_no,
+                        roll: data.roll.roll_no,
+                        width: data.roll.width,
+                        length: data.roll.length,
+                        source: data.roll.source || 'recoiling_product'
+                    }
+                };
+                openRecoilModal(dummyBtn);
+            } else {
+                // 1st scan: Brief pause then reload to show new pending item in table
+                setTimeout(() => window.location.reload(), 1400);
+            }
         } else {
             // Failed — no reload, so refocus immediately so the operator
             // can correct and retry without touching the mouse.
@@ -864,10 +922,15 @@ function applyRecoilFilters() {
 }
 
 
+const isRecoilActive = <?= $isRecoilActive ? 'true' : 'false' ?>;
 document.addEventListener('DOMContentLoaded', function () {
     document.body.addEventListener('click', function (e) {
         const btn = e.target.closest('.btn-recoil');
         if (!btn) return;
+        if (!isRecoilActive) {
+            alert('The Recoil button function is currently BLOCKED in Control Center.');
+            return;
+        }
         openRecoilModal(btn);
     });
 
@@ -1342,5 +1405,13 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 });
 </script>
+
+<?php if (!empty($autoPrintUrl)): ?>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    window.open(<?= json_encode($autoPrintUrl) ?>, '_blank');
+});
+</script>
+<?php endif; ?>
 
 <?php include 'footer.php'; ?>

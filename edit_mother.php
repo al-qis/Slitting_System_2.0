@@ -12,7 +12,7 @@ if (!$res || $res->num_rows === 0) die("Mother coil not found");
 $data = $res->fetch_assoc();
 
 // Fetch existing slitting plan rows
-$plansStmt = $conn->prepare("SELECT roll_seq, planned_width, customer_name, ref_no FROM slitting_plans WHERE mother_coil_id = ? ORDER BY sort_order ASC, id ASC");
+$plansStmt = $conn->prepare("SELECT roll_seq, planned_width, customer_name, ref_no FROM slitting_plans WHERE mother_coil_id = ? AND (stock_id IS NULL OR stock_id = 0) ORDER BY sort_order ASC, id ASC");
 $plansStmt->bind_param("i", $id);
 $plansStmt->execute();
 $plans = $plansStmt->get_result()->fetch_all(MYSQLI_ASSOC);

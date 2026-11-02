@@ -257,7 +257,7 @@ try {
     }
 
     // 3. Update slitting_plans (delete old and re-insert updated plan rows)
-    $delPlan = $conn->prepare("DELETE FROM slitting_plans WHERE mother_coil_id = ?");
+    $delPlan = $conn->prepare("DELETE FROM slitting_plans WHERE mother_coil_id = ? AND (stock_id IS NULL OR stock_id = 0)");
     if ($delPlan) {
         $delPlan->bind_param("i", $id);
         $delPlan->execute();

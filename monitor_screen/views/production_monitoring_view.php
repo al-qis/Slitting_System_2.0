@@ -1,16 +1,9 @@
 <?php
-session_start();
-
-if (!isset($_SESSION['role'])) {
-    header("Location: login.php");
-    exit;
-}
-
-include 'config.php';
-
-$page_title = "Real-Time Production Monitoring";
-$hide_sidebar = true;
-include 'header.php';
+/**
+ * production_monitoring_view.php
+ * View template for Real-Time Production Monitoring (TV Display)
+ */
+include __DIR__ . '/../../header.php';
 ?>
 
 <style>
@@ -27,9 +20,62 @@ include 'header.php';
         border-left: 8px solid #0d6efd;
     }
     .packing-hero-card {
-        background: linear-gradient(135deg, #2d1b4e 0%, #1e1b4b 100%);
+        background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
         color: #ffffff;
         border-left: 8px solid #ffc107;
+    }
+    .running-compact-badge {
+        background: rgba(15, 23, 42, 0.75);
+        border: 1px solid rgba(56, 189, 248, 0.5);
+        box-shadow: 0 0 10px rgba(56, 189, 248, 0.2);
+    }
+    .packing-compact-badge {
+        background: rgba(15, 23, 42, 0.75);
+        border: 1px solid rgba(255, 193, 7, 0.5);
+        box-shadow: 0 0 10px rgba(255, 193, 7, 0.2);
+    }
+    .roll-details-section {
+        background: rgba(15, 23, 42, 0.45);
+        border-radius: 8px;
+        padding: 14px;
+    }
+    .roll-details-table {
+        background-color: transparent !important;
+        border-collapse: separate;
+        border-spacing: 0;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 6px;
+        overflow: hidden;
+    }
+    .roll-details-table thead th {
+        background-color: rgba(30, 41, 59, 0.95) !important;
+        border-bottom: 2px solid #ffc107;
+        font-size: 0.85rem;
+        letter-spacing: 0.6px;
+        text-transform: uppercase;
+        padding: 10px 14px;
+    }
+    .roll-details-table tbody td {
+        padding: 9px 14px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+        font-size: 0.95rem;
+        background-color: transparent !important;
+    }
+    .roll-details-table tbody tr:nth-of-type(odd) {
+        background-color: rgba(30, 41, 59, 0.35);
+    }
+    .roll-details-table tbody tr:hover td {
+        background-color: rgba(56, 189, 248, 0.1) !important;
+    }
+    .roll-details-table.compact-table thead th {
+        padding: 5px 8px !important;
+        font-size: 0.72rem !important;
+        letter-spacing: 0.5px;
+    }
+    .roll-details-table.compact-table tbody td {
+        padding: 4px 8px !important;
+        font-size: 0.82rem !important;
+        line-height: 1.25;
     }
     .idle-hero-card {
         background: linear-gradient(135deg, #334155 0%, #1e293b 100%);
@@ -183,34 +229,34 @@ include 'header.php';
                 <p class="text-muted small m-0 mt-1">Real-time active production status & mother coil queue display</p>
             </div>
 
-            <!-- Slitting Running Coil Counter (Jumlah Coil Sedang Dipotong) -->
+            <!-- Slitting Running Roll Counter (Jumlah Roll Sedang Dipotong untuk Lot Number Tersebut) -->
             <div class="card border-0 shadow-sm px-3 py-2 rounded-3 bg-white d-flex flex-row align-items-center gap-3 border-start border-4 border-primary">
                 <div class="p-2 rounded-2 bg-primary bg-opacity-20 text-primary">
                     <i class="bi bi-scissors fs-4 text-primary"></i>
                 </div>
                 <div>
                     <div class="text-uppercase text-muted fw-bold" style="font-size: 0.72rem; letter-spacing: 0.5px;">
-                        Coil Sedang Dipotong
+                        Roll Sedang Dipotong
                     </div>
                     <div class="d-flex align-items-baseline gap-1">
                         <span class="fs-4 fw-bold text-dark" id="slittingRunningCoilCount">0</span>
-                        <span class="text-muted small fw-semibold">Coil (<span id="slittingRunningCoilLen">0 m</span>)</span>
+                        <span class="text-muted small fw-semibold">Roll (<span id="slittingRunningCoilLen">0 m</span>)</span>
                     </div>
                 </div>
             </div>
 
-            <!-- Recoiling Coil Counter (By Coil, Follow by Day) -->
+            <!-- Recoiling Counter (Rolls Only, Follow by Day) -->
             <div class="card border-0 shadow-sm px-3 py-2 rounded-3 bg-white d-flex flex-row align-items-center gap-3 border-start border-4 border-warning">
                 <div class="p-2 rounded-2 bg-warning bg-opacity-20 text-warning">
                     <i class="bi bi-arrow-repeat fs-4 text-warning"></i>
                 </div>
                 <div>
                     <div class="text-uppercase text-muted fw-bold" style="font-size: 0.72rem; letter-spacing: 0.5px;">
-                        Recoiling Coils (Today)
+                        Recoiling (Today)
                     </div>
                     <div class="d-flex align-items-baseline gap-1">
                         <span class="fs-4 fw-bold text-dark" id="recoilDayCoilCount">0</span>
-                        <span class="text-muted small fw-semibold">Coils</span>
+                        <span class="text-muted small fw-semibold" id="recoilDayUnitLabel">Rolls</span>
                     </div>
                 </div>
             </div>
@@ -279,7 +325,6 @@ include 'header.php';
                     <div>
                         <div class="d-flex flex-wrap align-items-center gap-2">
                             <h5 class="fw-bold m-0 text-dark">Real Production Performance (Actual)</h5>
-                            <span class="badge bg-primary bg-opacity-10 text-primary border border-primary fs-7 d-none" id="runningCoilInfoBadge"></span>
                             <span class="badge bg-secondary bg-opacity-10 text-secondary border fs-7 d-none" id="completedCoilInfoBadge"></span>
                             <span class="badge bg-light text-dark border fs-7 d-none" id="productionVarianceBadge"></span>
                         </div>
@@ -418,8 +463,19 @@ function fetchMonitoringData() {
                 }
                 if (data.recoil_summary) {
                     const elCoil = document.getElementById('recoilDayCoilCount');
+                    const elUnit = document.getElementById('recoilDayUnitLabel');
                     if (elCoil) {
-                        elCoil.innerText = data.recoil_summary.total_coils ?? 0;
+                        const totalRolls = data.recoil_summary.total_rolls ?? 0;
+                        const totalCoils = data.recoil_summary.total_coils ?? 0;
+                        const rewinding  = data.recoil_summary.rewinding_count ?? 0;
+                        const cutDefect  = data.recoil_summary.cut_defect_count ?? 0;
+
+                        elCoil.innerText = totalRolls;
+                        if (elUnit) {
+                            elUnit.innerText = 'Rolls';
+                        }
+                        // Tooltip for breakdown details on hover
+                        elCoil.parentElement.setAttribute('title', `Rewinding: ${rewinding}, Cut Defect: ${cutDefect}`);
                     }
                     const elDate = document.getElementById('prodDayLabel');
                     if (elDate && data.recoil_summary.prod_date_formatted) {
@@ -438,7 +494,7 @@ function fetchMonitoringData() {
                 }
             } else {
                 if (data.message === 'Unauthorized') {
-                    window.location.href = 'login.php';
+                    window.location.href = '../login.php';
                 } else {
                     renderSectionA(null);
                     renderSectionB([]);
@@ -505,23 +561,12 @@ function renderLengthTracking(tracking) {
     
     if (badge) badge.innerText = pct.toFixed(1) + '%';
 
-    // Badges for Completed vs Sedang Dipotong
+    // Badges for Completed
     const elCompletedBadge = document.getElementById('completedCoilInfoBadge');
-    const elRunningBadge   = document.getElementById('runningCoilInfoBadge');
 
     if (elCompletedBadge) {
         elCompletedBadge.classList.remove('d-none');
         elCompletedBadge.innerText = 'Siap: ' + Math.round(tracking.length_completed_24h || 0).toLocaleString() + ' m';
-    }
-    if (elRunningBadge) {
-        const rCount = parseInt(tracking.running_coil_count, 10) || 0;
-        const rLen   = parseFloat(tracking.running_coil_length) || 0;
-        if (rCount > 0 && rLen > 0) {
-            elRunningBadge.classList.remove('d-none');
-            elRunningBadge.innerHTML = `<i class="bi bi-scissors me-1"></i>Sedang dipotong: ${rCount} Coil (${Math.round(rLen).toLocaleString()} m)`;
-        } else {
-            elRunningBadge.classList.add('d-none');
-        }
     }
 
     // Variance badge (Ahead / Behind target pacing)
@@ -640,8 +685,79 @@ function renderSectionA(running) {
         return;
     }
 
+    // Helper: Build the 4-column Roll Details Table (used across ALL stages)
+    // If rolls > 7 (e.g. 8 - 15+ coils), auto split into 2 side-by-side compact tables
+    const buildRollDetailsTableHtml = (rollList) => {
+        const renderRow = (roll, idx, offset = 0) => `
+            <tr>
+                <td class="fw-bold text-warning text-nowrap">${roll.roll_no || ('R' + (offset + idx + 1))}</td>
+                <td class="fw-bold text-info text-nowrap">${roll.width_fmt || (roll.width ? roll.width + ' mm' : '-')}</td>
+                <td class="text-white text-nowrap fw-semibold text-truncate" style="max-width: 120px;" title="${roll.customer_name || '-'}">${roll.customer_name || '-'}</td>
+                <td class="text-light font-monospace text-nowrap text-truncate" style="max-width: 120px;" title="${roll.ref_no || '-'}">${roll.ref_no || '-'}</td>
+            </tr>
+        `;
+
+        const renderTableWrapper = (rowsHtml, isCompact = false) => `
+            <div class="table-responsive rounded-2" style="max-height: 320px; overflow-y: auto;">
+                <table class="table table-dark table-striped table-hover align-middle mb-0 roll-details-table ${isCompact ? 'compact-table' : ''}">
+                    <thead>
+                        <tr>
+                            <th class="text-warning fw-bold text-nowrap" style="width: 16%;">ROLL</th>
+                            <th class="text-info fw-bold text-nowrap" style="width: 22%;">WIDTH</th>
+                            <th class="text-light fw-bold text-nowrap" style="width: 32%;">CUSTOMER NAME</th>
+                            <th class="text-light fw-bold text-nowrap" style="width: 30%;">SO NUM / REF NO</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${rowsHtml}
+                    </tbody>
+                </table>
+            </div>
+        `;
+
+        if (!rollList || rollList.length === 0) {
+            const emptyRows = `<tr><td colspan="4" class="text-center text-muted py-3">No roll details recorded</td></tr>`;
+            return `
+                <div class="roll-details-section mt-3 pt-3 border-top border-secondary border-opacity-50">
+                    ${renderTableWrapper(emptyRows, false)}
+                </div>
+            `;
+        }
+
+        // If more than 7 rolls (e.g. 8 - 15+ coils), split into 2 side-by-side tables with compact columns
+        if (rollList.length > 7) {
+            const splitIdx = Math.ceil(rollList.length / 2);
+            const leftList = rollList.slice(0, splitIdx);
+            const rightList = rollList.slice(splitIdx);
+
+            const leftRowsHtml = leftList.map((roll, idx) => renderRow(roll, idx, 0)).join('');
+            const rightRowsHtml = rightList.map((roll, idx) => renderRow(roll, idx, splitIdx)).join('');
+
+            return `
+                <div class="roll-details-section mt-3 pt-3 border-top border-secondary border-opacity-50">
+                    <div class="row g-2">
+                        <div class="col-12 col-md-6">
+                            ${renderTableWrapper(leftRowsHtml, true)}
+                        </div>
+                        <div class="col-12 col-md-6">
+                            ${renderTableWrapper(rightRowsHtml, true)}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // 7 or fewer rolls: single regular table
+        const singleRowsHtml = rollList.map((roll, idx) => renderRow(roll, idx, 0)).join('');
+        return `
+            <div class="roll-details-section mt-3 pt-3 border-top border-secondary border-opacity-50">
+                ${renderTableWrapper(singleRowsHtml, false)}
+            </div>
+        `;
+    };
+
     if (running.is_packing) {
-        // PACKING STATE (Temporary 5-minute completion state)
+        // ── PACKING STAGE (Temporary 5-minute completion state) ──
         container.className = 'card monitoring-card h-100 packing-hero-card';
         currentPackingRemaining = running.packing_remaining_seconds || 300;
 
@@ -654,49 +770,49 @@ function renderSectionA(running) {
 
         body.innerHTML = `
             <div>
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <div>
+                <!-- Top Header Row: Badges & Packing Countdown Timer -->
+                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+                    <div class="d-flex align-items-center flex-wrap gap-2">
                         <span class="badge bg-warning text-dark fs-6 status-badge-packing">
                             <i class="bi bi-box-seam me-1"></i> PACKING
                         </span>
-                        <span class="badge bg-secondary ms-2 fs-6">${running.sub_status}</span>
+                        <span class="badge bg-secondary fs-6">${running.sub_status}</span>
                     </div>
-                    <div class="text-end">
-                        <span class="text-warning small fw-bold">Auto-clears in 5 minutes</span>
+                    <div class="d-flex align-items-center flex-wrap gap-2 text-end">
+                        <div class="packing-compact-badge d-inline-flex align-items-center px-3 py-1 rounded-pill">
+                            <i class="bi bi-stopwatch text-warning me-2 fs-6"></i>
+                            <span class="text-uppercase text-warning small fw-bold me-1">PACKING COUNTDOWN:</span>
+                            <span class="fw-bold text-warning fs-6 font-monospace" id="packingCountdownDisplay">${formatPackingTime(currentPackingRemaining)}</span>
+                        </div>
+                        <span class="text-secondary d-none d-sm-inline">|</span>
+                        <span class="text-warning small fw-bold">Auto-clears in 5m</span>
                     </div>
                 </div>
 
+                <!-- Finalizing Finished Goods & Mother Coil ID -->
                 <div class="mb-4">
                     <div class="text-uppercase text-warning small fw-bold mb-1">Finalizing Finished Goods</div>
                     <div class="display-coil-id">${running.coil_id_display}</div>
                 </div>
 
+                <!-- Mother Coil Details (3 Columns: Product Type, Mother Coil Width, Mother Coil Length) -->
                 <div class="row g-3 mb-4">
-                    <div class="col-4 col-md-4">
+                    <div class="col-12 col-md-4">
                         <div class="text-uppercase small text-light fw-semibold">Product Type</div>
                         <div class="display-product-type">${running.product_type}</div>
                     </div>
-                    <div class="col-4 col-md-4">
+                    <div class="col-12 col-md-4">
+                        <div class="text-uppercase small text-light fw-semibold">Mother Coil Width</div>
+                        <div class="display-product-type text-info fw-bold">${running.mother_width_formatted || '-'}</div>
+                    </div>
+                    <div class="col-12 col-md-4">
                         <div class="text-uppercase small text-light fw-semibold">Mother Coil Length</div>
                         <div class="display-product-type text-warning fw-bold">${running.mother_length_formatted || '-'}</div>
                     </div>
-                    <div class="col-4 col-md-4">
-                        <div class="text-uppercase small text-light fw-semibold">Customer Name</div>
-                        <div class="display-customer">${running.customer_name}</div>
-                    </div>
                 </div>
-            </div>
 
-            <div class="d-flex justify-content-between align-items-end mt-3 pt-3 border-top border-secondary">
-                <div class="elapsed-timer-box">
-                    <div class="text-uppercase small text-warning fw-bold mb-1">Packing Countdown</div>
-                    <div class="packing-countdown-digits" id="packingCountdownDisplay">${formatPackingTime(currentPackingRemaining)}</div>
-                </div>
-                <div>
-                    <span class="badge bg-success fs-6 py-2 px-3">
-                        <i class="bi bi-check-all me-1"></i> Saved to Stock
-                    </span>
-                </div>
+                <!-- Roll Details Table -->
+                ${buildRollDetailsTableHtml(running.roll_list)}
             </div>
         `;
 
@@ -716,7 +832,7 @@ function renderSectionA(running) {
         }, 1000);
 
     } else {
-        // RUNNING STATE
+        // ── RUNNING STAGE (Slitting / Recoiling / Reslit) ──
         container.className = 'card monitoring-card h-100 running-hero-card';
         currentStartTimestamp = running.start_timestamp;
 
@@ -726,8 +842,9 @@ function renderSectionA(running) {
 
         body.innerHTML = `
             <div>
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <div>
+                <!-- Top Header Row: Badges & Elapsed Time Badge -->
+                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+                    <div class="d-flex align-items-center flex-wrap gap-2">
                         <span class="badge bg-primary status-badge-running">
                             <i class="bi bi-gear-wide-connected me-1"></i> RUNNING
                         </span>
@@ -736,46 +853,41 @@ function renderSectionA(running) {
                         </span>
                         <span class="badge bg-secondary ms-2 fs-6">${running.sub_status}</span>
                     </div>
-                    <div class="text-end">
+                    <div class="d-flex align-items-center flex-wrap gap-2 text-end">
+                        <div class="running-compact-badge d-inline-flex align-items-center px-3 py-1 rounded-pill">
+                            <i class="bi bi-clock-history text-info me-2 fs-6"></i>
+                            <span class="text-uppercase text-info small fw-bold me-1">ELAPSED TIME:</span>
+                            <span class="fw-bold text-info fs-6 font-monospace" id="liveElapsedDisplay">${running.elapsed_formatted}</span>
+                        </div>
+                        <span class="text-secondary d-none d-sm-inline">|</span>
                         <span class="text-light small">Started: ${running.start_time_fmt}</span>
                     </div>
                 </div>
 
+                <!-- Active Mother Coil ID -->
                 <div class="mb-4">
                     <div class="text-uppercase text-info small fw-bold mb-1">Active Mother Coil ID</div>
                     <div class="display-coil-id">${running.coil_id_display}</div>
                 </div>
 
+                <!-- Mother Coil Details (3 Columns: Product Type, Mother Coil Width, Mother Coil Length) -->
                 <div class="row g-3 mb-4">
-                    <div class="col-6 col-md-3">
-                        <div class="text-uppercase small text-light fw-semibold">Process</div>
-                        <div class="display-product-type"><span class="badge ${processBadgeClass} fs-6"><i class="bi ${processIcon} me-1"></i>${processType}</span></div>
-                    </div>
-                    <div class="col-6 col-md-3">
+                    <div class="col-12 col-md-4">
                         <div class="text-uppercase small text-light fw-semibold">Product Type</div>
                         <div class="display-product-type">${running.product_type}</div>
                     </div>
-                    <div class="col-6 col-md-3">
+                    <div class="col-12 col-md-4">
+                        <div class="text-uppercase small text-light fw-semibold">Mother Coil Width</div>
+                        <div class="display-product-type text-info fw-bold">${running.mother_width_formatted || '-'}</div>
+                    </div>
+                    <div class="col-12 col-md-4">
                         <div class="text-uppercase small text-light fw-semibold">Mother Coil Length</div>
                         <div class="display-product-type text-warning fw-bold">${running.mother_length_formatted || '-'}</div>
                     </div>
-                    <div class="col-6 col-md-3">
-                        <div class="text-uppercase small text-light fw-semibold">Customer Name</div>
-                        <div class="display-customer">${running.customer_name}</div>
-                    </div>
                 </div>
-            </div>
 
-            <div class="d-flex justify-content-between align-items-end mt-3 pt-3 border-top border-secondary">
-                <div class="elapsed-timer-box">
-                    <div class="text-uppercase small text-info fw-bold mb-1">Elapsed Time</div>
-                    <div class="timer-digits" id="liveElapsedDisplay">${running.elapsed_formatted}</div>
-                </div>
-                <div>
-                    <span class="badge bg-info text-dark fs-6 py-2 px-3 fw-bold">
-                        <i class="bi bi-activity me-1"></i> Active Production
-                    </span>
-                </div>
+                <!-- Roll Details Table -->
+                ${buildRollDetailsTableHtml(running.roll_list)}
             </div>
         `;
 
@@ -843,4 +955,4 @@ function renderSectionB(waitingList) {
 }
 </script>
 
-<?php include 'footer.php'; ?>
+<?php include __DIR__ . '/../../footer.php'; ?>

@@ -272,4 +272,285 @@ if (!function_exists('getWeeklyProductionLength')) {
     }
 }
 
+if (!function_exists('getProductionMonthOptions')) {
+    /**
+     * Helper to get dropdown options for coil production month (Current, Month Before, Month Forward).
+     */
+    function getProductionMonthOptions(?string $baseDate = null): array {
+        $ts = (!empty($baseDate) && strtotime($baseDate) !== false) ? strtotime($baseDate) : time();
+        $year = (int)date('Y', $ts);
+        $month = (int)date('m', $ts);
+
+        $currentTs = mktime(0, 0, 0, $month, 1, $year);
+        $beforeTs  = mktime(0, 0, 0, $month - 1, 1, $year);
+        $forwardTs = mktime(0, 0, 0, $month + 1, 1, $year);
+
+        return [
+            'current' => [
+                'value' => 'current',
+                'date' => date('Y-m-d', $currentTs),
+                'yymm' => date('ym', $currentTs),
+                'label' => 'Current Month (' . date('M Y', $currentTs) . ' - ' . date('ym', $currentTs) . ')',
+            ],
+            'before' => [
+                'value' => 'before',
+                'date' => date('Y-m-d', $beforeTs),
+                'yymm' => date('ym', $beforeTs),
+                'label' => 'Month Before (' . date('M Y', $beforeTs) . ' - ' . date('ym', $beforeTs) . ')',
+            ],
+            'forward' => [
+                'value' => 'forward',
+                'date' => date('Y-m-d', $forwardTs),
+                'yymm' => date('ym', $forwardTs),
+                'label' => 'Month Forward (' . date('M Y', $forwardTs) . ' - ' . date('ym', $forwardTs) . ')',
+            ],
+        ];
+    }
+}
+
+if (!function_exists('resolveProductionMonthDate')) {
+    /**
+     * Resolves selected production month option ('current', 'before', 'forward' or date) into a Y-m-d date string.
+     */
+    function resolveProductionMonthDate(?string $selectedOption, ?string $baseDate = null): string {
+        $ts = (!empty($baseDate) && strtotime($baseDate) !== false) ? strtotime($baseDate) : time();
+        $year = (int)date('Y', $ts);
+        $month = (int)date('m', $ts);
+
+        if ($selectedOption === 'before') {
+            return date('Y-m-d', mktime(0, 0, 0, $month - 1, 1, $year));
+        } elseif ($selectedOption === 'forward') {
+            return date('Y-m-d', mktime(0, 0, 0, $month + 1, 1, $year));
+        } elseif (!empty($selectedOption) && strtotime($selectedOption) !== false) {
+            return date('Y-m-d', strtotime($selectedOption));
+        }
+        return date('Y-m-d', mktime(0, 0, 0, $month, 1, $year));
+    }
+}
+
+if (!function_exists('generateStockCode')) {
+    /**
+     * Generates a unique stock in code for a produced roll coil.
+     * Format: YYMM-XXXX (e.g. 2610-0001)
+     * Starts at 0001 for each month (YYMM) and increments with each coil produced.
+     * Guaranteed strictly unique across all rolls.
+     */
+    function generateStockCode(mysqli $conn, ?string $dateStr = null): string {
+        $ts = (!empty($dateStr) && strtotime($dateStr) !== false) ? strtotime($dateStr) : time();
+        $prefix = date('ym', $ts); // YYMM e.g. 2610
+
+        $maxSeq = 0;
+        $stmt = $conn->prepare("
+            SELECT MAX(CAST(SUBSTRING(stock_code, 6) AS UNSIGNED)) AS max_seq
+            FROM slitting_product
+            WHERE stock_code LIKE CONCAT(?, '-%')
+        ");
+        if ($stmt) {
+            $stmt->bind_param("s", $prefix);
+            $stmt->execute();
+            $res = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            $maxSeq = (isset($res['max_seq']) && $res['max_seq'] !== null) ? (int)$res['max_seq'] : 0;
+        }
+
+        $candidateSeq = $maxSeq + 1;
+        while (true) {
+            $candidateCode = sprintf("%s-%04d", $prefix, $candidateSeq);
+
+            $chkStmt = $conn->prepare("SELECT id FROM slitting_product WHERE stock_code = ? LIMIT 1");
+            if ($chkStmt) {
+                $chkStmt->bind_param("s", $candidateCode);
+                $chkStmt->execute();
+                $chkRes = $chkStmt->get_result();
+                $exists = ($chkRes && $chkRes->num_rows > 0);
+                $chkStmt->close();
+
+                if (!$exists) {
+                    return $candidateCode;
+                }
+            } else {
+                return $candidateCode;
+            }
+
+            $candidateSeq++;
+        }
+    }
+}
+
+if (!function_exists('getRollProductionMonthYear')) {
+    /**
+     * Determines the effective production year and month [year, month] for a roll.
+     * If stock_code starts with YYMM- (4 digits), extracts year (2000+YY) and month (MM).
+     * Otherwise, falls back to date_in.
+     */
+    function getRollProductionMonthYear(?string $stockCode, ?string $dateIn): array {
+        if (!empty($stockCode) && preg_match('/^(\d{2})(\d{2})-/', $stockCode, $m)) {
+            $yy = (int)$m[1];
+            $mm = (int)$m[2];
+            if ($mm >= 1 && $mm <= 12) {
+                return [2000 + $yy, $mm];
+            }
+        }
+        $ts = (!empty($dateIn) && strtotime($dateIn) !== false) ? strtotime($dateIn) : time();
+        return [(int)date('Y', $ts), (int)date('m', $ts)];
+    }
+}
+
+if (!function_exists('getProductionMonthSqlCondition')) {
+    /**
+     * Returns the SQL WHERE condition snippet for filtering produced rolls by month and year.
+     * Follows stock_code YYMM prefix if valid (e.g. 2611-xxxx -> Nov 2026),
+     * otherwise falls back to date_in month/year.
+     * Expects parameters: [$yymmPrefix, $month, $year] (types: 'sii')
+     */
+    function getProductionMonthSqlCondition(string $tableAlias = 'sp'): string {
+        global $conn;
+        static $hasStockCode = null;
+        if ($hasStockCode === null && isset($conn) && $conn instanceof mysqli) {
+            $check = $conn->query("SHOW COLUMNS FROM slitting_product LIKE 'stock_code'");
+            $hasStockCode = ($check && $check->num_rows > 0);
+        }
+        $prefix = $tableAlias !== '' ? $tableAlias . '.' : '';
+        if ($hasStockCode) {
+            return "(CASE WHEN {$prefix}stock_code REGEXP '^[0-9]{4}-' THEN {$prefix}stock_code LIKE CONCAT(?, '-%') ELSE (MONTH({$prefix}date_in) = ? AND YEAR({$prefix}date_in) = ?) END)";
+        }
+        return "(MONTH({$prefix}date_in) = ? AND YEAR({$prefix}date_in) = ?)";
+    }
+}
+
+if (!function_exists('getStockMonthEndSqlCondition')) {
+    /**
+     * Returns the SQL WHERE condition snippet for verifying if a roll was produced
+     * on or before the target month-end.
+     * Follows stock_code YYMM prefix if valid (e.g. 2611 is NOT included in Oct 2026 / 2610 end stock),
+     * otherwise falls back to date_in <= eom.
+     * Expects parameters: [$yymmPrefix, $eom] (types: 'ss')
+     */
+    function getStockMonthEndSqlCondition(string $tableAlias = 'sp'): string {
+        global $conn;
+        static $hasStockCode = null;
+        if ($hasStockCode === null && isset($conn) && $conn instanceof mysqli) {
+            $check = $conn->query("SHOW COLUMNS FROM slitting_product LIKE 'stock_code'");
+            $hasStockCode = ($check && $check->num_rows > 0);
+        }
+        $prefix = $tableAlias !== '' ? $tableAlias . '.' : '';
+        if ($hasStockCode) {
+            return "(CASE WHEN {$prefix}stock_code REGEXP '^[0-9]{4}-' THEN SUBSTRING({$prefix}stock_code, 1, 4) <= ? ELSE {$prefix}date_in <= ? END)";
+        }
+        return "({$prefix}date_in <= ?)";
+    }
+}
+
+
+if (!function_exists('resolveSlitProductCode')) {
+    /**
+     * Resolves the slitting child product code based on the mother product and slit width.
+     * Rule: From the mother coil RS-3020 (or TS-3020, or V-coil):
+     * If the slit width (mm) is 66.5, 81, 109.5, 118, or 309,
+     * auto set the slitting product code as TS-3020 (White sticker).
+     * Otherwise standard RS-3020 (Blue sticker).
+     *
+     * @param string $motherProductCode Mother product code (e.g. 'RS-3020')
+     * @param bool   $isVCoil           Whether mother coil is a V-coil
+     * @param float|string $slitWidth   Resulting slit roll width in mm
+     * @return array ['code' => string, 'is_ts' => bool]
+     */
+    function resolveSlitProductCode(string $motherProductCode, bool $isVCoil, $slitWidth): array {
+        // Exact TS-trigger widths (mm), compared with float tolerance.
+        $tsWidths = [66.5, 81.0, 109.5, 118.0, 309.0];
+
+        $width = (float)$slitWidth;
+        $matchesTsWidth = false;
+        foreach ($tsWidths as $tsw) {
+            if (abs($width - $tsw) < 0.01) {
+                $matchesTsWidth = true;
+                break;
+            }
+        }
+
+        $cleanMother = trim($motherProductCode);
+
+        // Check if this is an RS-3020 mother coil (or TS-3020, or V-coil 3020)
+        $is3020Mother = (strcasecmp($cleanMother, 'RS-3020') === 0)
+            || (strcasecmp($cleanMother, 'TS-3020') === 0)
+            || (stripos($cleanMother, 'RS-3020') === 0)
+            || (stripos($cleanMother, 'TS-3020') === 0)
+            || ($isVCoil && (stripos($cleanMother, '3020') !== false || $cleanMother === ''));
+
+        if ($is3020Mother) {
+            if ($matchesTsWidth) {
+                return ['code' => 'TS-3020', 'is_ts' => true];
+            } else {
+                return ['code' => 'RS-3020', 'is_ts' => false];
+            }
+        }
+
+        // Generic V-Coil prefix replacement fallback for other product suffixes (if any)
+        $parts  = explode('-', $cleanMother, 2);
+        $suffix = $parts[1] ?? $cleanMother;
+
+        if ($isVCoil && $matchesTsWidth) {
+            return ['code' => 'TS-' . $suffix, 'is_ts' => true];
+        }
+
+        if ($isVCoil) {
+            return ['code' => 'RS-' . $suffix, 'is_ts' => false];
+        }
+
+        // Non-V mother coil: leave product code exactly as passed in — untouched
+        return ['code' => $cleanMother, 'is_ts' => false];
+    }
+}
+
+if (!function_exists('syncSlittingPlanCustomer')) {
+    /**
+     * Synchronizes customer_name and ref_no to slitting_plans for a given slitting_product ID.
+     */
+    function syncSlittingPlanCustomer(mysqli $conn, int $productId, string $customer, string $refNo): bool {
+        if ($productId <= 0) return false;
+        $customer = trim($customer);
+        $refNo    = trim($refNo);
+        if ($customer === '' && $refNo === '') return false;
+
+        $stmt = $conn->prepare("SELECT mother_id, roll_no, width FROM slitting_product WHERE id = ? LIMIT 1");
+        if (!$stmt) return false;
+        $stmt->bind_param("i", $productId);
+        $stmt->execute();
+        $prod = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        if (!$prod || empty($prod['mother_id']) || empty($prod['roll_no'])) {
+            return false;
+        }
+
+        $motherId = (int)$prod['mother_id'];
+        $rollSeq  = trim($prod['roll_no']);
+        $width    = (float)($prod['width'] ?? 0);
+
+        // Check if row exists in slitting_plans for this mother_id and roll_seq
+        $chk = $conn->prepare("SELECT id FROM slitting_plans WHERE mother_coil_id = ? AND roll_seq = ? LIMIT 1");
+        if (!$chk) return false;
+        $chk->bind_param("is", $motherId, $rollSeq);
+        $chk->execute();
+        $hasRow = ($chk->get_result()->num_rows > 0);
+        $chk->close();
+
+        if ($hasRow) {
+            $upd = $conn->prepare("UPDATE slitting_plans SET customer_name = ?, ref_no = ? WHERE mother_coil_id = ? AND roll_seq = ?");
+            if ($upd) {
+                $upd->bind_param("ssis", $customer, $refNo, $motherId, $rollSeq);
+                $upd->execute();
+                $upd->close();
+            }
+        } else {
+            $ins = $conn->prepare("INSERT INTO slitting_plans (mother_coil_id, roll_seq, planned_width, customer_name, ref_no) VALUES (?, ?, ?, ?, ?)");
+            if ($ins) {
+                $ins->bind_param("isdss", $motherId, $rollSeq, $width, $customer, $refNo);
+                $ins->execute();
+                $ins->close();
+            }
+        }
+        return true;
+    }
+}
 ?>

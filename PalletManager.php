@@ -38,9 +38,9 @@ class PalletManager
     ];
 
     /**
-     * SFS-XXXX-XXX  or  SFS-XXXX-XXX (A)  … (ABC)
+     * SFS-XXXX-XXX, SFS-XXXX-XXXa, or with suffix SFS-XXXX-XXX (A), SFS-XXXX-XXXa (A)
      */
-    public const PALLET_NO_REGEX = '/^SFS-\d{4}-\d{3}(?: \([A-Z]{1,3}\))?$/';
+    public const PALLET_NO_REGEX = '/^SFS-\d{4}-\d{3}[a-zA-Z]?(?: \([A-Z]{1,3}\))?$/';
 
     /**
      * Special Ref No value meaning "not tied to a specific SO" — a
@@ -51,9 +51,10 @@ class PalletManager
      */
     public const STOCK_REF_NO = 'STOCK';
 
-    private static function isStockRefNo(?string $refNo): bool
+    public static function isStockRefNo(?string $refNo): bool
     {
-        return strcasecmp(trim((string)$refNo), self::STOCK_REF_NO) === 0;
+        $clean = strtoupper(trim((string)$refNo));
+        return $clean === '' || $clean === self::STOCK_REF_NO || $clean === '-' || $clean === '—' || $clean === 'SO-' || $clean === 'MS-';
     }
 
     // =========================================================
@@ -117,7 +118,7 @@ class PalletManager
         if (!preg_match(self::PALLET_NO_REGEX, $palletNo)) {
             return [
                 'ok'  => false,
-                'msg' => "Invalid format. Expected SFS-XXXX-XXX or SFS-XXXX-XXX (A). Got: \"{$palletNo}\".",
+                'msg' => "Invalid format. Expected SFS-XXXX-XXX, SFS-XXXX-XXXa, or with suffix (e.g. SFS-XXXX-XXX (B), SFS-XXXX-XXXa (B)). Got: \"{$palletNo}\".",
             ];
         }
         $stmt = $this->conn->prepare(
@@ -137,25 +138,30 @@ class PalletManager
     // 2. CREATE PALLET  (pallet_no only — constraints seeded
     //    from first scanned roll via addRollToPallet)
     // =========================================================
-    public function createPallet(string $palletNo): array
+    // 2. CREATE PALLET  (pallet_no, customer_name, ref_no)
+    // =========================================================
+    public function createPallet(string $palletNo, string $customerName = '', string $refNo = ''): array
     {
         $v = $this->validatePalletNo($palletNo);
         if (!$v['ok']) return $v;
+
+        $customerName = trim($customerName);
+        $refNo        = trim($refNo);
 
         $stmt = $this->conn->prepare("
             INSERT INTO pallets
                 (pallet_no, customer_name, ref_no, product_type, width,
                  status, created_by)
-            VALUES (?, '', '', '', 0, 'building', ?)
+            VALUES (?, ?, ?, '', 0, 'building', ?)
         ");
-        $stmt->bind_param("ss", $palletNo, $this->actor);
+        $stmt->bind_param("ssss", $palletNo, $customerName, $refNo, $this->actor);
         $stmt->execute();
         $palletId = (int)$this->conn->insert_id;
         $stmt->close();
 
         return [
             'ok'        => true,
-            'msg'       => "Pallet {$palletNo} created. Scan the first roll to lock its constraints.",
+            'msg'       => "Pallet {$palletNo} created successfully.",
             'pallet_id' => $palletId,
             'pallet_no' => $palletNo,
         ];
@@ -182,7 +188,7 @@ class PalletManager
         if (!preg_match(self::PALLET_NO_REGEX, $newPalletNo)) {
             return [
                 'ok'  => false,
-                'msg' => "Invalid format. Expected SFS-XXXX-XXX or SFS-XXXX-XXX (A). Got: \"{$newPalletNo}\".",
+                'msg' => "Invalid format. Expected SFS-XXXX-XXX, SFS-XXXX-XXXa, or with suffix (e.g. SFS-XXXX-XXX (B), SFS-XXXX-XXXa (B)). Got: \"{$newPalletNo}\".",
             ];
         }
 
@@ -327,20 +333,20 @@ class PalletManager
             $upd->execute();
             $upd->close();
 
-            // Propagate to every roll currently on this pallet, so
-            // slitting_product never drifts out of sync with the pallet.
-            // Customer always propagates (a pallet has exactly one
-            // Customer). Ref No only propagates to rolls that carry a
-            // real SO number — rolls flagged "STOCK" keep their Ref No
-            // untouched, since STOCK isn't tied to any specific SO.
+            // Propagate to rolls on this pallet: if a roll has empty/STOCK
+            // customer or ref_no, update it; otherwise preserve the roll's
+            // original slitted Customer & Ref No so sticker data remains intact.
             $stockRef = self::STOCK_REF_NO;
             $propagate = $this->conn->prepare("
                 UPDATE slitting_product sp
                 JOIN pallet_items pi ON pi.slitting_product_id = sp.id
-                SET sp.customer_name = ?,
+                SET sp.customer_name = CASE
+                        WHEN sp.customer_name IS NULL OR TRIM(sp.customer_name) = '' OR UPPER(TRIM(sp.customer_name)) = 'STOCK' THEN ?
+                        ELSE sp.customer_name
+                    END,
                     sp.ref_no = CASE
-                        WHEN UPPER(TRIM(sp.ref_no)) = UPPER(?) THEN sp.ref_no
-                        ELSE ?
+                        WHEN UPPER(TRIM(sp.ref_no)) = UPPER(?) OR TRIM(sp.ref_no) = '' THEN ?
+                        ELSE sp.ref_no
                     END
                 WHERE pi.pallet_id = ?
             ");
@@ -689,26 +695,118 @@ class PalletManager
             $currentCount = (int)$stmt->get_result()->fetch_assoc()['cnt'];
             $stmt->close();
 
-            if ($currentCount >= self::MAX_ROLLS) {
-                throw new RuntimeException(
-                    "Pallet {$pallet['pallet_no']} is full ({$currentCount}/" . self::MAX_ROLLS . " rolls)."
-                );
-            }
-
             $product = $this->fetchProduct($productId);
             if (!$product) {
                 throw new RuntimeException("Product #{$productId} not found.");
             }
 
-            $guard = $this->guardProductForPallet($product);
+            $guard = $this->guardProductForPallet($product, $palletId);
             if (!$guard['ok']) {
                 throw new RuntimeException($guard['msg']);
             }
 
+            $isReplacement = !empty($guard['is_replacement']);
+
+            if (!$isReplacement && $currentCount >= self::MAX_ROLLS) {
+                throw new RuntimeException(
+                    "Pallet {$pallet['pallet_no']} is full ({$currentCount}/" . self::MAX_ROLLS . " rolls)."
+                );
+            }
+
+            if ($isReplacement) {
+                // If the replacement roll is missing customer_name or ref_no, inherit them from pallet
+                if (empty($product['customer_name']) || empty($product['ref_no'])) {
+                    $newCust = !empty($product['customer_name']) ? $product['customer_name'] : $pallet['customer_name'];
+                    $newRef  = !empty($product['ref_no']) ? $product['ref_no'] : $pallet['ref_no'];
+                    $updProd = $this->conn->prepare("
+                        UPDATE slitting_product
+                        SET customer_name = ?, ref_no = ?
+                        WHERE id = ?
+                    ");
+                    $updProd->bind_param("ssi", $newCust, $newRef, $productId);
+                    $updProd->execute();
+                    $updProd->close();
+                    $product['customer_name'] = $newCust;
+                    $product['ref_no']        = $newRef;
+                }
+
+                $rawLen = (!empty($product['actual_length']) && $product['actual_length'] > 0)
+                    ? (float)$product['actual_length'] : (float)$product['length'];
+                $nodLen = !empty($product['nod_length']) ? (float)$product['nod_length'] : 0.0;
+                $lenForCode = max(0.0, $rawLen - $nodLen);
+                $stockCode = self::formatStockCode($product['coil_no'], $product['width'], $lenForCode);
+
+                $voidProductId = (int)$guard['void_matched_id'];
+                $updItem = $this->conn->prepare("
+                    UPDATE pallet_items
+                    SET slitting_product_id = ?, stock_code = ?
+                    WHERE pallet_id = ? AND slitting_product_id = ?
+                ");
+                $updItem->bind_param("isii", $productId, $stockCode, $palletId, $voidProductId);
+                $updItem->execute();
+                $updItem->close();
+
+                $seqStmt = $this->conn->prepare("SELECT seq FROM pallet_items WHERE pallet_id = ? AND slitting_product_id = ? LIMIT 1");
+                $seqStmt->bind_param("ii", $palletId, $productId);
+                $seqStmt->execute();
+                $seq = (int)($seqStmt->get_result()->fetch_assoc()['seq'] ?? 1);
+                $seqStmt->close();
+
+                $updP = $this->conn->prepare("UPDATE pallets SET updated_at = NOW() WHERE id = ?");
+                $updP->bind_param("i", $palletId);
+                $updP->execute();
+                $updP->close();
+
+                $this->writeEditLog(
+                    $palletId, $pallet['pallet_no'], 'auto_recoil_swap', $productId,
+                    $this->makeProductRef($product),
+                    "Auto-replaced voided roll #{$voidProductId} with active roll #{$productId} in slot {$seq}."
+                );
+
+                $this->conn->commit();
+                return [
+                    'ok'            => true,
+                    'msg'           => "Auto-replaced voided roll with active roll #{$productId} at position {$seq}.",
+                    'seq'           => $seq,
+                    'roll_count'    => $currentCount,
+                    'customer_name' => $pallet['customer_name'],
+                    'ref_no'        => $pallet['ref_no'],
+                    'product_type'  => $pallet['product_type'],
+                    'width'         => $pallet['width'],
+                    'swapped'       => true,
+                ];
+            }
+
             // ── First roll: seed constraints ─────────────────
             if ($currentCount === 0) {
-                $cn = trim($product['customer_name'] ?? '');
-                $rn = trim($product['ref_no']        ?? '');
+                // If customer_name or ref_no was already specified at pallet creation,
+                // validate them against incoming roll; otherwise take from roll.
+                $hasPreCustomer = trim($pallet['customer_name'] ?? '') !== '';
+                $hasPreRefNo    = trim($pallet['ref_no'] ?? '') !== '';
+
+                if ($hasPreCustomer || $hasPreRefNo) {
+                    $mismatches = [];
+                    if ($hasPreCustomer && strtolower(trim($product['customer_name'] ?? '')) !== strtolower(trim($pallet['customer_name']))) {
+                        $mismatches[] = sprintf('Customer (pallet: "%s", roll: "%s")', $pallet['customer_name'], $product['customer_name'] ?? '—');
+                    }
+                    if ($hasPreRefNo) {
+                        $productRef = trim($product['ref_no'] ?? '');
+                        $palletRef  = trim($pallet['ref_no']);
+                        if (!self::isStockRefNo($productRef) && !self::isStockRefNo($palletRef) && $productRef !== $palletRef) {
+                            $mismatches[] = sprintf('Ref No (pallet: "%s", roll: "%s")', $pallet['ref_no'], $product['ref_no'] ?? '—');
+                        }
+                    }
+                    if (!empty($mismatches)) {
+                        throw new RuntimeException(
+                            "Product does not match pallet constraints. "
+                            . "Mismatched: " . implode(', ', $mismatches) . ". "
+                            . "Pallet is designated for Customer: \"{$pallet['customer_name']}\", Ref No: \"{$pallet['ref_no']}\"."
+                        );
+                    }
+                }
+
+                $cn = $hasPreCustomer ? trim($pallet['customer_name']) : trim($product['customer_name'] ?? '');
+                $rn = $hasPreRefNo    ? trim($pallet['ref_no'])        : trim($product['ref_no']        ?? '');
                 $pt = trim($product['product']       ?? '');
                 $wd = (float)($product['width']       ?? 0);
                 $upd = $this->conn->prepare("
@@ -797,7 +895,32 @@ class PalletManager
             ];
         } catch (Throwable $e) {
             $this->conn->rollback();
-            return ['ok' => false, 'msg' => $e->getMessage()];
+            $res = ['ok' => false, 'msg' => $e->getMessage()];
+            if (isset($mismatches) && !empty($mismatches)) {
+                $res['is_mismatch'] = true;
+                $res['mismatches']  = $mismatches;
+                if (isset($product)) {
+                    $res['roll'] = [
+                        'lot_no'        => $product['lot_no'] ?? '',
+                        'coil_no'       => $product['coil_no'] ?? '',
+                        'roll_no'       => $product['roll_no'] ?? '',
+                        'customer_name' => $product['customer_name'] ?? '',
+                        'ref_no'        => $product['ref_no'] ?? '',
+                        'product_type'  => $product['product'] ?? '',
+                        'width'         => $product['width'] ?? 0,
+                    ];
+                }
+                if (isset($pallet)) {
+                    $res['pallet'] = [
+                        'pallet_no'     => $pallet['pallet_no'] ?? '',
+                        'customer_name' => $pallet['customer_name'] ?? '',
+                        'ref_no'        => $pallet['ref_no'] ?? '',
+                        'product_type'  => $pallet['product_type'] ?? '',
+                        'width'         => $pallet['width'] ?? 0,
+                    ];
+                }
+            }
+            return $res;
         }
     }
 
@@ -882,19 +1005,13 @@ class PalletManager
 
             $newCount = count($remaining);
 
-            // ── If pallet is now empty, clear constraint seed ──
-            // This lets the next roll re-seed the constraints,
-            // avoiding a situation where an empty pallet locks out
-            // all products that don't match the removed roll.
+            // ── If pallet is now empty, reset product_type and width ──
+            // Customer and Ref No are permanent (set at creation).
+            // Product Type and Width are re-seeded by the next roll scan.
             if ($newCount === 0) {
-                $clearStmt = $this->conn->prepare("
-                    UPDATE pallets
-                    SET customer_name = '',
-                        ref_no        = '',
-                        product_type  = '',
-                        width         = 0
-                    WHERE id = ?
-                ");
+                $clearStmt = $this->conn->prepare(
+                    "UPDATE pallets SET product_type = '', width = 0 WHERE id = ?"
+                );
                 $clearStmt->bind_param("i", $palletId);
                 $clearStmt->execute();
                 $clearStmt->close();
@@ -911,9 +1028,11 @@ class PalletManager
 
             $this->conn->commit();
             return [
-                'ok'        => true,
-                'msg'       => "Roll #{$productId} removed. {$newCount} roll(s) remaining.",
-                'new_count' => $newCount,
+                'ok'           => true,
+                'msg'          => "Roll #{$productId} removed. {$newCount} roll(s) remaining.",
+                'new_count'    => $newCount,
+                'product_type' => $newCount === 0 ? '' : ($pallet['product_type'] ?? ''),
+                'width'        => $newCount === 0 ? 0  : ($pallet['width'] ?? 0),
             ];
         } catch (Throwable $e) {
             $this->conn->rollback();
@@ -1187,6 +1306,13 @@ class PalletManager
                 );
             }
 
+            if (self::isStockRefNo($pallet['ref_no'])) {
+                $refDisplay = !empty(trim($pallet['ref_no'])) ? "\"{$pallet['ref_no']}\"" : "empty";
+                throw new RuntimeException(
+                    "Cannot re-submit to QC: Pallet SOS No. is {$refDisplay} (STOCK). Operator must edit the Customer SO number first."
+                );
+            }
+
             $palletNo = $pallet['pallet_no'];
 
             // ── Count rolls ───────────────────────────────────
@@ -1454,6 +1580,24 @@ class PalletManager
     {
         $this->conn->begin_transaction();
         try {
+            $stmt = $this->conn->prepare("SELECT * FROM pallets WHERE id = ? FOR UPDATE");
+            $stmt->bind_param("i", $palletId);
+            $stmt->execute();
+            $pallet = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+
+            if (!$pallet) {
+                throw new RuntimeException("Pallet #{$palletId} not found.");
+            }
+            if ($pallet['status'] !== 'building') {
+                throw new RuntimeException("Pallet {$pallet['pallet_no']} is not in building state.");
+            }
+
+            if (self::isStockRefNo($pallet['ref_no'])) {
+                $refDisplay = !empty(trim($pallet['ref_no'])) ? "\"{$pallet['ref_no']}\"" : "empty";
+                throw new RuntimeException("Cannot send to QC: Pallet SOS No. is {$refDisplay} (STOCK). Operator must edit the Customer & SO number first.");
+            }
+
             $stmt = $this->conn->prepare(
                 "SELECT COUNT(*) AS cnt FROM pallet_items WHERE pallet_id = ?"
             );
@@ -1585,15 +1729,18 @@ class PalletManager
                 $sfsFormatted = 'SFS-' . $search;
             }
 
-            $where[]  = "(pallet_no LIKE ? OR pallet_no LIKE ? OR REPLACE(pallet_no, '-', '') LIKE ? OR customer_name LIKE ? OR lot_nos LIKE ?)";
+            $where[]  = "(pallet_no LIKE ? OR pallet_no LIKE ? OR REPLACE(pallet_no, '-', '') LIKE ? OR customer_name LIKE ? OR lot_nos LIKE ? OR product_type LIKE ? OR width LIKE ? OR ref_no LIKE ?)";
             $like     = '%' . $search . '%';
             $sfsLike  = $sfsFormatted !== '' ? '%' . $sfsFormatted . '%' : $like;
             $digLike  = '%' . ($cleanDigits !== '' ? $cleanDigits : $search) . '%';
 
-            $types   .= 'sssss';
+            $types   .= 'ssssssss';
             $params[] = $like;
             $params[] = $sfsLike;
             $params[] = $digLike;
+            $params[] = $like;
+            $params[] = $like;
+            $params[] = $like;
             $params[] = $like;
             $params[] = $like;
         }
@@ -1655,6 +1802,7 @@ class PalletManager
             $row['max_rolls']    = self::MAX_ROLLS;
             $row['status_group'] = $this->statusGroupOf($row['status']);
             $row['created_date'] = !empty($row['created_at']) ? date('d/m/Y', strtotime($row['created_at'])) : '';
+            $row['width']        = (float)($row['width'] ?? 0);
         }
         unset($row);
 
@@ -1716,7 +1864,7 @@ class PalletManager
             SELECT id, product, lot_no, coil_no, roll_no,
                    width, length, actual_length, nod_length,
                    status, stock_counted, is_voided,
-                   mother_id, customer_name, ref_no
+                   mother_id, customer_name, ref_no, parent_slit_id
             FROM slitting_product
             WHERE id = ? LIMIT 1
         ");
@@ -1727,7 +1875,7 @@ class PalletManager
         return $row ?: null;
     }
 
-    private function guardProductForPallet(array $product): array
+    private function guardProductForPallet(array $product, int $palletId = 0): array
     {
         if ((int)($product['is_voided'] ?? 0) === 1) {
             return ['ok' => false, 'msg' => "Roll #{$product['id']} has been voided."];
@@ -1738,36 +1886,90 @@ class PalletManager
                 'msg' => "Roll #{$product['id']}: actual length not saved yet. Click Update first.",
             ];
         }
-        if (!($product['customer_name'] ?? '')) {
+        if (!($product['customer_name'] ?? '') && $palletId <= 0) {
             return [
                 'ok'  => false,
                 'msg' => "Roll #{$product['id']} has no Customer assigned.",
             ];
         }
-        if (!($product['ref_no'] ?? '')) {
+        if (!($product['ref_no'] ?? '') && $palletId <= 0) {
             return [
                 'ok'  => false,
                 'msg' => "Roll #{$product['id']} has no Ref No assigned.",
             ];
         }
 
-        // Not already on another pallet
+        // Check if this roll (or any ancestor/descendant/voided version of it with same lot, coil, roll, width)
+        // is already in pallet_items on ANY pallet
+        $pid      = (int)$product['id'];
+        $parentId = (int)($product['parent_slit_id'] ?? 0);
+
+        // Normalize base roll (e.g. "R1", "R-1", "R1_void_5173" -> canonical R1 and R-1)
+        $rawRoll     = trim($product['roll_no'] ?? '');
+        $baseRoll    = preg_replace('/(_void_|_OLD_).*$/i', '', $rawRoll);
+        $cleanDigits = preg_replace('/[^0-9A-Za-z]/', '', $baseRoll);
+        $r1          = 'R' . ltrim($cleanDigits, 'R');
+        $r_dash_1    = 'R-' . ltrim($cleanDigits, 'R');
+        $lotNo       = trim($product['lot_no'] ?? '');
+        $coilNo      = trim($product['coil_no'] ?? '');
+        $width       = (float)($product['width'] ?? 0);
+
         $stmt = $this->conn->prepare("
-            SELECT pi.pallet_id, p.pallet_no
+            SELECT pi.pallet_id, p.pallet_no, sp.id AS matched_id, sp.roll_no AS matched_roll
             FROM pallet_items pi
             JOIN pallets p ON p.id = pi.pallet_id
-            WHERE pi.slitting_product_id = ? LIMIT 1
+            JOIN slitting_product sp ON sp.id = pi.slitting_product_id
+            WHERE (
+                sp.id = ?
+                OR (? > 0 AND sp.id = ?)
+                OR (sp.parent_slit_id IS NOT NULL AND sp.parent_slit_id = ?)
+                OR (
+                    sp.lot_no = ?
+                    AND sp.coil_no = ?
+                    AND ABS(sp.width - ?) < 0.5
+                    AND (
+                        sp.roll_no = ? OR sp.roll_no = ?
+                        OR sp.roll_no LIKE CONCAT(?, '_void_%') OR sp.roll_no LIKE CONCAT(?, '_void_%')
+                        OR sp.roll_no LIKE CONCAT(?, '_OLD_%') OR sp.roll_no LIKE CONCAT(?, '_OLD_%')
+                    )
+                )
+            )
+            LIMIT 1
         ");
-        $pid = (int)$product['id'];
-        $stmt->bind_param("i", $pid);
+        $stmt->bind_param(
+            "iiiissdssssss",
+            $pid,
+            $parentId, $parentId,
+            $pid,
+            $lotNo, $coilNo, $width,
+            $r1, $r_dash_1,
+            $r1, $r_dash_1,
+            $r1, $r_dash_1
+        );
         $stmt->execute();
         $existing = $stmt->get_result()->fetch_assoc();
         $stmt->close();
 
         if ($existing) {
+            $displayRoll = $r_dash_1;
+            if ($palletId > 0 && (int)$existing['pallet_id'] === $palletId) {
+                $isVoid = (strpos($existing['matched_roll'], '_void_') !== false || strpos($existing['matched_roll'], '_OLD_') !== false);
+                if ($isVoid) {
+                    return [
+                        'ok'              => true,
+                        'is_replacement'  => true,
+                        'void_matched_id' => (int)$existing['matched_id'],
+                        'display_roll'    => $displayRoll,
+                    ];
+                }
+                return [
+                    'ok'  => false,
+                    'msg' => "Roll {$lotNo} {$coilNo} {$displayRoll} is already on this pallet.",
+                ];
+            }
             return [
                 'ok'  => false,
-                'msg' => "Roll #{$product['id']} is already on pallet {$existing['pallet_no']}.",
+                'msg' => "Roll {$lotNo} {$coilNo} {$displayRoll} (width {$width}mm) is already assigned to pallet {$existing['pallet_no']}.",
             ];
         }
         return ['ok' => true, 'msg' => 'OK'];
@@ -1857,17 +2059,43 @@ class PalletManager
         $raw = trim($raw);
         if ($raw === '') return '';
 
-        $cleaned      = preg_replace('/^\s*SFS-?\s*/i', '', $raw);
-        $cleanDigits  = substr(preg_replace('/[^0-9]/', '', $cleaned), 0, 7);
-        $cleanLetters = strtoupper(substr(preg_replace('/[^A-Za-z]/', '', preg_replace('/^\s*SFS-?\s*/i', '', $raw)), 0, 3));
-
-        if ($cleanDigits === '' && $cleanLetters === '') return $raw;
-
-        $formatted = 'SFS-' . (strlen($cleanDigits) <= 4 ? $cleanDigits : substr($cleanDigits, 0, 4) . '-' . substr($cleanDigits, 4));
-        if ($cleanLetters !== '') {
-            $formatted .= " ({$cleanLetters})";
+        // 1. Extract suffix in parentheses if present, e.g. (B), (BN)
+        $suffix = '';
+        if (preg_match('/\(([A-Za-z]{1,3})\)/', $raw, $m)) {
+            $suffix = strtoupper($m[1]);
+            $mainPart = preg_replace('/\([^)]*\)/', '', $raw);
+        } elseif (preg_match('/\s+([A-Za-z]{1,3})\s*$/', $raw, $m)) {
+            $suffix = strtoupper($m[1]);
+            $mainPart = preg_replace('/\s+[A-Za-z]{1,3}\s*$/', '', $raw);
+        } else {
+            $mainPart = $raw;
         }
-        return $formatted;
+
+        // 2. Clean mainPart (remove leading SFS-)
+        $cleaned = preg_replace('/^\s*SFS-?\s*/i', '', $mainPart);
+        $cleanNoDash = str_replace('-', '', $cleaned);
+        $digits  = substr(preg_replace('/[^0-9]/', '', $cleanNoDash), 0, 7);
+
+        // Check if there is an extra letter attached to the sequence (e.g. 194a)
+        $extraLetter = '';
+        if (strlen($digits) >= 5) {
+            if (preg_match('/\d{5,7}\s*([A-Za-z])/i', $cleanNoDash, $lm)) {
+                $extraLetter = $lm[1];
+            }
+        }
+
+        if ($digits === '' && $extraLetter === '' && $suffix === '') {
+            return $raw;
+        }
+
+        $out = 'SFS-' . (strlen($digits) <= 4 ? $digits : substr($digits, 0, 4) . '-' . substr($digits, 4));
+        if ($extraLetter !== '') {
+            $out .= $extraLetter;
+        }
+        if ($suffix !== '') {
+            $out .= " ({$suffix})";
+        }
+        return $out;
     }
 
     /**

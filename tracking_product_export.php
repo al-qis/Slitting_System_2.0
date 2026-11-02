@@ -74,10 +74,12 @@ if ($filter_source === 'sfc') {
                 OR (LOWER(sp.original_source) != 'sfc' AND LOWER(sp.original_source) NOT LIKE '%initial%'))";
 }
 if ($filter_month > 0) {
+    $yymmPrefix = sprintf('%02d%02d', $filter_year % 100, $filter_month);
+    $prodCond   = getProductionMonthSqlCondition('sp');
     $sql .= " AND ((sp.status='DELIVERED' AND MONTH(sp.delivered_at)=? AND YEAR(sp.delivered_at)=?)
-                OR (sp.status!='DELIVERED' AND MONTH(sp.date_in)=?    AND YEAR(sp.date_in)=?))";
-    $params = array_merge($params, [$filter_month,$filter_year,$filter_month,$filter_year]);
-    $types .= 'iiii';
+                OR (sp.status!='DELIVERED' AND {$prodCond}))";
+    $params = array_merge($params, [$filter_month, $filter_year, $yymmPrefix, $filter_month, $filter_year]);
+    $types .= 'iisii';
 }
 $sql .= " ORDER BY CASE sp.status WHEN 'DELIVERED' THEN 0 ELSE 1 END ASC,
           COALESCE(sp.delivered_at, sp.date_in) DESC";

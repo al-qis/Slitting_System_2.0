@@ -1,14 +1,28 @@
 // scan_pallet_action.php (new file)
 // Step 1: find the slitting_product row from the QR
-$stmt = $conn->prepare("
-    SELECT sp.id, sp.status, sp.stock_counted,
-           pi.pallet_id
-    FROM slitting_product sp
-    LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
-    WHERE sp.lot_no = ? AND sp.coil_no = ? AND sp.roll_no = ?
-    LIMIT 1
-");
-$stmt->bind_param("sss", $lot, $coil, $roll);
+$widthVal = floatval($width ?? 0);
+if ($widthVal > 0) {
+    $stmt = $conn->prepare("
+        SELECT sp.id, sp.status, sp.stock_counted,
+               pi.pallet_id
+        FROM slitting_product sp
+        LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+        WHERE sp.lot_no = ? AND sp.coil_no = ? AND sp.roll_no = ?
+          AND ABS(sp.width - ?) < 0.5
+        LIMIT 1
+    ");
+    $stmt->bind_param("sssd", $lot, $coil, $roll, $widthVal);
+} else {
+    $stmt = $conn->prepare("
+        SELECT sp.id, sp.status, sp.stock_counted,
+               pi.pallet_id
+        FROM slitting_product sp
+        LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+        WHERE sp.lot_no = ? AND sp.coil_no = ? AND sp.roll_no = ?
+        LIMIT 1
+    ");
+    $stmt->bind_param("sss", $lot, $coil, $roll);
+}
 $stmt->execute();
 $product = $stmt->get_result()->fetch_assoc();
 

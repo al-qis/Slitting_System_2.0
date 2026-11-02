@@ -31,6 +31,9 @@ if ($_SESSION['role'] !== 'slitting') {
 }
 
 include 'config.php';
+require_once __DIR__ . '/control_system/config_store.php';
+$isFinishStockEditActive = function_exists('isButtonActive') ? isButtonActive('finish_stock_edit') : true;
+$isFinishProducedEditActive = function_exists('isButtonActive') ? isButtonActive('finish_produced_edit') : true;
 
 // ============================================================
 // INLINED PALLET HELPERS — no external file needed
@@ -136,7 +139,7 @@ $sort_dir = (isset($_GET['sort_dir']) && strtoupper($_GET['sort_dir']) === 'ASC'
 //         produced_month (production report) | stock_month_end (point-in-time snapshot)
 // Defaults to "in_pending" (the IN tab) when the page first loads.
 $filter_card = $_GET['filter'] ?? 'in_pending';
-if (!in_array($filter_card, ['in_pending', 'stock', 'palletised', 'waiting', 'deliver', 'produced_month', 'stock_month_end'], true)) {
+if (!in_array($filter_card, ['in_pending', 'stock', 'palletised', 'waiting', 'waiting_deliver', 'deliver', 'produced_month', 'stock_month_end'], true)) {
     $filter_card = 'in_pending';
 }
 
@@ -329,16 +332,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     && isset($_POST['action'])
     && $_POST['action'] === 'batch_update_actual_length') {
 
-    $actual_length = trim($_POST['actual_length']);
-    $product       = trim($_POST['product']);
-    $lot_no        = trim($_POST['lot_no']);
-    $id            = intval($_POST['id']);
-    $new_coil_no   = trim($_POST['coil_no'] ?? '');
-    $new_lot_no    = trim($_POST['new_lot_no'] ?? '');
+    $actual_length  = trim($_POST['actual_length']);
+    $product        = trim($_POST['product']);
+    $lot_no         = trim($_POST['lot_no']);
+    $id             = intval($_POST['id']);
+    $new_coil_no    = trim($_POST['coil_no'] ?? '');
+    $new_lot_no     = trim($_POST['new_lot_no'] ?? '');
+    $new_stock_code = trim($_POST['stock_code'] ?? '');
 
     // Fetch the specific row being edited — used for the coil-no/lot-no fixes
     // below, its mother_id for logging, and as the fallback group member.
     $selfRow = $conn->query("SELECT * FROM slitting_product WHERE id=$id")->fetch_assoc();
+
+    // ── Stock Code correction ──
+    if ($selfRow && $new_stock_code !== '' && $new_stock_code !== trim($selfRow['stock_code'] ?? '')) {
+        // Prevent duplicate stock codes across rolls
+        $chkDup = $conn->prepare("SELECT id FROM slitting_product WHERE stock_code = ? AND id != ? LIMIT 1");
+        $chkDup->bind_param("si", $new_stock_code, $id);
+        $chkDup->execute();
+        $dupRes = $chkDup->get_result();
+        $isDup = ($dupRes && $dupRes->num_rows > 0);
+        $chkDup->close();
+
+        if ($isDup) {
+            $redirectFilter = $_POST['filter'] ?? $filter_card;
+            $redirectSearch = $_POST['search'] ?? $search;
+            $redirectParams = ['month' => $month, 'year' => $year, 'error' => 'duplicate_stock_code', 'msg' => "Stock Code '{$new_stock_code}' is already assigned to another roll."];
+            if ($day > 0) $redirectParams['day'] = $day;
+            if ($redirectSearch !== '') $redirectParams['search'] = $redirectSearch;
+            if ($redirectFilter !== '') $redirectParams['filter'] = $redirectFilter;
+            header("Location: finish_product.php?" . http_build_query($redirectParams));
+            exit;
+        }
+
+        $oldStockCode = trim($selfRow['stock_code'] ?? '');
+        $stmtFixStock = $conn->prepare("UPDATE slitting_product SET stock_code=? WHERE id=?");
+        $stmtFixStock->bind_param("si", $new_stock_code, $id);
+        $stmtFixStock->execute();
+        $stmtFixStock->close();
+        $selfRow['stock_code'] = $new_stock_code;
+
+        log_process($conn, 'slitting', $id, intval($selfRow['mother_id'] ?? 0) ?: null,
+            'IN', 'IN', 'stock_code_corrected',
+            "Stock Code corrected: '{$oldStockCode}' -> '{$new_stock_code}'");
+    }
 
     // ── Lot No correction ──
     // Fixes a typo on THIS roll only. Note this is independent of $lot_no
@@ -781,6 +818,9 @@ if ($filter_card === 'in_pending') {
 } elseif ($filter_card === 'waiting') {
     $cardCondition = " AND sp.status = 'WAITING'";
     $sortColumn    = 'sp.date_out';
+} elseif ($filter_card === 'waiting_deliver') {
+    $cardCondition = " AND (sp.status = 'APPROVED' OR p.status = 'approved') AND sp.status != 'DELIVERED' AND (p.status IS NULL OR p.status != 'delivered')";
+    $sortColumn    = 'sp.date_out';
 } elseif ($filter_card === 'deliver') {
     $cardCondition = " AND sp.status = 'DELIVERED'";
     $sortColumn    = 'sp.delivered_at';
@@ -796,10 +836,11 @@ $baseParams = [];
 
 if ($filter_card === 'produced_month') {
     // ── Monthly Production Report ──
-    // Every roll whose date_in falls inside the selected month, no matter
-    // what happened to it since (delivered, recoiled, reslitted, still in
-    // stock...). Answers "what did we produce in month X", not "what's
-    // currently in stock".
+    // Every roll produced in the selected month, following stock_code YYMM prefix if valid
+    // (e.g. 2611 -> Nov 2026), or date_in month/year if stock_code is missing/non-conforming.
+    // Answers "what did we produce in month X", not "what's currently in stock".
+    $yymmPrefix = sprintf('%02d%02d', $year % 100, $month);
+    $prodCond   = getProductionMonthSqlCondition('sp');
     $baseSql = "
         SELECT sp.*,
                pi.pallet_id,
@@ -809,11 +850,11 @@ if ($filter_card === 'produced_month') {
         LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
         LEFT JOIN pallets p       ON p.id = pi.pallet_id
         WHERE sp.is_voided = 0
-          AND MONTH(sp.date_in) = ? AND YEAR(sp.date_in) = ?"
+          AND {$prodCond}"
           . ($day > 0 ? " AND DAY(sp.date_in) = ?" : "");
     $sortColumn = 'sp.date_in';
-    $baseTypes  = $day > 0 ? 'iii' : 'ii';
-    $baseParams = $day > 0 ? [$month, $year, $day] : [$month, $year];
+    $baseTypes  = $day > 0 ? 'siii' : 'sii';
+    $baseParams = $day > 0 ? [$yymmPrefix, $month, $year, $day] : [$yymmPrefix, $month, $year];
 
 } elseif ($filter_card === 'stock_month_end') {
     // ── Month-End Stock Balance (reconstructed snapshot) ──
@@ -834,6 +875,8 @@ if ($filter_card === 'produced_month') {
     $eom = ($day > 0)
         ? sprintf('%04d-%02d-%02d 23:59:59', $year, $month, $day)
         : date('Y-m-t 23:59:59', strtotime("$year-$month-01"));
+    $yymmPrefix = sprintf('%02d%02d', $year % 100, $month);
+    $smeCond    = getStockMonthEndSqlCondition('sp');
     $baseSql = "
         SELECT sp.*,
                pi.pallet_id,
@@ -855,14 +898,14 @@ if ($filter_card === 'produced_month') {
             GROUP BY entity_id
         ) rs ON rs.entity_id = sp.id
         WHERE sp.is_voided = 0
-          AND sp.date_in <= ?
+          AND {$smeCond}
           AND (sp.date_out     IS NULL OR sp.date_out     > ?)
           AND (sp.delivered_at IS NULL OR sp.delivered_at > ?)
           AND (rc.recoil_date  IS NULL OR rc.recoil_date  > ?)
           AND (rs.reslit_date  IS NULL OR rs.reslit_date  > ?)";
     $sortColumn = 'sp.date_in';
-    $baseTypes  = 'sssss';
-    $baseParams = [$eom, $eom, $eom, $eom, $eom];
+    $baseTypes  = 'ssssss';
+    $baseParams = [$yymmPrefix, $eom, $eom, $eom, $eom, $eom];
 
 } else {
     // ── Live warehouse tabs (IN / STOCK / PALLETISED / WAITING / DELIVER) ──
@@ -884,7 +927,9 @@ if ($filter_card === 'produced_month') {
           AND (
               sp.status = 'IN'
               OR sp.status = 'WAITING'
-              OR (sp.status IN ('OUT','APPROVED','REJECTED')
+              OR sp.status = 'APPROVED'
+              OR p.status = 'approved'
+              OR (sp.status IN ('OUT','REJECTED')
                   AND MONTH(sp.date_out) = ? AND YEAR(sp.date_out) = ?{$dayCondOut})
               OR (sp.status = 'DELIVERED'
                   AND MONTH(sp.delivered_at) = ? AND YEAR(sp.delivered_at) = ?{$dayCondDelivered})
@@ -923,7 +968,7 @@ if (!empty($searchTokens)) {
     $tokenClauses = array_fill(
         0,
         count($searchTokens),
-        "(sp.product LIKE ? OR sp.lot_no LIKE ? OR sp.coil_no LIKE ? OR sp.roll_no LIKE ? OR sp.id LIKE ? OR p.pallet_no LIKE ? OR sp.width LIKE ?)"
+        "(sp.product LIKE ? OR sp.lot_no LIKE ? OR sp.coil_no LIKE ? OR sp.roll_no LIKE ? OR sp.id LIKE ? OR p.pallet_no LIKE ? OR sp.width LIKE ? OR sp.stock_code LIKE ?)"
     );
     $baseSql .= " AND (" . implode(" AND ", $tokenClauses) . ")";
 }
@@ -954,14 +999,14 @@ $stmt = $conn->prepare($baseSql);
 if (!$stmt) { die("Query prepare failed: " . htmlspecialchars($conn->error)); }
 
 // Build bind_param args dynamically: the mode-specific base params above,
-// then 7 string placeholders per search token (all sharing that token's
-// LIKE value) — product/lot/coil/roll/id/pallet/width.
+// then 8 string placeholders per search token (all sharing that token's
+// LIKE value) — product/lot/coil/roll/id/pallet/width/stock_code.
 $types  = $baseTypes;
 $params = $baseParams;
 
 foreach ($searchTokens as $token) {
     $like = '%' . $token . '%';
-    for ($i = 0; $i < 7; $i++) {
+    for ($i = 0; $i < 8; $i++) {
         $types    .= "s";
         $params[] = $like;
     }
@@ -980,12 +1025,22 @@ $result = $stmt->get_result();
 $stmt->close();
 
 // Summary counts
-// IN / STOCK / WAITING / PALLETISED reflect *live* current warehouse state,
+// IN / STOCK / WAITING / PALLETISED / WAITING DELIVER reflect *live* current warehouse state,
 // so they are cumulative and intentionally ignore the Month/Year filter.
 // DELIVER is a completed, dated transaction, so it stays scoped to the
 // selected month.
 $in      = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='IN' AND is_completed=0 AND (is_recoiled=0 OR is_recoiled IS NULL) AND (is_reslitted=0 OR is_reslitted IS NULL)")->fetch_assoc()['total'];
-$stock   = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='IN' AND stock_counted=1 AND (is_recoiled=0 OR is_recoiled IS NULL) AND (is_reslitted=0 OR is_reslitted IS NULL)")->fetch_assoc()['total'];
+$stock   = $conn->query("
+    SELECT IFNULL(COUNT(*),0) AS total 
+    FROM slitting_product sp 
+    LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id 
+    WHERE sp.is_voided=0 
+      AND sp.status='IN' 
+      AND sp.stock_counted=1 
+      AND (sp.is_recoiled=0 OR sp.is_recoiled IS NULL) 
+      AND (sp.is_reslitted=0 OR sp.is_reslitted IS NULL) 
+      AND pi.pallet_id IS NULL
+")->fetch_assoc()['total'];
 $waiting = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='WAITING'")->fetch_assoc()['total'];
 $deliver = $conn->query("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND status='DELIVERED' AND MONTH(delivered_at)=$month AND YEAR(delivered_at)=$year")->fetch_assoc()['total'];
 
@@ -999,16 +1054,38 @@ $palletised = $conn->query("
     WHERE p.status = 'building'
 ")->fetch_assoc()['total'];
 
+// Total coils (rolls) on approved pallets waiting for delivery
+$waiting_deliver = $conn->query("
+    SELECT IFNULL(COUNT(*),0) AS total
+    FROM slitting_product sp
+    LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
+    LEFT JOIN pallets p ON p.id = pi.pallet_id
+    WHERE sp.is_voided = 0
+      AND (sp.status = 'APPROVED' OR p.status = 'approved')
+      AND sp.status != 'DELIVERED'
+      AND (p.status IS NULL OR p.status != 'delivered')
+")->fetch_assoc()['total'];
+
+// Total approved pallets
+$approved_pallets_count = $conn->query("
+    SELECT IFNULL(COUNT(*),0) AS total
+    FROM pallets
+    WHERE status = 'approved'
+")->fetch_assoc()['total'];
+
 // ── Report card counts (Produced This Month / Stock as of Month-End) ──
 $producedMonthCount = 0;
-$stmtPM = $conn->prepare("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product WHERE is_voided=0 AND MONTH(date_in)=? AND YEAR(date_in)=?");
-$stmtPM->bind_param("ii", $month, $year);
+$yymmPrefix = sprintf('%02d%02d', $year % 100, $month);
+$prodCond = getProductionMonthSqlCondition('sp');
+$stmtPM = $conn->prepare("SELECT IFNULL(COUNT(*),0) AS total FROM slitting_product sp WHERE sp.is_voided=0 AND {$prodCond}");
+$stmtPM->bind_param("sii", $yymmPrefix, $month, $year);
 $stmtPM->execute();
 $producedMonthCount = (int)$stmtPM->get_result()->fetch_assoc()['total'];
 $stmtPM->close();
 
 $stockMonthEndCount = 0;
 $eomForCount = date('Y-m-t 23:59:59', strtotime("$year-$month-01"));
+$smeCondCount = getStockMonthEndSqlCondition('sp');
 $stmtSME = $conn->prepare("
     SELECT IFNULL(COUNT(*),0) AS total
     FROM slitting_product sp
@@ -1025,13 +1102,13 @@ $stmtSME = $conn->prepare("
         GROUP BY entity_id
     ) rs ON rs.entity_id = sp.id
     WHERE sp.is_voided = 0
-      AND sp.date_in <= ?
+      AND {$smeCondCount}
       AND (sp.date_out     IS NULL OR sp.date_out     > ?)
       AND (sp.delivered_at IS NULL OR sp.delivered_at > ?)
       AND (rc.recoil_date  IS NULL OR rc.recoil_date  > ?)
       AND (rs.reslit_date  IS NULL OR rs.reslit_date  > ?)
 ");
-$stmtSME->bind_param("sssss", $eomForCount, $eomForCount, $eomForCount, $eomForCount, $eomForCount);
+$stmtSME->bind_param("ssssss", $yymmPrefix, $eomForCount, $eomForCount, $eomForCount, $eomForCount, $eomForCount);
 $stmtSME->execute();
 $stockMonthEndCount = (int)$stmtSME->get_result()->fetch_assoc()['total'];
 $stmtSME->close();
@@ -1059,7 +1136,19 @@ if (isset($_GET['edit'])) {
     $eid = intval($_GET['edit']);
     $res = $conn->query("SELECT * FROM slitting_product WHERE id=$eid");
     if ($res && $res->num_rows > 0) {
-        $editData = $res->fetch_assoc();
+        $tempData = $res->fetch_assoc();
+        $isProducedSection = ($filter_card === 'produced_month' || ($tempData['status'] ?? '') !== 'IN');
+        $isAlreadyCompleted = (intval($tempData['is_completed'] ?? 0) === 1);
+
+        // Only block if editing an ALREADY COMPLETED item (Edit button), NOT initial length entry (Update button)
+        if ($isAlreadyCompleted) {
+            $isEditActive = $isProducedSection ? $isFinishProducedEditActive : $isFinishStockEditActive;
+            if (!$isEditActive) {
+                echo "<script>alert('The Edit button function for this section is currently BLOCKED in Control Center.'); window.location.href='finish_product.php';</script>";
+                exit;
+            }
+        }
+        $editData = $tempData;
 
         $lotNoFetch    = trim($editData['lot_no'] ?? '');
         $coilNoFetch   = trim($editData['coil_no'] ?? '');
@@ -1377,7 +1466,7 @@ table td.lot-coil-cell {
 <!-- ================================================================
      KPI SUMMARY CARDS — clickable filters
 ================================================================ -->
-<div class="d-flex mb-3 gap-2 flex-wrap">
+<div class="d-flex mb-3 gap-2 flex-wrap align-items-stretch">
 
     <!-- IN (Pending) -->
     <?php $isActiveIn = ($filter_card === 'in_pending'); ?>
@@ -1444,6 +1533,26 @@ table td.lot-coil-cell {
         </div>
     </a>
 
+    <!-- WAITING DELIVER (Approved Pallets) -->
+    <?php $isActiveWaitDel = ($filter_card === 'waiting_deliver'); ?>
+    <a href="<?= cardUrl('waiting_deliver', $month, $year, $search) ?>"
+       class="kpi-card-link flex-fill <?= $isActiveWaitDel ? 'active-kpi' : '' ?>"
+       title="Show Waiting Deliver (Approved Pallet) rolls only"
+       style="color:#15803d;">
+        <div class="card text-center h-100" style="background:#dcfce7; border:2px solid #22c55e; color:#15803d;">
+            <div class="card-body p-2">
+                <h6 class="mb-1" style="color:#15803d;">WAITING DELIVER</h6>
+                <h2 class="mb-0" style="color:#15803d;"><?= (int)$waiting_deliver ?></h2>
+                <small style="font-size:10px; color:#166534; font-weight:600; display:block;">
+                    <?= (int)$approved_pallets_count ?> Approved Pallet<?= $approved_pallets_count != 1 ? 's' : '' ?>
+                </small>
+                <?php if ($isActiveWaitDel): ?>
+                    <span class="kpi-active-dot" style="color:#15803d;">▲ filtered</span>
+                <?php endif; ?>
+            </div>
+        </div>
+    </a>
+
     <!-- DELIVER -->
     <?php $isActiveDel = ($filter_card === 'deliver'); ?>
     <a href="<?= cardUrl('deliver', $month, $year, $search) ?>"
@@ -1468,20 +1577,26 @@ table td.lot-coil-cell {
      questions ("what happened in month X") instead of "what's true
      right now".
 ================================================================ -->
-<div class="d-flex mb-3 gap-2 flex-wrap">
+<div class="d-flex mb-3 gap-2 flex-wrap align-items-stretch">
 
     <!-- Produced This Month -->
     <?php $isActivePM = ($filter_card === 'produced_month'); ?>
     <a href="<?= cardUrl('produced_month', $month, $year, $search) ?>"
        class="kpi-card-link flex-fill <?= $isActivePM ? 'active-kpi' : '' ?>"
-       title="Show every roll produced (date in) during the selected month">
+       title="Show every roll produced (date in) during the selected month"
+       style="color:#7e22ce;">
         <div class="card text-center h-100" style="background:#fdf4ff; border-color:#d8b4fe;">
-            <div class="card-body p-2">
-                <h6 class="mb-1" style="color:#7e22ce;"><i class="bi bi-calendar-plus me-1"></i>PRODUCED (<?= date("M", mktime(0,0,0,$month,1)) ?>)</h6>
-                <h2 class="mb-0" style="color:#7e22ce;"><?= $producedMonthCount ?></h2>
-                <?php if ($isActivePM): ?>
-                    <span class="kpi-active-dot" style="color:#7e22ce;">▲ filtered</span>
-                <?php endif; ?>
+            <div class="card-body p-2 d-flex flex-column justify-content-between">
+                <div>
+                    <h6 class="kpi-title mb-1" style="color:#7e22ce;"><i class="bi bi-calendar-plus me-1"></i>PRODUCED</h6>
+                    <h2 class="kpi-value mb-0" style="color:#7e22ce;"><?= $producedMonthCount ?></h2>
+                </div>
+                <div>
+                    <span class="kpi-subtext" style="color:#7e22ce;"><?= date("M Y", mktime(0,0,0,$month,1,$year)) ?></span>
+                    <?php if ($isActivePM): ?>
+                        <span class="kpi-active-dot" style="color:#7e22ce;">▲ filtered</span>
+                    <?php endif; ?>
+                </div>
             </div>
         </div>
     </a>
@@ -1490,14 +1605,20 @@ table td.lot-coil-cell {
     <?php $isActiveSME = ($filter_card === 'stock_month_end'); ?>
     <a href="<?= cardUrl('stock_month_end', $month, $year, $search) ?>"
        class="kpi-card-link flex-fill <?= $isActiveSME ? 'active-kpi' : '' ?>"
-       title="Reconstructed stock balance as of the end of the selected month">
+       title="Reconstructed stock balance as of the end of the selected month"
+       style="color:#c2410c;">
         <div class="card text-center h-100" style="background:#fff7ed; border-color:#fdba74;">
-            <div class="card-body p-2">
-                <h6 class="mb-1" style="color:#c2410c;"><i class="bi bi-clock-history me-1"></i>STOCK @ END OF <?= strtoupper(date("M", mktime(0,0,0,$month,1))) ?></h6>
-                <h2 class="mb-0" style="color:#c2410c;"><?= $stockMonthEndCount ?></h2>
-                <?php if ($isActiveSME): ?>
-                    <span class="kpi-active-dot" style="color:#c2410c;">▲ filtered</span>
-                <?php endif; ?>
+            <div class="card-body p-2 d-flex flex-column justify-content-between">
+                <div>
+                    <h6 class="kpi-title mb-1" style="color:#c2410c;"><i class="bi bi-clock-history me-1"></i>STOCK @ END</h6>
+                    <h2 class="kpi-value mb-0" style="color:#c2410c;"><?= $stockMonthEndCount ?></h2>
+                </div>
+                <div>
+                    <span class="kpi-subtext" style="color:#c2410c;">End of <?= date("M Y", mktime(0,0,0,$month,1,$year)) ?></span>
+                    <?php if ($isActiveSME): ?>
+                        <span class="kpi-active-dot" style="color:#c2410c;">▲ filtered</span>
+                    <?php endif; ?>
+                </div>
             </div>
         </div>
     </a>
@@ -1512,14 +1633,20 @@ table td.lot-coil-cell {
     ?>
     <a href="?<?= http_build_query($nodCardParams) ?>"
        class="kpi-card-link flex-fill <?= $isActiveNod ? 'active-kpi' : '' ?>"
-       title="Show only rolls with a Notice of Defect recorded during the selected month">
+       title="Show only rolls with a Notice of Defect recorded during the selected month"
+       style="color:#92400e;">
         <div class="card text-center h-100" style="background:#fffbeb; border-color:#fcd34d;">
-            <div class="card-body p-2">
-                <h6 class="mb-1" style="color:#92400e;"><i class="bi bi-exclamation-triangle-fill me-1"></i>NOD (<?= date("M", mktime(0,0,0,$month,1)) ?>)</h6>
-                <h2 class="mb-0" style="color:#92400e;"><?= $nodMonthCount ?></h2>
-                <?php if ($isActiveNod): ?>
-                    <span class="kpi-active-dot" style="color:#92400e;">▲ filtered</span>
-                <?php endif; ?>
+            <div class="card-body p-2 d-flex flex-column justify-content-between">
+                <div>
+                    <h6 class="kpi-title mb-1" style="color:#92400e;"><i class="bi bi-exclamation-triangle-fill me-1"></i>NOD</h6>
+                    <h2 class="kpi-value mb-0" style="color:#92400e;"><?= $nodMonthCount ?></h2>
+                </div>
+                <div>
+                    <span class="kpi-subtext" style="color:#92400e;">Defect Reports (<?= date("M", mktime(0,0,0,$month,1)) ?>)</span>
+                    <?php if ($isActiveNod): ?>
+                        <span class="kpi-active-dot" style="color:#92400e;">▲ filtered</span>
+                    <?php endif; ?>
+                </div>
             </div>
         </div>
     </a>
@@ -1535,6 +1662,7 @@ table td.lot-coil-cell {
         'stock'            => 'Finish Good Stock only',
         'palletised'       => 'Palletised rolls only',
         'waiting'          => 'Waiting QC only',
+        'waiting_deliver'  => 'Waiting Deliver (Approved Pallets) only',
         'deliver'          => 'Delivered only',
         'produced_month'   => 'Produced during ' . date("F Y", mktime(0,0,0,$month,1,$year)),
         'stock_month_end'  => 'Reconstructed stock balance as of end of ' . date("F Y", mktime(0,0,0,$month,1,$year)),
@@ -1635,6 +1763,10 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                 default     => '<span class="badge bg-secondary">' . $row['status'] . '</span>'
             };
 
+            if (!empty($row['stock_code'])) {
+                $statusBadge .= '<br><span class="badge bg-light text-dark border font-monospace mt-1" style="font-size:8.5px; font-weight:500; padding:2px 4px; letter-spacing:0.3px;">' . htmlspecialchars($row['stock_code']) . '</span>';
+            }
+
             $originalSource = $row['original_source'] ?? $row['source'] ?? 'raw_material';
             $originDisplay  = match(trim(strtolower($originalSource))) {
                 'sfc'           => ['label' => 'SFC', 'class' => 'bg-primary'],
@@ -1693,7 +1825,20 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                     </div>
                 </td>
                 <td><?= htmlspecialchars($row['product'] ?? '') ?></td>
-                <td class="lot-coil-cell"><?= htmlspecialchars($lotCoilRoll) ?></td>
+                <td class="lot-coil-cell">
+                    <?= htmlspecialchars($lotCoilRoll) ?>
+                    <?php
+                        $rowRef = trim($row['ref_no'] ?? '');
+                        $rowCust = trim($row['customer_name'] ?? '');
+                        $isRowStock = (strcasecmp($rowRef, 'STOCK') === 0 || strcasecmp($rowCust, 'STOCK') === 0);
+                    ?>
+                    <?php if ($isRowStock): ?>
+                        <br><span class="badge badge-warning-stock" style="font-size:9px;"><i class="bi bi-exclamation-octagon-fill me-1"></i>SO: STOCK</span>
+                    <?php endif; ?>
+                    <?php if (!empty($rowCust) || !empty($rowRef)): ?>
+                        <br><small class="text-muted" style="font-size:10px;"><?= htmlspecialchars($rowCust) ?><?= $rowRef ? ' (' . htmlspecialchars($rowRef) . ')' : '' ?></small>
+                    <?php endif; ?>
+                </td>
                 <td><?= $row['width'] ?></td>
                 <td><?= $row['length'] ?></td>
                 <td id="actual-display-<?= $row['id'] ?>"><?= $row['actual_length'] ?></td>
@@ -1752,7 +1897,7 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
         <div class="d-flex flex-column gap-1">
 
             <?php if ($row['is_completed'] == 0): ?>
-                <!-- No actual length yet — must update first -->
+                <!-- No actual length yet — must update first (unblocked) -->
                 <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
                    class="btn btn-primary btn-sm w-100">Update</a>
 
@@ -1767,9 +1912,17 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                 </small>
 
             <?php else: ?>
-                <!-- Stock counted, not yet on a pallet -->
-                <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
-                   class="btn btn-outline-primary btn-sm w-100">Edit</a>
+                <!-- Stock / Produced item counted, not yet on a pallet -->
+                <?php 
+                    $isProducedRow = ($filter_card === 'produced_month' || ($row['status'] ?? '') !== 'IN');
+                    $isRowEditActive = $isProducedRow ? $isFinishProducedEditActive : $isFinishStockEditActive;
+                ?>
+                <?php if ($isRowEditActive): ?>
+                    <a href="?edit=<?= $row['id'] ?>&month=<?= $month ?>&year=<?= $year ?>&day=<?= $day ?>&search=<?= urlencode($search) ?><?= $filter_card ? '&filter='.urlencode($filter_card) : '' ?><?= $filter_origin !== '' ? '&origin='.urlencode($filter_origin) : '' ?><?= $filter_nod !== '' ? '&nod='.urlencode($filter_nod) : '' ?>"
+                       class="btn btn-outline-primary btn-sm w-100">Edit</a>
+                <?php else: ?>
+                    <button type="button" class="btn btn-secondary btn-sm w-100 disabled opacity-75" title="Edit is BLOCKED by Control Center" disabled><i class="bi bi-slash-circle me-1"></i> Edit (Blocked)</button>
+                <?php endif; ?>
                 <button type="button" class="btn btn-primary btn-sm w-100"
                         onclick="openSendToSfcModal(<?= (int)$row['id'] ?>, '<?= htmlspecialchars($row['product'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['lot_no'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['coil_no'] ?? '', ENT_QUOTES) ?>', '<?= htmlspecialchars($row['roll_no'] ?? '', ENT_QUOTES) ?>', <?= (float)($row['width'] ?? 0) ?>, <?= (float)($row['actual_length'] ?: $row['length']) ?>)">
                     <i class="bi bi-box-seam me-1"></i> Send to SFC
@@ -1869,20 +2022,36 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
 
             <!-- Modal Body -->
             <div class="modal-body p-3 bg-light">
+                <?php
+                    $allCustomerUnassigned = true;
+                    $allRefNoUnassigned = true;
+                    foreach ($batchRolls as $r) {
+                        $c = trim($r['customer_name'] ?? '');
+                        $rf = trim($r['ref_no'] ?? '');
+                        if ($c !== '') {
+                            $allCustomerUnassigned = false;
+                        }
+                        if ($rf !== '' && $rf !== 'SO-' && $rf !== 'STOCK') {
+                            $allRefNoUnassigned = false;
+                        }
+                    }
+                    $canCopyAllCustRef = ($allCustomerUnassigned && $allRefNoUnassigned);
+                ?>
                 <!-- Consolidated Batch Assignment Panel Toolbar (Copy to All Rows) -->
                 <div class="card mb-3 shadow-sm border-danger-subtle" style="background: #fff8f8;">
                     <div class="card-header bg-danger-subtle fw-bold py-2 text-danger-emphasis d-flex justify-content-between align-items-center">
-                        <span><i class="bi bi-sliders me-1"></i> Batch Assignment Toolbar — Copy to All Rows</span>
+                        <span><i class="bi bi-sliders me-1"></i> Batch Assignment Toolbar — Copy <?= $canCopyAllCustRef ? 'Customer, Ref No &amp; Actual Length' : 'Actual Length' ?> to All Rows</span>
                         <span class="badge bg-danger text-white"><?= htmlspecialchars($editData['product'] ?? '') ?></span>
                     </div>
                     <div class="card-body py-2">
                         <div class="row g-2 align-items-end">
-                            <div class="col-6 col-md-3">
+                            <div class="<?= $canCopyAllCustRef ? 'col-6 col-md-3' : 'col-12 col-md-6' ?>">
                                 <label class="small fw-bold mb-1">Actual Length (meters)</label>
                                 <input type="number" step="0.01" min="0" class="form-control form-control-sm" id="modalCopyAllActualLength"
                                        placeholder="e.g. 500" value="<?= htmlspecialchars((string)($editData['actual_length'] ?? '')) ?>">
                             </div>
-                            <div class="col-12 col-md-3">
+                            <?php if ($canCopyAllCustRef): ?>
+                            <div class="col-12 col-md-4">
                                 <label class="small fw-bold mb-1">Customer</label>
                                 <select class="form-select form-select-sm" id="modalCopyAllCustomer">
                                     <option value="">-- Select Customer --</option>
@@ -1915,24 +2084,16 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                                 <label class="small fw-bold mb-1">Ref No</label>
                                 <input type="text" class="form-control form-control-sm" id="modalCopyAllRefNo" value="SO-" placeholder="SO-00-0000">
                             </div>
-                            <div class="col-4 col-md-1">
-                                <label class="small fw-bold mb-1">Copies</label>
-                                <select class="form-select form-select-sm" id="modalCopyAllCopies">
-                                    <option value="">—</option>
-                                    <option value="0">0 (skip)</option>
-                                    <option value="1">1</option>
-                                    <option value="2">2</option>
-                                    <option value="3">3</option>
-                                    <option value="4">4</option>
-                                </select>
-                            </div>
                             <div class="col-12 col-md-2">
+                            <?php else: ?>
+                            <div class="col-12 col-md-6">
+                            <?php endif; ?>
                                 <button type="button" class="btn btn-outline-danger btn-sm w-100 fw-bold" onclick="modalCopyToAllRows()">
                                     <i class="bi bi-arrow-down-square me-1"></i> Copy to All
                                 </button>
                             </div>
                         </div>
-                        <div class="form-text mb-0">Fills every row below with Customer, Ref No, Actual Length, and Print Copies — then adjust any row if needed.</div>
+                        <div class="form-text mb-0"><?= $canCopyAllCustRef ? 'Fills every row below with Customer, Ref No, and Actual Length — then adjust any row if needed.' : 'Fills every row below with Actual Length — then adjust any row if needed.' ?></div>
                     </div>
                 </div>
 
@@ -1947,12 +2108,12 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                             <table class="table table-bordered table-hover table-sm mb-0 align-middle" id="modalBatchGridTable">
                                 <thead class="table-dark sticky-top" style="z-index: 5;">
                                     <tr>
-                                        <th style="width:14%;">Roll No &amp; Product</th>
-                                        <th style="width:14%;">Width / Actual Length</th>
-                                        <th style="width:28%;">Customer</th>
-                                        <th style="width:26%;">Ref No.</th>
-                                        <th style="width:9%;">Copies</th>
-                                        <th style="width:9%;">Status</th>
+                                        <th style="width:16%;">Roll No &amp; Product</th>
+                                        <th style="width:16%;">Width / Actual Length</th>
+                                        <th style="width:26%;">Customer</th>
+                                        <th style="width:22%;">Ref No.</th>
+                                        <th style="width:10%;">Copies</th>
+                                        <th style="width:10%;">Status</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -1995,9 +2156,12 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                                                 $rawRefNo = trim($r['ref_no'] ?? '');
                                                 $isStock = ($saved === 'STOCK' || $rawRefNo === 'STOCK');
                                                 $displayRefNo = $isStock ? 'STOCK' : ($rawRefNo !== '' ? $rawRefNo : 'SO-');
+
+                                                $hasCustomer = ($saved !== '');
+                                                $hasRefNo = ($rawRefNo !== '' && $rawRefNo !== 'SO-');
                                             ?>
                                             <select class="form-select form-select-sm modal-row-customer" data-row="<?= $idx ?>"
-                                                    onchange="modalHandleRowCustomerChange(<?= $idx ?>)">
+                                                    onchange="modalHandleRowCustomerChange(<?= $idx ?>)" <?= $hasCustomer ? 'disabled' : '' ?>>
                                                 <option value=""         <?= $saved===''         ?'selected':'' ?>>-- Select Customer --</option>
                                                 <option value="NAE"      <?= $saved==='NAE'      ?'selected':'' ?>>NICHIAS AUTOPARTS EUROPE (NAE)</option>
                                                 <option value="NAX"      <?= $saved==='NAX'      ?'selected':'' ?>>NAX MFG, SA.DE C.V</option>
@@ -2023,17 +2187,17 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                                             </select>
                                             <input type="text" class="form-control form-control-sm modal-row-custom-customer mt-1" data-row="<?= $idx ?>"
                                                    placeholder="Enter customer name" style="display:<?= $isOther?'block':'none' ?>;"
-                                                   value="<?= $isOther ? htmlspecialchars($saved) : '' ?>">
+                                                   value="<?= $isOther ? htmlspecialchars($saved) : '' ?>" <?= $hasCustomer ? 'disabled' : '' ?>>
                                             <div class="text-muted modal-nci-note mt-1" data-row="<?= $idx ?>" style="display:none; font-size:11px;"></div>
                                         </td>
                                         <td>
                                             <div class="form-check mb-1">
                                                 <input class="form-check-input modal-row-stock-override" type="checkbox"
-                                                       id="modalRowStock<?= $idx ?>" data-row="<?= $idx ?>" <?= $isStock ? 'checked' : '' ?>>
+                                                       id="modalRowStock<?= $idx ?>" data-row="<?= $idx ?>" <?= $isStock ? 'checked' : '' ?> <?= ($hasCustomer || $hasRefNo) ? 'disabled' : '' ?>>
                                                 <label class="form-check-label small" for="modalRowStock<?= $idx ?>">Set to STOCK</label>
                                             </div>
                                             <input type="text" class="form-control form-control-sm modal-row-refno" data-row="<?= $idx ?>"
-                                                   value="<?= htmlspecialchars($displayRefNo) ?>" placeholder="SO-00-0000" <?= $isStock ? 'readonly' : '' ?>>
+                                                   value="<?= htmlspecialchars($displayRefNo) ?>" placeholder="SO-00-0000" <?= ($hasRefNo || $isStock) ? 'readonly disabled' : '' ?>>
                                         </td>
                                         <td>
                                             <select class="form-select form-select-sm modal-row-copies" data-row="<?= $idx ?>">
@@ -2114,12 +2278,18 @@ function modalApplyMaskForRow(idx, val) {
             blocks: { a: { mask: /[A-Z]/ } },
             prepareChar: (str) => str.toUpperCase()
         });
-        if (!modalRefNoMasks[idx].value || modalRefNoMasks[idx].value === 'SO-' || modalRefNoMasks[idx].value === 'STOCK') {
+    } else {
+        modalRefNoMasks[idx] = IMask(refEl, {
+            mask: 'SO-00-0000'
+        });
+    }
+
+    if (val === 'STAMPING') {
+        if (!modalRefNoMasks[idx].value || modalRefNoMasks[idx].value.startsWith('SO-') || modalRefNoMasks[idx].value === 'STOCK') {
             modalRefNoMasks[idx].value = 'MS-';
         }
     } else {
-        modalRefNoMasks[idx] = IMask(refEl, { mask: 'SO-00-0000' });
-        if (!modalRefNoMasks[idx].value || modalRefNoMasks[idx].value === 'STOCK') {
+        if (!modalRefNoMasks[idx].value || modalRefNoMasks[idx].value.startsWith('MS-') || modalRefNoMasks[idx].value === 'STOCK') {
             modalRefNoMasks[idx].value = 'SO-';
         }
     }
@@ -2136,8 +2306,8 @@ function modalRefNoMatchesActiveRuleForRow(idx) {
     const cust = custEl.value;
 
     if (MODAL_NCI_CUSTOMERS.includes(cust)) return val !== '';
-    if (cust === 'STAMPING') return /^MS-\d{7}( [A-Z])?$/.test(val);
-    return /^SO-\d{2}-\d{4}$/.test(val);
+    if (cust === 'STAMPING') return /^MS-\d{7}( [A-Z])?$/i.test(val);
+    return /^SO-\d{2}-\d{4}$/i.test(val);
 }
 
 function modalGetRowCount() {
@@ -2198,18 +2368,39 @@ async function modalHandleRowCustomerChange(rowIdx) {
     }
 }
 
+let modalCopyAllRefMask = null;
+function updateModalCopyAllRefMask(custVal) {
+    if (modalCopyAllRefMask) { modalCopyAllRefMask.destroy(); modalCopyAllRefMask = null; }
+    const el = document.getElementById('modalCopyAllRefNo');
+    if (!el) return;
+
+    if (custVal === 'STOCK') {
+        el.value = 'STOCK';
+        return;
+    }
+
+    if (custVal === 'STAMPING') {
+        modalCopyAllRefMask = IMask(el, {
+            mask: 'MS-0000000[ a]',
+            blocks: { a: { mask: /[A-Z]/ } },
+            prepareChar: (str) => str.toUpperCase()
+        });
+        if (!el.value || el.value.startsWith('SO-') || el.value === 'STOCK') {
+            el.value = 'MS-';
+        }
+    } else {
+        modalCopyAllRefMask = IMask(el, { mask: 'SO-00-0000' });
+        if (!el.value || el.value.startsWith('MS-') || el.value === 'STOCK') {
+            el.value = 'SO-';
+        }
+    }
+}
+
 document.getElementById('modalCopyAllCustomer')?.addEventListener('change', function () {
     const val = this.value;
     document.getElementById('modalCopyAllCustomOther').style.display =
         (val === 'OTHER') ? 'block' : 'none';
-    const copyAllRefEl = document.getElementById('modalCopyAllRefNo');
-    if (copyAllRefEl) {
-        if (val === 'STOCK') {
-            copyAllRefEl.value = 'STOCK';
-        } else if (copyAllRefEl.value === 'STOCK') {
-            copyAllRefEl.value = 'SO-';
-        }
-    }
+    updateModalCopyAllRefMask(val);
 });
 
 document.querySelectorAll('.modal-row-stock-override').forEach((cb) => {
@@ -2261,18 +2452,19 @@ async function modalCopyToAllRows() {
     const otherEl   = document.getElementById('modalCopyAllCustomOther');
     const refEl     = document.getElementById('modalCopyAllRefNo');
     const lengthEl  = document.getElementById('modalCopyAllActualLength');
-    const copiesEl  = document.getElementById('modalCopyAllCopies');
 
     const customerVal = sel ? sel.value : '';
     const refVal      = refEl ? refEl.value.trim().replace(/\s+/g, '') : '';
     const lengthVal   = lengthEl ? lengthEl.value.trim() : '';
-    const copiesVal   = copiesEl ? copiesEl.value : '';
 
     if (!customerVal && !lengthVal) {
         alert('Set Customer or Actual Length to copy to all rows.');
         return;
     }
-    if (customerVal === 'OTHER' && !otherEl.value.trim()) { alert('Enter the customer name.'); return; }
+    if (customerVal === 'OTHER' && otherEl && !otherEl.value.trim()) {
+        alert('Enter the customer name.');
+        return;
+    }
 
     const rowCount = modalGetRowCount();
     for (let idx = 0; idx < rowCount; idx++) {
@@ -2280,31 +2472,26 @@ async function modalCopyToAllRows() {
         const rowOtherEl  = document.querySelector(`.modal-row-custom-customer[data-row="${idx}"]`);
         const rowRefEl    = document.querySelector(`.modal-row-refno[data-row="${idx}"]`);
         const rowLengthEl = document.querySelector(`.modal-row-length[data-row="${idx}"]`);
-        const rowCopiesEl = document.querySelector(`.modal-row-copies[data-row="${idx}"]`);
         const rowStockEl  = document.querySelector(`.modal-row-stock-override[data-row="${idx}"]`);
 
-        if (customerVal) {
+        if (customerVal && rowSel && !rowSel.disabled) {
             rowSel.value = customerVal;
-            if (customerVal === 'OTHER') rowOtherEl.value = otherEl.value.trim();
+            if (customerVal === 'OTHER' && rowOtherEl) rowOtherEl.value = otherEl.value.trim();
 
             if (customerVal === 'STOCK') {
                 if (rowStockEl) rowStockEl.checked = true;
-                rowRefEl.readOnly = true;
-                if (refVal !== '') rowRefEl.value = refVal;
+                if (rowRefEl) rowRefEl.readOnly = true;
+                if (refVal !== '' && rowRefEl) rowRefEl.value = refVal;
             } else {
                 if (rowStockEl) rowStockEl.checked = false;
-                rowRefEl.readOnly = false;
-                if (refVal !== '') rowRefEl.value = refVal;
+                if (rowRefEl) rowRefEl.readOnly = false;
+                if (refVal !== '' && rowRefEl) rowRefEl.value = refVal;
             }
             await modalHandleRowCustomerChange(idx);
         }
 
         if (lengthVal !== '' && rowLengthEl) {
             rowLengthEl.value = lengthVal;
-        }
-
-        if (copiesVal && rowCopiesEl) {
-            rowCopiesEl.value = copiesVal;
         }
     }
 }
@@ -2325,9 +2512,9 @@ function modalCollectSelections() {
         const sel      = document.querySelector(`.modal-row-customer[data-row="${idx}"]`);
         const otherEl  = document.querySelector(`.modal-row-custom-customer[data-row="${idx}"]`);
         const refEl    = document.querySelector(`.modal-row-refno[data-row="${idx}"]`);
-        const copiesEl = document.querySelector(`.modal-row-copies[data-row="${idx}"]`);
-        const lengthEl = document.querySelector(`.modal-row-length[data-row="${idx}"]`);
-        const stockEl  = document.querySelector(`.modal-row-stock-override[data-row="${idx}"]`);
+        const copiesEl  = document.querySelector(`.modal-row-copies[data-row="${idx}"]`);
+        const lengthEl  = document.querySelector(`.modal-row-length[data-row="${idx}"]`);
+        const stockEl   = document.querySelector(`.modal-row-stock-override[data-row="${idx}"]`);
 
         let customer = sel.value;
         if (customer === 'OTHER') customer = otherEl.value.trim();

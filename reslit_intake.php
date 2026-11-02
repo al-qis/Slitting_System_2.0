@@ -134,6 +134,56 @@ if ($lot_no === '' || $coil_no === '' || $roll_no === '') {
 
 $conn->begin_transaction();
 try {
+    // ── STEP 0: Check if roll is ALREADY in reslit_product queue (2nd scan) ──
+    $chkReslit = $conn->prepare("
+        SELECT r.id, r.status, r.product, r.lot_no, r.coil_no, r.roll_no, r.width, r.length,
+               COALESCE(NULLIF(s.actual_length, 0), r.length) AS effective_length
+        FROM reslit_product r
+        LEFT JOIN (
+            SELECT sp1.*
+            FROM slitting_product sp1
+            INNER JOIN (
+                SELECT lot_no, coil_no, roll_no, MAX(id) AS max_id
+                FROM slitting_product
+                GROUP BY lot_no, coil_no, roll_no
+            ) sp2 ON sp1.id = sp2.max_id
+        ) s ON s.lot_no = r.lot_no AND s.coil_no = r.coil_no AND s.roll_no = r.roll_no
+        WHERE LOWER(r.lot_no) = LOWER(?)
+          AND LOWER(r.coil_no) = LOWER(?)
+          AND LOWER(r.roll_no) = LOWER(?)
+        ORDER BY r.id DESC
+        LIMIT 1
+    ");
+    $chkReslit->bind_param("sss", $lot_no, $coil_no, $roll_no);
+    $chkReslit->execute();
+    $existingReslit = $chkReslit->get_result()->fetch_assoc();
+    $chkReslit->close();
+
+    if ($existingReslit) {
+        if ($existingReslit['status'] === 'completed') {
+            throw new Exception("This roll has already completed the reslit process.");
+        }
+        // Roll is already pending in reslit_product queue!
+        // 2nd Scan action: Return open_modal signal to open process modal directly.
+        $conn->commit();
+        echo json_encode([
+            'ok'             => true,
+            'already_exists' => true,
+            'action'         => 'open_modal',
+            'msg'            => "Opening Reslit Process for {$existingReslit['lot_no']} {$existingReslit['coil_no']} {$existingReslit['roll_no']}...",
+            'roll'           => [
+                'id'      => (int)$existingReslit['id'],
+                'product' => $existingReslit['product'] ?? '',
+                'lot_no'  => $existingReslit['lot_no'] ?? '',
+                'coil_no' => $existingReslit['coil_no'] ?? '',
+                'roll_no' => $existingReslit['roll_no'] ?? '',
+                'width'   => (float)($existingReslit['width'] ?? 0),
+                'length'  => (float)($existingReslit['effective_length'] ?? ($existingReslit['length'] ?? 0)),
+            ],
+        ]);
+        exit;
+    }
+
     // Lock the matching slitting_product row for the duration of this
     // transaction, so two simultaneous scans of the same roll can't both
     // succeed.

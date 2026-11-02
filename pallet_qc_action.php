@@ -103,6 +103,7 @@ function approvePallet(
         $stmt->close();
 
         $conn->commit();
+
         return ['ok' => true];
     } catch (Throwable $e) {
         $conn->rollback();
@@ -158,6 +159,7 @@ function rejectPallet(
         $stmt->close();
 
         $conn->commit();
+
         return ['ok' => true];
     } catch (Throwable $e) {
         $conn->rollback();

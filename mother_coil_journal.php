@@ -177,16 +177,24 @@ foreach ($sfc_rows as $sf) {
     $sfLot    = $sf['lot_no']  ?? '';
     $sfCoil   = $sf['coil_no'] ?? '';
     $sfRoll   = $sf['roll_no'] ?? '';
+    $sfWidth  = floatval($sf['width'] ?? 0);
     $sfAction = strtoupper($sf['action'] ?? '');
 
     if ($sfAction === 'RESLIT') {
-        $stmt = $conn->prepare("
+        $rSql = "
             SELECT id, status FROM reslit_product
             WHERE lot_no = ? AND coil_no = ? AND roll_no = ?
               AND original_source = 'sfc'
-            ORDER BY id DESC LIMIT 1
-        ");
-        $stmt->bind_param("sss", $sfLot, $sfCoil, $sfRoll);
+        ";
+        if ($sfWidth > 0) {
+            $rSql .= " AND ABS(width - ?) < 0.5 ORDER BY id DESC LIMIT 1";
+            $stmt = $conn->prepare($rSql);
+            $stmt->bind_param("sssd", $sfLot, $sfCoil, $sfRoll, $sfWidth);
+        } else {
+            $rSql .= " ORDER BY id DESC LIMIT 1";
+            $stmt = $conn->prepare($rSql);
+            $stmt->bind_param("sss", $sfLot, $sfCoil, $sfRoll);
+        }
         $stmt->execute();
         $rp = $stmt->get_result()->fetch_assoc();
         $stmt->close();
@@ -213,13 +221,20 @@ foreach ($sfc_rows as $sf) {
             }
         }
     } elseif ($sfAction === 'RECOIL') {
-        $stmt = $conn->prepare("
+        $rcSql = "
             SELECT id, status FROM recoiling_product
             WHERE lot_no = ? AND coil_no = ? AND roll_no = ?
               AND original_source = 'sfc'
-            ORDER BY id DESC LIMIT 1
-        ");
-        $stmt->bind_param("sss", $sfLot, $sfCoil, $sfRoll);
+        ";
+        if ($sfWidth > 0) {
+            $rcSql .= " AND ABS(width - ?) < 0.5 ORDER BY id DESC LIMIT 1";
+            $stmt = $conn->prepare($rcSql);
+            $stmt->bind_param("sssd", $sfLot, $sfCoil, $sfRoll, $sfWidth);
+        } else {
+            $rcSql .= " ORDER BY id DESC LIMIT 1";
+            $stmt = $conn->prepare($rcSql);
+            $stmt->bind_param("sss", $sfLot, $sfCoil, $sfRoll);
+        }
         $stmt->execute();
         $rcp = $stmt->get_result()->fetch_assoc();
         $stmt->close();
@@ -246,15 +261,22 @@ foreach ($sfc_rows as $sf) {
             }
         }
     } elseif ($sfAction === 'SELL') {
-        $stmt = $conn->prepare("
+        $sSql = "
             SELECT id, lot_no, coil_no, roll_no, width, length, actual_length,
                    status, date_in, 'SELL' AS sfc_process
             FROM slitting_product
             WHERE lot_no = ? AND coil_no = ? AND roll_no = ?
               AND source = 'sfc' AND original_source = 'sfc'
-            ORDER BY id DESC LIMIT 1
-        ");
-        $stmt->bind_param("sss", $sfLot, $sfCoil, $sfRoll);
+        ";
+        if ($sfWidth > 0) {
+            $sSql .= " AND ABS(width - ?) < 0.5 ORDER BY id DESC LIMIT 1";
+            $stmt = $conn->prepare($sSql);
+            $stmt->bind_param("sssd", $sfLot, $sfCoil, $sfRoll, $sfWidth);
+        } else {
+            $sSql .= " ORDER BY id DESC LIMIT 1";
+            $stmt = $conn->prepare($sSql);
+            $stmt->bind_param("sss", $sfLot, $sfCoil, $sfRoll);
+        }
         $stmt->execute();
         $sp = $stmt->get_result()->fetch_assoc();
         $stmt->close();

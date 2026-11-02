@@ -1,0 +1,144 @@
+/* Stock Draft System — Premium Production Styling */
+:root {
+    --primary-color: #0d6efd;
+    --secondary-color: #495057;
+    --success-color: #198754;
+    --danger-color: #dc3545;
+    --warning-color: #ffc107;
+    --info-color: #0dcaf0;
+    --dark-bg: #1e293b;
+    --light-bg: #f8fafc;
+    --card-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+
+body {
+    background-color: #f1f5f9;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    color: #334155;
+}
+
+/* Navbar */
+.navbar-brand {
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+.nav-link {
+    font-weight: 500;
+    padding: 0.5rem 1rem !important;
+    border-radius: 6px;
+    transition: all 0.2s ease-in-out;
+}
+.nav-link:hover, .nav-link.active {
+    background-color: rgba(255, 255, 255, 0.15);
+}
+
+/* Metric Cards */
+.metric-card {
+    border: none;
+    border-radius: 12px;
+    box-shadow: var(--card-shadow);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    background: #ffffff;
+}
+.metric-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+}
+.metric-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.5rem;
+}
+
+/* Live Badges */
+.badge-status {
+    font-size: 0.8rem;
+    padding: 0.4em 0.75em;
+    border-radius: 50rem;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+}
+.badge-available { background-color: #e6f4ea; color: #137333; }
+.badge-reserved  { background-color: #fef7e0; color: #b06000; }
+.badge-used      { background-color: #feefc3; color: #5f6368; }
+.badge-outgoing  { background-color: #e8f0fe; color: #1a73e8; }
+.badge-cancelled { background-color: #fce8e6; color: #c5221f; }
+
+/* Status Alert Banner for Calculations */
+.status-badge-container {
+    padding: 0.75rem 1.25rem;
+    border-radius: 10px;
+    font-weight: 700;
+    font-size: 1.1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.status-enough {
+    background-color: #d1e7dd;
+    color: #0f5132;
+    border: 1px solid #badbcc;
+}
+.status-not-enough {
+    background-color: #f8d7da;
+    color: #842029;
+    border: 1px solid #f5c2c7;
+}
+
+/* Tables */
+.table-custom {
+    background: #ffffff;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: var(--card-shadow);
+}
+.table-custom thead {
+    background-color: #0f172a;
+    color: #ffffff;
+}
+.table-custom th {
+    font-weight: 600;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 0.9rem 1rem;
+    border: none;
+}
+.table-custom td {
+    padding: 0.8rem 1rem;
+    vertical-align: middle;
+    font-size: 0.9rem;
+}
+
+/* Two-Panel Layout */
+.panel-card {
+    background: #ffffff;
+    border-radius: 12px;
+    box-shadow: var(--card-shadow);
+    height: 100%;
+}
+.panel-header {
+    border-bottom: 1px solid #e2e8f0;
+    padding: 1rem 1.25rem;
+    background: #f8fafc;
+    border-top-left-radius: 12px;
+    border-top-right-radius: 12px;
+}
+.coil-scroll-area {
+    max-height: 520px;
+    overflow-y: auto;
+}
+
+/* Glass & Buttons */
+.btn-primary {
+    background-color: #2563eb;
+    border-color: #2563eb;
+}
+.btn-primary:hover {
+    background-color: #1d4ed8;
+    border-color: #1d4ed8;
+}

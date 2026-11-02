@@ -19,6 +19,7 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 include 'config.php';
+require_once 'PalletManager.php';
 
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
@@ -136,28 +137,38 @@ $is_same_roll = in_array($cut_type, ['rewinding', 'normal']);
 // "lot_OLD_{id}") frees the unique key, so no pre-check is needed.
 if ($cut_type === 'cut_into_2') {
     $duplicates = [];
+    $seen_in_batch = [];
     for ($i = 0; $i < $total_rolls; $i++) {
         $letter     = trim($_POST['letter'][$i] ?? '');
+        $new_width  = floatval($_POST['new_width'][$i] ?? ($original['width'] ?? 0));
         // Roll and coil stay the same as original; only lot may get a suffix
         $new_lot_no = $original['lot_no'] . $letter;       // '' = same lot
         $new_roll   = $original['roll_no'];                // R4 stays R4
         $exclude_id = $parent_slit_id ?? 0;
 
-        // Only check against OTHER non-voided rows (not the source itself)
+        // Check for duplicates within the current submission
+        $batch_key = $new_lot_no . '|' . $original['coil_no'] . '|' . $new_roll . '|' . round($new_width, 2);
+        if (isset($seen_in_batch[$batch_key])) {
+            $duplicates[] = "{$new_lot_no} {$original['coil_no']} {$new_roll} (width {$new_width}mm)";
+        }
+        $seen_in_batch[$batch_key] = true;
+
+        // Only check against OTHER non-voided rows (not the source itself) with matching width
         $chk = $conn->prepare("
             SELECT COUNT(*) AS cnt
             FROM slitting_product
             WHERE lot_no = ? AND coil_no = ? AND roll_no = ?
+              AND ABS(width - ?) < 0.5
               AND id != ?
               AND (is_voided = 0 OR is_voided IS NULL)
         ");
-        $chk->bind_param("sssi", $new_lot_no, $original['coil_no'], $new_roll, $exclude_id);
+        $chk->bind_param("sssdi", $new_lot_no, $original['coil_no'], $new_roll, $new_width, $exclude_id);
         $chk->execute();
         $cnt = (int)($chk->get_result()->fetch_assoc()['cnt'] ?? 0);
         $chk->close();
 
         if ($cnt > 0) {
-            $duplicates[] = "{$new_lot_no} {$original['coil_no']} {$new_roll}";
+            $duplicates[] = "{$new_lot_no} {$original['coil_no']} {$new_roll} (width {$new_width}mm)";
         }
     }
 
@@ -173,12 +184,8 @@ $conn->begin_transaction();
 
 try {
     // ── STEP 1: Void the source slitting_product row ──────────────────────
-    // Free the UNIQUE KEY (lot_no, coil_no, roll_no) so the new row(s) can
+    // Free the UNIQUE KEY (lot_no, coil_no, roll_no, roll_key) so the new row(s) can
     // reuse the same reference values.
-    //
-    // cut_into_2 strategy: rename lot_no → "lot_OLD_{id}" (keeps roll_no
-    //   intact; both output rolls inherit the original roll_no).
-    // rewinding / cut defect: rename roll_no → "R1_void_{id}" as before.
     if ($parent_slit_id) {
         if ($cut_type === 'cut_into_2') {
             $voided_lot = $original['lot_no'] . '_OLD_' . $parent_slit_id;
@@ -186,6 +193,7 @@ try {
             $void_stmt = $conn->prepare("
                 UPDATE slitting_product
                 SET lot_no        = ?,
+                    roll_key      = CONCAT(COALESCE(roll_key, ''), '_OLD_', ?),
                     is_recoiled   = 1,
                     is_voided     = 1,
                     voided_at     = NOW(),
@@ -193,7 +201,7 @@ try {
                 WHERE id = ?
             ");
             $reason = 'replaced_by_recoil_cut_into_2';
-            $void_stmt->bind_param("ssi", $voided_lot, $reason, $parent_slit_id);
+            $void_stmt->bind_param("sisi", $voided_lot, $parent_slit_id, $reason, $parent_slit_id);
         } else {
             // rewinding / normal: rename roll_no to free unique key
             $voided_roll = $original['roll_no'] . '_void_' . $parent_slit_id;
@@ -201,6 +209,7 @@ try {
             $void_stmt = $conn->prepare("
                 UPDATE slitting_product
                 SET roll_no       = ?,
+                    roll_key      = CONCAT(COALESCE(roll_key, ''), '_OLD_', ?),
                     is_recoiled   = 1,
                     is_voided     = 1,
                     voided_at     = NOW(),
@@ -208,7 +217,7 @@ try {
                 WHERE id = ?
             ");
             $reason = 'replaced_by_recoil_' . $cut_type;
-            $void_stmt->bind_param("ssi", $voided_roll, $reason, $parent_slit_id);
+            $void_stmt->bind_param("sisi", $voided_roll, $parent_slit_id, $reason, $parent_slit_id);
         }
 
         $void_stmt->execute();
@@ -222,10 +231,50 @@ try {
         );
     }
 
+    // ── Fetch pallet & customer/ref information from parent roll ───────────
+    $palletItem      = null;
+    $parent_customer = '';
+    $parent_ref_no   = '';
+    if ($parent_slit_id) {
+        $parent_info_stmt = $conn->prepare("SELECT customer_name, ref_no FROM slitting_product WHERE id = ? LIMIT 1");
+        $parent_info_stmt->bind_param("i", $parent_slit_id);
+        $parent_info_stmt->execute();
+        $parent_info = $parent_info_stmt->get_result()->fetch_assoc();
+        $parent_info_stmt->close();
+        if ($parent_info) {
+            $parent_customer = trim($parent_info['customer_name'] ?? '');
+            $parent_ref_no   = trim($parent_info['ref_no'] ?? '');
+        }
+
+        $p_stmt = $conn->prepare("
+            SELECT pi.id AS item_id, pi.pallet_id, pi.seq, p.pallet_no,
+                   p.customer_name AS pallet_customer, p.ref_no AS pallet_ref
+            FROM pallet_items pi
+            JOIN pallets p ON p.id = pi.pallet_id
+            WHERE pi.slitting_product_id = ?
+            LIMIT 1
+        ");
+        $p_stmt->bind_param("i", $parent_slit_id);
+        $p_stmt->execute();
+        $palletItem = $p_stmt->get_result()->fetch_assoc();
+        $p_stmt->close();
+
+        if ($palletItem) {
+            if ($parent_customer === '' && !empty($palletItem['pallet_customer'])) {
+                $parent_customer = trim($palletItem['pallet_customer']);
+            }
+            if ($parent_ref_no === '' && !empty($palletItem['pallet_ref'])) {
+                $parent_ref_no = trim($palletItem['pallet_ref']);
+            }
+        }
+    }
+
     // ── STEP 2: Insert new slitting_product row(s) ────────────────────────
     $total_actual_length = 0.0;
     $summary_width       = 0.0;
     $all_remarks         = [];
+    $created_slit_ids       = [];
+    $created_actual_lengths = [];
 
     for ($i = 0; $i < $total_rolls; $i++) {
         $new_width     = floatval($_POST['new_width'][$i]     ?? 0);
@@ -255,18 +304,47 @@ try {
             $all_remarks[] = $r;
         }
 
+        // Generate unique DB roll_key incorporating width
+        $base_roll_key   = $new_lot_no . '_' . $original['coil_no'] . '_' . $new_roll_no . '_' . round($new_width, 2);
+        $target_roll_key = $base_roll_key;
+        $chk_key = $conn->prepare("SELECT id FROM slitting_product WHERE roll_key = ? AND (is_voided = 0 OR is_voided IS NULL)");
+        $chk_key->bind_param("s", $target_roll_key);
+        $chk_key->execute();
+        if ($chk_key->get_result()->num_rows > 0) {
+            $suffix_num = 1;
+            while (true) {
+                $candidate = $base_roll_key . "_" . $suffix_num;
+                $chk2 = $conn->prepare("SELECT id FROM slitting_product WHERE roll_key = ? AND (is_voided = 0 OR is_voided IS NULL)");
+                $chk2->bind_param("s", $candidate);
+                $chk2->execute();
+                if ($chk2->get_result()->num_rows === 0) {
+                    $target_roll_key = $candidate;
+                    $chk2->close();
+                    break;
+                }
+                $chk2->close();
+                $suffix_num++;
+            }
+        }
+        $chk_key->close();
+
+        $prod_month_opt = trim($_POST['production_month'] ?? 'current');
+        $prod_date      = resolveProductionMonthDate($prod_month_opt);
+        $date_in_val    = ($prod_month_opt === 'current') ? date('Y-m-d H:i:s') : $prod_date . ' ' . date('H:i:s');
+        $stock_code     = generateStockCode($conn, $prod_date);
         $insert_stmt = $conn->prepare("
             INSERT INTO slitting_product
                 (recoiling_id, mother_id, parent_slit_id,
-                 product, lot_no, coil_no, roll_no,
+                 product, lot_no, coil_no, roll_no, roll_key,
                  width, length, actual_length,
                  status, is_completed, stock_counted,
-                 original_source, source, date_in)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, ?, 'recoiling', NOW())
+                 original_source, source, date_in, stock_code,
+                 customer_name, ref_no)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, ?, 'recoiling', ?, ?, ?, ?)
         ");
 
         $insert_stmt->bind_param(
-            "iiissssddds",
+            "iiisssssdddsssss",
             $id,
             $mother_id_val,
             $parent_slit_id,
@@ -274,16 +352,23 @@ try {
             $new_lot_no,
             $original['coil_no'],
             $new_roll_no,
+            $target_roll_key,
             $new_width,
             $length,
             $actual_length,
-            $original['original_source']
+            $original['original_source'],
+            $date_in_val,
+            $stock_code,
+            $parent_customer,
+            $parent_ref_no
         );
 
         if (!$insert_stmt->execute()) {
             throw new Exception("Insert failed: " . $insert_stmt->error);
         }
         $new_slit_id = $conn->insert_id;
+        $created_slit_ids[]       = $new_slit_id;
+        $created_actual_lengths[] = $actual_length;
         $insert_stmt->close();
 
         log_process($conn, 'slitting', $new_slit_id, $mother_id_val,
@@ -298,6 +383,47 @@ try {
     }
 
     $combined_remark = !empty($all_remarks) ? implode(" | ", $all_remarks) : "";
+
+    // ── STEP 2.5: Auto-swap pallet slot if parent roll was on a pallet ────
+    if ($palletItem && !empty($created_slit_ids)) {
+        $primary_slit_id = $created_slit_ids[0];
+        $primary_len = $created_actual_lengths[0] ?? $total_actual_length;
+        $new_pallet_stock_code = PalletManager::formatStockCode(
+            $original['coil_no'],
+            $summary_width,
+            $primary_len
+        );
+
+        $upd_item = $conn->prepare("
+            UPDATE pallet_items
+            SET slitting_product_id = ?, stock_code = ?
+            WHERE id = ?
+        ");
+        $upd_item->bind_param("isi", $primary_slit_id, $new_pallet_stock_code, $palletItem['item_id']);
+        $upd_item->execute();
+        $upd_item->close();
+
+        $palletId = (int)$palletItem['pallet_id'];
+        $palletNo = $palletItem['pallet_no'];
+        $upd_p = $conn->prepare("UPDATE pallets SET updated_at = NOW() WHERE id = ?");
+        $upd_p->bind_param("i", $palletId);
+        $upd_p->execute();
+        $upd_p->close();
+
+        $log_note = "Auto-replaced voided roll #{$parent_slit_id} with recoiled roll #{$primary_slit_id} (actual length: {$primary_len}m)";
+        $edit_log = $conn->prepare("
+            INSERT INTO pallet_edit_log
+                (pallet_id, pallet_no, action, product_id, product_ref, performed_by, note)
+            VALUES (?, ?, 'auto_recoil_swap', ?, ?, ?, ?)
+        ");
+        $performed_by = $_SESSION['role'] ?? 'slitting';
+        $prod_ref = "{$original['lot_no']} {$original['coil_no']} " . ($original['roll_no'] ?? '');
+        $edit_log->bind_param("isisss", $palletId, $palletNo, $primary_slit_id, $prod_ref, $performed_by, $log_note);
+        $edit_log->execute();
+        $edit_log->close();
+
+        log_process($conn, 'pallet', $palletId, $mother_id_val, 'building', 'building', 'auto_recoil_swap', $log_note);
+    }
 
     // ── STEP 3: Mark recoiling_product as completed ───────────────────────
     $update_stmt = $conn->prepare("
@@ -322,7 +448,16 @@ try {
     );
 
     $conn->commit();
-    header("Location: recoiling.php?success=completed&id=$id");
+    $print_ids_param = !empty($created_slit_ids) ? implode(',', $created_slit_ids) : '';
+    if (!empty($created_slit_ids)) {
+        if (count($created_slit_ids) === 1) {
+            header("Location: select_customer.php?id=" . $created_slit_ids[0] . "&from=recoiling");
+        } else {
+            header("Location: mixed_batch_setup.php?ids=" . urlencode($print_ids_param) . "&from=recoiling");
+        }
+    } else {
+        header("Location: recoiling.php?success=completed&id=$id");
+    }
     exit;
 
 } catch (Throwable $e) {

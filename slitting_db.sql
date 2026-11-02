@@ -434,7 +434,9 @@ DROP TABLE IF EXISTS `slitting_plans`;
 !50503 SET character_set_client = utf8mb4 ;
 CREATE TABLE `slitting_plans` (
   `id` int NOT NULL AUTO_INCREMENT,
-  `mother_coil_id` int NOT NULL,
+  `mother_coil_id` int DEFAULT NULL,
+  `stock_id` int DEFAULT NULL,
+  `reslit_id` int DEFAULT NULL,
   `roll_seq` varchar(10) NOT NULL,
   `planned_width` decimal(10,2) NOT NULL,
   `customer_name` varchar(100) DEFAULT NULL,
@@ -443,6 +445,8 @@ CREATE TABLE `slitting_plans` (
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_slitting_plans_mother` (`mother_coil_id`),
+  KEY `idx_slitting_plans_stock` (`stock_id`),
+  KEY `idx_slitting_plans_reslit` (`reslit_id`),
   CONSTRAINT `fk_slitting_plans_mother` FOREIGN KEY (`mother_coil_id`) REFERENCES `mother_coil` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB AUTO_INCREMENT=82 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 !40101 SET character_set_client = @saved_cs_client ;
@@ -468,6 +472,7 @@ CREATE TABLE `slitting_product` (
   `nod_recorded_by` varchar(50) DEFAULT NULL,
   `length_type` varchar(20) DEFAULT NULL,
   `status` enum('IN','WAITING','APPROVED','REJECTED','DELIVERED','OUT') DEFAULT 'IN',
+  `stock_code` varchar(50) DEFAULT NULL,
   `qc_comment` text,
   `is_completed` tinyint(1) DEFAULT '0',
   `stock_counted` tinyint(1) DEFAULT '0',
@@ -518,6 +523,7 @@ CREATE TABLE `slitting_product` (
   KEY `idx_slitting_product_source` (`source`),
   KEY `idx_is_printed` (`is_printed`),
   KEY `idx_nod_recorded_at` (`nod_recorded_at`),
+  UNIQUE KEY `idx_stock_code` (`stock_code`),
   CONSTRAINT `fk_slit_parent` FOREIGN KEY (`parent_slit_id`) REFERENCES `slitting_product` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
   CONSTRAINT `fk_slitting_log` FOREIGN KEY (`from_log_id`) REFERENCES `raw_material_log` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_slitting_mother` FOREIGN KEY (`mother_id`) REFERENCES `mother_coil` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,

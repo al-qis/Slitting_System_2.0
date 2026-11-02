@@ -41,6 +41,38 @@ function log_process(
     $stmt->close();
 }
 
+// ── AJAX Action: Operator opened modal / started reslit process ───────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'start_reslit_process') {
+    header('Content-Type: application/json');
+    $reslit_id = intval($_POST['id'] ?? 0);
+    if ($reslit_id > 0) {
+        $stmt = $conn->prepare("UPDATE reslit_product SET status = 'in_progress', started_at = COALESCE(started_at, NOW()) WHERE id = ? AND status != 'completed'");
+        $stmt->bind_param("i", $reslit_id);
+        $ok = $stmt->execute();
+        $stmt->close();
+        echo json_encode(['success' => $ok]);
+        exit;
+    }
+    echo json_encode(['success' => false, 'error' => 'Invalid ID']);
+    exit;
+}
+
+// ── AJAX Action: Operator cancelled / closed modal without completing ────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'cancel_reslit_process') {
+    header('Content-Type: application/json');
+    $reslit_id = intval($_POST['id'] ?? 0);
+    if ($reslit_id > 0) {
+        $stmt = $conn->prepare("UPDATE reslit_product SET status = 'pending', started_at = NULL WHERE id = ? AND status = 'in_progress'");
+        $stmt->bind_param("i", $reslit_id);
+        $ok = $stmt->execute();
+        $stmt->close();
+        echo json_encode(['success' => $ok]);
+        exit;
+    }
+    echo json_encode(['success' => false, 'error' => 'Invalid ID']);
+    exit;
+}
+
 if (
     $_SERVER['REQUEST_METHOD'] !== 'POST'
     || ($_POST['action'] ?? '') !== 'complete_reslit_direct'
@@ -58,6 +90,7 @@ $new_widths     = $_POST['new_width']     ?? [];
 $lengths        = $_POST['length']        ?? [];
 $actual_lengths = $_POST['actual_length'] ?? [];
 $send_to_sfc    = $_POST['send_to_sfc']   ?? [];
+$sfc_balance_width = floatval($_POST['sfc_balance_width'] ?? 0);
 
 // Cut Into 2 leftover routing (mutually exclusive: SFC XOR Finished Product)
 $slit_quantity    = floatval($_POST['slit_quantity'] ?? 0);
@@ -127,27 +160,58 @@ try {
         $stmt_void_parent->bind_param("i", $parent_slit_id);
         $stmt_void_parent->execute();
         $stmt_void_parent->close();
+
+        // Clean up from pallet_items if parent was attached to any pallet
+        $stmt_del_pallet = $conn->prepare("DELETE FROM pallet_items WHERE slitting_product_id = ?");
+        $stmt_del_pallet->bind_param("i", $parent_slit_id);
+        $stmt_del_pallet->execute();
+        $stmt_del_pallet->close();
     }
 
     // ── Validation: check for duplicate active (non-voided) lot+coil+roll ─────────
     $exclude_id = $parent_slit_id ?? 0;
 
+    // ── Fetch Slitting Plan (if any) to map customer & ref_no by roll sequence ──
+    $planCustomerMap = [];
+    $planRefMap      = [];
+    $planRes = $conn->query("SELECT roll_seq, customer_name, ref_no FROM slitting_plans WHERE reslit_id = " . intval($parent_id) . " ORDER BY sort_order ASC, id ASC");
+    if ($planRes && $planRes->num_rows > 0) {
+        $pIdx = 0;
+        while ($pRow = $planRes->fetch_assoc()) {
+            $cName  = trim($pRow['customer_name'] ?? '');
+            $rNo    = trim($pRow['ref_no'] ?? '');
+            $seqKey = strtoupper(trim($pRow['roll_seq']));
+            if ($seqKey !== '') {
+                if ($cName !== '') $planCustomerMap[$seqKey] = $cName;
+                if ($rNo !== '')   $planRefMap[$seqKey]      = $rNo;
+            }
+            if ($cName !== '') $planCustomerMap['idx_' . $pIdx] = $cName;
+            if ($rNo !== '')   $planRefMap['idx_' . $pIdx]      = $rNo;
+            $pIdx++;
+        }
+    }
+
+    $posted_customers = $_POST['customer_name'] ?? [];
+    $posted_refs      = $_POST['ref_no'] ?? [];
+
     foreach ($roll_numbers as $index => $roll_label) {
         $letter      = trim($cut_letters[$index] ?? '');
         $temp_lot_no = $parent['lot_no'] . $letter;
+        $width       = floatval($new_widths[$index] ?? 0);
 
-        // Check against OTHER active non-voided rolls only
+        // Check against OTHER active non-voided rolls only matching width
         $check = $conn->prepare("
             SELECT id FROM slitting_product
             WHERE lot_no = ? AND coil_no = ? AND roll_no = ?
+              AND ABS(width - ?) < 0.5
               AND id != ?
               AND (is_voided = 0 OR is_voided IS NULL)
         ");
-        $check->bind_param("sssi", $temp_lot_no, $coil_no_val, $roll_label, $exclude_id);
+        $check->bind_param("sssdi", $temp_lot_no, $coil_no_val, $roll_label, $width, $exclude_id);
         $check->execute();
         if ($check->get_result()->num_rows > 0) {
             throw new Exception(
-                "Duplicate: Lot [{$temp_lot_no}] Coil [{$coil_no_val}] Roll [{$roll_label}] already exists on an active roll."
+                "Duplicate: Lot [{$temp_lot_no}] Coil [{$coil_no_val}] Roll [{$roll_label}] (width {$width}mm) already exists on an active roll."
             );
         }
         $check->close();
@@ -159,20 +223,22 @@ try {
         $check = $conn->prepare("
             SELECT id FROM slitting_product
             WHERE lot_no = ? AND coil_no = ? AND roll_no = ?
+              AND ABS(width - ?) < 0.5
               AND id != ?
               AND (is_voided = 0 OR is_voided IS NULL)
         ");
-        $check->bind_param("sssi", $parent['lot_no'], $coil_no_val, $leftover_roll_no, $exclude_id);
+        $check->bind_param("sssdi", $parent['lot_no'], $coil_no_val, $leftover_roll_no, $leftover_width, $exclude_id);
         $check->execute();
         if ($check->get_result()->num_rows > 0) {
             throw new Exception(
-                "Duplicate: Lot [{$parent['lot_no']}] Coil [{$coil_no_val}] Roll [{$leftover_roll_no}] already exists on an active roll."
+                "Duplicate: Lot [{$parent['lot_no']}] Coil [{$coil_no_val}] Roll [{$leftover_roll_no}] (width {$leftover_width}mm) already exists on an active roll."
             );
         }
         $check->close();
     }
 
     $total_actual = 0;
+    $created_slit_ids = [];
 
     // ── Insert pass ───────────────────────────────────────────
     foreach ($roll_numbers as $index => $roll_label) {
@@ -226,30 +292,75 @@ try {
         }
 
         // ── PATH B: Go to Finished Products (existing behavior) ─────
+        $base_roll_key   = $new_lot_no . '_' . $coil_no_val . '_' . $roll_label . '_' . round($width, 2);
+        $target_roll_key = $base_roll_key;
+        $chk_key = $conn->prepare("SELECT id FROM slitting_product WHERE roll_key = ? AND (is_voided = 0 OR is_voided IS NULL)");
+        $chk_key->bind_param("s", $target_roll_key);
+        $chk_key->execute();
+        if ($chk_key->get_result()->num_rows > 0) {
+            $suffix_num = 1;
+            while (true) {
+                $candidate = $base_roll_key . "_" . $suffix_num;
+                $chk2 = $conn->prepare("SELECT id FROM slitting_product WHERE roll_key = ? AND (is_voided = 0 OR is_voided IS NULL)");
+                $chk2->bind_param("s", $candidate);
+                $chk2->execute();
+                if ($chk2->get_result()->num_rows === 0) {
+                    $target_roll_key = $candidate;
+                    $chk2->close();
+                    break;
+                }
+                $chk2->close();
+                $suffix_num++;
+            }
+        }
+        $chk_key->close();
+
+        $prod_month_opt = trim($_POST['production_month'] ?? 'current');
+        $prod_date      = resolveProductionMonthDate($prod_month_opt);
+
+        $date_in_val    = ($prod_month_opt === 'current') ? date('Y-m-d H:i:s') : $prod_date . ' ' . date('H:i:s');
+        $stock_code     = generateStockCode($conn, $prod_date);
+
+        $roll_cust = trim($posted_customers[$index] ?? ($planCustomerMap[strtoupper($roll_label)] ?? ($planCustomerMap['idx_' . $index] ?? '')));
+        $roll_ref  = trim($posted_refs[$index] ?? ($planRefMap[strtoupper($roll_label)] ?? ($planRefMap['idx_' . $index] ?? '')));
+
+        // ── Resolve product code dynamically (TS/RS dynamic naming) ──
+        $isVCoilReslit = (stripos($parent['lot_no'] ?? '', 'V') !== false)
+                      || (stripos($coil_no_val, 'V') !== false);
+        $reslit_resolved   = resolveSlitProductCode($parent['product'] ?? '', $isVCoilReslit, $width);
+        $roll_product_code = $reslit_resolved['code'];
+
         $stmt_ins = $conn->prepare("
             INSERT INTO slitting_product
                 (mother_id, parent_slit_id,
-                 product, lot_no, coil_no, roll_no,
+                 product, lot_no, coil_no, roll_no, roll_key,
                  width, length, actual_length,
                  status, is_completed, stock_counted,
-                 date_in, source, original_source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, NOW(), 'reslit', ?)
+                 date_in, source, original_source, stock_code,
+                 customer_name, ref_no)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, ?, 'reslit', ?, ?, ?, ?)
         ");
         $stmt_ins->bind_param(
-            "iissssddds",
+            "iisssssdddsssss",
             $mother_id_val,
             $parent_slit_id,
-            $parent['product'],
+            $roll_product_code,
             $new_lot_no,
             $coil_no_val,
             $roll_label,
+            $target_roll_key,
             $width,
             $nom_len,
             $act_len,
-            $originalSource
+            $date_in_val,
+            $originalSource,
+            $stock_code,
+            $roll_cust,
+            $roll_ref
         );
         $stmt_ins->execute();
         $new_slit_id = $conn->insert_id;
+        $created_slit_ids[] = $new_slit_id;
         $stmt_ins->close();
 
         log_process($conn, 'slitting', $new_slit_id, $mother_id_val,
@@ -315,38 +426,123 @@ try {
 
         } else {
             // ── Leftover → Finished Product ONLY ──
+            $base_leftover_key   = $parent['lot_no'] . '_' . $coil_no_val . '_' . $leftover_roll_no . '_' . round($leftover_width, 2);
+            $target_leftover_key = $base_leftover_key;
+            $chk_key = $conn->prepare("SELECT id FROM slitting_product WHERE roll_key = ? AND (is_voided = 0 OR is_voided IS NULL)");
+            $chk_key->bind_param("s", $target_leftover_key);
+            $chk_key->execute();
+            if ($chk_key->get_result()->num_rows > 0) {
+                $suffix_num = 1;
+                while (true) {
+                    $candidate = $base_leftover_key . "_" . $suffix_num;
+                    $chk2 = $conn->prepare("SELECT id FROM slitting_product WHERE roll_key = ? AND (is_voided = 0 OR is_voided IS NULL)");
+                    $chk2->bind_param("s", $candidate);
+                    $chk2->execute();
+                    if ($chk2->get_result()->num_rows === 0) {
+                        $target_leftover_key = $candidate;
+                        $chk2->close();
+                        break;
+                    }
+                    $chk2->close();
+                    $suffix_num++;
+                }
+            }
+            $chk_key->close();
+
+            $leftover_stock_code = generateStockCode($conn, $prod_date);
+            $leftover_resolved   = resolveSlitProductCode($parent['product'] ?? '', $isVCoilReslit, $leftover_width);
+            $leftover_product    = $leftover_resolved['code'];
+
             $stmt_leftover = $conn->prepare("
                 INSERT INTO slitting_product
                     (mother_id, parent_slit_id,
-                     product, lot_no, coil_no, roll_no,
+                     product, lot_no, coil_no, roll_no, roll_key,
                      width, length, actual_length,
                      status, is_completed, stock_counted,
-                     date_in, source, original_source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, NOW(), 'reslit', ?)
+                     date_in, source, original_source, stock_code)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN', 1, 1, ?, 'reslit', ?, ?)
             ");
             $stmt_leftover->bind_param(
-                "iissssddds",
+                "iisssssdddsss",
                 $mother_id_val,
                 $parent_slit_id,
-                $parent['product'],
+                $leftover_product,
                 $parent['lot_no'],
                 $coil_no_val,
                 $leftover_roll_no,
+                $target_leftover_key,
                 $leftover_width,
                 $leftover_length,
                 $leftover_length,
-                $originalSource
+                $date_in_val,
+                $originalSource,
+                $leftover_stock_code
             );
             if (!$stmt_leftover->execute()) {
                 throw new Exception("Failed to insert leftover into Finished Product: " . $stmt_leftover->error);
             }
             $leftover_slit_id = $conn->insert_id;
+            $created_slit_ids[] = $leftover_slit_id;
             $stmt_leftover->close();
 
             log_process($conn, 'slitting', $leftover_slit_id, $mother_id_val,
                 null, 'IN', 'reslit_leftover_output',
                 "Leftover {$leftover_length}m (roll {$leftover_roll_no}) from reslit_product id={$parent_id} routed to Finished Product (slit_quantity={$slit_quantity}m used)");
         }
+    }
+
+    // ── Optional SFC balance width entry ────────────────────────
+    if ($sfc_balance_width > 0) {
+        $bal_length = ($cut_type === 'cut_into_2' && $slit_quantity > 0)
+            ? $slit_quantity
+            : (floatval($actual_lengths[0] ?? 0) > 0 ? floatval($actual_lengths[0]) : floatval($lengths[0] ?? ($parent['effective_length'] ?? $parent['length'])));
+        $balance_roll_no = "BALANCE";
+        $balance_lot_no  = $parent['lot_no'];
+
+        $sfc_bal = $conn->prepare("
+            INSERT INTO sfc
+                (mother_id, product, lot_no, coil_no, roll_no,
+                 width, length, action, date_created)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'reslit_balance_width', NOW())
+        ");
+        $sfc_bal->bind_param(
+            "issssdd",
+            $mother_id_val,
+            $parent['product'],
+            $balance_lot_no,
+            $coil_no_val,
+            $balance_roll_no,
+            $sfc_balance_width,
+            $bal_length
+        );
+        if (!$sfc_bal->execute()) {
+            throw new Exception("Failed to insert SFC balance width: " . $sfc_bal->error);
+        }
+        $sfc_bal_id = $conn->insert_id;
+        $sfc_bal->close();
+
+        log_process($conn, 'sfc', $sfc_bal_id, $mother_id_val,
+            null, 'IN', 'balance_width_to_sfc_from_reslit',
+            "Balance width {$sfc_balance_width}mm saved to SFC from reslit_product id={$parent_id}");
+
+        // Also record in reslit_rolls for tracking
+        $stmt_bal_roll = $conn->prepare("
+            INSERT INTO reslit_rolls
+                (parent_id, roll_no, cut_letter, new_width,
+                 length, actual_length, original_source)
+            VALUES (?, ?, '', ?, ?, ?, ?)
+        ");
+        $stmt_bal_roll->bind_param(
+            "isddds",
+            $parent_id,
+            $balance_roll_no,
+            $sfc_balance_width,
+            $bal_length,
+            $bal_length,
+            $originalSource
+        );
+        $stmt_bal_roll->execute();
+        $stmt_bal_roll->close();
     }
 
     // Mark parent as completed — do NOT touch actual_length here.
@@ -367,7 +563,16 @@ try {
         "Output rolls: " . count($roll_numbers) . ", total={$total_actual}m");
 
     $conn->commit();
-    header("Location: reslit.php?success=completed");
+    $print_ids_param = !empty($created_slit_ids) ? implode(',', $created_slit_ids) : '';
+    if (!empty($created_slit_ids)) {
+        if (count($created_slit_ids) === 1) {
+            header("Location: select_customer.php?id=" . $created_slit_ids[0] . "&from=reslit");
+        } else {
+            header("Location: mixed_batch_setup.php?ids=" . urlencode($print_ids_param) . "&from=reslit");
+        }
+    } else {
+        header("Location: reslit.php?success=completed");
+    }
     exit;
 
 } catch (Exception $e) {

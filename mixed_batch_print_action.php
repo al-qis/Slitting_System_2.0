@@ -224,6 +224,10 @@ if ($from === 'slitting_product') {
         'search'       => $backSearch !== '' ? $backSearch : null,
         'print_status' => $backPrintFilter !== '' ? $backPrintFilter : null,
     ]));
+} elseif ($from === 'recoiling') {
+    $backUrl = 'recoiling.php';
+} elseif ($from === 'reslit') {
+    $backUrl = 'reslit.php';
 } else {
     $backMonth  = intval($_POST['month'] ?? date('m'));
     $backYear   = intval($_POST['year']  ?? date('Y'));

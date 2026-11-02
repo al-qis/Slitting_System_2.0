@@ -41,7 +41,7 @@ $filter_lot  = isset($_GET['lot_no'])  ? trim($_GET['lot_no'])  : '';
 $filter_coil = isset($_GET['coil_no']) ? trim($_GET['coil_no']) : '';
 
 $filter_card = $_GET['filter'] ?? 'in_pending';
-if (!in_array($filter_card, ['in_pending', 'stock', 'palletised', 'waiting', 'deliver', 'produced_month', 'stock_month_end'], true)) {
+if (!in_array($filter_card, ['in_pending', 'stock', 'palletised', 'waiting', 'waiting_deliver', 'deliver', 'produced_month', 'stock_month_end'], true)) {
     $filter_card = 'in_pending';
 }
 
@@ -70,6 +70,9 @@ if ($filter_card === 'in_pending') {
 } elseif ($filter_card === 'waiting') {
     $cardCondition = " AND sp.status = 'WAITING'";
     $sortColumn    = 'sp.date_out';
+} elseif ($filter_card === 'waiting_deliver') {
+    $cardCondition = " AND (sp.status = 'APPROVED' OR p.status = 'approved') AND sp.status != 'DELIVERED' AND (p.status IS NULL OR p.status != 'delivered')";
+    $sortColumn    = 'sp.date_out';
 } elseif ($filter_card === 'deliver') {
     $cardCondition = " AND sp.status = 'DELIVERED'";
     $sortColumn    = 'sp.delivered_at';
@@ -80,30 +83,36 @@ $baseTypes  = '';
 $baseParams = [];
 
 if ($filter_card === 'produced_month') {
+    $yymmPrefix = sprintf('%02d%02d', $year % 100, $month);
+    $prodCond   = getProductionMonthSqlCondition('sp');
     $baseSql = "
         SELECT sp.*,
                pi.pallet_id,
                p.pallet_no,
-               p.status AS pallet_status
+               p.status AS pallet_status,
+               p.ref_no AS pallet_ref_no
         FROM slitting_product sp
         LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
         LEFT JOIN pallets p       ON p.id = pi.pallet_id
         WHERE sp.is_voided = 0
-          AND MONTH(sp.date_in) = ? AND YEAR(sp.date_in) = ?"
+          AND {$prodCond}"
           . ($day > 0 ? " AND DAY(sp.date_in) = ?" : "");
     $sortColumn = 'sp.date_in';
-    $baseTypes  = $day > 0 ? 'iii' : 'ii';
-    $baseParams = $day > 0 ? [$month, $year, $day] : [$month, $year];
+    $baseTypes  = $day > 0 ? 'siii' : 'sii';
+    $baseParams = $day > 0 ? [$yymmPrefix, $month, $year, $day] : [$yymmPrefix, $month, $year];
 
 } elseif ($filter_card === 'stock_month_end') {
     $eom = ($day > 0)
         ? sprintf('%04d-%02d-%02d 23:59:59', $year, $month, $day)
         : date('Y-m-t 23:59:59', strtotime("$year-$month-01"));
+    $yymmPrefix = sprintf('%02d%02d', $year % 100, $month);
+    $smeCond    = getStockMonthEndSqlCondition('sp');
     $baseSql = "
         SELECT sp.*,
                pi.pallet_id,
                p.pallet_no,
-               p.status AS pallet_status
+               p.status AS pallet_status,
+               p.ref_no AS pallet_ref_no
         FROM slitting_product sp
         LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
         LEFT JOIN pallets p       ON p.id = pi.pallet_id
@@ -120,14 +129,14 @@ if ($filter_card === 'produced_month') {
             GROUP BY entity_id
         ) rs ON rs.entity_id = sp.id
         WHERE sp.is_voided = 0
-          AND sp.date_in <= ?
+          AND {$smeCond}
           AND (sp.date_out     IS NULL OR sp.date_out     > ?)
           AND (sp.delivered_at IS NULL OR sp.delivered_at > ?)
           AND (rc.recoil_date  IS NULL OR rc.recoil_date  > ?)
           AND (rs.reslit_date  IS NULL OR rs.reslit_date  > ?)";
     $sortColumn = 'sp.date_in';
-    $baseTypes  = 'sssss';
-    $baseParams = [$eom, $eom, $eom, $eom, $eom];
+    $baseTypes  = 'ssssss';
+    $baseParams = [$yymmPrefix, $eom, $eom, $eom, $eom, $eom];
 
 } else {
     $dayCondOut       = $day > 0 ? " AND DAY(sp.date_out) = ?"     : "";
@@ -136,7 +145,8 @@ if ($filter_card === 'produced_month') {
         SELECT sp.*,
                pi.pallet_id,
                p.pallet_no,
-               p.status AS pallet_status
+               p.status AS pallet_status,
+               p.ref_no AS pallet_ref_no
         FROM slitting_product sp
         LEFT JOIN pallet_items pi ON pi.slitting_product_id = sp.id
         LEFT JOIN pallets p       ON p.id = pi.pallet_id
@@ -146,7 +156,9 @@ if ($filter_card === 'produced_month') {
           AND (
               sp.status = 'IN'
               OR sp.status = 'WAITING'
-              OR (sp.status IN ('OUT','APPROVED','REJECTED')
+              OR sp.status = 'APPROVED'
+              OR p.status = 'approved'
+              OR (sp.status IN ('OUT','REJECTED')
                   AND MONTH(sp.date_out) = ? AND YEAR(sp.date_out) = ?{$dayCondOut})
               OR (sp.status = 'DELIVERED'
                   AND MONTH(sp.delivered_at) = ? AND YEAR(sp.delivered_at) = ?{$dayCondDelivered})
@@ -171,7 +183,7 @@ if (!empty($searchTokens)) {
     $tokenClauses = array_fill(
         0,
         count($searchTokens),
-        "(sp.product LIKE ? OR sp.lot_no LIKE ? OR sp.coil_no LIKE ? OR sp.roll_no LIKE ? OR sp.id LIKE ? OR p.pallet_no LIKE ?)"
+        "(sp.product LIKE ? OR sp.lot_no LIKE ? OR sp.coil_no LIKE ? OR sp.roll_no LIKE ? OR sp.id LIKE ? OR p.pallet_no LIKE ? OR sp.width LIKE ? OR sp.stock_code LIKE ?)"
     );
     $baseSql .= " AND (" . implode(" AND ", $tokenClauses) . ")";
 }
@@ -194,7 +206,7 @@ $params = $baseParams;
 
 foreach ($searchTokens as $token) {
     $like = '%' . $token . '%';
-    for ($i = 0; $i < 6; $i++) {
+    for ($i = 0; $i < 8; $i++) {
         $types    .= "s";
         $params[] = $like;
     }
@@ -219,6 +231,7 @@ $tabLabels = [
     'stock'           => 'Finish Good Stock',
     'palletised'      => 'Palletised',
     'waiting'         => 'Waiting QC',
+    'waiting_deliver' => 'Waiting Deliver (Approved Pallets)',
     'deliver'         => 'Delivered',
     'produced_month'  => 'Produced This Month',
     'stock_month_end' => 'Stock Balance (Month End)',
@@ -293,19 +306,31 @@ if ($result && $result->num_rows > 0) {
         $nodDisplay   = $hasNod ? number_format($nodValue, 2) : '-';
         $invoiceLength = number_format((float)($row['actual_length'] ?? 0) - $nodValue, 2);
 
+        $rollRef   = trim((string)($row['ref_no'] ?? ''));
+        $palletRef = trim((string)($row['pallet_ref_no'] ?? ''));
+        $isStockRef = ($rollRef === '' || strtoupper($rollRef) === 'STOCK');
+        $effectiveRef = ($isStockRef && $palletRef !== '' && strtoupper($palletRef) !== 'STOCK')
+            ? $palletRef
+            : ($rollRef !== '' ? $rollRef : ($palletRef !== '' ? $palletRef : '-'));
+
+        $statusText = strtoupper($row['status'] ?? '-');
+        if (!empty($row['stock_code'])) {
+            $statusText .= ' (' . $row['stock_code'] . ')';
+        }
+
         echo '<tr>';
-        echo '<td ' . $td  . '>' . htmlspecialchars(strtoupper($row['status'] ?? '-')) . '</td>';
+        echo '<td ' . $td  . '>' . htmlspecialchars($statusText) . '</td>';
         echo '<td ' . $td  . '>' . htmlspecialchars($originLabelTxt) . '</td>';
         echo '<td ' . $td  . '>' . htmlspecialchars($row['product'] ?? '-') . '</td>';
         echo '<td ' . $td  . '>' . htmlspecialchars($lotCoil) . '</td>';
         echo '<td ' . $td  . '>' . htmlspecialchars($row['roll_no'] ?? '-') . '</td>';
-        echo '<td ' . $tdN . '>' . number_format((float)($row['width']         ?? 0)) . '</td>';
-        echo '<td ' . $tdN . '>' . number_format((float)($row['length']        ?? 0)) . '</td>';
-        echo '<td ' . $tdN . '>' . number_format((float)($row['actual_length'] ?? 0)) . '</td>';
+        echo '<td ' . $tdN . '>' . number_format((float)($row['width']         ?? 0), 2) . '</td>';
+        echo '<td ' . $tdN . '>' . number_format((float)($row['length']        ?? 0), 2) . '</td>';
+        echo '<td ' . $tdN . '>' . number_format((float)($row['actual_length'] ?? 0), 2) . '</td>';
         echo '<td ' . $tdN . '>' . $nodDisplay . '</td>';
         echo '<td ' . $tdN . '>' . $invoiceLength . '</td>';
         echo '<td ' . $td  . '>' . htmlspecialchars($row['customer_name'] ?: '-') . '</td>';
-        echo '<td ' . $td  . '>' . htmlspecialchars($row['ref_no']        ?: '-') . '</td>';
+        echo '<td ' . $td  . '>' . htmlspecialchars($effectiveRef) . '</td>';
         echo '<td ' . $td  . '>' . htmlspecialchars($row['date_in']  ?? '-') . '</td>';
         echo '<td ' . $td  . '>' . htmlspecialchars($row['date_out'] ?? '-') . '</td>';
         echo '</tr>';

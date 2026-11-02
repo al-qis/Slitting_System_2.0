@@ -96,17 +96,66 @@ $coil_width_val = floatval($source_data['width'] ?? $mother_data['width'] ?? 0);
 $isLeftoverCut = $from_stock && (($source_data['source_type'] ?? '') === 'slitting_cut_into_2');
 
 $slittingPlan = [];
-if (!$isLeftoverCut && $mother_id) {
+if ($stock_id) {
+    $planStmt = $conn->prepare("
+        SELECT roll_seq, planned_width, customer_name, ref_no
+        FROM slitting_plans
+        WHERE stock_id = ?
+        ORDER BY sort_order ASC, id ASC
+    ");
+    if ($planStmt) {
+        $planStmt->bind_param("i", $stock_id);
+        $planStmt->execute();
+        $slittingPlan = $planStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $planStmt->close();
+    }
+}
+if (empty($slittingPlan) && $mother_id) {
     $planStmt = $conn->prepare("
         SELECT roll_seq, planned_width, customer_name, ref_no
         FROM slitting_plans
         WHERE mother_coil_id = ?
         ORDER BY sort_order ASC, id ASC
     ");
-    $planStmt->bind_param("i", $mother_id);
-    $planStmt->execute();
-    $slittingPlan = $planStmt->get_result()->fetch_all(MYSQLI_ASSOC);
-    $planStmt->close();
+    if ($planStmt) {
+        $planStmt->bind_param("i", $mother_id);
+        $planStmt->execute();
+        $slittingPlan = $planStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $planStmt->close();
+    }
+}
+
+// ── Determine next cut letter for this mother coil / leftover ──
+$base_mother_lot = trim($mother_data['lot_no'] ?? $source_data['lot_no'] ?? '');
+$clean_base_lot  = preg_replace('/[a-z]$/i', '', $base_mother_lot);
+
+$used_letters = [];
+if (!empty($mother_id)) {
+    $mId = intval($mother_id);
+    $qLetters = $conn->query("
+        SELECT DISTINCT lot_no FROM slitting_product 
+        WHERE mother_id = $mId AND (is_voided = 0 OR is_voided IS NULL)
+        UNION
+        SELECT DISTINCT lot_no FROM sfc 
+        WHERE mother_id = $mId AND is_deleted = 0
+    ");
+    if ($qLetters) {
+        while ($lRow = $qLetters->fetch_assoc()) {
+            $lLot = trim($lRow['lot_no'] ?? '');
+            if (preg_match('/^' . preg_quote($clean_base_lot, '/') . '([a-z])$/i', $lLot, $matches)) {
+                $used_letters[strtolower($matches[1])] = true;
+            }
+        }
+    }
+}
+
+$alphabet = range('a', 'z');
+$next_cut_letter = 'a';
+foreach ($alphabet as $letter) {
+    if (!isset($used_letters[$letter])) {
+        $next_cut_letter = $letter;
+        break;
+    }
 }
 ?>
 <!DOCTYPE html>
@@ -191,23 +240,63 @@ if (!$isLeftoverCut && $mother_id) {
 <body>
 
     <div class="container py-4">
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <h3><i class="bi bi-scissors me-2"></i>Production Slitting</h3>
-        <a href="<?= $from_stock ? 'raw_material.php' : 'index.php' ?>" class="btn btn-outline-secondary btn-sm">
-            <i class="bi bi-arrow-left"></i> Back
-        </a>
-    </div>
+    <form method="post" action="save_slitting.php" id="mainSlittingForm">
+        <input type="hidden" name="source_type" value="<?= $source_type ?>">
+        <input type="hidden" name="mother_id" value="<?= $mother_id ?>">
+        <?php if($from_stock && $stock_id): ?>
+            <input type="hidden" name="stock_id" value="<?= $stock_id ?>">
+        <?php endif; ?>
+        
+        <!-- Get product from mother_coil table -->
+        <input type="hidden" name="product" value="<?= htmlspecialchars($mother_data['product'] ?? '') ?>">
+        <input type="hidden" name="lot_no" value="<?= htmlspecialchars($source_data['lot_no'] ?? '') ?>">
+        <input type="hidden" name="coil_no" value="<?= htmlspecialchars($source_data['coil_no'] ?? '') ?>">
+        <input type="hidden" name="source_width" value="<?= floatval($source_data['width'] ?? $mother_data['width'] ?? 0) ?>">
+
+        <!-- Top Header: Page Title + Production Month Control (Centered) + Back Button -->
+        <div class="row align-items-center mb-4 g-3">
+            <div class="col-md-4">
+                <h3 class="mb-0 text-nowrap"><i class="bi bi-scissors me-2"></i>Production Slitting</h3>
+            </div>
+            <div class="col-md-4 text-center">
+                <div class="d-inline-flex align-items-center justify-content-center gap-2">
+                    <label for="production_month" class="form-label mb-0 fw-bold small text-nowrap">
+                        <i class="bi bi-calendar-check me-1 text-primary"></i>Production Month:
+                    </label>
+                    <select name="production_month" id="production_month" class="form-select form-select-sm w-auto fw-semibold" onchange="updateStockCodePreview()">
+                        <?php $prodOptions = getProductionMonthOptions(); ?>
+                        <?php foreach ($prodOptions as $optKey => $opt): ?>
+                            <option value="<?= $opt['value'] ?>" data-yymm="<?= $opt['yymm'] ?>" <?= $optKey === 'current' ? 'selected' : '' ?>>
+                                <?= htmlspecialchars($opt['label']) ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <span id="stockCodePrefixBadge" class="badge bg-primary fs-6 font-monospace" title="Generated Stock Code YYMM Prefix">
+                        <?= date('ym') ?>-XXXX
+                    </span>
+                </div>
+            </div>
+            <div class="col-md-4 text-end">
+                <a href="<?= $from_stock ? 'raw_material.php' : 'index.php' ?>" class="btn btn-outline-secondary btn-sm">
+                    <i class="bi bi-arrow-left"></i> Back
+                </a>
+            </div>
+        </div>
 
     <div class="card shadow-sm mb-4 <?= ($source_data['source_type'] ?? '') === 'slitting_cut_into_2' ? 'source-info-leftover' : 'source-info' ?>">
         <div class="card-body">
             <div class="row">
-                <div class="col-md-3">
+                <div class="col-md-2">
                     <small class="text-muted d-block">Lot No</small>
                     <span class="fw-bold"><?= htmlspecialchars($source_data['lot_no'] ?? '-') ?></span>
                 </div>
-                <div class="col-md-3">
+                <div class="col-md-2">
                     <small class="text-muted d-block">Coil No</small>
                     <span class="fw-bold"><?= htmlspecialchars($source_data['coil_no'] ?? '-') ?></span>
+                </div>
+                <div class="col-md-2">
+                    <small class="text-muted d-block">Mother Product</small>
+                    <span class="badge bg-secondary fs-6"><?= htmlspecialchars($mother_data['product'] ?? $source_data['product'] ?? '-') ?></span>
                 </div>
                 <div class="col-md-2">
                     <small class="text-muted d-block">Grade</small>
@@ -233,19 +322,6 @@ if (!$isLeftoverCut && $mother_id) {
             <?php endif; ?>
         </div>
     </div>
-
-    <form method="post" action="save_slitting.php">
-        <input type="hidden" name="source_type" value="<?= $source_type ?>">
-        <input type="hidden" name="mother_id" value="<?= $mother_id ?>">
-        <?php if($from_stock && $stock_id): ?>
-            <input type="hidden" name="stock_id" value="<?= $stock_id ?>">
-        <?php endif; ?>
-        
-        <!-- Get product from mother_coil table -->
-        <input type="hidden" name="product" value="<?= htmlspecialchars($mother_data['product'] ?? '') ?>">
-        <input type="hidden" name="lot_no" value="<?= htmlspecialchars($source_data['lot_no'] ?? '') ?>">
-        <input type="hidden" name="coil_no" value="<?= htmlspecialchars($source_data['coil_no'] ?? '') ?>">
-        <input type="hidden" name="source_width" value="<?= floatval($source_data['width'] ?? $mother_data['width'] ?? 0) ?>">
 
         <div class="card shadow-sm mb-4">
             <div class="card-body">
@@ -334,8 +410,56 @@ const sourceData = {
     originalLength: <?= floatval($source_data['length'] ?? 0) ?>,
     originalWidth: <?= floatval($source_data['width'] ?? $mother_data['width'] ?? 0) ?>,
     fromStock: <?= $from_stock ? 'true' : 'false' ?>,
-    product: '<?= htmlspecialchars($mother_data['product'] ?? '') ?>'
+    isLeftover: <?= $isLeftoverCut ? 'true' : 'false' ?>,
+    nextCutLetter: '<?= $next_cut_letter ?>',
+    product: '<?= htmlspecialchars($mother_data['product'] ?? '') ?>',
+    isVCoil: <?= ((stripos($source_data['lot_no'] ?? '', 'V') !== false) || (stripos($source_data['coil_no'] ?? '', 'V') !== false) || (stripos($mother_data['lot_no'] ?? '', 'V') !== false) || (stripos($mother_data['coil_no'] ?? '', 'V') !== false)) ? 'true' : 'false' ?>
 };
+
+const tsTriggerWidths = [66.5, 81.0, 109.5, 118.0, 309.0];
+
+function resolveRollProduct(motherProduct, widthVal) {
+    const w = parseFloat(widthVal) || 0;
+    const clean = (motherProduct || '').trim();
+    const is3020 = /^(RS|TS)-3020/i.test(clean) || (sourceData.isVCoil && /3020/.test(clean));
+    const matchesTs = tsTriggerWidths.some(tw => Math.abs(w - tw) < 0.01);
+    if (is3020) {
+        return matchesTs ? 'TS-3020' : 'RS-3020';
+    }
+    return clean || '-';
+}
+
+function updateRowProduct(idx) {
+    const widthInputs = document.querySelectorAll('.width-input');
+    const badge = document.getElementById(`prodBadge${idx}`);
+    if (!widthInputs[idx] || !badge) return;
+
+    const resolved = resolveRollProduct(sourceData.product, widthInputs[idx].value);
+    badge.textContent = resolved;
+    if (resolved === 'TS-3020') {
+        badge.className = 'badge bg-success';
+        badge.title = 'Auto-set to TS-3020 (White sticker)';
+    } else if (resolved === 'RS-3020') {
+        badge.className = 'badge bg-primary';
+        badge.title = 'Standard RS-3020 (Blue sticker)';
+    } else {
+        badge.className = 'badge bg-secondary';
+        badge.title = '';
+    }
+};
+
+function formatRollLot(baseLot, letter) {
+    baseLot = (baseLot || '').trim();
+    letter  = (letter  || '').trim();
+    if (!letter) return baseLot;
+    if (baseLot.toLowerCase().endsWith(letter.toLowerCase())) {
+        return baseLot;
+    }
+    if (/[a-z]$/i.test(baseLot)) {
+        return baseLot.slice(0, -1) + letter;
+    }
+    return baseLot + letter;
+}
 
 /* ════════════════════════════════════════════════════════════
    OPTIONAL SLITTING PLAN — the officer only plans roll widths, not
@@ -359,7 +483,10 @@ function fillWidthsFromPlan() {
     if (!slittingPlan || slittingPlan.length === 0) return;
     const widthInputs = document.querySelectorAll('.width-input');
     slittingPlan.forEach((row, i) => {
-        if (widthInputs[i]) widthInputs[i].value = row.planned_width;
+        if (widthInputs[i]) {
+            widthInputs[i].value = row.planned_width;
+            updateRowProduct(i);
+        }
     });
 }
 
@@ -371,6 +498,17 @@ function applySlittingPlanToForm() {
     if (totalSelect) totalSelect.value = String(slittingPlan.length);
     generateForm();
     fillWidthsFromPlan();
+}
+
+let isSubmitting = false;
+
+function lockSubmitButton() {
+    isSubmitting = true;
+    const submitBtn = document.getElementById('submitBtn');
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Saving Production Data...';
+    }
 }
 
 document.addEventListener('DOMContentLoaded', function () {
@@ -392,7 +530,19 @@ document.addEventListener('DOMContentLoaded', function () {
             }
         });
     }
+
+    updateStockCodePreview();
 });
+
+function updateStockCodePreview() {
+    const sel = document.getElementById('production_month');
+    const badge = document.getElementById('stockCodePrefixBadge');
+    if (sel && badge) {
+        const opt = sel.options[sel.selectedIndex];
+        const yymm = opt.getAttribute('data-yymm') || '<?= date('ym') ?>';
+        badge.textContent = yymm + '-XXXX';
+    }
+}
 
 function calculateStock() {
     const slitQtyInput = document.getElementById('slitQuantity');
@@ -489,18 +639,45 @@ function generateForm(){
         ? (slitVal > 0 ? slitVal : 0)
         : sourceData.originalLength;
 
-    // ── Bulk "Apply to All" toolbar for Width ──
+    // Determine default cut letter:
+    // Only fresh mother coil on "Cut Into 2" defaults to 'a' (the first cut roll-out).
+    // If mother coil lot already ends with a letter (e.g. 826928a), it already has its letter suffix.
+    // Leftover mother coil and Normal cut stay NO suffix (Standard).
+    const lotAlreadyHasLetter = /[a-z]$/i.test(sourceData.lotNo);
+    const defaultCutLetter = (!sourceData.isLeftover && cutType === 'cut_into_2' && !lotAlreadyHasLetter)
+        ? 'a'
+        : '';
+
+    // ── Bulk "Apply to All" toolbar for Width & Cut Letter ──
     let html = `
         <div id="bulkApplyBar" class="mb-2 d-flex flex-wrap gap-2 align-items-center">
             <i class="bi bi-lightning-charge-fill text-primary"></i>
-            <strong class="small">Apply Width to All Rolls:</strong>
-            <div class="input-group input-group-sm" style="width:200px;">
+            <strong class="small">Apply Width:</strong>
+            <div class="input-group input-group-sm" style="width:170px;">
                 <input type="number" step="0.1" id="bulkWidthInput" class="form-control" placeholder="e.g. 50">
                 <span class="input-group-text">mm</span>
             </div>
             <button type="button" class="btn btn-primary btn-sm" onclick="applyWidthToAll()">
-                <i class="bi bi-check2-all me-1"></i>Apply to All ${total} Rolls
+                <i class="bi bi-check2-all me-1"></i>Apply Width
             </button>
+
+            <div class="vr mx-1"></div>
+            <strong class="small">Cut Letter:</strong>
+            <div class="input-group input-group-sm" style="width:130px;">
+                <select id="bulkLetterSelect" class="form-select">
+                    <option value="" ${defaultCutLetter === '' ? 'selected' : ''}>Standard</option>
+                    <option value="a" ${defaultCutLetter === 'a' ? 'selected' : ''}>a</option>
+                    <option value="b">b</option>
+                    <option value="c">c</option>
+                    <option value="d">d</option>
+                    <option value="e">e</option>
+                    <option value="f">f</option>
+                </select>
+            </div>
+            <button type="button" class="btn btn-outline-primary btn-sm" onclick="applyLetterToAll()">
+                <i class="bi bi-check-all me-1"></i>Apply Letter
+            </button>
+
             <span class="text-muted small ms-auto">${total} roll${total>1?'s':''} — scroll the table below if needed</span>
         </div>
         <div id="rollsTableWrap">
@@ -511,6 +688,7 @@ function generateForm(){
                     <th>Cut Letter</th>
                     <th>Length (m)</th>
                     <th>Width (mm)</th>
+                    <th>Product</th>
                     <th class="text-center">To SFC</th>
                     <th>Lot Preview</th>
                 </tr>
@@ -520,10 +698,22 @@ function generateForm(){
 
     for (let i = 1; i <= total; i++) {
         const valWidth = prevWidths[i - 1] !== undefined ? prevWidths[i - 1] : '';
-        const valLetter = prevCutLetters[i - 1] || '';
+        let valLetter = prevCutLetters[i - 1];
+        if (sourceData.isLeftover) {
+            // Leftover mother coil stays NO suffix unless user explicitly selected something
+            valLetter = (valLetter !== undefined && valLetter !== null) ? valLetter : '';
+        } else if (cutType === 'cut_into_2') {
+            valLetter = (valLetter !== undefined && valLetter !== null && valLetter !== '') ? valLetter : defaultCutLetter;
+        } else {
+            // Fresh coil normal cut -> no suffix unless user explicitly selected
+            valLetter = (valLetter !== undefined && valLetter !== null && valLetter !== '') ? valLetter : '';
+        }
+
         const isSfc = prevSfcs[i - 1] ? 'checked' : '';
         const sfcActive = prevSfcs[i - 1] ? 'sfc-active' : '';
         const rowActive = prevSfcs[i - 1] ? 'sfc-row-active' : '';
+        const curProd = resolveRollProduct(sourceData.product, valWidth);
+        const curBadgeClass = (curProd === 'TS-3020') ? 'bg-success' : ((curProd === 'RS-3020') ? 'bg-primary' : 'bg-secondary');
 
         html += `
                 <tr class="${rowActive}">
@@ -538,6 +728,8 @@ function generateForm(){
                             <option value="b" ${valLetter === 'b' ? 'selected' : ''}>b</option>
                             <option value="c" ${valLetter === 'c' ? 'selected' : ''}>c</option>
                             <option value="d" ${valLetter === 'd' ? 'selected' : ''}>d</option>
+                            <option value="e" ${valLetter === 'e' ? 'selected' : ''}>e</option>
+                            <option value="f" ${valLetter === 'f' ? 'selected' : ''}>f</option>
                         </select>
                     </td>
                     <td>
@@ -546,7 +738,10 @@ function generateForm(){
                     </td>
                     <td>
                         <input type="number" step="0.1" name="width[]" class="form-control form-control-sm width-input"
-                               placeholder="Width" value="${valWidth}" required>
+                               placeholder="Width" value="${valWidth}" required oninput="updateRowProduct(${i-1})">
+                    </td>
+                    <td>
+                        <span class="badge ${curBadgeClass}" id="prodBadge${i-1}">${curProd}</span>
                     </td>
                     <td class="text-center sfc-cell">
                         <label class="sfc-toggle ${sfcActive}" for="sfcCheck${i-1}">
@@ -556,8 +751,8 @@ function generateForm(){
                         </label>
                     </td>
                     <td>
-                        <small class="text-primary" id="infoBadge${i-1}">
-                            <i class="bi bi-tag me-1"></i>${sourceData.lotNo}${valLetter} ${sourceData.coilNo}-R${i}
+                        <small class="text-primary fw-semibold" id="infoBadge${i-1}">
+                            <i class="bi bi-tag me-1"></i>${formatRollLot(sourceData.lotNo, valLetter)} ${sourceData.coilNo}-R${i}
                         </small>
                     </td>
                 </tr>
@@ -575,14 +770,23 @@ function generateForm(){
     if (submitBtn) submitBtn.style.display = 'inline-block';
 }
 
+function applyLetterToAll() {
+    const bulkLetter = document.getElementById('bulkLetterSelect')?.value ?? '';
+    document.querySelectorAll('select[name="cut_letter[]"]').forEach((sel, idx) => {
+        sel.value = bulkLetter;
+        updateLotLabel(idx);
+    });
+}
+
 function applyWidthToAll() {
     const bulkVal = document.getElementById('bulkWidthInput').value;
     if (bulkVal === '' || isNaN(parseFloat(bulkVal))) {
         alert('Enter a width value first.');
         return;
     }
-    document.querySelectorAll('.width-input').forEach(input => {
+    document.querySelectorAll('.width-input').forEach((input, idx) => {
         input.value = bulkVal;
+        updateRowProduct(idx);
     });
 }
 
@@ -595,9 +799,11 @@ function toggleSfcRowHighlight(checkbox) {
 
 function updateLotLabel(idx) {
     const selectElem = document.querySelectorAll('select[name="cut_letter[]"]')[idx];
-    const letter = selectElem.value;
+    const letter = selectElem ? selectElem.value : '';
     const badge = document.getElementById(`infoBadge${idx}`);
-    badge.innerHTML = `<i class="bi bi-tag me-1"></i>${sourceData.lotNo}${letter} ${sourceData.coilNo}-R${idx+1}`;
+    if (badge) {
+        badge.innerHTML = `<i class="bi bi-tag me-1"></i>${formatRollLot(sourceData.lotNo, letter)} ${sourceData.coilNo}-R${idx+1}`;
+    }
 }
 
 // ── SFC Balance Warning Interceptor (≥ 80mm) ────────────────
@@ -714,23 +920,40 @@ function handleSfcChoice(choice) {
         }
 
         isBypassingSfcWarning = true;
+        lockSubmitButton();
         const mainForm = document.querySelector('form');
         if (mainForm) mainForm.submit();
     }
 }
 
+
+
 document.addEventListener('DOMContentLoaded', function () {
     const mainForm = document.querySelector('form');
     if (mainForm) {
         mainForm.addEventListener('submit', function (e) {
-            checkAndShowSfcModal(e);
+            if (isSubmitting) {
+                e.preventDefault();
+                return false;
+            }
+            if (!checkAndShowSfcModal(e)) {
+                return false;
+            }
+            lockSubmitButton();
         });
     }
 
     const submitBtn = document.getElementById('submitBtn');
     if (submitBtn) {
         submitBtn.addEventListener('click', function (e) {
-            checkAndShowSfcModal(e);
+            if (isSubmitting) {
+                e.preventDefault();
+                return false;
+            }
+            if (!checkAndShowSfcModal(e)) {
+                return false;
+            }
+            lockSubmitButton();
         });
     }
 });
