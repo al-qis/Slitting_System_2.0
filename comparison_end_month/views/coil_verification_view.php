@@ -387,7 +387,7 @@ $totalNodVariance   = $metrics['totalNodVariance'] ?? 0.0;
                             <th class="text-center bg-secondary text-white border-bottom-0" style="width: 40px;">#</th>
                             
                             <!-- Table 1: Scanned Physical Store (Ground Truth) -->
-                            <th colspan="3" class="text-center super-header-store py-2">
+                            <th colspan="4" class="text-center super-header-store py-2">
                                 <i class="bi bi-upc-scan me-1"></i> 1. Scanned Physical Store (Ground Truth)
                             </th>
 
@@ -409,7 +409,8 @@ $totalNodVariance   = $metrics['totalNodVariance'] ?? 0.0;
                             <!-- Table 1 Columns -->
                             <th class="sub-header">D365 ITEM NUMBER</th>
                             <th class="sub-header">D365 LOT NO</th>
-                            <th class="sub-header text-end col-sep">MTR</th>
+                            <th class="sub-header text-end">MTR</th>
+                            <th class="sub-header text-end col-sep">NOD</th>
 
                             <!-- Table 2 Columns -->
                             <th class="sub-header">D365 ITEM NUMBER</th>
@@ -426,7 +427,7 @@ $totalNodVariance   = $metrics['totalNodVariance'] ?? 0.0;
                     <tbody id="tableBody">
                         <?php if (empty($reconciledResults)): ?>
                             <tr>
-                                <td colspan="11" class="text-center py-5 text-muted">
+                                <td colspan="12" class="text-center py-5 text-muted">
                                     <i class="bi bi-inbox fs-1 d-block mb-2 text-secondary"></i>
                                     <span class="fw-bold">No coil data found for the selected period.</span>
                                     <p class="small mb-0 mt-1">Please select another month or upload a D365 System Export spreadsheet.</p>
@@ -450,7 +451,18 @@ $totalNodVariance   = $metrics['totalNodVariance'] ?? 0.0;
                                     <!-- Table 1: Scanned Physical Store -->
                                     <td class="fw-semibold text-dark"><?= htmlspecialchars($row['scanned_item']) ?></td>
                                     <td><code class="text-dark bg-light px-2 py-1 rounded"><?= htmlspecialchars($row['scanned_lot']) ?></code></td>
-                                    <td class="text-end fw-bold text-dark col-sep"><?= number_format($row['scanned_mtr'], 2) ?></td>
+                                    <td class="text-end fw-bold text-dark"><?= $row['scanned_item'] !== '-' ? number_format($row['scanned_mtr'], 2) : '-' ?></td>
+                                    <td class="text-end fw-semibold col-sep">
+                                        <?php if ($row['scanned_item'] === '-'): ?>
+                                            <span class="text-muted">-</span>
+                                        <?php elseif (!empty($row['scanned_nod']) && (float)$row['scanned_nod'] > 0): ?>
+                                            <span class="badge bg-warning text-dark border border-warning px-2 py-1" title="Notice of Defect: <?= number_format($row['scanned_nod'], 2) ?> m">
+                                                <i class="bi bi-exclamation-triangle-fill me-1"></i><?= number_format($row['scanned_nod'], 2) ?>
+                                            </span>
+                                        <?php else: ?>
+                                            <span class="text-muted">0.00</span>
+                                        <?php endif; ?>
+                                    </td>
 
                                     <!-- Table 2: D365 System Export -->
                                     <td class="fw-semibold text-dark"><?= htmlspecialchars($row['d365_item']) ?></td>
