@@ -34,11 +34,25 @@ class CoilReconciliationModel
         try {
             $stmt = $this->pdo->query("
                 SELECT
-                    COALESCE(NULLIF(TRIM(d365_item_number), ''), NULLIF(TRIM(product_code), ''), 'N/A') AS d365_item_number,
-                    COALESCE(NULLIF(TRIM(d365_lot_no), ''), NULLIF(TRIM(lot), ''), 'N/A') AS d365_lot_no,
-                    CAST(COALESCE(NULLIF(mtr, ''), length, 0) AS DECIMAL(10,2)) AS mtr
-                FROM stock_crosscheck_scans
-                ORDER BY id DESC
+                    COALESCE(NULLIF(TRIM(scs.d365_item_number), ''), NULLIF(TRIM(scs.product_code), ''), 'N/A') AS d365_item_number,
+                    COALESCE(NULLIF(TRIM(scs.d365_lot_no), ''), NULLIF(TRIM(scs.lot), ''), 'N/A') AS d365_lot_no,
+                    CAST(COALESCE(NULLIF(scs.mtr, ''), scs.length, 0) AS DECIMAL(10,2)) AS mtr,
+                    CAST(COALESCE(MAX(sp.nod_length), 0) AS DECIMAL(10,2)) AS nod
+                FROM stock_crosscheck_scans scs
+                LEFT JOIN slitting_product sp 
+                    ON LOWER(TRIM(sp.lot_no)) = LOWER(TRIM(scs.lot))
+                    AND (
+                        LOWER(TRIM(sp.coil_no)) = LOWER(TRIM(scs.coil))
+                        OR LOWER(REPLACE(sp.coil_no, '-0', '-')) = LOWER(REPLACE(scs.coil, '-0', '-'))
+                    )
+                    AND (
+                        LOWER(TRIM(sp.roll_no)) = LOWER(TRIM(scs.roll))
+                        OR LOWER(REPLACE(sp.roll_no, 'R0', 'R')) = LOWER(REPLACE(scs.roll, 'R0', 'R'))
+                    )
+                    AND (scs.width IS NULL OR scs.width = '' OR ABS(sp.width - CAST(scs.width AS DECIMAL(10,2))) < 0.5)
+                    AND (sp.is_voided = 0 OR sp.is_voided IS NULL)
+                GROUP BY scs.id
+                ORDER BY scs.id DESC
             ");
 
             $rows = $stmt->fetchAll() ?: [];
@@ -265,6 +279,7 @@ class CoilReconciliationModel
             $scannedItem = trim((string)($scan['d365_item_number'] ?? ''));
             $scannedLot  = trim((string)($scan['d365_lot_no'] ?? ''));
             $scannedMtr  = round((float)($scan['mtr'] ?? 0), 2);
+            $scannedNod  = round((float)($scan['nod'] ?? 0), 2);
 
             $d365Record = $findD365Match($scannedItem, $scannedLot);
 
@@ -300,6 +315,7 @@ class CoilReconciliationModel
                     'scanned_item'    => $scannedItem,
                     'scanned_lot'     => $scannedLot,
                     'scanned_mtr'     => $scannedMtr,
+                    'scanned_nod'     => $scannedNod,
                     'd365_item'       => $d365Item,
                     'd365_lot'        => $d365Lot,
                     'd365_mtr'        => $d365Mtr,
@@ -314,6 +330,7 @@ class CoilReconciliationModel
                     'scanned_item'    => $scannedItem,
                     'scanned_lot'     => $scannedLot,
                     'scanned_mtr'     => $scannedMtr,
+                    'scanned_nod'     => $scannedNod,
                     'd365_item'       => '-',
                     'd365_lot'        => '-',
                     'd365_mtr'        => 0.0,
@@ -342,6 +359,7 @@ class CoilReconciliationModel
                 'scanned_item'    => '-',
                 'scanned_lot'     => '-',
                 'scanned_mtr'     => 0.0,
+                'scanned_nod'     => 0.0,
                 'd365_item'       => $d365Item,
                 'd365_lot'        => $d365Lot,
                 'd365_mtr'        => $d365Mtr,
@@ -436,7 +454,7 @@ class CoilReconciliationModel
             $reportTitle .= " - {$monthTitle} {$year}";
         }
 
-        $sheet->mergeCells('A1:J1');
+        $sheet->mergeCells('A1:K1');
         $sheet->setCellValue('A1', $reportTitle);
         $sheet->getStyle('A1')->getFont()->setBold(true)->setSize(14)->setColor(new Color('FFFFFF'));
         $sheet->getStyle('A1')->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FF1E293B');
@@ -444,36 +462,37 @@ class CoilReconciliationModel
         $sheet->getRowDimension(1)->setRowHeight(35);
 
         // Super Headers (Row 3)
-        $sheet->mergeCells('A3:C3');
+        $sheet->mergeCells('A3:D3');
         $sheet->setCellValue('A3', '1. SCANNED PHYSICAL STORE (GROUND TRUTH)');
         $sheet->getStyle('A3')->getFont()->setBold(true)->setColor(new Color('FFFFFF'));
         $sheet->getStyle('A3')->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FF0F172A');
         $sheet->getStyle('A3')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
 
-        $sheet->mergeCells('D3:F3');
-        $sheet->setCellValue('D3', '2. D365 SYSTEM EXPORT (ERP REFERENCE)');
-        $sheet->getStyle('D3')->getFont()->setBold(true)->setColor(new Color('FFFFFF'));
-        $sheet->getStyle('D3')->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FF0D9488');
-        $sheet->getStyle('D3')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
+        $sheet->mergeCells('E3:G3');
+        $sheet->setCellValue('E3', '2. D365 SYSTEM EXPORT (ERP REFERENCE)');
+        $sheet->getStyle('E3')->getFont()->setBold(true)->setColor(new Color('FFFFFF'));
+        $sheet->getStyle('E3')->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FF0D9488');
+        $sheet->getStyle('E3')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
 
-        $sheet->mergeCells('G3:J3');
-        $sheet->setCellValue('G3', '3. VERIFICATION & DISCREPANCY STATUS (AUTO EVALUATION)');
-        $sheet->getStyle('G3')->getFont()->setBold(true)->setColor(new Color('FFFFFF'));
-        $sheet->getStyle('G3')->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FF6D28D9');
-        $sheet->getStyle('G3')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
+        $sheet->mergeCells('H3:K3');
+        $sheet->setCellValue('H3', '3. VERIFICATION & DISCREPANCY STATUS (AUTO EVALUATION)');
+        $sheet->getStyle('H3')->getFont()->setBold(true)->setColor(new Color('FFFFFF'));
+        $sheet->getStyle('H3')->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FF6D28D9');
+        $sheet->getStyle('H3')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
 
         // Column Headers (Row 4)
         $columnMap = [
             'A' => 'D365 ITEM NUMBER',
             'B' => 'D365 LOT NO',
             'C' => 'MTR',
-            'D' => 'D365 ITEM NUMBER',
-            'E' => 'D365 LOT NO',
-            'F' => 'MTR',
-            'G' => 'STATUS ITEM NUMBER',
-            'H' => 'STATUS LOT NO',
-            'I' => 'STATUS MTR',
-            'J' => 'NOD (Meters)'
+            'D' => 'NOD (Meters)',
+            'E' => 'D365 ITEM NUMBER',
+            'F' => 'D365 LOT NO',
+            'G' => 'MTR',
+            'H' => 'STATUS ITEM NUMBER',
+            'I' => 'STATUS LOT NO',
+            'J' => 'STATUS MTR',
+            'K' => 'NOD (Variance)'
         ];
 
         foreach ($columnMap as $col => $title) {
@@ -491,30 +510,31 @@ class CoilReconciliationModel
             $sheet->setCellValue("A{$rIdx}", $row['scanned_item']);
             $sheet->setCellValue("B{$rIdx}", $row['scanned_lot']);
             $sheet->setCellValue("C{$rIdx}", $row['scanned_mtr']);
+            $sheet->setCellValue("D{$rIdx}", $row['scanned_nod']);
 
-            $sheet->setCellValue("D{$rIdx}", $row['d365_item']);
-            $sheet->setCellValue("E{$rIdx}", $row['d365_lot']);
-            $sheet->setCellValue("F{$rIdx}", $row['d365_mtr']);
+            $sheet->setCellValue("E{$rIdx}", $row['d365_item']);
+            $sheet->setCellValue("F{$rIdx}", $row['d365_lot']);
+            $sheet->setCellValue("G{$rIdx}", $row['d365_mtr']);
 
-            $sheet->setCellValue("G{$rIdx}", $row['status_item'] ? 'TRUE' : 'FALSE');
-            $sheet->setCellValue("H{$rIdx}", $row['status_lot']  ? 'TRUE' : 'FALSE');
-            $sheet->setCellValue("I{$rIdx}", $row['status_mtr']  ? 'TRUE' : 'FALSE');
-            $sheet->setCellValue("J{$rIdx}", $row['nod']);
+            $sheet->setCellValue("H{$rIdx}", $row['status_item'] ? 'TRUE' : 'FALSE');
+            $sheet->setCellValue("I{$rIdx}", $row['status_lot']  ? 'TRUE' : 'FALSE');
+            $sheet->setCellValue("J{$rIdx}", $row['status_mtr']  ? 'TRUE' : 'FALSE');
+            $sheet->setCellValue("K{$rIdx}", $row['nod']);
 
             // Alignments & Number formatting
             $sheet->getStyle("A{$rIdx}:B{$rIdx}")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_LEFT);
-            $sheet->getStyle("C{$rIdx}")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_RIGHT);
-            $sheet->getStyle("C{$rIdx}")->getNumberFormat()->setFormatCode('#,##0.00');
+            $sheet->getStyle("C{$rIdx}:D{$rIdx}")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_RIGHT);
+            $sheet->getStyle("C{$rIdx}:D{$rIdx}")->getNumberFormat()->setFormatCode('#,##0.00');
 
-            $sheet->getStyle("D{$rIdx}:E{$rIdx}")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_LEFT);
-            $sheet->getStyle("F{$rIdx}")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_RIGHT);
-            $sheet->getStyle("F{$rIdx}")->getNumberFormat()->setFormatCode('#,##0.00');
+            $sheet->getStyle("E{$rIdx}:F{$rIdx}")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_LEFT);
+            $sheet->getStyle("G{$rIdx}")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_RIGHT);
+            $sheet->getStyle("G{$rIdx}")->getNumberFormat()->setFormatCode('#,##0.00');
 
-            $sheet->getStyle("J{$rIdx}")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_RIGHT);
-            $sheet->getStyle("J{$rIdx}")->getNumberFormat()->setFormatCode('#,##0.00');
+            $sheet->getStyle("K{$rIdx}")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_RIGHT);
+            $sheet->getStyle("K{$rIdx}")->getNumberFormat()->setFormatCode('#,##0.00');
 
-            // Status Styling (G, H, I)
-            foreach (['G', 'H', 'I'] as $statusCol) {
+            // Status Styling (H, I, J)
+            foreach (['H', 'I', 'J'] as $statusCol) {
                 $statusVal = $sheet->getCell("{$statusCol}{$rIdx}")->getValue();
                 $cellStyle = $sheet->getStyle("{$statusCol}{$rIdx}");
                 $cellStyle->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
@@ -528,8 +548,14 @@ class CoilReconciliationModel
                 }
             }
 
-            // NOD styling (J)
-            $nodStyle = $sheet->getStyle("J{$rIdx}");
+            // Scanned NOD styling (D)
+            if ($row['scanned_nod'] > 0) {
+                $sheet->getStyle("D{$rIdx}")->getFont()->setColor(new Color('FF856404'))->setBold(true);
+                $sheet->getStyle("D{$rIdx}")->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFFFF3CD');
+            }
+
+            // Variance NOD styling (K)
+            $nodStyle = $sheet->getStyle("K{$rIdx}");
             if ($row['nod'] > 0) {
                 $nodStyle->getFont()->setColor(new Color('FF721C24'))->setBold(true);
                 $nodStyle->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFF8D7DA');
@@ -539,14 +565,14 @@ class CoilReconciliationModel
         }
 
         // Auto Column Widths
-        foreach (range('A', 'J') as $colLetter) {
+        foreach (range('A', 'K') as $colLetter) {
             $sheet->getColumnDimension($colLetter)->setAutoSize(true);
         }
 
         // Border Styling for the whole table
         $lastRow = $rIdx - 1;
         if ($lastRow >= 4) {
-            $sheet->getStyle("A3:J{$lastRow}")->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN)->setColor(new Color('FFCBD5E1'));
+            $sheet->getStyle("A3:K{$lastRow}")->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN)->setColor(new Color('FFCBD5E1'));
         }
 
         // Download headers
