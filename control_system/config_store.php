@@ -22,6 +22,7 @@ function getDefaultControlConfig(): array {
             'finish_stock_edit'    => 'active',
             'finish_produced_edit' => 'active',
             'pallet_manual_deliver'=> 'active',
+            'finish_customer_edit' => 'active',
         ],
         'last_updated' => date('Y-m-d H:i:s'),
         'updated_by'   => 'system'
@@ -46,6 +47,7 @@ function getSystemControlConfig(): array {
         'ctrl_finish_stock_edit',
         'ctrl_finish_produced_edit',
         'ctrl_pallet_manual_deliver',
+        'ctrl_finish_customer_edit',
         'ctrl_last_updated',
         'ctrl_updated_by'
     ];
@@ -94,6 +96,7 @@ function getSystemControlConfig(): array {
             'finish_stock_edit'    => $dbSettings['ctrl_finish_stock_edit'] ?? 'active',
             'finish_produced_edit' => $dbSettings['ctrl_finish_produced_edit'] ?? 'active',
             'pallet_manual_deliver'=> $dbSettings['ctrl_pallet_manual_deliver'] ?? 'active',
+            'finish_customer_edit' => $dbSettings['ctrl_finish_customer_edit'] ?? 'active',
         ],
         'last_updated' => $dbSettings['ctrl_last_updated'] ?? date('Y-m-d H:i:s'),
         'updated_by'   => $dbSettings['ctrl_updated_by'] ?? 'system'
@@ -119,6 +122,7 @@ function saveSystemControlConfig(array $config): bool {
         'ctrl_finish_stock_edit'    => strtolower(trim($config['button_states']['finish_stock_edit'] ?? 'active')),
         'ctrl_finish_produced_edit' => strtolower(trim($config['button_states']['finish_produced_edit'] ?? 'active')),
         'ctrl_pallet_manual_deliver'=> strtolower(trim($config['button_states']['pallet_manual_deliver'] ?? 'active')),
+        'ctrl_finish_customer_edit' => strtolower(trim($config['button_states']['finish_customer_edit'] ?? 'active')),
         'ctrl_last_updated'         => $lastUpdated,
         'ctrl_updated_by'           => $updatedBy
     ];

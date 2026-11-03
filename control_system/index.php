@@ -139,6 +139,11 @@ $buttonMeta = [
         'title'       => 'Pallet - Manual Deliver Button',
         'description' => 'Controls the manual "Deliver Pallet" button function in pallet.php.',
         'icon'        => 'truck'
+    ],
+    'finish_customer_edit' => [
+        'title'       => 'Finish Product - Edit Customer & Ref No',
+        'description' => 'Controls editing Customer and Customer Ref No in finish_product.php.',
+        'icon'        => 'person-gear'
     ]
 ];
 
@@ -154,7 +159,7 @@ include __DIR__ . '/../header.php';
             <h1 class="h2 text-dark font-weight-bold">
                 <i class="bi bi-sliders text-primary me-2"></i>Control Center
             </h1>
-            <p class="text-muted mb-0">System Control System — Manage Supervisor PIN & Button Lockout States</p>
+            <p class="text-muted mb-0">System Control System â€” Manage Supervisor PIN & Button Lockout States</p>
         </div>
         <div class="btn-toolbar mb-2 mb-md-0 gap-2">
             <a href="../index.php" class="btn btn-outline-secondary btn-sm fw-bold">
@@ -447,7 +452,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }, 220);
     });
 
-    // Double Click: Auto switch status (ACTIVE ↔ BLOCKED)
+    // Double Click: Auto switch status (ACTIVE â†” BLOCKED)
     document.addEventListener('dblclick', function (e) {
         const target = e.target.closest('.btn-toggle-state, [id^="status-badge-"]');
         if (!target) return;

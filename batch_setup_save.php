@@ -12,7 +12,7 @@ session_start();
 header('Content-Type: application/json');
 
 if (!isset($_SESSION['role'])) {
-    echo json_encode(['ok' => false, 'msg' => 'Session expired — please log in again.']);
+    echo json_encode(['ok' => false, 'msg' => 'Session expired â€” please log in again.']);
     exit;
 }
 if ($_SESSION['role'] !== 'slitting') {
@@ -21,6 +21,10 @@ if ($_SESSION['role'] !== 'slitting') {
 }
 
 include 'config.php';
+require_once __DIR__ . '/control_system/config_store.php';
+$isFinishCustomerEditActive = function_exists('isButtonActive') ? isButtonActive('finish_customer_edit') : true;
+require_once __DIR__ . '/control_system/config_store.php';
+$isFinishCustomerEditActive = function_exists('isButtonActive') ? isButtonActive('finish_customer_edit') : true;
 
 $body = json_decode(file_get_contents('php://input'), true);
 $selections = $body['selections'] ?? null;
@@ -65,6 +69,30 @@ foreach ($selections as $sel) {
     $customerToSave = $customer;
     if (in_array($customer, ['NCI MFG', 'NCI 2'], true) && $nciResolved !== '') {
         $customerToSave = $nciResolved;
+    }
+
+    // If finish_customer_edit is blocked in Control Center, do not allow changing customer / ref_no if already set
+    if (!$isFinishCustomerEditActive && $existing) {
+        $exCust = trim($existing['customer_name'] ?? '');
+        $exRef  = trim($existing['ref_no'] ?? '');
+        if ($exCust !== '') {
+            $customerToSave = $exCust;
+        }
+        if ($exRef !== '' && $exRef !== 'SO-') {
+            $ref_no = $exRef;
+        }
+    }
+
+    // If finish_customer_edit is blocked in Control Center, do not allow changing customer / ref_no if already set
+    if (!$isFinishCustomerEditActive && $existing) {
+        $exCust = trim($existing['customer_name'] ?? '');
+        $exRef  = trim($existing['ref_no'] ?? '');
+        if ($exCust !== '') {
+            $customerToSave = $exCust;
+        }
+        if ($exRef !== '' && $exRef !== 'SO-') {
+            $ref_no = $exRef;
+        }
     }
 
     $stmt->bind_param("ssdi", $customerToSave, $ref_no, $length, $id);
@@ -130,7 +158,7 @@ foreach ($selections as $sel) {
             $stmtLog->close();
         }
     } else {
-        $errors[] = "Roll #{$id}: save failed — {$conn->error}";
+        $errors[] = "Roll #{$id}: save failed â€” {$conn->error}";
     }
 }
 $stmt->close();

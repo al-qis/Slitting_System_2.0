@@ -41,6 +41,8 @@ if ($_SESSION['role'] !== 'slitting') {
 }
 
 include 'config.php';
+require_once __DIR__ . '/control_system/config_store.php';
+$isFinishCustomerEditActive = function_exists('isButtonActive') ? isButtonActive('finish_customer_edit') : true;
 
 // ── Parse the selected IDs (POST JSON preferred, GET CSV as fallback) ──
 $rawIds = null;
@@ -226,10 +228,18 @@ usort($rolls, function ($a, $b) {
                 $lotNos[] = trim($r['lot_no']);
             }
         }
-        $canCopyAllCustRef = ($allCustomerUnassigned && $allRefNoUnassigned);
+        $canCopyAllCustRef = $isFinishCustomerEditActive ? true : ($allCustomerUnassigned && $allRefNoUnassigned);
         $distinctLotNos = array_values(array_unique($lotNos));
         $hasMultipleLots = (count($distinctLotNos) > 1);
     ?>
+    <?php if (!$isFinishCustomerEditActive): ?>
+    <div class="alert alert-warning py-2 px-3 small d-flex align-items-center mb-3">
+        <i class="bi bi-shield-lock-fill text-warning me-2 fs-5"></i>
+        <div>
+            <strong>Customer &amp; Ref No Editing Blocked:</strong> Editing Customer and Customer Ref No is currently locked in Control Center. Only Actual Length can be modified.
+        </div>
+    </div>
+    <?php endif; ?>
     <!-- Apply to All Rows ──────────────────────────────────────── -->
     <div class="card copy-all-card mb-3">
         <div class="card-body py-2">
@@ -362,9 +372,14 @@ usort($rolls, function ($a, $b) {
 
                             $hasCustomer = ($saved !== '');
                             $hasRefNo = ($rawRefNo !== '' && $rawRefNo !== 'SO-');
+
+                            // Control Center setting: finish_customer_edit
+                            $rowCustDisabled  = (!$isFinishCustomerEditActive && $hasCustomer) ? 'disabled' : '';
+                            $rowStockDisabled = (!$isFinishCustomerEditActive && ($hasCustomer || $hasRefNo)) ? 'disabled' : '';
+                            $rowRefDisabled   = (!$isFinishCustomerEditActive && ($hasRefNo || $isStock)) ? 'readonly disabled' : ($isStock ? 'readonly' : '');
                         ?>
                         <select class="form-select form-select-sm row-customer" data-row="<?= $idx ?>"
-                                onchange="handleRowCustomerChange(<?= $idx ?>)" <?= $hasCustomer ? 'disabled' : '' ?>>
+                                onchange="handleRowCustomerChange(<?= $idx ?>)" <?= $rowCustDisabled ?>>
                             <option value=""         <?= $saved===''         ?'selected':'' ?>>-- Select Customer --</option>
                             <option value="NAE"      <?= $saved==='NAE'      ?'selected':'' ?>>NICHIAS AUTOPARTS EUROPE (NAE)</option>
                             <option value="NAX"      <?= $saved==='NAX'      ?'selected':'' ?>>NAX MFG, SA.DE C.V</option>
@@ -390,17 +405,17 @@ usort($rolls, function ($a, $b) {
                         </select>
                         <input type="text" class="form-control form-control-sm row-custom-customer mt-1" data-row="<?= $idx ?>"
                                placeholder="Enter customer name" style="display:<?= $isOther?'block':'none' ?>;"
-                               value="<?= $isOther ? htmlspecialchars($saved) : '' ?>" <?= $hasCustomer ? 'disabled' : '' ?>>
+                               value="<?= $isOther ? htmlspecialchars($saved) : '' ?>" <?= $rowCustDisabled ?>>
                         <div class="text-muted nci-note mt-1" data-row="<?= $idx ?>" style="display:none;"></div>
                     </td>
                     <td>
                         <div class="form-check mb-1">
                             <input class="form-check-input row-stock-override" type="checkbox"
-                                   id="rowStock<?= $idx ?>" data-row="<?= $idx ?>" <?= $isStock ? 'checked' : '' ?> <?= ($hasCustomer || $hasRefNo) ? 'disabled' : '' ?>>
+                                   id="rowStock<?= $idx ?>" data-row="<?= $idx ?>" <?= $isStock ? 'checked' : '' ?> <?= $rowStockDisabled ?>>
                             <label class="form-check-label small" for="rowStock<?= $idx ?>">Set to STOCK</label>
                         </div>
                         <input type="text" class="form-control form-control-sm row-refno" data-row="<?= $idx ?>"
-                               value="<?= htmlspecialchars($displayRefNo) ?>" placeholder="SO-00-0000" <?= ($hasRefNo || $isStock) ? 'readonly disabled' : '' ?>>
+                               value="<?= htmlspecialchars($displayRefNo) ?>" placeholder="SO-00-0000" <?= $rowRefDisabled ?>>
                     </td>
                     <td>
                         <select class="form-select form-select-sm row-copies" data-row="<?= $idx ?>">

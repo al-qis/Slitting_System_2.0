@@ -34,6 +34,7 @@ include 'config.php';
 require_once __DIR__ . '/control_system/config_store.php';
 $isFinishStockEditActive = function_exists('isButtonActive') ? isButtonActive('finish_stock_edit') : true;
 $isFinishProducedEditActive = function_exists('isButtonActive') ? isButtonActive('finish_produced_edit') : true;
+$isFinishCustomerEditActive = function_exists('isButtonActive') ? isButtonActive('finish_customer_edit') : true;
 
 // ============================================================
 // INLINED PALLET HELPERS — no external file needed
@@ -2035,8 +2036,16 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                             $allRefNoUnassigned = false;
                         }
                     }
-                    $canCopyAllCustRef = ($allCustomerUnassigned && $allRefNoUnassigned);
+                    $canCopyAllCustRef = $isFinishCustomerEditActive ? true : ($allCustomerUnassigned && $allRefNoUnassigned);
                 ?>
+                <?php if (!$isFinishCustomerEditActive): ?>
+                <div class="alert alert-warning py-2 px-3 small d-flex align-items-center mb-3">
+                    <i class="bi bi-shield-lock-fill text-warning me-2 fs-5"></i>
+                    <div>
+                        <strong>Customer &amp; Ref No Editing Blocked:</strong> Editing Customer and Customer Ref No is currently locked in Control Center. Only Actual Length can be modified.
+                    </div>
+                </div>
+                <?php endif; ?>
                 <!-- Consolidated Batch Assignment Panel Toolbar (Copy to All Rows) -->
                 <div class="card mb-3 shadow-sm border-danger-subtle" style="background: #fff8f8;">
                     <div class="card-header bg-danger-subtle fw-bold py-2 text-danger-emphasis d-flex justify-content-between align-items-center">
@@ -2159,9 +2168,14 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
 
                                                 $hasCustomer = ($saved !== '');
                                                 $hasRefNo = ($rawRefNo !== '' && $rawRefNo !== 'SO-');
+
+                                                // Control Center setting: finish_customer_edit
+                                                $rowCustDisabled  = (!$isFinishCustomerEditActive && $hasCustomer) ? 'disabled' : '';
+                                                $rowStockDisabled = (!$isFinishCustomerEditActive && ($hasCustomer || $hasRefNo)) ? 'disabled' : '';
+                                                $rowRefDisabled   = (!$isFinishCustomerEditActive && ($hasRefNo || $isStock)) ? 'readonly disabled' : ($isStock ? 'readonly' : '');
                                             ?>
                                             <select class="form-select form-select-sm modal-row-customer" data-row="<?= $idx ?>"
-                                                    onchange="modalHandleRowCustomerChange(<?= $idx ?>)" <?= $hasCustomer ? 'disabled' : '' ?>>
+                                                    onchange="modalHandleRowCustomerChange(<?= $idx ?>)" <?= $rowCustDisabled ?>>
                                                 <option value=""         <?= $saved===''         ?'selected':'' ?>>-- Select Customer --</option>
                                                 <option value="NAE"      <?= $saved==='NAE'      ?'selected':'' ?>>NICHIAS AUTOPARTS EUROPE (NAE)</option>
                                                 <option value="NAX"      <?= $saved==='NAX'      ?'selected':'' ?>>NAX MFG, SA.DE C.V</option>
@@ -2187,17 +2201,17 @@ function sortHeaderLink(string $col, string $label, string $currentSortCol, stri
                                             </select>
                                             <input type="text" class="form-control form-control-sm modal-row-custom-customer mt-1" data-row="<?= $idx ?>"
                                                    placeholder="Enter customer name" style="display:<?= $isOther?'block':'none' ?>;"
-                                                   value="<?= $isOther ? htmlspecialchars($saved) : '' ?>" <?= $hasCustomer ? 'disabled' : '' ?>>
+                                                   value="<?= $isOther ? htmlspecialchars($saved) : '' ?>" <?= $rowCustDisabled ?>>
                                             <div class="text-muted modal-nci-note mt-1" data-row="<?= $idx ?>" style="display:none; font-size:11px;"></div>
                                         </td>
                                         <td>
                                             <div class="form-check mb-1">
                                                 <input class="form-check-input modal-row-stock-override" type="checkbox"
-                                                       id="modalRowStock<?= $idx ?>" data-row="<?= $idx ?>" <?= $isStock ? 'checked' : '' ?> <?= ($hasCustomer || $hasRefNo) ? 'disabled' : '' ?>>
+                                                       id="modalRowStock<?= $idx ?>" data-row="<?= $idx ?>" <?= $isStock ? 'checked' : '' ?> <?= $rowStockDisabled ?>>
                                                 <label class="form-check-label small" for="modalRowStock<?= $idx ?>">Set to STOCK</label>
                                             </div>
                                             <input type="text" class="form-control form-control-sm modal-row-refno" data-row="<?= $idx ?>"
-                                                   value="<?= htmlspecialchars($displayRefNo) ?>" placeholder="SO-00-0000" <?= ($hasRefNo || $isStock) ? 'readonly disabled' : '' ?>>
+                                                   value="<?= htmlspecialchars($displayRefNo) ?>" placeholder="SO-00-0000" <?= $rowRefDisabled ?>>
                                         </td>
                                         <td>
                                             <select class="form-select form-select-sm modal-row-copies" data-row="<?= $idx ?>">

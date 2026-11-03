@@ -1,5 +1,7 @@
 <?php
 include 'config.php';
+require_once __DIR__ . '/control_system/config_store.php';
+$isFinishCustomerEditActive = function_exists('isButtonActive') ? isButtonActive('finish_customer_edit') : true;
 
 // Strips trailing zeros for display (109.50 -> "109.5", 375.00 -> "375"),
 // capped at 2 decimal places — same fix applied to the sticker pattern
@@ -109,6 +111,7 @@ $product = $result->fetch_assoc();
 // ── Read existing saved customer & ref_no ───────────────────────
 $savedCustomer = trim($product['customer_name'] ?? '');
 $savedRefNo    = trim($product['ref_no']        ?? '');
+$isCustEditLocked = (!$isFinishCustomerEditActive && $savedCustomer !== '' && $savedCustomer !== 'STOCK');
 
 // ═══════════════════════════════════════════════════════════════
 // AJAX SAVE
@@ -125,6 +128,12 @@ if (
     $pid      = intval($_POST['id']       ?? 0);
     $customer = trim($_POST['customer']   ?? '');
     $ref_no   = trim($_POST['ref_no']     ?? '');
+
+    // Check Control Center block
+    if (!$isFinishCustomerEditActive && $savedCustomer !== '' && $savedCustomer !== 'STOCK') {
+        echo json_encode(['ok' => false, 'msg' => 'Editing Customer and Ref No is currently BLOCKED in Control Center.']);
+        exit;
+    }
 
     if ($customer === 'OTHER') {
         $customer = trim($_POST['custom_customer'] ?? '');
@@ -289,6 +298,17 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
         <!-- Line A/B flag — toggled by the Line A button below -->
         <input type="hidden" name="line" id="lineInput" value="B">
 
+        <?php if ($isCustEditLocked): ?>
+        <input type="hidden" name="customer" value="<?= htmlspecialchars($savedCustomer) ?>">
+        <input type="hidden" name="ref_no" value="<?= htmlspecialchars($savedRefNo ?: 'STOCK') ?>">
+        <div class="alert alert-warning py-2 px-3 small d-flex align-items-center mb-3">
+            <i class="bi bi-shield-lock-fill text-warning me-2 fs-5"></i>
+            <div>
+                <strong>Customer &amp; Ref No Editing Blocked:</strong> Editing Customer and Ref No is currently locked in Control Center. You can still print with the saved details.
+            </div>
+        </div>
+        <?php endif; ?>
+
         <table class="preview-table">
         
 <tr>
@@ -330,7 +350,7 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
             <tr class="editable-row">
                 <td>Customer</td><td>:</td>
                 <td>
-                    <select name="customer" id="customer" class="form-select" required
+                    <select name="<?= $isCustEditLocked ? 'customer_disabled' : 'customer' ?>" id="customer" class="form-select" required <?= $isCustEditLocked ? 'disabled' : '' ?>
                             onchange="handleCustomerChange(this.value)">
                         <option value="">-- Select Customer --</option>
                         <option value="NAE"     <?= $savedCustomer==='NAE'     ?'selected':'' ?>>NICHIAS AUTOPARTS EUROPE (NAE)</option>
@@ -355,7 +375,7 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
                         <option value="TRIAL"   <?= $savedCustomer==='TRIAL'   ?'selected':'' ?>>TRIAL</option>
                         <option value="OTHER"   <?= ($savedCustomer!=='' && !in_array($savedCustomer,['NAE','NAX','NCI MFG','TAIHO','NRI','ASHUKA','NIPPON','NTC','SGC','STAMPING','YANTAI','NIPP','NVC','NSJ','NIP','YTEC','NSA','NCI 2','STOCK','TRIAL'])) ?'selected':'' ?>>OTHER (type below)</option>
                     </select>
-                    <input type="text" name="custom_customer" id="custom_customer"
+                    <input type="text" name="<?= $isCustEditLocked ? 'custom_customer_disabled' : 'custom_customer' ?>" id="custom_customer" <?= $isCustEditLocked ? 'disabled' : '' ?>
                            class="form-control mt-2" placeholder="Enter customer name"
                            style="display:none;">
                     <!-- NCI match status panel — shown only for NCI MFG / NCI 2 -->
@@ -372,10 +392,10 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
                 <td>Ref. No.</td><td>:</td>
                 <td>
                     <div class="form-check mb-2">
-                        <input class="form-check-input" type="checkbox" id="stockOverride">
+                        <input class="form-check-input" type="checkbox" id="stockOverride" <?= $isCustEditLocked ? 'disabled' : '' ?>>
                         <label class="form-check-label" for="stockOverride">Set to STOCK</label>
                     </div>
-                    <input type="text" name="ref_no" id="ref_no"
+                    <input type="text" name="<?= $isCustEditLocked ? 'ref_no_disabled' : 'ref_no' ?>" id="ref_no" <?= $isCustEditLocked ? 'readonly disabled' : '' ?>
                            class="form-control" value="<?= htmlspecialchars($savedRefNo ?: 'STOCK') ?>" required>
                 </td>
             </tr>
@@ -390,7 +410,7 @@ $lotCoil = trim($product['lot_no']) . ' ' . trim($product['coil_no']);
                 <span id="lineToggleLabel">Line A</span>
             </button>
 
-            <button type="button" class="btn-action btn-save" id="saveBtn" onclick="saveOnly()">
+            <button type="button" class="btn-action btn-save" id="saveBtn" onclick="saveOnly()" <?= $isCustEditLocked ? 'disabled style="pointer-events:none; opacity:0.5;" title="Customer and Ref No editing locked by Control Center"' : '' ?>>
                 <i class="bi bi-floppy-fill"></i> Save
             </button>
             <button type="submit" class="btn-action btn-print">
