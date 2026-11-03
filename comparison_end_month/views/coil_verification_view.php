@@ -217,12 +217,6 @@ $totalNodVariance   = $metrics['totalNodVariance'] ?? 0.0;
             </div>
             
             <div class="d-flex align-items-center gap-2">
-                <!-- Download Sample Template Button -->
-                <a href="coil_verification.php?action=download_template" class="btn btn-outline-secondary fw-semibold shadow-sm d-flex align-items-center gap-2">
-                    <i class="bi bi-download"></i>
-                    <span>Download Sample D365 Template</span>
-                </a>
-
                 <!-- Export to Excel Button -->
                 <form action="coil_verification.php" method="POST" class="m-0">
                     <input type="hidden" name="action" value="export">
