@@ -12,6 +12,12 @@ if (!in_array($_SESSION['role'], ['slitting', 'mkl3'], true)) {
 
 include 'config.php';
 
+// Embed mode - used when this page is loaded inside an <iframe> for a
+// consolidated bulk print job (bulk_print_sfc.php). Hides the toolbar /
+// preview info bar and print/back buttons so only the 120mm x 47mm sticker
+// itself renders, matching print_product.php and print_mother.php.
+$embed = (($_GET['embed'] ?? '') === '1');
+
 function getCoilPrefix($coil_no) {
     $coil_no = trim((string)$coil_no);
     if ($coil_no === '') return '';
@@ -61,12 +67,18 @@ if ($mc_row) {
 }
 
 // ── Build $product array ──────────────────────────────────────
+$rawRoll = trim($sfc['roll_no'] ?? '');
+$hasRoll = ($rawRoll !== '' && strtoupper($rawRoll) !== 'BALANCE');
+$rollRaw = strtoupper($rawRoll);
+$rollDisplay = preg_replace('/^R(\d+)$/i', 'R-$1', $rollRaw);
+if ($rollDisplay === '') $rollDisplay = $rollRaw;
+
 $product = [
     'id'            => $sfc['sfc_id'],
     'product'       => $sfc['product'],
     'lot_no'        => $sfc['lot_no'],
     'coil_no'       => $sfc['coil_no'],
-    'roll_no'       => (strtoupper(trim($sfc['roll_no'])) === 'BALANCE') ? '' : $sfc['roll_no'],
+    'roll_no'       => $hasRoll ? $rawRoll : '',
     'width'         => $sfc['width'],
     'length'        => $sfc['length'],
     'actual_length' => $sfc['length'],
@@ -114,6 +126,12 @@ $qrImageUrl = $protocol . "://" . $host . $basePath
             . "&coil=" . urlencode($product['coil_no']);
 if (trim($product['roll_no'] ?? '') !== '') {
     $qrImageUrl .= "&roll=" . urlencode($product['roll_no']);
+}
+if (!empty($product['width'])) {
+    $qrImageUrl .= "&width=" . urlencode($product['width']);
+}
+if (!empty($product['length'])) {
+    $qrImageUrl .= "&length=" . urlencode($product['length']);
 }
 
 // ── Sticker colour — set BEFORE include $patternFile ─────────
@@ -188,23 +206,56 @@ include $patternFile;
         /* Force hide INTERNAL USE */
         .internal-use { display: none !important; }
 
-        /* Hide roll number on SFC prints */
-        .sticker-bg-wrap .p2-roll { display: none !important; }
+        /* Hide default pattern roll block to avoid duplicate/conflicting positioning */
+        .sticker-bg-wrap .p2-roll,
+        .sticker-bg-wrap .p1-roll,
+        .sticker-bg-wrap .p3-roll,
+        .sticker-bg-wrap .p4-roll {
+            display: none !important;
+        }
 
-        /* SFC text — directly below the QR code, right panel */
+        /* SFC text / Roll — directly below the QR code, right panel */
         .sfc-label-overlay {
             position: absolute;
-            top: 30.5mm;
             right: 1.5mm;
             width: 33mm;
             font-family: "Arial Narrow", Arial, sans-serif;
-            font-size: 40px;
-            font-weight: 500;
             color: #000;
             text-align: center;
             white-space: nowrap;
             pointer-events: none;
             z-index: 20;
+        }
+
+        /* When SFC has NO roll: single large SFC text */
+        .sfc-label-overlay.sfc-no-roll {
+            top: 30.5mm;
+            font-size: 40px;
+            font-weight: 500;
+            line-height: 1;
+        }
+
+        /* When SFC HAS a roll: display both SFC tag and Roll No */
+        .sfc-label-overlay.sfc-has-roll {
+            top: 29.5mm;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .sfc-overlay-tag {
+            font-size: 15px;
+            font-weight: 700;
+            letter-spacing: 0.8px;
+            line-height: 1.1;
+        }
+
+        .sfc-overlay-roll {
+            font-size: 30px;
+            font-weight: 600;
+            line-height: 1;
+            margin-top: 0.5mm;
         }
 
         .no-print { text-align: center; margin: 20px 0; }
@@ -250,11 +301,30 @@ include $patternFile;
             z-index: 20;
         }
 
+        <?php if ($embed): ?>
+        html, body {
+            margin: 0 !important;
+            padding: 0 !important;
+            background: transparent !important;
+            overflow: hidden !important;
+            width: 120mm !important;
+            height: 47mm !important;
+        }
+        .info-bar, .no-print {
+            display: none !important;
+        }
+        .sticker-bg-wrap {
+            margin: 0 !important;
+            box-shadow: none !important;
+            border-radius: 0 !important;
+        }
+        <?php endif; ?>
 
     </style>
 </head>
 <body>
 
+<?php if (!$embed): ?>
 <div class="no-print info-bar">
     <strong>SFC Label Preview</strong> |
     SFC ID: #<?= $sfc_id ?> |
@@ -263,6 +333,7 @@ include $patternFile;
     Customer: <?= htmlspecialchars($customer) ?> |
     Sticker Color: <?= htmlspecialchars($colorName) ?>
 </div>
+<?php endif; ?>
 
 <?php
 echo '<div class="sticker-bg-wrap">';
@@ -274,17 +345,26 @@ if (function_exists('render_sticker')) {
 }
 
 
-// SFC label — below QR
-echo '<div class="sfc-label-overlay">SFC</div>';
+// SFC label & roll — below QR
+if ($hasRoll) {
+    echo '<div class="sfc-label-overlay sfc-has-roll">';
+    echo '<div class="sfc-overlay-tag">SFC</div>';
+    echo '<div class="sfc-overlay-roll">' . htmlspecialchars($rollDisplay) . '</div>';
+    echo '</div>';
+} else {
+    echo '<div class="sfc-label-overlay sfc-no-roll">SFC</div>';
+}
 
 
 echo '</div>';
 ?>
 
+<?php if (!$embed): ?>
 <div class="no-print">
     <button type="button" class="btn btn-print" onclick="window.print()">🖨 Print Sticker</button>
     <a href="sfc.php" class="btn btn-back">← Back to List</a>
 </div>
+<?php endif; ?>
 
 </body>
 </html>
