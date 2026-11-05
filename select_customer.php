@@ -111,7 +111,10 @@ $product = $result->fetch_assoc();
 // ── Read existing saved customer & ref_no ───────────────────────
 $savedCustomer = trim($product['customer_name'] ?? '');
 $savedRefNo    = trim($product['ref_no']        ?? '');
-$isCustEditLocked = (!$isFinishCustomerEditActive && $savedCustomer !== '' && $savedCustomer !== 'STOCK');
+
+// Exclude control button for slitting_product page (only applies to finish_product)
+$isFromSlittingProduct = ($from === 'slitting_product');
+$isCustEditLocked = (!$isFromSlittingProduct && !$isFinishCustomerEditActive && $savedCustomer !== '' && $savedCustomer !== 'STOCK');
 
 // ═══════════════════════════════════════════════════════════════
 // AJAX SAVE
@@ -129,8 +132,8 @@ if (
     $customer = trim($_POST['customer']   ?? '');
     $ref_no   = trim($_POST['ref_no']     ?? '');
 
-    // Check Control Center block
-    if (!$isFinishCustomerEditActive && $savedCustomer !== '' && $savedCustomer !== 'STOCK') {
+    // Check Control Center block (excluded for slitting_product page)
+    if (!$isFromSlittingProduct && !$isFinishCustomerEditActive && $savedCustomer !== '' && $savedCustomer !== 'STOCK') {
         echo json_encode(['ok' => false, 'msg' => 'Editing Customer and Ref No is currently BLOCKED in Control Center.']);
         exit;
     }

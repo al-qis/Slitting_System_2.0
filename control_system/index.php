@@ -142,7 +142,7 @@ $buttonMeta = [
     ],
     'finish_customer_edit' => [
         'title'       => 'Finish Product - Edit Customer & Ref No',
-        'description' => 'Controls editing Customer and Customer Ref No in finish_product.php.',
+        'description' => 'Controls editing Customer and Customer Ref No in finish_product.php (excludes slitting_product.php).',
         'icon'        => 'person-gear'
     ]
 ];

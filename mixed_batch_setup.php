@@ -228,11 +228,15 @@ usort($rolls, function ($a, $b) {
                 $lotNos[] = trim($r['lot_no']);
             }
         }
-        $canCopyAllCustRef = $isFinishCustomerEditActive ? true : ($allCustomerUnassigned && $allRefNoUnassigned);
+        // Exclude control button for slitting_product page
+        $isFromSlittingProduct = ($from === 'slitting_product');
+        $effectiveCustomerEditActive = $isFromSlittingProduct ? true : $isFinishCustomerEditActive;
+
+        $canCopyAllCustRef = $effectiveCustomerEditActive ? true : ($allCustomerUnassigned && $allRefNoUnassigned);
         $distinctLotNos = array_values(array_unique($lotNos));
         $hasMultipleLots = (count($distinctLotNos) > 1);
     ?>
-    <?php if (!$isFinishCustomerEditActive): ?>
+    <?php if (!$effectiveCustomerEditActive): ?>
     <div class="alert alert-warning py-2 px-3 small d-flex align-items-center mb-3">
         <i class="bi bi-shield-lock-fill text-warning me-2 fs-5"></i>
         <div>
@@ -373,10 +377,10 @@ usort($rolls, function ($a, $b) {
                             $hasCustomer = ($saved !== '');
                             $hasRefNo = ($rawRefNo !== '' && $rawRefNo !== 'SO-');
 
-                            // Control Center setting: finish_customer_edit
-                            $rowCustDisabled  = (!$isFinishCustomerEditActive && $hasCustomer) ? 'disabled' : '';
-                            $rowStockDisabled = (!$isFinishCustomerEditActive && ($hasCustomer || $hasRefNo)) ? 'disabled' : '';
-                            $rowRefDisabled   = (!$isFinishCustomerEditActive && ($hasRefNo || $isStock)) ? 'readonly disabled' : ($isStock ? 'readonly' : '');
+                            // Control Center setting: finish_customer_edit (excluded for slitting_product page)
+                            $rowCustDisabled  = (!$effectiveCustomerEditActive && $hasCustomer) ? 'disabled' : '';
+                            $rowStockDisabled = (!$effectiveCustomerEditActive && ($hasCustomer || $hasRefNo)) ? 'disabled' : '';
+                            $rowRefDisabled   = (!$effectiveCustomerEditActive && ($hasRefNo || $isStock)) ? 'readonly disabled' : ($isStock ? 'readonly' : '');
                         ?>
                         <select class="form-select form-select-sm row-customer" data-row="<?= $idx ?>"
                                 onchange="handleRowCustomerChange(<?= $idx ?>)" <?= $rowCustDisabled ?>>
