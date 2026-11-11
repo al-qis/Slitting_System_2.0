@@ -234,28 +234,16 @@ class CustomerTrackOrderModel
             $stmtPr->close();
         }
 
-        // 4. Index produced rolls into Recoil, Reslit, and Normal Production Pool
-        $recoilRolls = [];
-        $reslitRolls = [];
-        $normalProducedPool = [];
-
+        // 4. Index all active produced rolls into Production Pool keyed by mother_id and roll sequence
+        $producedPool = [];
         foreach ($prodsList as $pr) {
-            $isRecoil = ($pr['source'] === 'recoiling' || !empty($pr['recoiling_id']) || ($pr['cut_type'] ?? '') === 'cut_into_2');
-            $isReslit = ($pr['source'] === 'reslit' || !empty($pr['is_reslitted']));
-
-            if ($isRecoil) {
-                $recoilRolls[] = $pr;
-            } elseif ($isReslit) {
-                $reslitRolls[] = $pr;
-            } else {
-                $mId = (int)($pr['mother_id'] ?? 0);
-                $normRoll = $this->normalizeRollSeq($pr['roll_no']);
-                $poolKey = "{$mId}_{$normRoll}";
-                if (!isset($normalProducedPool[$poolKey])) {
-                    $normalProducedPool[$poolKey] = [];
-                }
-                $normalProducedPool[$poolKey][] = $pr;
+            $mId = (int)($pr['mother_id'] ?? 0);
+            $normRoll = $this->normalizeRollSeq($pr['roll_no']);
+            $poolKey = "{$mId}_{$normRoll}";
+            if (!isset($producedPool[$poolKey])) {
+                $producedPool[$poolKey] = [];
             }
+            $producedPool[$poolKey][] = $pr;
         }
 
         $orderRolls = [];
@@ -283,14 +271,19 @@ class CustomerTrackOrderModel
             $poolKey = "{$mId}_{$normSeq}";
 
             $matchedProd = null;
-            if (!empty($normalProducedPool[$poolKey])) {
-                $matchedProd = array_shift($normalProducedPool[$poolKey]);
+            if (!empty($producedPool[$poolKey])) {
+                $matchedProd = array_shift($producedPool[$poolKey]);
             }
 
             if ($matchedProd) {
+                $isRecoil = ($matchedProd['source'] === 'recoiling' || !empty($matchedProd['recoiling_id']) || ($matchedProd['cut_type'] ?? '') === 'cut_into_2');
+                $isReslit = ($matchedProd['source'] === 'reslit' || !empty($matchedProd['is_reslitted']));
+
                 $matchedProd['is_planned_only'] = false;
                 $matchedProd['is_produced']     = true;
                 $matchedProd['is_from_plan']    = true;
+                $matchedProd['is_recoil']       = $isRecoil;
+                $matchedProd['is_reslit']       = $isReslit;
                 $matchedProd['plan_id']         = $pl['plan_id'];
                 $orderRolls[] = $matchedProd;
                 $producedRollsCnt++;
@@ -331,46 +324,39 @@ class CustomerTrackOrderModel
                     'is_planned_only'     => true,
                     'is_produced'         => false,
                     'is_from_plan'        => true,
+                    'is_recoil'           => false,
+                    'is_reslit'           => false,
                 ];
                 $planningRollsCnt++;
             }
         }
 
-        // 6. Add Recoil Coils to breakdown & total quantity
-        foreach ($recoilRolls as $rec) {
-            $rec['is_planned_only'] = false;
-            $rec['is_produced']     = true;
-            $rec['is_recoil']       = true;
-            $orderRolls[] = $rec;
-            $producedRollsCnt++;
-        }
-
-        // 7. Add Reslit Coils to breakdown & total quantity
-        foreach ($reslitRolls as $res) {
-            $res['is_planned_only'] = false;
-            $res['is_produced']     = true;
-            $res['is_reslit']       = true;
-            $orderRolls[] = $res;
-            $producedRollsCnt++;
-        }
-
-        // 8. Add any remaining normal produced coils not matched to plan (extra cuts / initial stock)
-        foreach ($normalProducedPool as $remainingGroup) {
+        // 6. Add any remaining produced coils not matched to plan (additional recoil, reslit, initial stock, or extra cuts)
+        foreach ($producedPool as $remainingGroup) {
             foreach ($remainingGroup as $extraProd) {
+                $isRecoil = ($extraProd['source'] === 'recoiling' || !empty($extraProd['recoiling_id']) || ($extraProd['cut_type'] ?? '') === 'cut_into_2');
+                $isReslit = ($extraProd['source'] === 'reslit' || !empty($extraProd['is_reslitted']));
                 $isInitialStock = (empty($extraProd['mother_id']) || ($extraProd['original_source'] ?? '') === 'initial_stock');
+
                 $extraProd['is_planned_only']  = false;
                 $extraProd['is_produced']      = true;
+                $extraProd['is_from_plan']     = false;
+                $extraProd['is_recoil']        = $isRecoil;
+                $extraProd['is_reslit']        = $isReslit;
                 $extraProd['is_initial_stock'] = $isInitialStock;
-                $extraProd['is_extra_cut']     = !$isInitialStock;
+                $extraProd['is_extra_cut']     = (!$isRecoil && !$isReslit && !$isInitialStock);
                 $orderRolls[] = $extraProd;
                 $producedRollsCnt++;
             }
         }
 
-        // 9. Accumulate metrics from all rolls in the order
+        // 7. Accumulate metrics from all rolls in the order
         $initialStockCount = 0;
-        $recoilCount       = count($recoilRolls);
-        $reslitCount       = count($reslitRolls);
+        $recoilCount       = 0;
+        $reslitCount       = 0;
+        $extraCutCount     = 0;
+        $extraRecoilCount  = 0;
+        $extraReslitCount  = 0;
 
         foreach ($orderRolls as &$roll) {
             if (!empty($roll['customer_name']) && $roll['customer_name'] !== 'N/A') {
@@ -382,6 +368,21 @@ class CustomerTrackOrderModel
 
             if (!empty($roll['is_initial_stock'])) {
                 $initialStockCount++;
+            }
+            if (!empty($roll['is_recoil'])) {
+                $recoilCount++;
+                if (empty($roll['is_from_plan'])) {
+                    $extraRecoilCount++;
+                }
+            }
+            if (!empty($roll['is_reslit'])) {
+                $reslitCount++;
+                if (empty($roll['is_from_plan'])) {
+                    $extraReslitCount++;
+                }
+            }
+            if (!empty($roll['is_extra_cut'])) {
+                $extraCutCount++;
             }
 
             if (!empty($roll['nod_length']) && (float)$roll['nod_length'] > 0) {
@@ -487,16 +488,15 @@ class CustomerTrackOrderModel
 
         $excessRolls = max(0, $totalRolls - $plannedRolls);
         $excessBreakdown = [];
-        if ($recoilCount > 0) {
-            $excessBreakdown[] = "{$recoilCount} Recoil";
+        if ($extraRecoilCount > 0) {
+            $excessBreakdown[] = "{$extraRecoilCount} Recoil";
         }
-        if ($reslitCount > 0) {
-            $excessBreakdown[] = "{$reslitCount} Reslit";
+        if ($extraReslitCount > 0) {
+            $excessBreakdown[] = "{$extraReslitCount} Reslit";
         }
         if ($initialStockCount > 0) {
             $excessBreakdown[] = "{$initialStockCount} Initial Stock";
         }
-        $extraCutCount = max(0, $excessRolls - ($recoilCount + $reslitCount + $initialStockCount));
         if ($extraCutCount > 0) {
             $excessBreakdown[] = "{$extraCutCount} Extra Cut";
         }
@@ -523,6 +523,8 @@ class CustomerTrackOrderModel
             'initial_stock_cnt'  => $initialStockCount,
             'recoil_cnt'         => $recoilCount,
             'reslit_cnt'         => $reslitCount,
+            'extra_recoil_cnt'   => $extraRecoilCount,
+            'extra_reslit_cnt'   => $extraReslitCount,
             'nod_cnt'            => $nodCount,
             'delivered_rolls'    => $deliveredRolls,
             'approved_rolls'     => $approvedRolls,
@@ -667,9 +669,9 @@ class CustomerTrackOrderModel
             $reslit  = (int)($prData['reslit_rolls'] ?? 0);
             $initStk = (int)($prData['initial_stock_rolls'] ?? 0);
 
-            // Target quantity starts from slitting_plans and adds recoil/reslit/initial stock
+            // Target quantity starts from slitting_plans and adds any extra coils (recoil/reslit/extra cut/stock)
             if ($planned > 0) {
-                $target = $planned + $recoil + $reslit + max(0, $totalProd - ($planned + $recoil + $reslit));
+                $target = max($planned, $totalProd);
             } else {
                 $target = $totalProd;
                 $planned = $totalProd;
