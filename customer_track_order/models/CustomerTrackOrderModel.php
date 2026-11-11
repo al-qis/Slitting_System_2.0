@@ -234,16 +234,40 @@ class CustomerTrackOrderModel
             $stmtPr->close();
         }
 
-        // 4. Index all active produced rolls into Production Pool keyed by mother_id and roll sequence
-        $producedPool = [];
-        foreach ($prodsList as $pr) {
-            $mId = (int)($pr['mother_id'] ?? 0);
-            $normRoll = $this->normalizeRollSeq($pr['roll_no']);
-            $poolKey = "{$mId}_{$normRoll}";
-            if (!isset($producedPool[$poolKey])) {
-                $producedPool[$poolKey] = [];
+        // 4. Index all active produced rolls into Production Pool with dual-key lookup
+        // Primary index: mother_id + roll_seq
+        // Secondary fallback index: lot_no + coil_no + roll_seq (resolves cases where mother_id is NULL/0 or differed between plan & product)
+        $unmatchedProds = [];
+        $motherPool     = [];
+        $lotCoilPool    = [];
+
+        $cleanStr = function(?string $str): string {
+            return strtoupper(preg_replace('/[^A-Z0-9]/', '', (string)$str));
+        };
+        $cleanCoil = function(?string $str) use ($cleanStr): string {
+            $c = $cleanStr($str);
+            if (preg_match('/^([A-Z]+)0*(\d+)$/', $c, $m)) {
+                return $m[1] . $m[2];
             }
-            $producedPool[$poolKey][] = $pr;
+            return $c;
+        };
+
+        foreach ($prodsList as $idx => $pr) {
+            $unmatchedProds[$idx] = $pr;
+            $normRoll = $this->normalizeRollSeq($pr['roll_no']);
+
+            $mId = (int)($pr['mother_id'] ?? 0);
+            if ($mId > 0 && $normRoll !== '') {
+                $motherKey = "{$mId}_{$normRoll}";
+                $motherPool[$motherKey][] = $idx;
+            }
+
+            $cLot  = $cleanStr($pr['lot_no'] ?? '');
+            $cCoil = $cleanCoil($pr['coil_no'] ?? '');
+            if ($cLot !== '' && $cLot !== '—' && $cCoil !== '' && $cCoil !== '—' && $normRoll !== '') {
+                $lotCoilKey = "{$cLot}_{$cCoil}_{$normRoll}";
+                $lotCoilPool[$lotCoilKey][] = $idx;
+            }
         }
 
         $orderRolls = [];
@@ -268,11 +292,38 @@ class CustomerTrackOrderModel
         foreach ($plansList as $pl) {
             $mId = (int)($pl['mother_coil_id'] ?: $pl['stock_id'] ?: 0);
             $normSeq = $this->normalizeRollSeq($pl['roll_seq']);
-            $poolKey = "{$mId}_{$normSeq}";
+            $motherKey = "{$mId}_{$normSeq}";
+
+            $cLot  = $cleanStr($pl['lot_no'] ?? '');
+            $cCoil = $cleanCoil($pl['coil_no'] ?? '');
+            $lotCoilKey = ($cLot !== '' && $cLot !== '—' && $cCoil !== '' && $cCoil !== '—' && $normSeq !== '')
+                ? "{$cLot}_{$cCoil}_{$normSeq}"
+                : '';
 
             $matchedProd = null;
-            if (!empty($producedPool[$poolKey])) {
-                $matchedProd = array_shift($producedPool[$poolKey]);
+
+            // Tier 1: Match by exact mother coil ID + roll sequence
+            if ($mId > 0 && !empty($motherPool[$motherKey])) {
+                while (!empty($motherPool[$motherKey])) {
+                    $candIdx = array_shift($motherPool[$motherKey]);
+                    if (isset($unmatchedProds[$candIdx])) {
+                        $matchedProd = $unmatchedProds[$candIdx];
+                        unset($unmatchedProds[$candIdx]);
+                        break;
+                    }
+                }
+            }
+
+            // Tier 2: Fallback match by Lot No + Coil No + roll sequence (e.g. when mother_id is NULL/0 or differed)
+            if (!$matchedProd && $lotCoilKey !== '' && !empty($lotCoilPool[$lotCoilKey])) {
+                while (!empty($lotCoilPool[$lotCoilKey])) {
+                    $candIdx = array_shift($lotCoilPool[$lotCoilKey]);
+                    if (isset($unmatchedProds[$candIdx])) {
+                        $matchedProd = $unmatchedProds[$candIdx];
+                        unset($unmatchedProds[$candIdx]);
+                        break;
+                    }
+                }
             }
 
             if ($matchedProd) {
@@ -291,6 +342,9 @@ class CustomerTrackOrderModel
                 $matchedProd['is_recoil']       = $isRecoil;
                 $matchedProd['is_reslit']       = $isReslit;
                 $matchedProd['plan_id']         = $pl['plan_id'];
+                if (empty($matchedProd['mother_id']) && !empty($pl['mother_coil_id'])) {
+                    $matchedProd['mother_id'] = $pl['mother_coil_id'];
+                }
                 $orderRolls[] = $matchedProd;
                 $producedRollsCnt++;
             } else {
@@ -340,28 +394,26 @@ class CustomerTrackOrderModel
         }
 
         // 6. Add any remaining produced coils not matched to plan (additional recoil, reslit, sfc, initial stock, or extra cuts)
-        foreach ($producedPool as $remainingGroup) {
-            foreach ($remainingGroup as $extraProd) {
-                $isSfc = (
-                    strtolower(trim($extraProd['original_source'] ?? '')) === 'sfc' || 
-                    strtolower(trim($extraProd['source'] ?? '')) === 'sfc' ||
-                    strtoupper(trim($extraProd['roll_no'] ?? '')) === 'SFC'
-                );
-                $isRecoil = ($extraProd['source'] === 'recoiling' || !empty($extraProd['recoiling_id']) || ($extraProd['cut_type'] ?? '') === 'cut_into_2');
-                $isReslit = ($extraProd['source'] === 'reslit' || !empty($extraProd['is_reslitted']));
-                $isInitialStock = (!$isSfc && (empty($extraProd['mother_id']) || ($extraProd['original_source'] ?? '') === 'initial_stock'));
+        foreach ($unmatchedProds as $extraProd) {
+            $isSfc = (
+                strtolower(trim($extraProd['original_source'] ?? '')) === 'sfc' || 
+                strtolower(trim($extraProd['source'] ?? '')) === 'sfc' ||
+                strtoupper(trim($extraProd['roll_no'] ?? '')) === 'SFC'
+            );
+            $isRecoil = ($extraProd['source'] === 'recoiling' || !empty($extraProd['recoiling_id']) || ($extraProd['cut_type'] ?? '') === 'cut_into_2');
+            $isReslit = ($extraProd['source'] === 'reslit' || !empty($extraProd['is_reslitted']));
+            $isInitialStock = (!$isSfc && (empty($extraProd['mother_id']) || ($extraProd['original_source'] ?? '') === 'initial_stock'));
 
-                $extraProd['is_planned_only']  = false;
-                $extraProd['is_produced']      = true;
-                $extraProd['is_from_plan']     = false;
-                $extraProd['is_sfc']           = $isSfc;
-                $extraProd['is_recoil']        = $isRecoil;
-                $extraProd['is_reslit']        = $isReslit;
-                $extraProd['is_initial_stock'] = $isInitialStock;
-                $extraProd['is_extra_cut']     = (!$isSfc && !$isRecoil && !$isReslit && !$isInitialStock);
-                $orderRolls[] = $extraProd;
-                $producedRollsCnt++;
-            }
+            $extraProd['is_planned_only']  = false;
+            $extraProd['is_produced']      = true;
+            $extraProd['is_from_plan']     = false;
+            $extraProd['is_sfc']           = $isSfc;
+            $extraProd['is_recoil']        = $isRecoil;
+            $extraProd['is_reslit']        = $isReslit;
+            $extraProd['is_initial_stock'] = $isInitialStock;
+            $extraProd['is_extra_cut']     = (!$isSfc && !$isRecoil && !$isReslit && !$isInitialStock);
+            $orderRolls[] = $extraProd;
+            $producedRollsCnt++;
         }
 
         // 7. Accumulate metrics from all rolls in the order
