@@ -252,6 +252,31 @@ $pathPrefix           = $pathPrefix ?? '../';
             align-items: center;
             gap: 6px;
         }
+        .badge-planned-lg {
+            background-color: #7c3aed;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 30px;
+            font-size: 0.95rem;
+            font-weight: 700;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .bg-purple {
+            background-color: #7c3aed !important;
+        }
+        .text-purple {
+            color: #7c3aed !important;
+        }
+        .btn-outline-purple {
+            color: #7c3aed;
+            border-color: #7c3aed;
+        }
+        .btn-outline-purple:hover, .btn-outline-purple.active {
+            background-color: #7c3aed;
+            color: #ffffff;
+        }
 
         /* Month Section Styling */
         .month-group-card {
@@ -489,6 +514,10 @@ $pathPrefix           = $pathPrefix ?? '../';
                             <div class="badge-waiting-lg">
                                 <i class="bi bi-shield-check fs-5"></i> QC INSPECTION IN PROGRESS
                             </div>
+                        <?php elseif ($singleOrder['overall_status'] === 'ORDER_PLANNED'): ?>
+                            <div class="badge-planned-lg">
+                                <i class="bi bi-clock-history fs-5"></i> ORDER PLANNED (WAITING SLITTING)
+                            </div>
                         <?php else: ?>
                             <div class="badge-production-lg">
                                 <i class="bi bi-gear-wide-connected fs-5"></i> IN SLITTING PRODUCTION
@@ -505,7 +534,7 @@ $pathPrefix           = $pathPrefix ?? '../';
                         <div class="timeline-progress-bar" style="width: <?= min(100, max(0, ($singleOrder['stage_index'] - 1) * 23.5)) ?>%;"></div>
 
                         <!-- Step 1: Order Planned -->
-                        <div class="timeline-step completed">
+                        <div class="timeline-step <?= ($singleOrder['stage_index'] > 1) ? 'completed' : 'active' ?>">
                             <div class="step-icon-bubble">
                                 <i class="bi bi-clipboard-check"></i>
                             </div>
@@ -737,11 +766,19 @@ $pathPrefix           = $pathPrefix ?? '../';
                     'finish_good' => 0,
                     'in_slitting' => 0,
                     'planned'     => 0,
+                    'recoil'      => 0,
+                    'reslit'      => 0,
                     'nod'         => 0,
                 ];
                 foreach ($orderRolls as $r) {
                     if (!empty($r['nod_length']) && (float)$r['nod_length'] > 0) {
                         $statusCounts['nod']++;
+                    }
+                    if (!empty($r['is_recoil']) || ($r['source'] ?? '') === 'recoiling' || !empty($r['recoiling_id'])) {
+                        $statusCounts['recoil']++;
+                    }
+                    if (!empty($r['is_reslit']) || ($r['source'] ?? '') === 'reslit' || !empty($r['is_reslitted'])) {
+                        $statusCounts['reslit']++;
                     }
                     if (!empty($r['is_planned_only'])) {
                         $statusCounts['planned']++;
@@ -770,24 +807,22 @@ $pathPrefix           = $pathPrefix ?? '../';
                         <i class="bi bi-list-check text-primary"></i> Order Itemized Rolls Breakdown
                     </h5>
                     <div class="d-flex flex-wrap align-items-center gap-2">
-                        <?php if (!empty($singleOrder['planning_rolls_cnt'])): ?>
-                            <span class="badge text-white border px-2 py-1 shadow-sm" style="background-color: #7c3aed;" title="Planned coils pending slitting">
-                                <i class="bi bi-clock-history me-1"></i>Planning: <strong><?= $singleOrder['planning_rolls_cnt'] ?></strong>
+                        <span class="badge text-white border px-2 py-1 shadow-sm" style="background-color: #7c3aed;" title="Initial Planned Coils from Slitting Plan">
+                            <i class="bi bi-calendar-check me-1"></i>Base Plan: <strong><?= $singleOrder['planned_rolls'] ?></strong>
+                        </span>
+                        <?php if (!empty($singleOrder['recoil_cnt'])): ?>
+                            <span class="badge bg-info text-dark border px-2 py-1 shadow-sm" title="Additional coils from recoiling">
+                                <i class="bi bi-arrow-repeat me-1"></i>+<?= $singleOrder['recoil_cnt'] ?> Recoil
+                            </span>
+                        <?php endif; ?>
+                        <?php if (!empty($singleOrder['reslit_cnt'])): ?>
+                            <span class="badge bg-warning text-dark border px-2 py-1 shadow-sm" title="Additional coils from reslitting">
+                                <i class="bi bi-scissors me-1"></i>+<?= $singleOrder['reslit_cnt'] ?> Reslit
                             </span>
                         <?php endif; ?>
                         <?php if (!empty($singleOrder['initial_stock_cnt'])): ?>
                             <span class="badge bg-secondary-subtle text-secondary border px-2 py-1" title="Rolls from initial ready stock">
                                 <i class="bi bi-box-seam me-1"></i>Initial Stock: <strong><?= $singleOrder['initial_stock_cnt'] ?></strong>
-                            </span>
-                        <?php endif; ?>
-                        <?php if (!empty($singleOrder['recoil_cnt'])): ?>
-                            <span class="badge bg-info-subtle text-info-emphasis border px-2 py-1" title="Rolls from recoiling">
-                                <i class="bi bi-arrow-repeat me-1"></i>Recoil: <strong><?= $singleOrder['recoil_cnt'] ?></strong>
-                            </span>
-                        <?php endif; ?>
-                        <?php if (!empty($singleOrder['reslit_cnt'])): ?>
-                            <span class="badge bg-warning-subtle text-warning-emphasis border px-2 py-1" title="Rolls from reslitting">
-                                <i class="bi bi-scissors me-1"></i>Reslit: <strong><?= $singleOrder['reslit_cnt'] ?></strong>
                             </span>
                         <?php endif; ?>
                         <?php 
@@ -798,7 +833,9 @@ $pathPrefix           = $pathPrefix ?? '../';
                                 <i class="bi bi-exclamation-triangle me-1"></i>NOD: <strong><?= $nodTotalCoils ?></strong>
                             </span>
                         <?php endif; ?>
-                        <span class="text-muted small fw-semibold">Total: <?= count($orderRolls) ?> Rolls (<?= $singleOrder['total_rolls'] ?> Produced<?= !empty($singleOrder['planning_rolls_cnt']) ? ' + ' . $singleOrder['planning_rolls_cnt'] . ' Planned' : '' ?>)</span>
+                        <span class="text-muted small fw-semibold">
+                            Total: <strong><?= count($orderRolls) ?></strong> Rolls (<?= $singleOrder['planned_rolls'] ?> Planned<?php if (!empty($singleOrder['recoil_cnt'])): ?> + <?= $singleOrder['recoil_cnt'] ?> Recoil<?php endif; ?><?php if (!empty($singleOrder['reslit_cnt'])): ?> + <?= $singleOrder['reslit_cnt'] ?> Reslit<?php endif; ?> &bull; <span class="text-success fw-bold"><?= $singleOrder['produced_rolls_cnt'] ?></span> Produced<?php if (!empty($singleOrder['planning_rolls_cnt'])): ?>, <span class="text-purple fw-bold"><?= $singleOrder['planning_rolls_cnt'] ?></span> Pending Cut<?php endif; ?>)
+                        </span>
                     </div>
                 </div>
 
@@ -812,24 +849,9 @@ $pathPrefix           = $pathPrefix ?? '../';
                             <button type="button" class="btn btn-sm btn-dark roll-filter-btn active shadow-sm" data-filter="all" onclick="filterRollTable('all', this)">
                                 All <span class="badge bg-light text-dark ms-1"><?= count($orderRolls) ?></span>
                             </button>
-                            <?php if ($statusCounts['delivered'] > 0): ?>
-                                <button type="button" class="btn btn-sm btn-outline-success roll-filter-btn" data-filter="delivered" onclick="filterRollTable('delivered', this)">
-                                    <i class="bi bi-check-circle me-1"></i>Delivered <span class="badge bg-success text-white ms-1"><?= $statusCounts['delivered'] ?></span>
-                                </button>
-                            <?php endif; ?>
-                            <?php if ($statusCounts['approved'] > 0): ?>
-                                <button type="button" class="btn btn-sm btn-outline-info text-dark roll-filter-btn" data-filter="approved" onclick="filterRollTable('approved', this)">
-                                    <i class="bi bi-patch-check me-1"></i>Approved <span class="badge bg-info text-dark ms-1"><?= $statusCounts['approved'] ?></span>
-                                </button>
-                            <?php endif; ?>
-                            <?php if ($statusCounts['waiting'] > 0): ?>
-                                <button type="button" class="btn btn-sm btn-outline-warning text-dark roll-filter-btn" data-filter="waiting" onclick="filterRollTable('waiting', this)">
-                                    <i class="bi bi-clock me-1"></i>Waiting QC <span class="badge bg-warning text-dark ms-1"><?= $statusCounts['waiting'] ?></span>
-                                </button>
-                            <?php endif; ?>
-                            <?php if ($statusCounts['finish_good'] > 0): ?>
-                                <button type="button" class="btn btn-sm btn-outline-primary roll-filter-btn" data-filter="finish_good" onclick="filterRollTable('finish_good', this)">
-                                    <i class="bi bi-check2-all me-1"></i>Finish Good <span class="badge bg-primary text-white ms-1"><?= $statusCounts['finish_good'] ?></span>
+                            <?php if ($statusCounts['planned'] > 0): ?>
+                                <button type="button" class="btn btn-sm roll-filter-btn btn-outline-purple" data-filter="planned" onclick="filterRollTable('planned', this)" style="border-color: #7c3aed; color: #7c3aed;">
+                                    <i class="bi bi-hourglass-split me-1"></i>Planned <span class="badge text-white ms-1" style="background-color: #7c3aed;"><?= $statusCounts['planned'] ?></span>
                                 </button>
                             <?php endif; ?>
                             <?php if ($statusCounts['in_slitting'] > 0): ?>
@@ -837,9 +859,34 @@ $pathPrefix           = $pathPrefix ?? '../';
                                     <i class="bi bi-gear me-1"></i>In Slitting <span class="badge bg-secondary text-white ms-1"><?= $statusCounts['in_slitting'] ?></span>
                                 </button>
                             <?php endif; ?>
-                            <?php if ($statusCounts['planned'] > 0): ?>
-                                <button type="button" class="btn btn-sm roll-filter-btn btn-outline-purple" data-filter="planned" onclick="filterRollTable('planned', this)" style="border-color: #7c3aed; color: #7c3aed;">
-                                    <i class="bi bi-hourglass-split me-1"></i>Planned <span class="badge text-white ms-1" style="background-color: #7c3aed;"><?= $statusCounts['planned'] ?></span>
+                            <?php if ($statusCounts['finish_good'] > 0): ?>
+                                <button type="button" class="btn btn-sm btn-outline-primary roll-filter-btn" data-filter="finish_good" onclick="filterRollTable('finish_good', this)">
+                                    <i class="bi bi-check2-all me-1"></i>Finish Good <span class="badge bg-primary text-white ms-1"><?= $statusCounts['finish_good'] ?></span>
+                                </button>
+                            <?php endif; ?>
+                            <?php if ($statusCounts['waiting'] > 0): ?>
+                                <button type="button" class="btn btn-sm btn-outline-warning text-dark roll-filter-btn" data-filter="waiting" onclick="filterRollTable('waiting', this)">
+                                    <i class="bi bi-clock me-1"></i>Waiting QC <span class="badge bg-warning text-dark ms-1"><?= $statusCounts['waiting'] ?></span>
+                                </button>
+                            <?php endif; ?>
+                            <?php if ($statusCounts['approved'] > 0): ?>
+                                <button type="button" class="btn btn-sm btn-outline-info text-dark roll-filter-btn" data-filter="approved" onclick="filterRollTable('approved', this)">
+                                    <i class="bi bi-patch-check me-1"></i>Approved <span class="badge bg-info text-dark ms-1"><?= $statusCounts['approved'] ?></span>
+                                </button>
+                            <?php endif; ?>
+                            <?php if ($statusCounts['delivered'] > 0): ?>
+                                <button type="button" class="btn btn-sm btn-outline-success roll-filter-btn" data-filter="delivered" onclick="filterRollTable('delivered', this)">
+                                    <i class="bi bi-check-circle me-1"></i>Delivered <span class="badge bg-success text-white ms-1"><?= $statusCounts['delivered'] ?></span>
+                                </button>
+                            <?php endif; ?>
+                            <?php if ($statusCounts['recoil'] > 0): ?>
+                                <button type="button" class="btn btn-sm btn-outline-info text-dark roll-filter-btn" data-filter="recoil" onclick="filterRollTable('recoil', this)">
+                                    <i class="bi bi-arrow-repeat me-1"></i>Recoil <span class="badge bg-info text-dark ms-1"><?= $statusCounts['recoil'] ?></span>
+                                </button>
+                            <?php endif; ?>
+                            <?php if ($statusCounts['reslit'] > 0): ?>
+                                <button type="button" class="btn btn-sm btn-outline-warning text-dark roll-filter-btn" data-filter="reslit" onclick="filterRollTable('reslit', this)">
+                                    <i class="bi bi-scissors me-1"></i>Reslit <span class="badge bg-warning text-dark ms-1"><?= $statusCounts['reslit'] ?></span>
                                 </button>
                             <?php endif; ?>
                             <?php if ($statusCounts['nod'] > 0): ?>
@@ -875,9 +922,9 @@ $pathPrefix           = $pathPrefix ?? '../';
                                 $isPlanOnly = !empty($roll['is_planned_only']);
                                 $st = strtoupper($roll['status'] ?? 'IN');
                                 $sc = (int)($roll['stock_counted'] ?? 0);
-                                $isInit = (empty($roll['mother_id']) || ($roll['original_source'] ?? '') === 'initial_stock');
-                                $isRec  = (($roll['source'] ?? '') === 'recoiling' || !empty($roll['recoiling_id']) || ($roll['cut_type'] ?? '') === 'cut_into_2');
-                                $isRes  = (($roll['source'] ?? '') === 'reslit' || !empty($roll['is_reslitted']));
+                                $isInit = (!empty($roll['is_initial_stock']) || empty($roll['mother_id']) || ($roll['original_source'] ?? '') === 'initial_stock');
+                                $isRec  = (!empty($roll['is_recoil']) || ($roll['source'] ?? '') === 'recoiling' || !empty($roll['recoiling_id']) || ($roll['cut_type'] ?? '') === 'cut_into_2');
+                                $isRes  = (!empty($roll['is_reslit']) || ($roll['source'] ?? '') === 'reslit' || !empty($roll['is_reslitted']));
 
                                 if ($isPlanOnly) {
                                     $rowStatus = 'planned';
@@ -903,9 +950,14 @@ $pathPrefix           = $pathPrefix ?? '../';
                                 } elseif ($isRes) {
                                     $rowStyle = 'border-left: 4px solid #f59e0b; background-color: rgba(245, 158, 11, 0.06);';
                                 }
-                                 $hasNod = (!empty($roll['nod_length']) && (float)$roll['nod_length'] > 0);
+                                $hasNod = (!empty($roll['nod_length']) && (float)$roll['nod_length'] > 0);
                             ?>
-                                <tr class="roll-row" data-roll-status="<?= $rowStatus ?>" data-has-nod="<?= $hasNod ? '1' : '0' ?>" style="<?= $rowStyle ?>">
+                                <tr class="roll-row" 
+                                    data-roll-status="<?= $rowStatus ?>" 
+                                    data-has-nod="<?= $hasNod ? '1' : '0' ?>" 
+                                    data-is-recoil="<?= $isRec ? '1' : '0' ?>" 
+                                    data-is-reslit="<?= $isRes ? '1' : '0' ?>" 
+                                    style="<?= $rowStyle ?>">
                                     <td class="text-muted roll-index-cell"><?= $idx + 1 ?></td>
                                     <td class="fw-bold text-dark">
                                         <?= $model->formatRollNo($roll['roll_no']) ?>
@@ -1283,7 +1335,13 @@ $pathPrefix           = $pathPrefix ?? '../';
                                                             </td>
                                                             <td>
                                                                 <strong><?= $order['total_rolls'] ?> / <?= $order['planned_rolls'] ?></strong> <span class="text-muted small">Rolls</span>
-                                                                <?php if (!empty($order['excess_breakdown'])): ?>
+                                                                <?php if ($order['order_status'] === 'ORDER_PLANNED'): ?>
+                                                                    <div class="mt-1">
+                                                                        <span class="badge text-white px-2 py-1" style="background-color: #7c3aed; font-size: 10px;">
+                                                                            <i class="bi bi-clock-history me-1"></i>Waiting Cut
+                                                                        </span>
+                                                                    </div>
+                                                                <?php elseif (!empty($order['excess_breakdown'])): ?>
                                                                     <div class="mt-1" style="font-size: 11px;">
                                                                         <span class="badge bg-warning text-dark border border-warning-subtle py-1" title="Extra produce beyond planned cut">
                                                                             <i class="bi bi-plus-circle me-1"></i>+<?= $order['excess_rolls'] ?>: <?= htmlspecialchars($order['excess_breakdown']) ?>
@@ -1304,7 +1362,7 @@ $pathPrefix           = $pathPrefix ?? '../';
                                                                 </div>
                                                                 <div class="progress" style="height: 6px;">
                                                                     <div 
-                                                                        class="progress-bar <?= ($order['progress_pct'] === 100) ? 'bg-success' : 'bg-primary' ?>" 
+                                                                        class="progress-bar <?= ($order['progress_pct'] === 100) ? 'bg-success' : (($order['order_status'] === 'ORDER_PLANNED') ? 'bg-purple' : 'bg-primary') ?>" 
                                                                         role="progressbar" 
                                                                         style="width: <?= $order['progress_pct'] ?>%;" 
                                                                         aria-valuenow="<?= $order['progress_pct'] ?>" 
@@ -1314,9 +1372,15 @@ $pathPrefix           = $pathPrefix ?? '../';
                                                                 </div>
                                                             </td>
                                                             <td>
-                                                                <span class="badge <?= $order['badge_class'] ?> px-2 py-1">
-                                                                    <?= $order['status_text'] ?>
-                                                                </span>
+                                                                <?php if ($order['order_status'] === 'ORDER_PLANNED'): ?>
+                                                                    <span class="badge px-2 py-1 text-white" style="background-color: #7c3aed;">
+                                                                        <i class="bi bi-calendar-check me-1"></i>Order Planned
+                                                                    </span>
+                                                                <?php else: ?>
+                                                                    <span class="badge <?= $order['badge_class'] ?> px-2 py-1">
+                                                                        <?= $order['status_text'] ?>
+                                                                    </span>
+                                                                <?php endif; ?>
                                                             </td>
                                                             <td class="text-end no-print">
                                                                 <a href="<?= $pageUrl ?>?so=<?= urlencode($order['ref_no']) ?>" class="btn btn-outline-primary btn-sm fw-semibold">
@@ -1503,6 +1567,16 @@ $pathPrefix           = $pathPrefix ?? '../';
                     if (badge) {
                         badge.className = `badge ms-1 ${isActive ? 'bg-white text-secondary' : 'bg-secondary text-white'}`;
                     }
+                } else if (filter === 'recoil') {
+                    btn.className = `btn btn-sm roll-filter-btn ${isActive ? 'btn-info text-dark fw-semibold active shadow-sm' : 'btn-outline-info text-dark'}`;
+                    if (badge) {
+                        badge.className = `badge ms-1 ${isActive ? 'bg-white text-dark' : 'bg-info text-dark'}`;
+                    }
+                } else if (filter === 'reslit') {
+                    btn.className = `btn btn-sm roll-filter-btn ${isActive ? 'btn-warning text-dark fw-semibold active shadow-sm' : 'btn-outline-warning text-dark'}`;
+                    if (badge) {
+                        badge.className = `badge ms-1 ${isActive ? 'bg-white text-dark' : 'bg-warning text-dark'}`;
+                    }
                 } else if (filter === 'planned') {
                     btn.className = `btn btn-sm roll-filter-btn ${isActive ? 'active shadow-sm' : ''}`;
                     if (isActive) {
@@ -1535,7 +1609,21 @@ $pathPrefix           = $pathPrefix ?? '../';
             rows.forEach(row => {
                 const rowStatus = row.getAttribute('data-roll-status');
                 const hasNod = row.getAttribute('data-has-nod') === '1';
-                const isMatch = (status === 'all') || (status === 'nod' ? hasNod : rowStatus === status);
+                const isRecoil = row.getAttribute('data-is-recoil') === '1';
+                const isReslit = row.getAttribute('data-is-reslit') === '1';
+
+                let isMatch = false;
+                if (status === 'all') {
+                    isMatch = true;
+                } else if (status === 'nod') {
+                    isMatch = hasNod;
+                } else if (status === 'recoil') {
+                    isMatch = isRecoil;
+                } else if (status === 'reslit') {
+                    isMatch = isReslit;
+                } else {
+                    isMatch = (rowStatus === status);
+                }
 
                 if (isMatch) {
                     row.style.display = '';
