@@ -270,6 +270,102 @@ class CustomerTrackOrderModel
             $stmtPr->close();
         }
 
+        // 3b. Fetch rolls cut and sent to SFC from table `sfc`
+        $planMotherIds = array_unique(array_filter(array_merge(
+            array_column($plansList, 'mother_coil_id'),
+            array_column($prodsList, 'mother_id')
+        )));
+
+        if (!empty($planMotherIds)) {
+            $inMothers = implode(',', array_map('intval', $planMotherIds));
+            $sfcSql = "
+                SELECT 
+                    s.sfc_id,
+                    s.mother_id,
+                    s.product,
+                    s.lot_no,
+                    s.coil_no,
+                    s.roll_no,
+                    s.width,
+                    s.length,
+                    s.action,
+                    s.date_created,
+                    s.date_out,
+                    mc.grade
+                FROM sfc s
+                LEFT JOIN mother_coil mc ON mc.id = s.mother_id
+                WHERE (s.is_deleted = 0 OR s.is_deleted IS NULL)
+                  AND s.mother_id IN ($inMothers)
+                ORDER BY s.sfc_id ASC
+            ";
+            $sfcRes = $this->conn->query($sfcSql);
+            if ($sfcRes) {
+                $existingProdRolls = [];
+                foreach ($prodsList as $idx => &$prItem) {
+                    $mKey = ((int)($prItem['mother_id'] ?? 0)) . '_' . $this->normalizeRollSeq($prItem['roll_no']);
+                    $existingProdRolls[$mKey] = $idx;
+                }
+                unset($prItem);
+
+                $defaultCust = !empty($plansList[0]['customer_name']) ? $plansList[0]['customer_name'] : 'SFC';
+
+                while ($sfc = $sfcRes->fetch_assoc()) {
+                    $normSfcRoll = $this->normalizeRollSeq($sfc['roll_no']);
+                    $mKey = ((int)$sfc['mother_id']) . '_' . $normSfcRoll;
+
+                    if (isset($existingProdRolls[$mKey])) {
+                        // Roll already exists in slitting_product (e.g. transferred to SFC with status='OUT')
+                        $pIdx = $existingProdRolls[$mKey];
+                        $prodsList[$pIdx]['is_sfc'] = true;
+                        $prodsList[$pIdx]['is_sent_to_sfc'] = true;
+                        if ($prodsList[$pIdx]['status'] === 'OUT' || empty($prodsList[$pIdx]['status'])) {
+                            $prodsList[$pIdx]['status'] = 'SFC';
+                        }
+                    } elseif ($sfc['action'] === 'slitting' || $sfc['roll_no'] !== 'BALANCE') {
+                        // Roll was cut directly and sent to SFC in save_slitting.php (not in slitting_product)
+                        $prodsList[] = [
+                            'id'                  => 'sfc_' . $sfc['sfc_id'],
+                            'sfc_id'              => $sfc['sfc_id'],
+                            'customer_name'       => $defaultCust,
+                            'ref_no'              => $actualRefNo,
+                            'product'             => $sfc['product'] ?: '—',
+                            'lot_no'              => $sfc['lot_no'] ?: '—',
+                            'coil_no'             => $sfc['coil_no'] ?: '—',
+                            'roll_no'             => $sfc['roll_no'] ?: '—',
+                            'width'               => (float)$sfc['width'],
+                            'length'              => (float)$sfc['length'],
+                            'actual_length'       => (float)$sfc['length'],
+                            'nod_length'          => null,
+                            'status'              => 'SFC',
+                            'stock_counted'       => 0,
+                            'is_completed'        => 1,
+                            'date_in'             => $sfc['date_created'],
+                            'date_out'            => $sfc['date_out'],
+                            'delivered_at'        => null,
+                            'delivered_by'        => null,
+                            'qc_comment'          => 'Cut & Sent to SFC',
+                            'mother_id'           => $sfc['mother_id'],
+                            'source'              => 'sfc',
+                            'original_source'     => 'sfc',
+                            'recoiling_id'        => null,
+                            'is_reslitted'        => 0,
+                            'cut_type'            => 'normal',
+                            'grade'               => $sfc['grade'] ?? '',
+                            'pallet_id'           => null,
+                            'pallet_no'           => null,
+                            'pallet_status'       => null,
+                            'pallet_delivered_at' => null,
+                            'is_planned_only'     => false,
+                            'is_produced'         => true,
+                            'is_sfc'              => true,
+                            'is_sent_to_sfc'      => true,
+                        ];
+                        $existingProdRolls[$mKey] = count($prodsList) - 1;
+                    }
+                }
+            }
+        }
+
         // 4. Index all active produced rolls into Production Pool with dual-key lookup
         // Primary index: mother_id + roll_seq
         // Secondary fallback index: lot_no + coil_no + roll_seq (resolves cases where mother_id is NULL/0 or differed between plan & product)
@@ -364,9 +460,12 @@ class CustomerTrackOrderModel
 
             if ($matchedProd) {
                 $isSfc = (
+                    !empty($matchedProd['is_sfc']) ||
+                    !empty($matchedProd['is_sent_to_sfc']) ||
                     strtolower(trim($matchedProd['original_source'] ?? '')) === 'sfc' || 
                     strtolower(trim($matchedProd['source'] ?? '')) === 'sfc' ||
-                    strtoupper(trim($matchedProd['roll_no'] ?? '')) === 'SFC'
+                    strtoupper(trim($matchedProd['roll_no'] ?? '')) === 'SFC' ||
+                    strtoupper(trim($matchedProd['status'] ?? '')) === 'SFC'
                 );
                 $isRecoil = ($matchedProd['source'] === 'recoiling' || !empty($matchedProd['recoiling_id']) || ($matchedProd['cut_type'] ?? '') === 'cut_into_2');
                 $isReslit = ($matchedProd['source'] === 'reslit' || !empty($matchedProd['is_reslitted']));
@@ -375,6 +474,7 @@ class CustomerTrackOrderModel
                 $matchedProd['is_produced']     = true;
                 $matchedProd['is_from_plan']    = true;
                 $matchedProd['is_sfc']          = $isSfc;
+                $matchedProd['is_sent_to_sfc']  = !empty($matchedProd['is_sent_to_sfc']) || (strtoupper(trim($matchedProd['status'] ?? '')) === 'SFC');
                 $matchedProd['is_recoil']       = $isRecoil;
                 $matchedProd['is_reslit']       = $isReslit;
                 $matchedProd['plan_id']         = $pl['plan_id'];
@@ -432,9 +532,12 @@ class CustomerTrackOrderModel
         // 6. Add any remaining produced coils not matched to plan (additional recoil, reslit, sfc, initial stock, or extra cuts)
         foreach ($unmatchedProds as $extraProd) {
             $isSfc = (
+                !empty($extraProd['is_sfc']) ||
+                !empty($extraProd['is_sent_to_sfc']) ||
                 strtolower(trim($extraProd['original_source'] ?? '')) === 'sfc' || 
                 strtolower(trim($extraProd['source'] ?? '')) === 'sfc' ||
-                strtoupper(trim($extraProd['roll_no'] ?? '')) === 'SFC'
+                strtoupper(trim($extraProd['roll_no'] ?? '')) === 'SFC' ||
+                strtoupper(trim($extraProd['status'] ?? '')) === 'SFC'
             );
             $isRecoil = ($extraProd['source'] === 'recoiling' || !empty($extraProd['recoiling_id']) || ($extraProd['cut_type'] ?? '') === 'cut_into_2');
             $isReslit = ($extraProd['source'] === 'reslit' || !empty($extraProd['is_reslitted']));
@@ -444,6 +547,7 @@ class CustomerTrackOrderModel
             $extraProd['is_produced']      = true;
             $extraProd['is_from_plan']     = false;
             $extraProd['is_sfc']           = $isSfc;
+            $extraProd['is_sent_to_sfc']   = !empty($extraProd['is_sent_to_sfc']) || (strtoupper(trim($extraProd['status'] ?? '')) === 'SFC');
             $extraProd['is_recoil']        = $isRecoil;
             $extraProd['is_reslit']        = $isReslit;
             $extraProd['is_initial_stock'] = $isInitialStock;
@@ -537,6 +641,9 @@ class CustomerTrackOrderModel
                     if (!empty($roll['pallet_no']) || !empty($roll['pallet_id'])) {
                         $palletizedRolls++;
                     }
+                } elseif ($status === 'SFC' || !empty($roll['is_sent_to_sfc'])) {
+                    // Cut and sent to SFC inventory
+                    $qcPassedRolls++;
                 } else {
                     $inProdRolls++;
                     if (!empty($roll['pallet_no']) || !empty($roll['pallet_id'])) {
