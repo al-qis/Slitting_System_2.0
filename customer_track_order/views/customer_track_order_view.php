@@ -768,11 +768,15 @@ $pathPrefix           = $pathPrefix ?? '../';
                     'planned'     => 0,
                     'recoil'      => 0,
                     'reslit'      => 0,
+                    'sfc'         => 0,
                     'nod'         => 0,
                 ];
                 foreach ($orderRolls as $r) {
                     if (!empty($r['nod_length']) && (float)$r['nod_length'] > 0) {
                         $statusCounts['nod']++;
+                    }
+                    if (!empty($r['is_sfc']) || strtolower(trim($r['original_source'] ?? '')) === 'sfc' || strtolower(trim($r['source'] ?? '')) === 'sfc' || strtoupper(trim($r['roll_no'] ?? '')) === 'SFC') {
+                        $statusCounts['sfc']++;
                     }
                     if (!empty($r['is_recoil']) || ($r['source'] ?? '') === 'recoiling' || !empty($r['recoiling_id'])) {
                         $statusCounts['recoil']++;
@@ -810,6 +814,11 @@ $pathPrefix           = $pathPrefix ?? '../';
                         <span class="badge text-white border px-2 py-1 shadow-sm" style="background-color: #7c3aed;" title="Initial Planned Coils from Slitting Plan">
                             <i class="bi bi-calendar-check me-1"></i>Base Plan: <strong><?= $singleOrder['planned_rolls'] ?></strong>
                         </span>
+                        <?php if (!empty($singleOrder['sfc_cnt'])): ?>
+                            <span class="badge text-white border px-2 py-1 shadow-sm" style="background-color: #0d9488;" title="Coils originating from SFC inventory">
+                                <i class="bi bi-box-seam me-1"></i><?= $singleOrder['sfc_cnt'] ?> SFC<?php if (!empty($singleOrder['extra_sfc_cnt'])): ?> (+<?= $singleOrder['extra_sfc_cnt'] ?> extra)<?php endif; ?>
+                            </span>
+                        <?php endif; ?>
                         <?php if (!empty($singleOrder['recoil_cnt'])): ?>
                             <span class="badge bg-info text-dark border px-2 py-1 shadow-sm" title="Coils processed via recoiling">
                                 <i class="bi bi-arrow-repeat me-1"></i><?= $singleOrder['recoil_cnt'] ?> Recoil<?php if (!empty($singleOrder['extra_recoil_cnt'])): ?> (+<?= $singleOrder['extra_recoil_cnt'] ?> extra)<?php endif; ?>
@@ -834,7 +843,7 @@ $pathPrefix           = $pathPrefix ?? '../';
                             </span>
                         <?php endif; ?>
                         <span class="text-muted small fw-semibold">
-                            Total: <strong><?= count($orderRolls) ?></strong> Rolls (<?= $singleOrder['planned_rolls'] ?> Base Plan<?php if (!empty($singleOrder['excess_rolls'])): ?> + <?= $singleOrder['excess_rolls'] ?> Extra<?php endif; ?> &bull; <span class="text-success fw-bold"><?= $singleOrder['produced_rolls_cnt'] ?></span> Produced<?php if (!empty($singleOrder['planning_rolls_cnt'])): ?>, <span class="text-purple fw-bold"><?= $singleOrder['planning_rolls_cnt'] ?></span> Pending Cut<?php endif; ?>)
+                            Total: <strong><?= count($orderRolls) ?></strong> Rolls (<?= $singleOrder['planned_rolls'] ?> Base Plan<?php if (!empty($singleOrder['sfc_cnt'])): ?> &bull; <strong class="text-teal" style="color: #0d9488;"><?= $singleOrder['sfc_cnt'] ?> SFC</strong><?php endif; ?><?php if (!empty($singleOrder['excess_rolls'])): ?> + <?= $singleOrder['excess_rolls'] ?> Extra<?php endif; ?> &bull; <span class="text-success fw-bold"><?= $singleOrder['produced_rolls_cnt'] ?></span> Produced<?php if (!empty($singleOrder['planning_rolls_cnt'])): ?>, <span class="text-purple fw-bold"><?= $singleOrder['planning_rolls_cnt'] ?></span> Pending Cut<?php endif; ?>)
                         </span>
                     </div>
                 </div>
@@ -877,6 +886,11 @@ $pathPrefix           = $pathPrefix ?? '../';
                             <?php if ($statusCounts['delivered'] > 0): ?>
                                 <button type="button" class="btn btn-sm btn-outline-success roll-filter-btn" data-filter="delivered" onclick="filterRollTable('delivered', this)">
                                     <i class="bi bi-check-circle me-1"></i>Delivered <span class="badge bg-success text-white ms-1"><?= $statusCounts['delivered'] ?></span>
+                                </button>
+                            <?php endif; ?>
+                            <?php if ($statusCounts['sfc'] > 0): ?>
+                                <button type="button" class="btn btn-sm roll-filter-btn" data-filter="sfc" onclick="filterRollTable('sfc', this)" style="border-color: #0d9488; color: #0d9488;">
+                                    <i class="bi bi-box-seam me-1"></i>SFC <span class="badge text-white ms-1" style="background-color: #0d9488;"><?= $statusCounts['sfc'] ?></span>
                                 </button>
                             <?php endif; ?>
                             <?php if ($statusCounts['recoil'] > 0): ?>
@@ -922,7 +936,8 @@ $pathPrefix           = $pathPrefix ?? '../';
                                 $isPlanOnly = !empty($roll['is_planned_only']);
                                 $st = strtoupper($roll['status'] ?? 'IN');
                                 $sc = (int)($roll['stock_counted'] ?? 0);
-                                $isInit = (!empty($roll['is_initial_stock']) || empty($roll['mother_id']) || ($roll['original_source'] ?? '') === 'initial_stock');
+                                $isSfc  = (!empty($roll['is_sfc']) || strtolower(trim($roll['original_source'] ?? '')) === 'sfc' || strtolower(trim($roll['source'] ?? '')) === 'sfc' || strtoupper(trim($roll['roll_no'] ?? '')) === 'SFC');
+                                $isInit = (!$isSfc && (!empty($roll['is_initial_stock']) || empty($roll['mother_id']) || ($roll['original_source'] ?? '') === 'initial_stock'));
                                 $isRec  = (!empty($roll['is_recoil']) || ($roll['source'] ?? '') === 'recoiling' || !empty($roll['recoiling_id']) || ($roll['cut_type'] ?? '') === 'cut_into_2');
                                 $isRes  = (!empty($roll['is_reslit']) || ($roll['source'] ?? '') === 'reslit' || !empty($roll['is_reslitted']));
 
@@ -943,6 +958,8 @@ $pathPrefix           = $pathPrefix ?? '../';
                                 $rowStyle = '';
                                 if ($isPlanOnly) {
                                     $rowStyle = 'border-left: 4px solid #7c3aed; background-color: rgba(124, 58, 237, 0.08);';
+                                } elseif ($isSfc) {
+                                    $rowStyle = 'border-left: 4px solid #0d9488; background-color: rgba(13, 148, 136, 0.06);';
                                 } elseif ($isInit) {
                                     $rowStyle = 'border-left: 4px solid #6c757d; background-color: rgba(108, 117, 125, 0.05);';
                                 } elseif ($isRec) {
@@ -957,6 +974,7 @@ $pathPrefix           = $pathPrefix ?? '../';
                                     data-has-nod="<?= $hasNod ? '1' : '0' ?>" 
                                     data-is-recoil="<?= $isRec ? '1' : '0' ?>" 
                                     data-is-reslit="<?= $isRes ? '1' : '0' ?>" 
+                                    data-is-sfc="<?= $isSfc ? '1' : '0' ?>" 
                                     style="<?= $rowStyle ?>">
                                     <td class="text-muted roll-index-cell"><?= $idx + 1 ?></td>
                                     <td class="fw-bold text-dark">
@@ -971,6 +989,8 @@ $pathPrefix           = $pathPrefix ?? '../';
                                             Coil: 
                                             <?php if ($isPlanOnly): ?>
                                                 <strong style="color: #7c3aed;"><?= htmlspecialchars($roll['coil_no'] ?: '—') ?></strong>
+                                            <?php elseif ($isSfc): ?>
+                                                <strong style="color: #0d9488;"><?= htmlspecialchars($roll['coil_no'] ?: '—') ?></strong>
                                             <?php elseif ($isInit): ?>
                                                 <strong class="text-secondary"><?= htmlspecialchars($roll['coil_no'] ?: '—') ?></strong>
                                             <?php elseif ($isRec): ?>
@@ -985,15 +1005,23 @@ $pathPrefix           = $pathPrefix ?? '../';
                                             <span class="badge text-white mt-1 shadow-sm px-2 py-1" style="background-color: #7c3aed; font-size: 10px;">
                                                 <i class="bi bi-clock-history me-1"></i>Planning Coil (Mother #<?= $roll['mother_id'] ?>)
                                             </span>
-                                        <?php elseif ($isInit): ?>
+                                        <?php endif; ?>
+                                        <?php if ($isSfc): ?>
+                                            <span class="badge text-white mt-1 shadow-sm px-2 py-1" style="background-color: #0d9488; font-size: 10px;" title="Origin: SFC Inventory">
+                                                <i class="bi bi-box-seam me-1"></i>SFC
+                                            </span>
+                                        <?php endif; ?>
+                                        <?php if ($isInit): ?>
                                             <span class="badge bg-secondary text-white mt-1 shadow-sm px-2 py-1" style="font-size: 10px;">
                                                 <i class="bi bi-box-seam me-1"></i>Initial Stock
                                             </span>
-                                        <?php elseif ($isRec): ?>
+                                        <?php endif; ?>
+                                        <?php if ($isRec): ?>
                                             <span class="badge bg-info text-dark mt-1 shadow-sm px-2 py-1" style="font-size: 10px;">
                                                 <i class="bi bi-arrow-repeat me-1"></i>Recoil
                                             </span>
-                                        <?php elseif ($isRes): ?>
+                                        <?php endif; ?>
+                                        <?php if ($isRes): ?>
                                             <span class="badge bg-warning text-dark mt-1 shadow-sm px-2 py-1" style="font-size: 10px;">
                                                 <i class="bi bi-scissors me-1"></i>Reslit
                                             </span>
@@ -1596,6 +1624,25 @@ $pathPrefix           = $pathPrefix ?? '../';
                             badge.style.color = '#ffffff';
                         }
                     }
+                } else if (filter === 'sfc') {
+                    btn.className = `btn btn-sm roll-filter-btn ${isActive ? 'text-white active shadow-sm' : ''}`;
+                    if (isActive) {
+                        btn.style.backgroundColor = '#0d9488';
+                        btn.style.borderColor = '#0d9488';
+                        btn.style.color = '#ffffff';
+                        if (badge) {
+                            badge.style.backgroundColor = '#ffffff';
+                            badge.style.color = '#0d9488';
+                        }
+                    } else {
+                        btn.style.backgroundColor = 'transparent';
+                        btn.style.borderColor = '#0d9488';
+                        btn.style.color = '#0d9488';
+                        if (badge) {
+                            badge.style.backgroundColor = '#0d9488';
+                            badge.style.color = '#ffffff';
+                        }
+                    }
                 } else if (filter === 'nod') {
                     btn.className = `btn btn-sm roll-filter-btn ${isActive ? 'btn-warning text-dark fw-semibold active shadow-sm' : 'btn-outline-warning text-dark'}`;
                     if (badge) {
@@ -1611,12 +1658,15 @@ $pathPrefix           = $pathPrefix ?? '../';
                 const hasNod = row.getAttribute('data-has-nod') === '1';
                 const isRecoil = row.getAttribute('data-is-recoil') === '1';
                 const isReslit = row.getAttribute('data-is-reslit') === '1';
+                const isSfc = row.getAttribute('data-is-sfc') === '1';
 
                 let isMatch = false;
                 if (status === 'all') {
                     isMatch = true;
                 } else if (status === 'nod') {
                     isMatch = hasNod;
+                } else if (status === 'sfc') {
+                    isMatch = isSfc;
                 } else if (status === 'recoil') {
                     isMatch = isRecoil;
                 } else if (status === 'reslit') {

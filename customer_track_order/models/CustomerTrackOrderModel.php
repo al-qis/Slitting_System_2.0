@@ -276,18 +276,25 @@ class CustomerTrackOrderModel
             }
 
             if ($matchedProd) {
+                $isSfc = (
+                    strtolower(trim($matchedProd['original_source'] ?? '')) === 'sfc' || 
+                    strtolower(trim($matchedProd['source'] ?? '')) === 'sfc' ||
+                    strtoupper(trim($matchedProd['roll_no'] ?? '')) === 'SFC'
+                );
                 $isRecoil = ($matchedProd['source'] === 'recoiling' || !empty($matchedProd['recoiling_id']) || ($matchedProd['cut_type'] ?? '') === 'cut_into_2');
                 $isReslit = ($matchedProd['source'] === 'reslit' || !empty($matchedProd['is_reslitted']));
 
                 $matchedProd['is_planned_only'] = false;
                 $matchedProd['is_produced']     = true;
                 $matchedProd['is_from_plan']    = true;
+                $matchedProd['is_sfc']          = $isSfc;
                 $matchedProd['is_recoil']       = $isRecoil;
                 $matchedProd['is_reslit']       = $isReslit;
                 $matchedProd['plan_id']         = $pl['plan_id'];
                 $orderRolls[] = $matchedProd;
                 $producedRollsCnt++;
             } else {
+                $isPlanSfc = (strtoupper(trim($pl['roll_seq'] ?? '')) === 'SFC' || strtoupper(trim($pl['ref_no'] ?? '')) === 'SFC');
                 // Pending cut (in slitting plan)
                 $orderRolls[] = [
                     'id'                  => 'plan_' . $pl['plan_id'],
@@ -324,6 +331,7 @@ class CustomerTrackOrderModel
                     'is_planned_only'     => true,
                     'is_produced'         => false,
                     'is_from_plan'        => true,
+                    'is_sfc'              => $isPlanSfc,
                     'is_recoil'           => false,
                     'is_reslit'           => false,
                 ];
@@ -331,20 +339,26 @@ class CustomerTrackOrderModel
             }
         }
 
-        // 6. Add any remaining produced coils not matched to plan (additional recoil, reslit, initial stock, or extra cuts)
+        // 6. Add any remaining produced coils not matched to plan (additional recoil, reslit, sfc, initial stock, or extra cuts)
         foreach ($producedPool as $remainingGroup) {
             foreach ($remainingGroup as $extraProd) {
+                $isSfc = (
+                    strtolower(trim($extraProd['original_source'] ?? '')) === 'sfc' || 
+                    strtolower(trim($extraProd['source'] ?? '')) === 'sfc' ||
+                    strtoupper(trim($extraProd['roll_no'] ?? '')) === 'SFC'
+                );
                 $isRecoil = ($extraProd['source'] === 'recoiling' || !empty($extraProd['recoiling_id']) || ($extraProd['cut_type'] ?? '') === 'cut_into_2');
                 $isReslit = ($extraProd['source'] === 'reslit' || !empty($extraProd['is_reslitted']));
-                $isInitialStock = (empty($extraProd['mother_id']) || ($extraProd['original_source'] ?? '') === 'initial_stock');
+                $isInitialStock = (!$isSfc && (empty($extraProd['mother_id']) || ($extraProd['original_source'] ?? '') === 'initial_stock'));
 
                 $extraProd['is_planned_only']  = false;
                 $extraProd['is_produced']      = true;
                 $extraProd['is_from_plan']     = false;
+                $extraProd['is_sfc']           = $isSfc;
                 $extraProd['is_recoil']        = $isRecoil;
                 $extraProd['is_reslit']        = $isReslit;
                 $extraProd['is_initial_stock'] = $isInitialStock;
-                $extraProd['is_extra_cut']     = (!$isRecoil && !$isReslit && !$isInitialStock);
+                $extraProd['is_extra_cut']     = (!$isSfc && !$isRecoil && !$isReslit && !$isInitialStock);
                 $orderRolls[] = $extraProd;
                 $producedRollsCnt++;
             }
@@ -354,9 +368,11 @@ class CustomerTrackOrderModel
         $initialStockCount = 0;
         $recoilCount       = 0;
         $reslitCount       = 0;
+        $sfcCount          = 0;
         $extraCutCount     = 0;
         $extraRecoilCount  = 0;
         $extraReslitCount  = 0;
+        $extraSfcCount     = 0;
 
         foreach ($orderRolls as &$roll) {
             if (!empty($roll['customer_name']) && $roll['customer_name'] !== 'N/A') {
@@ -366,6 +382,12 @@ class CustomerTrackOrderModel
                 $uniqueProducts[$roll['product']] = true;
             }
 
+            if (!empty($roll['is_sfc'])) {
+                $sfcCount++;
+                if (empty($roll['is_from_plan'])) {
+                    $extraSfcCount++;
+                }
+            }
             if (!empty($roll['is_initial_stock'])) {
                 $initialStockCount++;
             }
@@ -494,6 +516,9 @@ class CustomerTrackOrderModel
         if ($extraReslitCount > 0) {
             $excessBreakdown[] = "{$extraReslitCount} Reslit";
         }
+        if ($extraSfcCount > 0) {
+            $excessBreakdown[] = "{$extraSfcCount} SFC";
+        }
         if ($initialStockCount > 0) {
             $excessBreakdown[] = "{$initialStockCount} Initial Stock";
         }
@@ -523,8 +548,10 @@ class CustomerTrackOrderModel
             'initial_stock_cnt'  => $initialStockCount,
             'recoil_cnt'         => $recoilCount,
             'reslit_cnt'         => $reslitCount,
+            'sfc_cnt'            => $sfcCount,
             'extra_recoil_cnt'   => $extraRecoilCount,
             'extra_reslit_cnt'   => $extraReslitCount,
+            'extra_sfc_cnt'      => $extraSfcCount,
             'nod_cnt'            => $nodCount,
             'delivered_rolls'    => $deliveredRolls,
             'approved_rolls'     => $approvedRolls,
@@ -612,7 +639,8 @@ class CustomerTrackOrderModel
                 COUNT(DISTINCT p.pallet_no) as pallet_count,
                 GROUP_CONCAT(DISTINCT p.pallet_no SEPARATOR ', ') as pallet_numbers,
                 GROUP_CONCAT(DISTINCT sp.product SEPARATOR ', ') as products,
-                SUM(CASE WHEN (sp.mother_id IS NULL OR sp.mother_id = 0 OR sp.original_source = 'initial_stock') THEN 1 ELSE 0 END) AS initial_stock_rolls,
+                SUM(CASE WHEN ((sp.mother_id IS NULL OR sp.mother_id = 0 OR sp.original_source = 'initial_stock') AND LOWER(COALESCE(sp.original_source, '')) != 'sfc' AND LOWER(COALESCE(sp.source, '')) != 'sfc') THEN 1 ELSE 0 END) AS initial_stock_rolls,
+                SUM(CASE WHEN (LOWER(sp.original_source) = 'sfc' OR LOWER(sp.source) = 'sfc' OR sp.roll_no = 'SFC') THEN 1 ELSE 0 END) AS sfc_rolls,
                 SUM(CASE WHEN (sp.source = 'recoiling' OR sp.recoiling_id > 0 OR sp.cut_type = 'cut_into_2') THEN 1 ELSE 0 END) AS recoil_rolls,
                 SUM(CASE WHEN (sp.source = 'reslit' OR sp.is_reslitted = 1) THEN 1 ELSE 0 END) AS reslit_rolls
             FROM slitting_product sp 
@@ -667,6 +695,7 @@ class CustomerTrackOrderModel
             $totalProd = (int)($prData['total_produced'] ?? 0);
             $recoil  = (int)($prData['recoil_rolls'] ?? 0);
             $reslit  = (int)($prData['reslit_rolls'] ?? 0);
+            $sfc     = (int)($prData['sfc_rolls'] ?? 0);
             $initStk = (int)($prData['initial_stock_rolls'] ?? 0);
 
             // Target quantity starts from slitting_plans and adds any extra coils (recoil/reslit/extra cut/stock)
@@ -738,8 +767,9 @@ class CustomerTrackOrderModel
             $breakdownParts = [];
             if ($recoil > 0)  $breakdownParts[] = "{$recoil} Recoil";
             if ($reslit > 0)  $breakdownParts[] = "{$reslit} Reslit";
+            if ($sfc > 0)     $breakdownParts[] = "{$sfc} SFC";
             if ($initStk > 0) $breakdownParts[] = "{$initStk} Initial Stock";
-            $extraCut = max(0, $excess - ($recoil + $reslit + $initStk));
+            $extraCut = max(0, $excess - ($recoil + $reslit + $sfc + $initStk));
             if ($extraCut > 0) $breakdownParts[] = "{$extraCut} Extra Cut";
 
             $orderList[] = [
@@ -768,6 +798,7 @@ class CustomerTrackOrderModel
                 'initial_stock_rolls' => $initStk,
                 'recoil_rolls'        => $recoil,
                 'reslit_rolls'        => $reslit,
+                'sfc_rolls'           => $sfc,
             ];
             $totalOrdersCount++;
         }
