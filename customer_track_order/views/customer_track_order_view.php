@@ -811,13 +811,13 @@ $pathPrefix           = $pathPrefix ?? '../';
                             <i class="bi bi-calendar-check me-1"></i>Base Plan: <strong><?= $singleOrder['planned_rolls'] ?></strong>
                         </span>
                         <?php if (!empty($singleOrder['recoil_cnt'])): ?>
-                            <span class="badge bg-info text-dark border px-2 py-1 shadow-sm" title="Additional coils from recoiling">
-                                <i class="bi bi-arrow-repeat me-1"></i>+<?= $singleOrder['recoil_cnt'] ?> Recoil
+                            <span class="badge bg-info text-dark border px-2 py-1 shadow-sm" title="Coils processed via recoiling">
+                                <i class="bi bi-arrow-repeat me-1"></i><?= $singleOrder['recoil_cnt'] ?> Recoil<?php if (!empty($singleOrder['extra_recoil_cnt'])): ?> (+<?= $singleOrder['extra_recoil_cnt'] ?> extra)<?php endif; ?>
                             </span>
                         <?php endif; ?>
                         <?php if (!empty($singleOrder['reslit_cnt'])): ?>
-                            <span class="badge bg-warning text-dark border px-2 py-1 shadow-sm" title="Additional coils from reslitting">
-                                <i class="bi bi-scissors me-1"></i>+<?= $singleOrder['reslit_cnt'] ?> Reslit
+                            <span class="badge bg-warning text-dark border px-2 py-1 shadow-sm" title="Coils processed via reslitting">
+                                <i class="bi bi-scissors me-1"></i><?= $singleOrder['reslit_cnt'] ?> Reslit<?php if (!empty($singleOrder['extra_reslit_cnt'])): ?> (+<?= $singleOrder['extra_reslit_cnt'] ?> extra)<?php endif; ?>
                             </span>
                         <?php endif; ?>
                         <?php if (!empty($singleOrder['initial_stock_cnt'])): ?>
@@ -834,7 +834,7 @@ $pathPrefix           = $pathPrefix ?? '../';
                             </span>
                         <?php endif; ?>
                         <span class="text-muted small fw-semibold">
-                            Total: <strong><?= count($orderRolls) ?></strong> Rolls (<?= $singleOrder['planned_rolls'] ?> Planned<?php if (!empty($singleOrder['recoil_cnt'])): ?> + <?= $singleOrder['recoil_cnt'] ?> Recoil<?php endif; ?><?php if (!empty($singleOrder['reslit_cnt'])): ?> + <?= $singleOrder['reslit_cnt'] ?> Reslit<?php endif; ?> &bull; <span class="text-success fw-bold"><?= $singleOrder['produced_rolls_cnt'] ?></span> Produced<?php if (!empty($singleOrder['planning_rolls_cnt'])): ?>, <span class="text-purple fw-bold"><?= $singleOrder['planning_rolls_cnt'] ?></span> Pending Cut<?php endif; ?>)
+                            Total: <strong><?= count($orderRolls) ?></strong> Rolls (<?= $singleOrder['planned_rolls'] ?> Base Plan<?php if (!empty($singleOrder['excess_rolls'])): ?> + <?= $singleOrder['excess_rolls'] ?> Extra<?php endif; ?> &bull; <span class="text-success fw-bold"><?= $singleOrder['produced_rolls_cnt'] ?></span> Produced<?php if (!empty($singleOrder['planning_rolls_cnt'])): ?>, <span class="text-purple fw-bold"><?= $singleOrder['planning_rolls_cnt'] ?></span> Pending Cut<?php endif; ?>)
                         </span>
                     </div>
                 </div>
