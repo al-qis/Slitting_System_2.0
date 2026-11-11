@@ -775,7 +775,7 @@ $pathPrefix           = $pathPrefix ?? '../';
                     if (!empty($r['nod_length']) && (float)$r['nod_length'] > 0) {
                         $statusCounts['nod']++;
                     }
-                    if (!empty($r['is_sfc']) || strtolower(trim($r['original_source'] ?? '')) === 'sfc' || strtolower(trim($r['source'] ?? '')) === 'sfc' || strtoupper(trim($r['roll_no'] ?? '')) === 'SFC') {
+                    if (!empty($r['is_sfc']) || !empty($r['is_sent_to_sfc']) || strtoupper(trim($r['status'] ?? '')) === 'SFC' || strtolower(trim($r['original_source'] ?? '')) === 'sfc' || strtolower(trim($r['source'] ?? '')) === 'sfc' || strtoupper(trim($r['roll_no'] ?? '')) === 'SFC') {
                         $statusCounts['sfc']++;
                     }
                     if (!empty($r['is_recoil']) || ($r['source'] ?? '') === 'recoiling' || !empty($r['recoiling_id'])) {
@@ -789,7 +789,9 @@ $pathPrefix           = $pathPrefix ?? '../';
                     } else {
                         $s = strtoupper($r['status'] ?? 'IN');
                         $sc = (int)($r['stock_counted'] ?? 0);
-                        if ($s === 'DELIVERED') {
+                        if (!empty($r['is_sent_to_sfc']) || $s === 'SFC') {
+                            // Tracked under $statusCounts['sfc'] above
+                        } elseif ($s === 'DELIVERED') {
                             $statusCounts['delivered']++;
                         } elseif ($s === 'APPROVED') {
                             $statusCounts['approved']++;
@@ -936,13 +938,16 @@ $pathPrefix           = $pathPrefix ?? '../';
                                 $isPlanOnly = !empty($roll['is_planned_only']);
                                 $st = strtoupper($roll['status'] ?? 'IN');
                                 $sc = (int)($roll['stock_counted'] ?? 0);
-                                $isSfc  = (!empty($roll['is_sfc']) || strtolower(trim($roll['original_source'] ?? '')) === 'sfc' || strtolower(trim($roll['source'] ?? '')) === 'sfc' || strtoupper(trim($roll['roll_no'] ?? '')) === 'SFC');
+                                $isSentToSfc = (!empty($roll['is_sent_to_sfc']) || $st === 'SFC');
+                                $isSfc  = (!empty($roll['is_sfc']) || $isSentToSfc || strtolower(trim($roll['original_source'] ?? '')) === 'sfc' || strtolower(trim($roll['source'] ?? '')) === 'sfc' || strtoupper(trim($roll['roll_no'] ?? '')) === 'SFC');
                                 $isInit = (!$isSfc && (!empty($roll['is_initial_stock']) || empty($roll['mother_id']) || ($roll['original_source'] ?? '') === 'initial_stock'));
                                 $isRec  = (!empty($roll['is_recoil']) || ($roll['source'] ?? '') === 'recoiling' || !empty($roll['recoiling_id']) || ($roll['cut_type'] ?? '') === 'cut_into_2');
                                 $isRes  = (!empty($roll['is_reslit']) || ($roll['source'] ?? '') === 'reslit' || !empty($roll['is_reslitted']));
 
                                 if ($isPlanOnly) {
                                     $rowStatus = 'planned';
+                                } elseif ($isSentToSfc) {
+                                    $rowStatus = 'sfc';
                                 } elseif ($st === 'DELIVERED') {
                                     $rowStatus = 'delivered';
                                 } elseif ($st === 'APPROVED') {
@@ -1049,6 +1054,10 @@ $pathPrefix           = $pathPrefix ?? '../';
                                             <span class="badge text-white shadow-sm" style="background-color: #7c3aed;">
                                                 <i class="bi bi-hourglass-split me-1"></i> Planned (Pending Cut)
                                             </span>
+                                        <?php elseif ($isSentToSfc): ?>
+                                            <span class="badge text-white shadow-sm px-2 py-1" style="background-color: #0d9488;" title="Cut and transferred to SFC">
+                                                <i class="bi bi-box-seam me-1"></i> Sent to SFC
+                                            </span>
                                         <?php elseif ($st === 'DELIVERED'): ?>
                                             <span class="badge bg-success"><i class="bi bi-check-circle me-1"></i> Delivered</span>
                                         <?php elseif ($st === 'APPROVED'): ?>
@@ -1064,6 +1073,10 @@ $pathPrefix           = $pathPrefix ?? '../';
                                     <td>
                                         <?php if ($isPlanOnly): ?>
                                             <span class="text-muted small"><i class="bi bi-dash-circle me-1"></i>Not Slit Yet</span>
+                                        <?php elseif ($isSentToSfc): ?>
+                                            <span class="badge text-white px-2 py-1" style="background-color: #0d9488;" title="Transferred to SFC Inventory">
+                                                <i class="bi bi-arrow-right me-1"></i>SFC Inventory
+                                            </span>
                                         <?php elseif (!empty($roll['pallet_no'])): ?>
                                             <span class="badge bg-light text-dark border fw-semibold">
                                                 <i class="bi bi-archive me-1"></i> <?= htmlspecialchars($roll['pallet_no']) ?>
