@@ -181,6 +181,42 @@ class CustomerTrackOrderModel
             $stmtP->close();
         }
 
+        // 2b. Auto-Deduplicate plansList
+        // If slitting_plans contains redundant entries for the same physical roll
+        // (e.g., entered once under mother_coil.php with stock_id=NULL and again under raw_material.php with stock_id=X),
+        // consolidate them into a single planned roll entry to prevent phantom duplicate rows.
+        $dedupPlans = [];
+        foreach ($plansList as $pl) {
+            $mId = (int)($pl['mother_coil_id'] ?? 0);
+            $sId = (int)($pl['stock_id'] ?? 0);
+            $normSeq = $this->normalizeRollSeq($pl['roll_seq']);
+
+            if ($mId > 0 && $normSeq !== '') {
+                $pKey = "m_{$mId}_{$normSeq}";
+            } elseif ($sId > 0 && $normSeq !== '') {
+                $pKey = "s_{$sId}_{$normSeq}";
+            } else {
+                $cLot  = strtoupper(preg_replace('/[^A-Z0-9]/', '', (string)($pl['lot_no'] ?? '')));
+                $cCoil = strtoupper(preg_replace('/[^A-Z0-9]/', '', (string)($pl['coil_no'] ?? '')));
+                $pKey = ($cLot !== '' && $cLot !== '—' && $cCoil !== '' && $cCoil !== '—' && $normSeq !== '')
+                    ? "lc_{$cLot}_{$cCoil}_{$normSeq}"
+                    : "id_{$pl['plan_id']}";
+            }
+
+            if (!isset($dedupPlans[$pKey])) {
+                $dedupPlans[$pKey] = $pl;
+            } else {
+                $existing = $dedupPlans[$pKey];
+                // Keep the more complete record (e.g. has stock_id) or newer plan
+                if (empty($existing['stock_id']) && !empty($pl['stock_id'])) {
+                    $dedupPlans[$pKey] = $pl;
+                } elseif ((int)$pl['plan_id'] > (int)$existing['plan_id']) {
+                    $dedupPlans[$pKey] = $pl;
+                }
+            }
+        }
+        $plansList = array_values($dedupPlans);
+
         // 3. Fetch all active produced rolls from slitting_product
         $sqlProds = "
             SELECT 
@@ -659,7 +695,7 @@ class CustomerTrackOrderModel
             SELECT 
                 p.ref_no,
                 MAX(p.customer_name) AS customer_name,
-                COUNT(*) AS planned_rolls,
+                COUNT(DISTINCT CONCAT(COALESCE(p.mother_coil_id, p.stock_id, 0), '_', TRIM(p.roll_seq))) AS planned_rolls,
                 MIN(p.created_at) AS plan_date,
                 GROUP_CONCAT(DISTINCT mc.product SEPARATOR ', ') AS plan_products
             FROM slitting_plans p
