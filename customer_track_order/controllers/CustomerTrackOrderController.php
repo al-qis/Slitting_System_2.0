@@ -47,11 +47,6 @@ class CustomerTrackOrderController
         $filterCustomer = $model->cleanInput($_GET['customer'] ?? '');
         $filterStatus   = $model->cleanInput($_GET['status'] ?? '');
 
-        // If user typed an SO pattern in generic search, prioritize it as single order
-        if ($searchSo === '' && $searchQuery !== '' && preg_match('/^SO-[\d-]+/i', $searchQuery)) {
-            $searchSo = $searchQuery;
-        }
-
         // Determine assets path prefix and page URL
         $scriptDir = str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? ''));
         if (basename($scriptDir) === 'views') {
@@ -68,7 +63,7 @@ class CustomerTrackOrderController
         // ── Customer List for Dropdown and Filter Pills ──────────────────────
         $customerList = $model->getCustomerList();
 
-        // ── Single Order Lookup Mode ─────────────────────────────────────────
+        // If searchSo is provided, or user typed an SO / Ref number in generic search
         $singleOrder = null;
         $orderRolls  = [];
 
@@ -77,6 +72,14 @@ class CustomerTrackOrderController
             if ($orderData !== null) {
                 $singleOrder = $orderData['summary'];
                 $orderRolls  = $orderData['rolls'];
+            }
+        } elseif ($searchQuery !== '') {
+            // Check if generic search query directly matches a specific Sales Order / Ref No
+            $orderData = $model->getSingleOrder($searchQuery);
+            if ($orderData !== null) {
+                $singleOrder = $orderData['summary'];
+                $orderRolls  = $orderData['rolls'];
+                $searchSo    = $singleOrder['ref_no'];
             }
         }
 
