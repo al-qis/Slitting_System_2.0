@@ -465,6 +465,9 @@ $pathPrefix           = $pathPrefix ?? '../';
                     <i class="bi bi-arrow-left me-1"></i> Back to All Orders
                 </a>
                 <div class="d-flex align-items-center gap-2">
+                    <a href="<?= $pageUrl ?>?export=excel&so=<?= urlencode($singleOrder['ref_no']) ?>" class="btn btn-success btn-sm fw-semibold shadow-sm d-inline-flex align-items-center gap-1">
+                        <i class="bi bi-file-earmark-excel"></i> Export to Excel
+                    </a>
                     <button type="button" class="btn btn-outline-primary btn-sm fw-semibold" onclick="copyTrackingLink()">
                         <i class="bi bi-link-45deg me-1"></i> Copy Shareable Tracking Link
                     </button>
@@ -482,6 +485,12 @@ $pathPrefix           = $pathPrefix ?? '../';
                             <span class="badge bg-dark fs-6 px-3 py-2">
                                 <i class="bi bi-receipt me-1"></i> SO NUMBER: <?= htmlspecialchars($singleOrder['ref_no']) ?>
                             </span>
+                            <a href="<?= $pageUrl ?>?export=excel&so=<?= urlencode($singleOrder['ref_no']) ?>" 
+                               class="btn btn-sm btn-outline-success bg-white text-success fw-bold shadow-sm px-2 py-1 d-inline-flex align-items-center gap-1" 
+                               title="Export <?= htmlspecialchars($singleOrder['ref_no']) ?> data to Excel"
+                               style="border-color: #198754;">
+                                <i class="bi bi-file-earmark-excel"></i> Export Excel
+                            </a>
                             <span class="badge bg-secondary fs-6 px-3 py-2">
                                 <i class="bi bi-building me-1"></i> Customer: <?= htmlspecialchars($singleOrder['customer_name']) ?>
                             </span>
@@ -813,6 +822,11 @@ $pathPrefix           = $pathPrefix ?? '../';
                         <i class="bi bi-list-check text-primary"></i> Order Itemized Rolls Breakdown
                     </h5>
                     <div class="d-flex flex-wrap align-items-center gap-2">
+                        <a href="<?= $pageUrl ?>?export=excel&so=<?= urlencode($singleOrder['ref_no']) ?>" 
+                           class="btn btn-sm btn-success fw-semibold shadow-sm px-2 py-1 d-inline-flex align-items-center gap-1"
+                           title="Export this breakdown table to Excel">
+                            <i class="bi bi-file-earmark-excel"></i> Export Excel
+                        </a>
                         <span class="badge text-white border px-2 py-1 shadow-sm" style="background-color: #7c3aed;" title="Initial Planned Coils from Slitting Plan">
                             <i class="bi bi-calendar-check me-1"></i>Base Plan: <strong><?= $singleOrder['planned_rolls'] ?></strong>
                         </span>
@@ -1359,9 +1373,17 @@ $pathPrefix           = $pathPrefix ?? '../';
                                                     <?php foreach ($mOrders as $order): ?>
                                                         <tr>
                                                             <td>
-                                                                <a href="<?= $pageUrl ?>?so=<?= urlencode($order['ref_no']) ?>" class="fw-bold text-decoration-none text-primary fs-6">
-                                                                    <i class="bi bi-receipt me-1"></i> <?= htmlspecialchars($order['ref_no']) ?>
-                                                                </a>
+                                                                <div class="d-flex align-items-center gap-2 mb-1">
+                                                                    <a href="<?= $pageUrl ?>?so=<?= urlencode($order['ref_no']) ?>" class="fw-bold text-decoration-none text-primary fs-6">
+                                                                        <i class="bi bi-receipt me-1"></i> <?= htmlspecialchars($order['ref_no']) ?>
+                                                                    </a>
+                                                                    <a href="<?= $pageUrl ?>?export=excel&so=<?= urlencode($order['ref_no']) ?>" 
+                                                                       class="btn btn-sm btn-outline-success py-0 px-2 shadow-sm d-inline-flex align-items-center gap-1" 
+                                                                       title="Export <?= htmlspecialchars($order['ref_no']) ?> data to Excel"
+                                                                       style="font-size: 11px; height: 22px;">
+                                                                        <i class="bi bi-file-earmark-excel"></i> Excel
+                                                                    </a>
+                                                                </div>
                                                                 <small class="text-muted d-block">
                                                                     Started: <?= $order['first_date'] ? date('d M Y', strtotime($order['first_date'])) : '—' ?>
                                                                 </small>
@@ -1424,9 +1446,16 @@ $pathPrefix           = $pathPrefix ?? '../';
                                                                 <?php endif; ?>
                                                             </td>
                                                             <td class="text-end no-print">
-                                                                <a href="<?= $pageUrl ?>?so=<?= urlencode($order['ref_no']) ?>" class="btn btn-outline-primary btn-sm fw-semibold">
-                                                                    Track <i class="bi bi-arrow-right ms-1"></i>
-                                                                </a>
+                                                                <div class="d-inline-flex align-items-center gap-1">
+                                                                    <a href="<?= $pageUrl ?>?export=excel&so=<?= urlencode($order['ref_no']) ?>" 
+                                                                       class="btn btn-outline-success btn-sm fw-semibold shadow-sm d-inline-flex align-items-center gap-1"
+                                                                       title="Export <?= htmlspecialchars($order['ref_no']) ?> to Excel">
+                                                                        <i class="bi bi-file-earmark-excel"></i> Excel
+                                                                    </a>
+                                                                    <a href="<?= $pageUrl ?>?so=<?= urlencode($order['ref_no']) ?>" class="btn btn-outline-primary btn-sm fw-semibold">
+                                                                        Track <i class="bi bi-arrow-right ms-1"></i>
+                                                                    </a>
+                                                                </div>
                                                             </td>
                                                         </tr>
                                                     <?php endforeach; ?>
