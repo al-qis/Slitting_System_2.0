@@ -617,35 +617,37 @@ $pathPrefix           = $pathPrefix ?? '../';
                 </div>
 
                 <!-- KPI Metric Chips -->
-                <div class="row g-3 mt-2">
+                <div class="row g-3 mt-2 align-items-stretch">
                     <div class="col-6 col-md-3">
                         <div class="p-3 rounded bg-light border text-center h-100 d-flex flex-column justify-content-center">
                             <small class="text-muted fw-bold text-uppercase d-block mb-1">Total Quantity</small>
                             <div>
                                 <span class="fs-4 fw-bold text-dark"><?= $singleOrder['total_rolls'] ?> / <?= $singleOrder['planned_rolls'] ?></span>
                                 <span class="text-muted small">Rolls</span>
-                            </div>
-                            <?php if (!empty($singleOrder['excess_breakdown'])): ?>
-                                <div class="mt-2 pt-1 border-top" style="font-size: 11px;">
-                                    <span class="badge bg-warning text-dark border border-warning-subtle" title="Extra produce beyond planned cut">
-                                        <i class="bi bi-plus-circle me-1"></i>+<?= $singleOrder['excess_rolls'] ?> Extra: <?= htmlspecialchars($singleOrder['excess_breakdown']) ?>
+                                <?php if (!empty($singleOrder['excess_breakdown'])): ?>
+                                    <span class="badge bg-warning text-dark border border-warning-subtle ms-1" style="font-size: 10px; vertical-align: middle;" title="Extra produce beyond planned cut">
+                                        +<?= $singleOrder['excess_rolls'] ?> Extra: <?= htmlspecialchars($singleOrder['excess_breakdown']) ?>
                                     </span>
-                                </div>
-                            <?php endif; ?>
+                                <?php endif; ?>
+                            </div>
                         </div>
                     </div>
                     <div class="col-6 col-md-3">
-                        <div class="p-3 rounded bg-light border text-center">
+                        <div class="p-3 rounded bg-light border text-center h-100 d-flex flex-column justify-content-center">
                             <small class="text-muted fw-bold text-uppercase d-block mb-1">Total Length</small>
-                            <span class="fs-4 fw-bold text-dark"><?= number_format($singleOrder['total_meters'], 1) ?></span>
-                            <span class="text-muted small">Meters (m)</span>
+                            <div>
+                                <span class="fs-4 fw-bold text-dark"><?= number_format($singleOrder['total_meters'], 1) ?></span>
+                                <span class="text-muted small">Meters (m)</span>
+                            </div>
                         </div>
                     </div>
                     <div class="col-6 col-md-3">
-                        <div class="p-3 rounded bg-light border text-center">
+                        <div class="p-3 rounded bg-light border text-center h-100 d-flex flex-column justify-content-center">
                             <small class="text-muted fw-bold text-uppercase d-block mb-1">Delivered Rolls</small>
-                            <span class="fs-4 fw-bold text-success"><?= $singleOrder['delivered_rolls'] ?></span>
-                            <span class="text-muted small">/ <?= $singleOrder['target_rolls'] ?? $singleOrder['planned_rolls'] ?> Rolls</span>
+                            <div>
+                                <span class="fs-4 fw-bold text-success"><?= $singleOrder['delivered_rolls'] ?></span>
+                                <span class="text-muted small">/ <?= $singleOrder['target_rolls'] ?? $singleOrder['planned_rolls'] ?> Rolls</span>
+                            </div>
                         </div>
                     </div>
                     <div class="col-6 col-md-3">
@@ -657,13 +659,15 @@ $pathPrefix           = $pathPrefix ?? '../';
                                  title="Click to toggle pallets dropdown"
                              <?php endif; ?>>
                             <small class="text-muted fw-bold text-uppercase d-block mb-1">Pallet Units</small>
-                            <span class="fs-4 fw-bold text-primary"><?= count($singleOrder['pallets']) ?></span>
-                            <span class="text-muted small">
-                                Pallets Assigned
-                                <?php if (!empty($singleOrder['pallets'])): ?>
-                                    <i class="bi bi-chevron-down ms-1 text-primary"></i>
-                                <?php endif; ?>
-                            </span>
+                            <div>
+                                <span class="fs-4 fw-bold text-primary"><?= count($singleOrder['pallets']) ?></span>
+                                <span class="text-muted small">
+                                    Pallets Assigned
+                                    <?php if (!empty($singleOrder['pallets'])): ?>
+                                        <i class="bi bi-chevron-down ms-1 text-primary"></i>
+                                    <?php endif; ?>
+                                </span>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1373,17 +1377,9 @@ $pathPrefix           = $pathPrefix ?? '../';
                                                     <?php foreach ($mOrders as $order): ?>
                                                         <tr>
                                                             <td>
-                                                                <div class="d-flex align-items-center gap-2 mb-1">
-                                                                    <a href="<?= $pageUrl ?>?so=<?= urlencode($order['ref_no']) ?>" class="fw-bold text-decoration-none text-primary fs-6">
-                                                                        <i class="bi bi-receipt me-1"></i> <?= htmlspecialchars($order['ref_no']) ?>
-                                                                    </a>
-                                                                    <a href="<?= $pageUrl ?>?export=excel&so=<?= urlencode($order['ref_no']) ?>" 
-                                                                       class="btn btn-sm btn-outline-success py-0 px-2 shadow-sm d-inline-flex align-items-center gap-1" 
-                                                                       title="Export <?= htmlspecialchars($order['ref_no']) ?> data to Excel"
-                                                                       style="font-size: 11px; height: 22px;">
-                                                                        <i class="bi bi-file-earmark-excel"></i> Excel
-                                                                    </a>
-                                                                </div>
+                                                                <a href="<?= $pageUrl ?>?so=<?= urlencode($order['ref_no']) ?>" class="fw-bold text-decoration-none text-primary fs-6">
+                                                                    <i class="bi bi-receipt me-1"></i> <?= htmlspecialchars($order['ref_no']) ?>
+                                                                </a>
                                                                 <small class="text-muted d-block">
                                                                     Started: <?= $order['first_date'] ? date('d M Y', strtotime($order['first_date'])) : '—' ?>
                                                                 </small>
@@ -1446,16 +1442,9 @@ $pathPrefix           = $pathPrefix ?? '../';
                                                                 <?php endif; ?>
                                                             </td>
                                                             <td class="text-end no-print">
-                                                                <div class="d-inline-flex align-items-center gap-1">
-                                                                    <a href="<?= $pageUrl ?>?export=excel&so=<?= urlencode($order['ref_no']) ?>" 
-                                                                       class="btn btn-outline-success btn-sm fw-semibold shadow-sm d-inline-flex align-items-center gap-1"
-                                                                       title="Export <?= htmlspecialchars($order['ref_no']) ?> to Excel">
-                                                                        <i class="bi bi-file-earmark-excel"></i> Excel
-                                                                    </a>
-                                                                    <a href="<?= $pageUrl ?>?so=<?= urlencode($order['ref_no']) ?>" class="btn btn-outline-primary btn-sm fw-semibold">
-                                                                        Track <i class="bi bi-arrow-right ms-1"></i>
-                                                                    </a>
-                                                                </div>
+                                                                <a href="<?= $pageUrl ?>?so=<?= urlencode($order['ref_no']) ?>" class="btn btn-outline-primary btn-sm fw-semibold">
+                                                                    Track <i class="bi bi-arrow-right ms-1"></i>
+                                                                </a>
                                                             </td>
                                                         </tr>
                                                     <?php endforeach; ?>
