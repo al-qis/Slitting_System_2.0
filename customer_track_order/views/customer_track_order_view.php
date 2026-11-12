@@ -378,13 +378,6 @@ $pathPrefix           = $pathPrefix ?? '../';
                     </p>
                 </div>
             </div>
-
-            <!-- Actions -->
-            <div class="d-flex align-items-center gap-2 no-print">
-                <button type="button" class="btn btn-outline-light btn-sm fw-semibold" onclick="window.print()">
-                    <i class="bi bi-printer me-1"></i> Print
-                </button>
-            </div>
         </div>
     </header>
 
@@ -470,9 +463,6 @@ $pathPrefix           = $pathPrefix ?? '../';
                     </a>
                     <button type="button" class="btn btn-outline-primary btn-sm fw-semibold" onclick="copyTrackingLink()">
                         <i class="bi bi-link-45deg me-1"></i> Copy Shareable Tracking Link
-                    </button>
-                    <button type="button" class="btn btn-primary btn-sm fw-semibold" onclick="window.print()">
-                        <i class="bi bi-printer me-1"></i> Print Order Slip
                     </button>
                 </div>
             </div>

@@ -565,6 +565,7 @@ class CustomerTrackOrderModel
         $extraRecoilCount  = 0;
         $extraReslitCount  = 0;
         $extraSfcCount     = 0;
+        $finishGoodCount   = 0;
 
         foreach ($orderRolls as &$roll) {
             if (!empty($roll['customer_name']) && $roll['customer_name'] !== 'N/A') {
@@ -607,6 +608,10 @@ class CustomerTrackOrderModel
                 $meters = (float)($roll['actual_length'] ?: $roll['length'] ?: 0);
                 $totalMeters += $meters;
                 $status = strtoupper($roll['status'] ?? 'IN');
+                $isStockCounted = ((int)($roll['stock_counted'] ?? 0) === 1);
+                if ($isStockCounted || $status === 'DELIVERED' || $status === 'APPROVED' || $status === 'SFC' || !empty($roll['is_sent_to_sfc'])) {
+                    $finishGoodCount++;
+                }
 
                 if (!empty($roll['pallet_no'])) {
                     $pNo = $roll['pallet_no'];
@@ -674,33 +679,59 @@ class CustomerTrackOrderModel
         $progressPct   = 30;
         $stageIndex    = 2; // 1: Order Planned, 2: Slitting, 3: QC, 4: Palletizing/Ready, 5: Delivered
 
+        $hasPallets = !empty($uniquePallets);
+
         if ($producedRollsCnt === 0 && $plannedRolls > 0) {
             $overallStatus = 'ORDER_PLANNED';
             $progressPct   = 15;
             $stageIndex    = 1;
-        } elseif ($deliveredRolls >= $targetRolls && $targetRolls > 0) {
-            $overallStatus = 'DELIVERED';
-            $progressPct   = 100;
-            $stageIndex    = 5;
-        } elseif ($deliveredRolls > 0) {
-            $overallStatus = 'PARTIALLY_DELIVERED';
-            $progressPct   = (int)round(($deliveredRolls / $targetRolls) * 100);
-            if ($progressPct < 20) {
-                $progressPct = 20;
+        } elseif ($hasPallets) {
+            // ORDER HAS PALLETS: Follow actual pallet delivery percentage
+            if ($deliveredRolls >= $targetRolls && $targetRolls > 0) {
+                $overallStatus = 'DELIVERED';
+                $progressPct   = 100;
+                $stageIndex    = 5;
+            } elseif ($deliveredRolls > 0) {
+                $overallStatus = 'PARTIALLY_DELIVERED';
+                $progressPct   = (int)round(($deliveredRolls / $targetRolls) * 100);
+                if ($progressPct < 20) {
+                    $progressPct = 20;
+                }
+                $stageIndex    = 4;
+            } else {
+                $overallStatus = 'READY_FOR_DELIVERY';
+                $progressPct   = 85;
+                $stageIndex    = 4;
             }
-            $stageIndex    = 4;
-        } elseif (!empty($uniquePallets) || ($approvedRolls === $targetRolls && $targetRolls > 0)) {
-            $overallStatus = 'READY_FOR_DELIVERY';
-            $progressPct   = 85;
-            $stageIndex    = 4;
-        } elseif ($waitingRolls > 0 || $approvedRolls > 0) {
-            $overallStatus = 'WAITING_QC';
-            $progressPct   = 55;
-            $stageIndex    = 3;
         } else {
-            $overallStatus = 'IN_PRODUCTION';
-            $progressPct   = 35;
-            $stageIndex    = 2;
+            // ORDER HAS NO PALLETS:
+            // If coils are Finish Good, mark as 100% Delivered
+            if ($finishGoodCount >= $targetRolls && $targetRolls > 0) {
+                $overallStatus  = 'DELIVERED';
+                $progressPct    = 100;
+                $stageIndex     = 5;
+                $deliveredRolls = $finishGoodCount;
+            } elseif ($finishGoodCount > 0) {
+                $overallStatus  = 'PARTIALLY_DELIVERED';
+                $progressPct    = (int)round(($finishGoodCount / $targetRolls) * 100);
+                if ($progressPct < 20) {
+                    $progressPct = 20;
+                }
+                $stageIndex     = 4;
+                $deliveredRolls = $finishGoodCount;
+            } elseif ($waitingRolls > 0 || $approvedRolls > 0) {
+                $overallStatus = 'WAITING_QC';
+                $progressPct   = 55;
+                $stageIndex    = 3;
+            } elseif ($producedRollsCnt > 0) {
+                $overallStatus = 'IN_PRODUCTION';
+                $progressPct   = 35;
+                $stageIndex    = 2;
+            } else {
+                $overallStatus = 'ORDER_PLANNED';
+                $progressPct   = 15;
+                $stageIndex    = 1;
+            }
         }
 
         $excessRolls = max(0, $totalRolls - $plannedRolls);
@@ -828,6 +859,7 @@ class CustomerTrackOrderModel
                 SUM(CASE WHEN sp.status = 'APPROVED' THEN 1 ELSE 0 END) as approved_rolls,
                 SUM(CASE WHEN sp.status = 'WAITING' THEN 1 ELSE 0 END) as waiting_rolls,
                 SUM(CASE WHEN sp.status = 'IN' THEN 1 ELSE 0 END) as in_prod_rolls,
+                SUM(CASE WHEN (sp.stock_counted = 1 OR sp.status IN ('DELIVERED','APPROVED','SFC') OR LOWER(COALESCE(sp.original_source, '')) = 'sfc') THEN 1 ELSE 0 END) as finish_good_rolls,
                 SUM(COALESCE(sp.actual_length, sp.length, 0)) as total_meters,
                 MAX(sp.delivered_at) as latest_delivered,
                 MIN(sp.date_in) as first_date,
@@ -905,46 +937,74 @@ class CustomerTrackOrderModel
             $app = (int)($prData['approved_rolls'] ?? 0);
             $wai = (int)($prData['waiting_rolls'] ?? 0);
             $inp = (int)($prData['in_prod_rolls'] ?? 0);
+            $fg  = (int)($prData['finish_good_rolls'] ?? 0);
             $palletsCount = (int)($prData['pallet_count'] ?? 0);
 
             // Status determination
-            if ($del >= $target && $target > 0) {
-                $st = 'DELIVERED';
-                $pct = 100;
-                $badgeClass = 'bg-success text-white';
-                $statusText = 'Delivered';
-                $deliveredOrdersCount++;
-            } elseif ($del > 0) {
-                $st = 'PARTIALLY_DELIVERED';
-                $pct = (int)round(($del / $target) * 100);
-                $badgeClass = 'bg-primary text-white';
-                $statusText = "Partial ({$del}/{$target} Delivered)";
-                $inProdOrdersCount++;
-            } elseif ($palletsCount > 0 || ($app === $target && $target > 0)) {
-                $st = 'READY';
-                $pct = 85;
-                $badgeClass = 'bg-info text-dark';
-                $statusText = 'Ready for Delivery';
-                $readyOrdersCount++;
-            } elseif ($wai > 0) {
-                $st = 'WAITING_QC';
-                $pct = 50;
-                $badgeClass = 'bg-warning text-dark';
-                $statusText = 'QC Inspection';
-                $inProdOrdersCount++;
-            } elseif ($totalProd > 0) {
-                $st = 'IN_PRODUCTION';
-                $pct = 30;
-                $badgeClass = 'bg-secondary text-white';
-                $statusText = 'In Production';
-                $inProdOrdersCount++;
-            } else {
+            if ($totalProd === 0 && $planned > 0) {
                 // Completely in planning (0 slit)
                 $st = 'ORDER_PLANNED';
                 $pct = 15;
                 $badgeClass = 'text-white';
                 $statusText = 'Order Planned';
                 $inProdOrdersCount++;
+            } elseif ($palletsCount > 0) {
+                // ORDER HAS PALLETS: Follow actual pallet delivery percentage
+                if ($del >= $target && $target > 0) {
+                    $st = 'DELIVERED';
+                    $pct = 100;
+                    $badgeClass = 'bg-success text-white';
+                    $statusText = 'Delivered';
+                    $deliveredOrdersCount++;
+                } elseif ($del > 0) {
+                    $st = 'PARTIALLY_DELIVERED';
+                    $pct = (int)round(($del / $target) * 100);
+                    $badgeClass = 'bg-primary text-white';
+                    $statusText = "Partial ({$del}/{$target} Delivered)";
+                    $inProdOrdersCount++;
+                } else {
+                    $st = 'READY';
+                    $pct = 85;
+                    $badgeClass = 'bg-info text-dark';
+                    $statusText = 'Ready for Delivery';
+                    $readyOrdersCount++;
+                }
+            } else {
+                // ORDER HAS NO PALLETS:
+                // If finish good coil not assigned to any pallet, make progress 100% Delivered!
+                if ($fg >= $target && $target > 0) {
+                    $st = 'DELIVERED';
+                    $pct = 100;
+                    $badgeClass = 'bg-success text-white';
+                    $statusText = 'Delivered';
+                    $del = $fg; // Sync delivered rolls count
+                    $deliveredOrdersCount++;
+                } elseif ($fg > 0) {
+                    $st = 'PARTIALLY_DELIVERED';
+                    $pct = (int)round(($fg / $target) * 100);
+                    $badgeClass = 'bg-primary text-white';
+                    $statusText = "Partial ({$fg}/{$target} Delivered)";
+                    $del = $fg;
+                    $inProdOrdersCount++;
+                } elseif ($wai > 0) {
+                    $st = 'WAITING_QC';
+                    $pct = 50;
+                    $badgeClass = 'bg-warning text-dark';
+                    $statusText = 'QC Inspection';
+                    $inProdOrdersCount++;
+                } elseif ($totalProd > 0) {
+                    $st = 'IN_PRODUCTION';
+                    $pct = 30;
+                    $badgeClass = 'bg-secondary text-white';
+                    $statusText = 'In Production';
+                    $inProdOrdersCount++;
+                } else {
+                    $st = 'ORDER_PLANNED';
+                    $pct = 15;
+                    $badgeClass = 'text-white';
+                    $statusText = 'Order Planned';
+                    $inProdOrdersCount++;
+                }
             }
 
             // Filter by order status
